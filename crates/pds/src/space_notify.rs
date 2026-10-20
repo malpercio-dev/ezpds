@@ -93,18 +93,25 @@ pub fn fan_out_write(
     state: &AppState,
     space: &SpaceRef,
     repo_did: &str,
-    rev: &str,
+    repo_rev: &str,
     hash: &[u8],
+    space_revs: Option<crate::db::space_notify::WriterRevs>,
 ) -> tokio::task::JoinHandle<()> {
     let state = state.clone();
     let space = space.clone();
     let repo_did = repo_did.to_string();
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "space": space.uri,
         "repo": repo_did,
-        "rev": rev,
+        "repoRev": repo_rev,
         "hash": crate::routes::space_views::lex_bytes(hash),
     });
+    if let Some(revs) = space_revs {
+        body["spaceRev"] = revs.space_rev.into();
+        if let Some(prev) = revs.prev_space_rev {
+            body["prevSpaceRev"] = prev.into();
+        }
+    }
     tokio::spawn(async move {
         let _permit = fanout_permits().acquire().await;
 
@@ -355,6 +362,8 @@ mod tests {
                 app_access: Some("open"),
                 app_allowed: None,
                 managing_app: None,
+                write_policy: None,
+                write_managing_app: None,
             },
         )
         .await
@@ -435,9 +444,19 @@ mod tests {
         register(&state, WRITER).await;
 
         let space = parse_space_ref(SPACE).unwrap();
-        fan_out_write(&state, &space, WRITER, "3lzz", &[0xde, 0xad])
-            .await
-            .unwrap();
+        fan_out_write(
+            &state,
+            &space,
+            WRITER,
+            "3lzz",
+            &[0xde, 0xad],
+            Some(crate::db::space_notify::WriterRevs {
+                space_rev: "3m22".to_string(),
+                prev_space_rev: Some("3m21".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
 
         let requests = received(&server).await;
         assert_eq!(requests.len(), 1, "the write's own origin must be skipped");
@@ -446,8 +465,10 @@ mod tests {
             serde_json::json!({
                 "space": SPACE,
                 "repo": WRITER,
-                "rev": "3lzz",
+                "repoRev": "3lzz",
                 "hash": { "$bytes": "3q0=" },
+                "spaceRev": "3m22",
+                "prevSpaceRev": "3m21",
             }),
             "the hash rides as lexicon bytes, not a hex or multibase string"
         );
@@ -477,7 +498,7 @@ mod tests {
         register(&state, &format!("{SYNCER}#atproto_space_host")).await;
 
         let space = parse_space_ref(SPACE).unwrap();
-        fan_out_write(&state, &space, WRITER, "3lzz", &[])
+        fan_out_write(&state, &space, WRITER, "3lzz", &[], None)
             .await
             .unwrap();
 

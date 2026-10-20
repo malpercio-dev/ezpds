@@ -825,7 +825,7 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
         const token = await session.accessToken();
         const spaces = await xrpc(session.pdsUrl, 'com.atproto.space.listSpaces', {
           token,
-          params: { type: args.type, did: args.did, limit: args.limit, cursor: args.cursor },
+          params: { spaceType: args.type, did: args.did, limit: args.limit, cursor: args.cursor },
         });
         return ok(spaces);
       } catch (err) {

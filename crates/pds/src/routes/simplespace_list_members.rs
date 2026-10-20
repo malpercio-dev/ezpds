@@ -40,7 +40,7 @@ pub async fn simplespace_list_members(
 
     // The lexicon layer has already bounded `limit` to 1..=1000.
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
-    let dids =
+    let members =
         crate::db::spaces::list_members(&state.db, &space.uri, params.cursor.as_deref(), limit)
             .await
             .map_err(|e| {
@@ -48,11 +48,14 @@ pub async fn simplespace_list_members(
                 ApiError::new(ErrorCode::InternalError, "internal server error")
             })?;
 
-    let next = (dids.len() as i64 == limit)
-        .then(|| dids.last().cloned())
+    let next = (members.len() as i64 == limit)
+        .then(|| members.last().map(|m| m.member_did.clone()))
         .flatten();
     let mut body = serde_json::json!({
-        "members": dids.iter().map(|did| serde_json::json!({ "did": did })).collect::<Vec<_>>(),
+        "members": members
+            .iter()
+            .map(|m| serde_json::json!({ "did": m.member_did, "read": m.can_read, "write": m.can_write }))
+            .collect::<Vec<_>>(),
     });
     if let Some(cursor) = next {
         body["cursor"] = serde_json::Value::String(cursor);

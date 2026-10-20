@@ -310,4 +310,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 72,
         sql: include_str!("migrations/V072__labels_seeded.sql"),
     },
+    Migration {
+        version: 73,
+        sql: include_str!("migrations/V073__space_read_write_split.sql"),
+    },
 ];

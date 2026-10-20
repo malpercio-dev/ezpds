@@ -16,7 +16,7 @@ auth:bearer {
 
 params:query {
   limit: 50
-  ~type: org.example.bucket
+  ~spaceType: org.example.bucket
   ~did: did:plc:authorityaaaaaaaaaaaaaaa
   ~cursor:
 }
@@ -26,7 +26,7 @@ docs {
   is deliberately not "spaces I am a member of": a member's PDS only ever learns about a
   space by storing a repo in it.
 
-  Optional "type" and "did" narrow to a space type / authority DID. With no filters, an
+  Optional "spaceType" and "did" narrow to a space type / authority DID. With no filters, an
   OAuth caller needs a wildcard "space:" grant; narrowing the query narrows what the grant
   has to cover. The cursor is the last space URI of a full page; a short page ends the walk.
 }

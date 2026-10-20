@@ -55,16 +55,17 @@ pub async fn space_list_repos(
     .map_err(internal)?;
 
     // A full page may have more behind it; a short one has reached the end.
-    let cursor = (writers.len() as i64 == limit)
-        .then(|| writers.last().map(|w| w.repo_did.clone()))
-        .flatten();
+    // The cursor is the last `spaceRev` seen even on a short page, so a syncer can resume from it
+    // later and pick up only what changed.
+    let cursor = writers.last().map(|w| w.space_rev.clone());
     let repos: Vec<_> = writers
         .into_iter()
         .map(|w| {
             serde_json::json!({
                 "did": w.repo_did,
-                "rev": w.rev,
+                "repoRev": w.rev,
                 "hash": super::space_views::lex_bytes(&w.hash),
+                "spaceRev": w.space_rev,
             })
         })
         .collect();

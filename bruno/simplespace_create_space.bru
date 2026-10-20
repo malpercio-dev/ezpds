@@ -16,19 +16,21 @@ auth:bearer {
 
 body:json {
   {
-    "type": "org.example.bucket",
+    "spaceType": "org.example.bucket",
     "skey": "main",
-    "policy": { "$type": "com.atproto.simplespace.defs#memberListPolicy" },
+    "readPolicy": { "$type": "com.atproto.simplespace.defs#memberListPolicy" },
+    "writePolicy": { "$type": "com.atproto.simplespace.defs#memberListPolicy" },
     "appAccess": { "$type": "com.atproto.simplespace.defs#open" }
   }
 }
 
 docs {
   Atproto Spaces (simplespace): create a space anchored on the authenticated account's own
-  DID. The URI is at://{callerDid}/space/{type}/{skey}; "skey" is optional (a TID is
+  DID. The URI is at://{callerDid}/space/{spaceType}/{skey}; "skey" is optional (a TID is
   generated when absent) and uses record-key syntax.
 
-  "policy" and "appAccess" are open unions and both are required. This host implements
+  "readPolicy" (who may read), "writePolicy" (whose writes are tracked and forwarded) and
+  "appAccess" are open unions and all are required. This host implements
   every member the lexicon declares — "#publicPolicy", "#memberListPolicy",
   "#managingAppPolicy" (whose "managingApp" must be a DID with an optional service
   fragment), "#open", and "#allowList" (whose "allowed" is the list of OAuth client IDs

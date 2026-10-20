@@ -159,13 +159,14 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/space/registerNotify.json"),
     include_str!("../../lexicons/com/atproto/space/unregisterNotify.json"),
     // The PDS-required simplespace management surface (`com.atproto.simplespace.*`), same
-    // branch. `checkUserAccess` is served by a managing app, never here, so it is not vendored.
-    include_str!("../../lexicons/com/atproto/simplespace/addMember.json"),
+    // branch. `checkUserAccess`, `notifyCredentialRevoked` and `notifySpaceDeleted` are vendored
+    // for byte-parity but not registered: this server only sends them or a managing app serves them.
     include_str!("../../lexicons/com/atproto/simplespace/createSpace.json"),
     include_str!("../../lexicons/com/atproto/simplespace/defs.json"),
     include_str!("../../lexicons/com/atproto/simplespace/deleteSpace.json"),
     include_str!("../../lexicons/com/atproto/simplespace/getSpace.json"),
     include_str!("../../lexicons/com/atproto/simplespace/listMembers.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/putMember.json"),
     include_str!("../../lexicons/com/atproto/simplespace/removeMember.json"),
     include_str!("../../lexicons/com/atproto/simplespace/updateSpace.json"),
 ];

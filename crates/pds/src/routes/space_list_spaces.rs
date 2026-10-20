@@ -17,9 +17,9 @@ const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 100;
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaceListSpacesParams {
     /// Filter to spaces of this type.
-    #[serde(rename = "type")]
     space_type: Option<String>,
     /// Filter to spaces under this authority DID.
     did: Option<String>,

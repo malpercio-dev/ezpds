@@ -43,17 +43,18 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
   - **Atproto Spaces (`com.atproto.space.*`):** the record CRUD, read, and sync documents behind
     the permissioned-data surface (the sync group: `listRepoOps`, `getRepo`, `getBlob`,
     `listBlobs`), the space-host notification group (`listRepos`, `registerNotify`,
-    `unregisterNotify`, `notifyWrite` — but **not** `notifySpaceDeleted`, which this server only
-    ever *sends*, so like `checkUserAccess` it is not a validation root here), plus the `defs`
+    `unregisterNotify`, `notifyWrite`; `notifySpaceDeleted` and `notifyCredentialRevoked`, which
+    this server only ever *sends*, are vendored but, like `checkUserAccess`, not registered as
+    validation roots), plus the `defs`
     document the `getLatestCommit`/`listRepoOps` outputs reach,
     and the two token-flow documents behind `auth/space.rs` (`getDelegationToken`,
     `getSpaceCredential`; both use the `space-ref` string format `space_uri.rs` validates), and
     the PDS-required management surface `com.atproto.simplespace.*` (`createSpace`,
-    `updateSpace`, `deleteSpace`, `getSpace`, `addMember`, `removeMember`, `listMembers` + the
-    `defs` document their policy/appAccess unions reach; `checkUserAccess` is served by a
-    managing app, not the PDS, so it is not vendored).
-    These are pinned to commit **`5fbc9a0076a40799c22a13e0bac7e6fba6ec785f`** of the
-    `permissioned-data` branch (2026-08-24), not the `@atproto/pds` tag the rest of this list
+    `updateSpace`, `deleteSpace`, `getSpace`, `putMember`, `removeMember`, `listMembers` + the
+    `defs` document their policy/appAccess unions reach; `checkUserAccess` is vendored for byte-parity but served by a
+    managing app, not the PDS).
+    These are pinned to commit **`619c6e8556db7dd37bb7df1d92a5eae83da8d8b0`** of the
+    `permissioned-data` branch (2026-10-20), not the `@atproto/pds` tag the rest of this list
     follows — the alpha ships no tag carrying them. A branch name is not a pin: it moves, and
     the byte-identity claim below is only auditable against a fixed revision, so re-fetch these
     at the SHA (substitute it for the tag in the `curl` below) and expect upstream to move —
@@ -77,7 +78,7 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
 
    ```sh
    curl -o com/atproto/space/example.json \
-     "https://raw.githubusercontent.com/bluesky-social/atproto/5fbc9a0076a40799c22a13e0bac7e6fba6ec785f/lexicons/com/atproto/space/example.json"
+     "https://raw.githubusercontent.com/bluesky-social/atproto/619c6e8556db7dd37bb7df1d92a5eae83da8d8b0/lexicons/com/atproto/space/example.json"
    ```
 
 2. Add it to `LEXICON_SOURCES` in `crates/pds/src/lexicon/mod.rs` (also vendor anything its

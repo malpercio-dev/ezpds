@@ -23,6 +23,9 @@ pub struct SpaceRow {
     /// `app_access = 'allowList'`. Read through [`SpaceRow::allowed_client_ids`].
     pub app_allowed: Option<String>,
     pub managing_app: Option<String>,
+    /// The write policy (V073): same vocabulary as `policy`, which is the read policy.
+    pub write_policy: Option<String>,
+    pub write_managing_app: Option<String>,
     pub deleted_at: Option<String>,
     /// When the operator took this space down (V070). Independent of `deleted_at`: the
     /// owner's tombstone is durable and clears the config, this is a reversible refusal to
@@ -52,6 +55,19 @@ pub struct NewSpace<'a> {
     /// JSON array of allow-listed client IDs (see [`SpaceRow::app_allowed`]).
     pub app_allowed: Option<&'a str>,
     pub managing_app: Option<&'a str>,
+    /// The write policy; `None` inherits the read `policy`/`managing_app`.
+    pub write_policy: Option<&'a str>,
+    pub write_managing_app: Option<&'a str>,
+}
+
+impl NewSpace<'_> {
+    /// The `(write_policy, write_managing_app)` to store: the explicit pair, or the read pair.
+    fn write_pair(&self) -> (Option<&str>, Option<&str>) {
+        match self.write_policy {
+            Some(_) => (self.write_policy, self.write_managing_app),
+            None => (self.policy, self.managing_app),
+        }
+    }
 }
 
 /// Insert a space. Returns `false` when the URI (or the equivalent
@@ -63,8 +79,8 @@ where
     let result = sqlx::query(
         "INSERT INTO spaces \
          (uri, authority_did, space_type, skey, policy, app_access, app_allowed, managing_app, \
-          created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) \
+          write_policy, write_managing_app, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) \
          ON CONFLICT DO NOTHING",
     )
     .bind(space.uri)
@@ -75,6 +91,8 @@ where
     .bind(space.app_access)
     .bind(space.app_allowed)
     .bind(space.managing_app)
+    .bind(space.write_pair().0)
+    .bind(space.write_pair().1)
     .execute(executor)
     .await?;
     Ok(result.rows_affected() == 1)
@@ -87,8 +105,8 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as::<_, SpaceRow>(
-        "SELECT uri, authority_did, policy, app_access, app_allowed, managing_app, deleted_at, \
-                takendown_at \
+        "SELECT uri, authority_did, policy, app_access, app_allowed, managing_app, \
+                write_policy, write_managing_app, deleted_at, takendown_at \
          FROM spaces WHERE uri = ?",
     )
     .bind(uri)
@@ -96,19 +114,28 @@ where
     .await
 }
 
-/// Whether `member_did` is on the simplespace member list of the space at `uri`. The
-/// `member-list` policy check behind `getSpaceCredential`.
-pub async fn is_member<'e, E>(executor: E, uri: &str, member_did: &str) -> Result<bool, sqlx::Error>
+/// Whether `member_did` is on the member list of the space at `uri` with the read bit (or,
+/// with `write`, the write bit) set. The `member-list` policy check behind `getSpaceCredential`
+/// and `notifyWrite`.
+pub async fn member_can<'e, E>(
+    executor: E,
+    uri: &str,
+    member_did: &str,
+    write: bool,
+) -> Result<bool, sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let found: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM space_members WHERE space_uri = ? AND member_did = ?")
-            .bind(uri)
-            .bind(member_did)
-            .fetch_optional(executor)
-            .await?;
-    Ok(found.is_some())
+    let allowed: Option<bool> = sqlx::query_scalar(
+        "SELECT CASE WHEN ? THEN can_write ELSE can_read END FROM space_members \
+         WHERE space_uri = ? AND member_did = ?",
+    )
+    .bind(write)
+    .bind(uri)
+    .bind(member_did)
+    .fetch_optional(executor)
+    .await?;
+    Ok(allowed.unwrap_or(false))
 }
 
 /// Create a simplespace-managed space, or claim/revive the row at that URI when it carries no
@@ -126,11 +153,13 @@ where
     let result = sqlx::query(
         "INSERT INTO spaces \
          (uri, authority_did, space_type, skey, policy, app_access, app_allowed, managing_app, \
-          created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) \
+          write_policy, write_managing_app, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) \
          ON CONFLICT (uri) DO UPDATE SET \
            policy = excluded.policy, app_access = excluded.app_access, \
            app_allowed = excluded.app_allowed, managing_app = excluded.managing_app, \
+           write_policy = excluded.write_policy, \
+           write_managing_app = excluded.write_managing_app, \
            created_at = excluded.created_at, deleted_at = NULL \
          WHERE spaces.policy IS NULL AND spaces.takendown_at IS NULL",
     )
@@ -142,31 +171,41 @@ where
     .bind(space.app_access)
     .bind(space.app_allowed)
     .bind(space.managing_app)
+    .bind(space.write_pair().0)
+    .bind(space.write_pair().1)
     .execute(executor)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// One policy axis of a space's config: the stored `policy` string and its `managing_app`.
+pub struct PolicyColumns<'a> {
+    pub policy: &'a str,
+    pub managing_app: Option<&'a str>,
 }
 
 /// Replace a space's simplespace config wholesale.
 pub async fn set_space_config<'e, E>(
     executor: E,
     uri: &str,
-    policy: &str,
+    read: &PolicyColumns<'_>,
+    write: &PolicyColumns<'_>,
     app_access: &str,
     app_allowed: Option<&str>,
-    managing_app: Option<&str>,
 ) -> Result<(), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "UPDATE spaces SET policy = ?, app_access = ?, app_allowed = ?, managing_app = ? \
-         WHERE uri = ?",
+        "UPDATE spaces SET policy = ?, managing_app = ?, write_policy = ?, \
+           write_managing_app = ?, app_access = ?, app_allowed = ? WHERE uri = ?",
     )
-    .bind(policy)
+    .bind(read.policy)
+    .bind(read.managing_app)
+    .bind(write.policy)
+    .bind(write.managing_app)
     .bind(app_access)
     .bind(app_allowed)
-    .bind(managing_app)
     .bind(uri)
     .execute(executor)
     .await?;
@@ -182,7 +221,8 @@ where
 {
     sqlx::query(
         "UPDATE spaces SET deleted_at = datetime('now'), \
-           policy = NULL, app_access = NULL, app_allowed = NULL, managing_app = NULL \
+           policy = NULL, app_access = NULL, app_allowed = NULL, managing_app = NULL, \
+           write_policy = NULL, write_managing_app = NULL \
          WHERE uri = ?",
     )
     .bind(uri)
@@ -191,17 +231,27 @@ where
     Ok(())
 }
 
-/// Add a DID to a space's member list (idempotent).
-pub async fn add_member<'e, E>(executor: E, uri: &str, member_did: &str) -> Result<(), sqlx::Error>
+/// Add a DID to a space's member list, or replace its read/write access (idempotent).
+pub async fn put_member<'e, E>(
+    executor: E,
+    uri: &str,
+    member_did: &str,
+    read: bool,
+    write: bool,
+) -> Result<(), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "INSERT INTO space_members (space_uri, member_did, added_at) \
-         VALUES (?, ?, datetime('now')) ON CONFLICT DO NOTHING",
+        "INSERT INTO space_members (space_uri, member_did, added_at, can_read, can_write) \
+         VALUES (?, ?, datetime('now'), ?, ?) \
+         ON CONFLICT (space_uri, member_did) \
+         DO UPDATE SET can_read = excluded.can_read, can_write = excluded.can_write",
     )
     .bind(uri)
     .bind(member_did)
+    .bind(read)
+    .bind(write)
     .execute(executor)
     .await?;
     Ok(())
@@ -248,6 +298,14 @@ where
     Ok(())
 }
 
+/// One member list entry.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MemberRow {
+    pub member_did: String,
+    pub can_read: bool,
+    pub can_write: bool,
+}
+
 /// One page of a space's member list, by DID ascending, after `after` (the previous page's
 /// last DID) when given.
 pub async fn list_members(
@@ -255,9 +313,9 @@ pub async fn list_members(
     uri: &str,
     after: Option<&str>,
     limit: i64,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT member_did FROM space_members \
+) -> Result<Vec<MemberRow>, sqlx::Error> {
+    sqlx::query_as::<_, MemberRow>(
+        "SELECT member_did, can_read, can_write FROM space_members \
          WHERE space_uri = ? AND (? IS NULL OR member_did > ?) \
          ORDER BY member_did ASC LIMIT ?",
     )

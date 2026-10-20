@@ -306,9 +306,10 @@ async fn a_taken_down_uri_cannot_be_re_created() {
             "/xrpc/com.atproto.simplespace.createSpace",
             &token,
             serde_json::json!({
-                "type": "org.example.bucket",
+                "spaceType": "org.example.bucket",
                 "skey": "own",
-                "policy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
+                "readPolicy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
+                "writePolicy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
                 "appAccess": { "$type": "com.atproto.simplespace.defs#open" },
             }),
         )

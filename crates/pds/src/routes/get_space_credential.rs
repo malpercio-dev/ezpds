@@ -196,6 +196,8 @@ mod tests {
                 app_access: Some(app_access),
                 app_allowed,
                 managing_app,
+                write_policy: None,
+                write_managing_app: None,
             },
         )
         .await

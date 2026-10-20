@@ -18,12 +18,12 @@ use common::{ApiError, ErrorCode};
 #[serde(rename_all = "camelCase")]
 pub struct CreateSpaceInput {
     /// The space type NSID.
-    #[serde(rename = "type")]
     space_type: String,
     /// Optional space key (record-key syntax); a TID is generated when absent.
     skey: Option<String>,
-    /// `policy` union — mapped by `space_views::policy_from_lex`.
-    policy: serde_json::Value,
+    /// `readPolicy` / `writePolicy` unions — mapped by `space_views::policy_from_lex`.
+    read_policy: serde_json::Value,
+    write_policy: serde_json::Value,
     /// `appAccess` union — mapped by `space_views::app_access_from_lex`.
     app_access: serde_json::Value,
 }
@@ -31,7 +31,7 @@ pub struct CreateSpaceInput {
 /// POST /xrpc/com.atproto.simplespace.createSpace
 ///
 /// The space URI is built from the authenticated DID, so the caller is the owner by
-/// construction; what the `manage=create` grant is matched against is that URI. Both config
+/// construction; what the `manage=create` grant is matched against is that URI. The config
 /// unions are open: an unimplemented member is refused (`UnsupportedPolicy` /
 /// `UnsupportedAppAccess`) before anything is stored.
 pub async fn simplespace_create_space(
@@ -49,7 +49,9 @@ pub async fn simplespace_create_space(
     ))?;
     require_space_grant(&state, &user, &space, SpaceOp::Manage(RepoAction::Create)).await?;
 
-    let (policy, managing_app) = super::space_views::policy_from_lex(&input.policy)?;
+    let (policy, managing_app) = super::space_views::policy_from_lex(&input.read_policy)?;
+    let (write_policy, write_managing_app) =
+        super::space_views::policy_from_lex(&input.write_policy)?;
     let (app_access, app_allowed) = super::space_views::app_access_from_lex(&input.app_access)?;
 
     let created = create_space(
@@ -63,6 +65,8 @@ pub async fn simplespace_create_space(
             app_access: Some(app_access),
             app_allowed: app_allowed.as_deref(),
             managing_app: managing_app.as_deref(),
+            write_policy: Some(write_policy),
+            write_managing_app: write_managing_app.as_deref(),
         },
     )
     .await

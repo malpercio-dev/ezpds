@@ -51,9 +51,10 @@ fn get(method_and_query: &str, token: &str) -> Request<Body> {
 
 fn create_body(policy: &str, app_access: &str) -> serde_json::Value {
     serde_json::json!({
-        "type": TYPE,
+        "spaceType": TYPE,
         "skey": "main",
-        "policy": { "$type": policy },
+        "readPolicy": { "$type": policy },
+        "writePolicy": { "$type": policy },
         "appAccess": { "$type": app_access },
     })
 }
@@ -88,8 +89,9 @@ async fn create_get_update_members_delete_round_trip() {
             "createSpace",
             &alice,
             serde_json::json!({
-                "type": TYPE,
-                "policy": { "$type": PUBLIC },
+                "spaceType": TYPE,
+                "readPolicy": { "$type": PUBLIC },
+                "writePolicy": { "$type": PUBLIC },
                 "appAccess": { "$type": OPEN },
             }),
         ),
@@ -103,23 +105,26 @@ async fn create_get_update_members_delete_round_trip() {
     let (status, body) = send(&state, get(&format!("getSpace?space={SPACE}"), &alice)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["uri"], SPACE);
-    assert_eq!(body["policy"]["$type"], MEMBER_LIST);
+    assert_eq!(body["readPolicy"]["$type"], MEMBER_LIST);
     assert_eq!(body["appAccess"]["$type"], OPEN);
 
     // Members: added, listed, and consulted by the credential issuance policy.
     let (status, _) = send(
         &state,
         post(
-            "addMember",
+            "putMember",
             &alice,
-            serde_json::json!({ "space": SPACE, "did": BOB }),
+            serde_json::json!({ "space": SPACE, "did": BOB, "read": true, "write": true }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     let (status, body) = send(&state, get(&format!("listMembers?space={SPACE}"), &alice)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["members"], serde_json::json!([{ "did": BOB }]));
+    assert_eq!(
+        body["members"],
+        serde_json::json!([{ "did": BOB, "read": true, "write": true }])
+    );
     assert!(
         body.get("cursor").is_none(),
         "a short page carries no cursor"
@@ -157,7 +162,7 @@ async fn create_get_update_members_delete_round_trip() {
         post(
             "updateSpace",
             &alice,
-            serde_json::json!({ "space": SPACE, "policy": { "$type": PUBLIC } }),
+            serde_json::json!({ "space": SPACE, "readPolicy": { "$type": PUBLIC } }),
         ),
     )
     .await;
@@ -173,7 +178,7 @@ async fn create_get_update_members_delete_round_trip() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let (_, body) = send(&state, get(&format!("getSpace?space={SPACE}"), &alice)).await;
-    assert_eq!(body["policy"]["$type"], PUBLIC);
+    assert_eq!(body["readPolicy"]["$type"], PUBLIC);
     assert_eq!(body["appAccess"]["$type"], OPEN);
 
     // The authority writes into its own space; deletion takes that repo with it.
@@ -224,12 +229,12 @@ async fn create_get_update_members_delete_round_trip() {
         post(
             "updateSpace",
             &alice,
-            serde_json::json!({ "space": SPACE, "policy": { "$type": PUBLIC } }),
+            serde_json::json!({ "space": SPACE, "readPolicy": { "$type": PUBLIC } }),
         ),
         post(
-            "addMember",
+            "putMember",
             &alice,
-            serde_json::json!({ "space": SPACE, "did": BOB }),
+            serde_json::json!({ "space": SPACE, "did": BOB, "read": true, "write": true }),
         ),
     ] {
         let (status, body) = send(&state, request).await;
@@ -274,8 +279,9 @@ async fn unimplemented_open_union_members_are_refused_and_never_stored() {
     for (body, error) in [
         (
             serde_json::json!({
-                "type": TYPE, "skey": "main",
-                "policy": { "$type": "com.example.futurePolicy" },
+                "spaceType": TYPE, "skey": "main",
+                "readPolicy": { "$type": "com.example.futurePolicy" },
+                "writePolicy": { "$type": "com.example.futurePolicy" },
                 "appAccess": { "$type": OPEN },
             }),
             "UnsupportedPolicy",
@@ -286,40 +292,45 @@ async fn unimplemented_open_union_members_are_refused_and_never_stored() {
         // prefix, a DID with no method-specific id, and an empty fragment.
         (
             serde_json::json!({
-                "type": TYPE, "skey": "main",
-                "policy": { "$type": MANAGING_APP, "managingApp": "https://forum.example" },
+                "spaceType": TYPE, "skey": "main",
+                "readPolicy": { "$type": MANAGING_APP, "managingApp": "https://forum.example" },
+                "writePolicy": { "$type": MANAGING_APP, "managingApp": "https://forum.example" },
                 "appAccess": { "$type": OPEN },
             }),
             "UnsupportedPolicy",
         ),
         (
             serde_json::json!({
-                "type": TYPE, "skey": "main",
-                "policy": { "$type": MANAGING_APP, "managingApp": "did:" },
+                "spaceType": TYPE, "skey": "main",
+                "readPolicy": { "$type": MANAGING_APP, "managingApp": "did:" },
+                "writePolicy": { "$type": MANAGING_APP, "managingApp": "did:" },
                 "appAccess": { "$type": OPEN },
             }),
             "UnsupportedPolicy",
         ),
         (
             serde_json::json!({
-                "type": TYPE, "skey": "main",
-                "policy": { "$type": MANAGING_APP, "managingApp": "did:web:" },
+                "spaceType": TYPE, "skey": "main",
+                "readPolicy": { "$type": MANAGING_APP, "managingApp": "did:web:" },
+                "writePolicy": { "$type": MANAGING_APP, "managingApp": "did:web:" },
                 "appAccess": { "$type": OPEN },
             }),
             "UnsupportedPolicy",
         ),
         (
             serde_json::json!({
-                "type": TYPE, "skey": "main",
-                "policy": { "$type": MANAGING_APP, "managingApp": "did:web:forum.example#" },
+                "spaceType": TYPE, "skey": "main",
+                "readPolicy": { "$type": MANAGING_APP, "managingApp": "did:web:forum.example#" },
+                "writePolicy": { "$type": MANAGING_APP, "managingApp": "did:web:forum.example#" },
                 "appAccess": { "$type": OPEN },
             }),
             "UnsupportedPolicy",
         ),
         (
             serde_json::json!({
-                "type": TYPE, "skey": "main",
-                "policy": { "$type": PUBLIC },
+                "spaceType": TYPE, "skey": "main",
+                "readPolicy": { "$type": PUBLIC },
+                "writePolicy": { "$type": PUBLIC },
                 "appAccess": { "$type": "com.example.futureAccess" },
             }),
             "UnsupportedAppAccess",
@@ -343,7 +354,7 @@ async fn unimplemented_open_union_members_are_refused_and_never_stored() {
     assert_eq!(status, StatusCode::OK);
     for (patch, error) in [
         (
-            serde_json::json!({ "policy": { "$type": "com.example.futurePolicy" } }),
+            serde_json::json!({ "readPolicy": { "$type": "com.example.futurePolicy" } }),
             "UnsupportedPolicy",
         ),
         (
@@ -360,7 +371,7 @@ async fn unimplemented_open_union_members_are_refused_and_never_stored() {
         assert_eq!(response["error"], error);
     }
     let (_, body) = send(&state, get(&format!("getSpace?space={SPACE}"), &alice)).await;
-    assert_eq!(body["policy"]["$type"], MEMBER_LIST);
+    assert_eq!(body["readPolicy"]["$type"], MEMBER_LIST);
     assert_eq!(body["appAccess"]["$type"], OPEN);
 
     // A missing required union is the lexicon layer's refusal, before any handler runs.
@@ -369,7 +380,7 @@ async fn unimplemented_open_union_members_are_refused_and_never_stored() {
         post(
             "createSpace",
             &alice,
-            serde_json::json!({ "type": TYPE, "skey": "other", "policy": { "$type": PUBLIC } }),
+            serde_json::json!({ "spaceType": TYPE, "skey": "other", "readPolicy": { "$type": PUBLIC }, "writePolicy": { "$type": PUBLIC } }),
         ),
     )
     .await;
@@ -396,8 +407,9 @@ async fn managing_app_and_allow_list_config_round_trips() {
             "createSpace",
             &alice,
             serde_json::json!({
-                "type": TYPE, "skey": "main",
-                "policy": { "$type": MANAGING_APP, "managingApp": APP },
+                "spaceType": TYPE, "skey": "main",
+                "readPolicy": { "$type": MANAGING_APP, "managingApp": APP },
+                "writePolicy": { "$type": MANAGING_APP, "managingApp": APP },
                 "appAccess": { "$type": ALLOW_LIST, "allowed": [CLIENT] },
             }),
         ),
@@ -407,8 +419,8 @@ async fn managing_app_and_allow_list_config_round_trips() {
 
     let (status, body) = send(&state, get(&format!("getSpace?space={SPACE}"), &alice)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["policy"]["$type"], MANAGING_APP);
-    assert_eq!(body["policy"]["managingApp"], APP);
+    assert_eq!(body["readPolicy"]["$type"], MANAGING_APP);
+    assert_eq!(body["readPolicy"]["managingApp"], APP);
     assert_eq!(body["appAccess"]["$type"], ALLOW_LIST);
     assert_eq!(body["appAccess"]["allowed"], serde_json::json!([CLIENT]));
 
@@ -432,13 +444,13 @@ async fn managing_app_and_allow_list_config_round_trips() {
         post(
             "updateSpace",
             &alice,
-            serde_json::json!({ "space": SPACE, "policy": { "$type": PUBLIC } }),
+            serde_json::json!({ "space": SPACE, "readPolicy": { "$type": PUBLIC } }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     let (_, body) = send(&state, get(&format!("getSpace?space={SPACE}"), &alice)).await;
-    assert_eq!(body["policy"]["$type"], PUBLIC);
+    assert_eq!(body["readPolicy"]["$type"], PUBLIC);
     assert_eq!(
         body["appAccess"]["allowed"],
         serde_json::json!([CLIENT, "https://b.example/c"]),
@@ -483,12 +495,12 @@ async fn management_is_gated_by_manage_grants_and_ownership() {
         post(
             "updateSpace",
             &create_only,
-            serde_json::json!({ "space": SPACE, "policy": { "$type": PUBLIC } }),
+            serde_json::json!({ "space": SPACE, "readPolicy": { "$type": PUBLIC } }),
         ),
         post(
-            "addMember",
+            "putMember",
             &create_only,
-            serde_json::json!({ "space": SPACE, "did": BOB }),
+            serde_json::json!({ "space": SPACE, "did": BOB, "read": true, "write": true }),
         ),
         post(
             "removeMember",
@@ -531,12 +543,12 @@ async fn management_is_gated_by_manage_grants_and_ownership() {
         post(
             "updateSpace",
             &bob,
-            serde_json::json!({ "space": SPACE, "policy": { "$type": PUBLIC } }),
+            serde_json::json!({ "space": SPACE, "readPolicy": { "$type": PUBLIC } }),
         ),
         post(
-            "addMember",
+            "putMember",
             &bob,
-            serde_json::json!({ "space": SPACE, "did": BOB }),
+            serde_json::json!({ "space": SPACE, "did": BOB, "read": true, "write": true }),
         ),
         post("deleteSpace", &bob, serde_json::json!({ "space": SPACE })),
         get(&format!("getSpace?space={SPACE}"), &bob),
@@ -623,7 +635,7 @@ async fn get_space_accepts_a_dpop_bound_space_credential() {
     let (status, body) = send(&state, request(&credential)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["uri"], carol_space);
-    assert_eq!(body["policy"]["$type"], MEMBER_LIST);
+    assert_eq!(body["readPolicy"]["$type"], MEMBER_LIST);
 
     // A credential for some other space is refused, and one presented as Bearer is too.
     let other = mint_space_credential(
@@ -683,9 +695,9 @@ async fn list_members_pages_by_did() {
         let (status, _) = send(
             &state,
             post(
-                "addMember",
+                "putMember",
                 &alice,
-                serde_json::json!({ "space": SPACE, "did": did }),
+                serde_json::json!({ "space": SPACE, "did": did, "read": true, "write": true }),
             ),
         )
         .await;
@@ -695,9 +707,9 @@ async fn list_members_pages_by_did() {
     let (status, _) = send(
         &state,
         post(
-            "addMember",
+            "putMember",
             &alice,
-            serde_json::json!({ "space": SPACE, "did": "did:plc:m1" }),
+            serde_json::json!({ "space": SPACE, "did": "did:plc:m1", "read": true, "write": true }),
         ),
     )
     .await;
@@ -710,7 +722,10 @@ async fn list_members_pages_by_did() {
     .await;
     assert_eq!(
         page1["members"],
-        serde_json::json!([{ "did": "did:plc:m1" }, { "did": "did:plc:m2" }])
+        serde_json::json!([
+            { "did": "did:plc:m1", "read": true, "write": true },
+            { "did": "did:plc:m2", "read": true, "write": true }
+        ])
     );
     assert_eq!(page1["cursor"], "did:plc:m2");
     let (_, page2) = send(
@@ -723,7 +738,7 @@ async fn list_members_pages_by_did() {
     .await;
     assert_eq!(
         page2["members"],
-        serde_json::json!([{ "did": "did:plc:m3" }])
+        serde_json::json!([{ "did": "did:plc:m3", "read": true, "write": true }])
     );
     assert!(page2.get("cursor").is_none());
 

@@ -18,7 +18,7 @@ body:json {
   {
     "space": "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main",
     "repo": "did:plc:memberaaaaaaaaaaaaaaaaaa",
-    "rev": "3kabcdefghij2",
+    "repoRev": "3kabcdefghij2",
     "hash": { "$bytes": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=" }
   }
 }
@@ -26,7 +26,9 @@ body:json {
 docs {
   A repo host telling a space host that one of its repos advanced, so the authority can maintain
   the rev/hash listRepos reports. The space host then forwards the notification to every service
-  registered through registerNotify. Carries no record data — just the new rev and commit hash.
+  registered through registerNotify. Carries no record data — just the new repoRev and commit hash. The forwarded form adds
+  spaceRev and prevSpaceRev (omitted on the first update); a gap in prevSpaceRev means a missed
+  notification, healed with listRepos and a spaceRev cursor.
 
   Authenticated with service auth (Authorization: Bearer <service-auth JWT>, lxm =
   com.atproto.space.notifyWrite, aud = this server's DID). Unlike uploadBlob's service-auth
@@ -34,6 +36,7 @@ docs {
   else by definition. It must be either the repo whose head moved or the space's authority
   forwarding; anyone else is 401.
 
-  Best-effort by lexicon (it declares no errors): a notification about a space this server is not
-  the authority for is accepted and dropped.
+  A notification about a space this server is not the authority for is accepted and dropped, as
+  is one from a repo the space's write policy does not admit. Errors: 400 FutureRev when repoRev
+  is more than five minutes ahead of this server's clock.
 }

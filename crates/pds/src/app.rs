@@ -121,11 +121,11 @@ use crate::routes::resolve_identity::{
 };
 use crate::routes::revoke_app_password::revoke_app_password;
 use crate::routes::sign_plc_operation::sign_plc_operation;
-use crate::routes::simplespace_add_member::simplespace_add_member;
 use crate::routes::simplespace_create_space::simplespace_create_space;
 use crate::routes::simplespace_delete_space::simplespace_delete_space;
 use crate::routes::simplespace_get_space::simplespace_get_space;
 use crate::routes::simplespace_list_members::simplespace_list_members;
+use crate::routes::simplespace_put_member::simplespace_put_member;
 use crate::routes::simplespace_remove_member::simplespace_remove_member;
 use crate::routes::simplespace_update_space::simplespace_update_space;
 use crate::routes::sovereign_session::create_sovereign_session;
@@ -325,8 +325,8 @@ fn space_routes() -> Router<AppState> {
         // The PDS-required simplespace management surface: spaces anchored on a local account's
         // own DID, managed by that account under `manage=` grants.
         .route(
-            "/xrpc/com.atproto.simplespace.addMember",
-            post(simplespace_add_member),
+            "/xrpc/com.atproto.simplespace.putMember",
+            post(simplespace_put_member),
         )
         .route(
             "/xrpc/com.atproto.simplespace.createSpace",

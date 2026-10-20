@@ -208,6 +208,8 @@ pub async fn apply_space_writes(
             app_access: None,
             app_allowed: None,
             managing_app: None,
+            write_policy: None,
+            write_managing_app: None,
         },
     )
     .await
@@ -481,7 +483,7 @@ pub async fn apply_space_writes(
     // the facts the authority reports. The query no-ops for a space whose authority is
     // elsewhere.
     let hash = lthash.digest();
-    crate::db::space_notify::upsert_writer(&mut *tx, space_uri, did, &new_rev, &hash)
+    let space_revs = crate::db::space_notify::upsert_writer(&mut tx, space_uri, did, &new_rev, &hash)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, did = %did, "failed to record space writer");
@@ -497,7 +499,7 @@ pub async fn apply_space_writes(
     // registered syncers) that this repo advanced. Placed here rather than in each record route
     // so no write path can be added that silently skips it.
     drop(crate::space_notify::fan_out_write(
-        state, space, did, &new_rev, &hash,
+        state, space, did, &new_rev, &hash, space_revs,
     ));
 
     Ok(SpaceCommitOutcome {

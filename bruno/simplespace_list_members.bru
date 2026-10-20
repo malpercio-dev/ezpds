@@ -21,7 +21,7 @@ params:query {
 }
 
 docs {
-  Page through a simplespace space's member list: { members: [{ did }], cursor? }, keyset
+  Page through a simplespace space's member list: { members: [{ did, read, write }], cursor? }, keyset
   paged by DID ascending ("limit" 1..1000, default 100; the cursor is the last DID of a
   full page, a short page ends the walk).
 

@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::app::AppState;
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::authenticate_space_owner;
-use crate::db::spaces::set_space_config;
+use crate::db::spaces::{set_space_config, PolicyColumns};
 use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
 
@@ -18,13 +18,14 @@ use common::{ApiError, ErrorCode};
 #[serde(rename_all = "camelCase")]
 pub struct UpdateSpaceInput {
     space: String,
-    policy: Option<serde_json::Value>,
+    read_policy: Option<serde_json::Value>,
+    write_policy: Option<serde_json::Value>,
     app_access: Option<serde_json::Value>,
 }
 
 /// POST /xrpc/com.atproto.simplespace.updateSpace
 ///
-/// Each supplied union replaces its axis wholesale (a new `policy` also resets `managingApp`);
+/// Each supplied union replaces its axis wholesale (a new policy also resets its `managingApp`);
 /// an omitted one is left alone. Unimplemented union members are refused before the row is
 /// touched, so a space can never end up carrying a config this host does not enforce.
 pub async fn simplespace_update_space(
@@ -45,8 +46,13 @@ pub async fn simplespace_update_space(
     )
     .await?;
 
-    let policy = input
-        .policy
+    let read_policy = input
+        .read_policy
+        .as_ref()
+        .map(super::space_views::policy_from_lex)
+        .transpose()?;
+    let write_policy = input
+        .write_policy
         .as_ref()
         .map(super::space_views::policy_from_lex)
         .transpose()?;
@@ -65,11 +71,18 @@ pub async fn simplespace_update_space(
     // never between; a config written onto a fresh tombstone could never be created again.
     let mut tx = state.db.begin().await.map_err(internal)?;
     let row = super::space_views::load_active_simplespace(&mut *tx, &space).await?;
-    let (policy, managing_app) = match policy {
+    let (policy, managing_app) = match read_policy {
         Some((policy, managing_app)) => (policy.to_string(), managing_app),
         None => (
             row.policy.clone().unwrap_or_default(),
             row.managing_app.clone(),
+        ),
+    };
+    let (write_policy, write_managing_app) = match write_policy {
+        Some((policy, managing_app)) => (policy.to_string(), managing_app),
+        None => (
+            row.write_policy.clone().unwrap_or_default(),
+            row.write_managing_app.clone(),
         ),
     };
     // The allow list travels with its `appAccess` union: replacing the axis replaces both, and
@@ -85,10 +98,16 @@ pub async fn simplespace_update_space(
     set_space_config(
         &mut *tx,
         &space.uri,
-        &policy,
+        &PolicyColumns {
+            policy: &policy,
+            managing_app: managing_app.as_deref(),
+        },
+        &PolicyColumns {
+            policy: &write_policy,
+            managing_app: write_managing_app.as_deref(),
+        },
         &app_access,
         app_allowed.as_deref(),
-        managing_app.as_deref(),
     )
     .await
     .map_err(internal)?;
