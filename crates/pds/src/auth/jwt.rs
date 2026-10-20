@@ -100,7 +100,10 @@ pub fn peek_jwt_iss(token: &str) -> Option<String> {
 
 /// Dispatch to the correct verification function based on token type.
 /// Uses `typ` header as algorithm discriminator to prevent algorithm confusion attacks.
-pub fn verify_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
+pub(super) fn verify_access_token(
+    token: &str,
+    state: &AppState,
+) -> Result<AccessTokenClaims, ApiError> {
     if peek_jwt_typ(token).as_deref() == Some("at+jwt") {
         verify_es256_access_token(token, state)
     } else {
@@ -129,10 +132,7 @@ pub(crate) fn oauth_es256_decoding_key(state: &AppState) -> Result<DecodingKey, 
 }
 
 /// Verify ES256 AT+JWT tokens issued by the OAuth token endpoint.
-pub fn verify_es256_access_token(
-    token: &str,
-    state: &AppState,
-) -> Result<AccessTokenClaims, ApiError> {
+fn verify_es256_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid token");
     let decoding_key = oauth_es256_decoding_key(state)?;
     let mut validation = Validation::new(Algorithm::ES256);
@@ -173,10 +173,7 @@ fn apply_audience_validation(validation: &mut Validation, config: &common::Confi
 }
 
 /// Verify HS256 access/refresh JWT issued by this server (legacy tokens).
-pub fn verify_hs256_access_token(
-    token: &str,
-    state: &AppState,
-) -> Result<AccessTokenClaims, ApiError> {
+fn verify_hs256_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
 
     let mut validation = Validation::new(Algorithm::HS256);

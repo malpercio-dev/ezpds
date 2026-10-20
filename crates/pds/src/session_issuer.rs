@@ -197,7 +197,8 @@ pub async fn issue_session_in_transaction(
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::auth::jwt::{parse_scope, verify_hs256_access_token, AuthScope};
+    use crate::auth::extractors::authenticate_bearer;
+    use crate::auth::jwt::AuthScope;
     use crate::routes::test_utils::insert_account_with_email;
 
     async fn seed_account(state: &AppState, did: &str) {
@@ -213,9 +214,9 @@ mod tests {
         let issued = issue_session(&state, did, &SessionKind::FullAccess)
             .await
             .unwrap();
-        let claims = verify_hs256_access_token(&issued.access_jwt, &state).unwrap();
-        assert_eq!(claims.sub, did);
-        assert_eq!(parse_scope(&claims.scope).unwrap(), AuthScope::Access);
+        let user = authenticate_bearer(&issued.access_jwt, &state).unwrap();
+        assert_eq!(user.did, did);
+        assert_eq!(user.scope, AuthScope::Access);
         assert_eq!(issued.did, did);
         assert_eq!(issued.handle, "handle.invalid");
         assert_eq!(issued.email.as_deref(), Some("owner@example.com"));
@@ -290,13 +291,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let claims = verify_hs256_access_token(&issued.access_jwt, &state).unwrap();
-        assert_eq!(
-            parse_scope(&claims.scope).unwrap(),
-            AuthScope::AppPassPrivileged
-        );
+        let user = authenticate_bearer(&issued.access_jwt, &state).unwrap();
+        assert_eq!(user.scope, AuthScope::AppPassPrivileged);
         assert!(
-            claims.personal_details,
+            user.personal_details,
             "the mint-time grant must ride the access JWT"
         );
         assert_eq!(issued.email, None);
