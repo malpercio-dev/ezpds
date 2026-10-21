@@ -67,6 +67,15 @@ pub async fn get_repo(
     let cids = match since {
         // Full export: every block reachable from the current commit.
         None => {
+            let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+            let cids = repo_engine::collect_reachable_cids(&mut store, root_cid)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, did = %did, "failed to collect repo blocks");
+                    ApiError::new(ErrorCode::InternalError, "failed to get repo")
+                })?;
+            // Checked (and recorded) only once the export is ready, so a failed walk never
+            // burns the caller's slot.
             let ip = crate::rate_limit::client_ip_from_headers(&headers);
             if let Err(e) = state
                 .rate_limiter
@@ -76,13 +85,7 @@ pub async fn get_repo(
                 tracing::info!(did = %did, ip = %ip, "getRepo: repeat full export of an unchanged repo cooled down");
                 return Err(e);
             }
-            let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-            repo_engine::collect_reachable_cids(&mut store, root_cid)
-                .await
-                .map_err(|e| {
-                    tracing::error!(error = %e, did = %did, "failed to collect repo blocks");
-                    ApiError::new(ErrorCode::InternalError, "failed to get repo")
-                })?
+            cids
         }
         // Incremental export: blocks newer than `since`, plus the commit block so the CAR always
         // contains its declared root (matters when `since` is at or ahead of the current rev).

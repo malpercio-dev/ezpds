@@ -202,14 +202,23 @@ changelog fragment and the host-target test run (`cargo test -p identity-wallet`
     shows the hydrant IPs receiving `429`s and at most one `200` per IP per hour.
   - `curl -s https://pds.obsign.org/metrics | grep 'rate_limit_rejections_total{limiter="get_repo_cooldown"'`
     is climbing.
+  - **Spoof check (the cooldown's key is only as good as this):** from one machine, fetch the
+    same unchanged repo twice in full, each time with a different made-up
+    `X-Forwarded-For: 198.51.100.N`. The second must answer `429`. A `200` means Railway's edge
+    passes the caller's `X-Forwarded-For` through, so the key is caller-chosen: an attacker could
+    claim a relay's IP and hold its full export off. In that case, switch the cooldown (and the
+    other per-IP limiters) to Railway's `X-Real-IP`, or set the window to `0` until fixed.
 - Next billing period's `railway usage` egress line item is a few dollars, not fifteen.
 
 ## 10. Risks and open points
 
 - **Shared NAT.** Two independent consumers behind one IP fetching the same repo within
   an hour: the second gets a `429` with a `Retry-After` it can honour. Accepted.
-- **XFF spoofing.** Same limitation as the existing per-IP limiters; the cooldown is a
-  cost control, not a security boundary.
+- **XFF spoofing.** Same limitation as the existing per-IP limiters, but sharper: a spoofed
+  key here buys a 1 h refusal for the victim IP, not a share of a 3000-per-5-min budget. Safe
+  only if Railway's edge replaces the caller's `X-Forwarded-For` (most reports say it does, none
+  official); the §9 spoof check confirms it after deploy. The cooldown is a cost control, not
+  a security boundary.
 - **hydrant's per-host throttle.** A `429` makes each hydrant instance pause *all*
   fetches from this host for `Retry-After`. Fine for a twelve-repo PDS.
 - **Upstream.** The evidence in §2 is enough for a hydrant bug report; deferred by

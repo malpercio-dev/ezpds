@@ -74,8 +74,8 @@ const ONE_DAY: Duration = Duration::from_secs(24 * 60 * 60);
 /// per minute already heals a real key rotation on the next request.
 const DID_REFRESH_COOLDOWN: Duration = Duration::from_secs(60);
 
-/// Above this many remembered full-`getRepo` exports, an insert first drops every entry older
-/// than the window.
+/// Hard cap on remembered full-`getRepo` exports. Past it an insert drops expired entries, and if
+/// that frees nothing, all of them.
 const GET_REPO_FULL_SWEEP_AT: usize = 10_000;
 
 /// Point cost of each repo-write action, matching the reference PDS write-point model.
@@ -121,7 +121,8 @@ pub struct RateLimiterState {
     /// Full-`getRepo` cooldown window; zero disables it.
     get_repo_full_window: Duration,
     /// Last full export per `(ip, did)`: the root CID served and when.
-    // ponytail: plain map swept past a size cap; a real LRU if the keyspace ever matters.
+    // ponytail: plain map, cleared when a sweep can't get it under the cap; a real LRU if a flood
+    // resetting everyone's cooldown ever matters.
     get_repo_full: Mutex<HashMap<(String, String), (String, Instant)>>,
 }
 
@@ -262,6 +263,11 @@ impl RateLimiterState {
         }
         if map.len() >= GET_REPO_FULL_SWEEP_AT {
             map.retain(|_, (_, at)| now.duration_since(*at) < window);
+            // Still full of live entries (a spoofed-IP flood): forget them all. Fails open — those
+            // callers get one more full export — but keeps memory bounded and the sweep amortized.
+            if map.len() >= GET_REPO_FULL_SWEEP_AT {
+                map.clear();
+            }
         }
         map.insert(key, (root.to_string(), now));
         Ok(())
@@ -665,6 +671,27 @@ mod tests {
                 .unwrap();
             assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         }
+    }
+
+    #[test]
+    fn get_repo_full_map_stays_bounded_under_a_flood() {
+        let limiter = RateLimiterState::new(&RateLimitConfig {
+            enabled: true,
+            get_repo_full_cooldown_secs: 3600,
+            ..RateLimitConfig::default()
+        });
+        let did = "did:plc:flood";
+        assert!(limiter.check_get_repo_full("ip-0", did, "root").is_ok());
+        assert!(limiter.check_get_repo_full("ip-0", did, "root").is_err());
+        for i in 1..GET_REPO_FULL_SWEEP_AT {
+            limiter
+                .check_get_repo_full(&format!("ip-{i}"), did, "root")
+                .unwrap();
+        }
+        // The cap is reached with every entry live: the next insert forgets them all.
+        limiter.check_get_repo_full("ip-new", did, "root").unwrap();
+        assert_eq!(lock(&limiter.get_repo_full).len(), 1);
+        assert!(limiter.check_get_repo_full("ip-0", did, "root").is_ok());
     }
 
     async fn state_with_transfer_accept_cap(max: u64) -> AppState {
