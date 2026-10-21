@@ -112,7 +112,7 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 `migrate.rs`, `handle_change.rs`, `rotate_repo_key.rs`, `disaster_recovery.rs`,
 `endpoint_repair.rs`, `self_held_kit.rs`.
 
-`src-tauri` is the shell: the Tauri wiring (`lib.rs`, `commands.rs`), the app's Keychain names (`keychain.rs`), and the APNs bridge (`apns.rs`), which patches the Tauri app delegate. `run()` installs the iOS implementations of the core's platform traits from `crates/obsign-platform-ios` (Keychain, Secure Enclave, iCloud, BGTaskScheduler); `lib.rs` also owns the background-backup task identifier, which must match `Info.ios.plist`. Everything else — the identity store, every ceremony, the network clients, `Core` — is `crates/obsign-core`, re-exported by `lib.rs` under each module's old name so `crate::claim::…` still resolves here; those modules' rows are in that crate's AGENTS.md.
+`src-tauri` is the shell: the Tauri wiring (`lib.rs`, `commands.rs`), the app's Keychain names (`keychain.rs`), and the APNs bridge (`apns.rs`), which patches the Tauri app delegate. `run()` installs the iOS implementations of the core's platform traits from `crates/obsign-platform-ios` (Keychain, Secure Enclave, iCloud, BGTaskScheduler); `lib.rs` also owns the `BGTaskScheduler` identifiers (background backup, background PLC sweep), which must match `Info.ios.plist`. Everything else — the identity store, every ceremony, the network clients, `Core` — is `crates/obsign-core`, re-exported by `lib.rs` under each module's old name so `crate::claim::…` still resolves here; those modules' rows are in that crate's AGENTS.md.
 
 | Module (src-tauri/src/) | What it is |
 |---|---|

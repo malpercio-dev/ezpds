@@ -28,6 +28,10 @@
 //! first immediate tick, then every [`MONITOR_INTERVAL_SECS`] (15 min) with
 //! `MissedTickBehavior::Delay` so iOS suspension cannot burst-fire missed ticks; emits the
 //! `"plc_alert"` Tauri event (`Vec<IdentityStatus>`) when unauthorized changes are found.
+//! While the app is closed the same sweep runs as the
+//! [`PlcCheck`](crate::scheduler::BackgroundJob::PlcCheck) job (requested by
+//! [`schedule_background_check`], at most every [`BACKGROUND_CHECK_AFTER`]); its result
+//! reaches the user through the sweep history and the next foreground check.
 //! `check_identity_status` is the synchronous foreground IPC check over the same set.
 //!
 //! **Sweep history.** Every completed pass — either trigger — is folded by the pure,
@@ -536,6 +540,25 @@ pub async fn run_monitoring_cycle_and_alert(state: &crate::oauth::Core) {
     let monitor = PlcMonitor::new(state.pds_client());
     let statuses = run_monitoring_cycle(&monitor).await;
     emit_if_alerts(&statuses);
+}
+
+/// The floor between background sweeps. iOS picks the moment and may run it less often; a
+/// few hours still leaves many chances inside did:plc's 72-hour window for nullifying a
+/// hostile operation with a higher-priority rotation key.
+pub const BACKGROUND_CHECK_AFTER: std::time::Duration = std::time::Duration::from_secs(4 * 60 * 60);
+
+/// Ask the platform to run [`run_monitoring_cycle_and_alert`] while the app is closed. Called
+/// once at startup; the platform re-arms it each time it fires. Not configurable: the monitor
+/// is always on, and the foreground timer keeps running alongside it.
+pub fn schedule_background_check() {
+    crate::scheduler::schedule(crate::scheduler::JobRequest {
+        job: crate::scheduler::BackgroundJob::PlcCheck,
+        earliest_after: BACKGROUND_CHECK_AFTER,
+        requires_network: true,
+        requires_external_power: false,
+        // A sweep is a few small fetches per identity; a security check shouldn't wait for Wi-Fi.
+        unmetered_only: false,
+    });
 }
 
 /// Emit "plc_alert" event to the frontend if any identity has unauthorized changes.
