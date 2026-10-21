@@ -31,9 +31,14 @@ FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf8
 # relay's own database (enrollments, handles) during troubleshooting.
 # Versions are unpinned for the same reason as the pds image (Hadolint DL3008): the base
 # image is digest-pinned, but apt version pins rot on every Debian point release.
+# ca-certificates floor: 20250419~deb12u2 (bookworm-security) drops the roots anchoring
+# the eMudhra intermediates whose private keys were disclosed in October 2026. The
+# version check fails the build rather than ship an image that still trusts them;
+# rustls-platform-verifier reads this store for every reqwest call.
 # hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tzdata gosu sqlite3 \
+ && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge '20250419~deb12u2' \
  && rm -rf /var/lib/apt/lists/*
 # Non-root runtime user. Home is /home/relay so a
 # root-owned /data mount cannot break user resolution.
