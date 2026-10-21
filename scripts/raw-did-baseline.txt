@@ -1,8 +1,8 @@
 crates/custos-core/src/auth/jwt.rs 2
 crates/custos-core/src/auth/oauth_scopes.rs 1
 crates/custos-core/src/auth/signing_key.rs 3
+crates/custos-core/src/scope_display.rs 1
 crates/custos-spaces/src/auth/space.rs 7
-crates/custos-spaces/src/consent.rs 1
 crates/custos-spaces/src/routes/admin_spaces.rs 1
 crates/custos-spaces/src/routes/simplespace_put_member.rs 1
 crates/custos-spaces/src/routes/simplespace_remove_member.rs 1

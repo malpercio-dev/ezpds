@@ -20,6 +20,7 @@ pub mod bearer;
 pub use bearer::extract_bearer_token;
 
 // Re-export the public API so callers don't need to know the internal layout.
+pub use agent_assertion::{new_claim_poll_tracker, ClaimPollTracker};
 pub use dpop::{
     validate_dpop_for_par, validate_dpop_for_token_endpoint, DpopNonceRotator, DpopNonces,
     DpopTokenEndpointError,
@@ -869,5 +870,3 @@ mod tests {
         assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 }
-
-pub use agent_assertion::{new_claim_poll_tracker, ClaimPollTracker};
