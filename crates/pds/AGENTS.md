@@ -106,15 +106,18 @@ it could not be asked. Details: the module doc in `src/relay_status.rs`.
 
 Reference-parity request rate limiting. The pure sliding-window algorithm lives in
 `auth/rate_limit.rs` (Functional Core); this module is the Imperative Shell owning the
-process-level limiters and the Axum middleware. Five families — global per-IP, per-endpoint
+process-level limiters and the Axum middleware. Six families — global per-IP, per-endpoint
 per-IP (guess-target endpoint pairs share one limiter instance so alternating endpoints can't
 double a guess budget), per-account write points charged in `record_write::commit_repo_write`
 on the **authenticated** DID, per-space-credential requests charged at the credential seam
-in `auth/space.rs` on the **verified** `cnf.kid`, and a per-DID cool-down on the
+in `auth/space.rs` on the **verified** `cnf.kid`, a per-DID cool-down on the
 signature-mismatch DID-document force-refresh (the one limiter guarding an *outbound* resource,
-charged in `identity::resolution::refresh_did_document_after_signature_mismatch`) — all off when
+charged in `identity::resolution::refresh_did_document_after_signature_mismatch`), and a
+per-`(IP, DID)` cooldown on repeat full `getRepo` exports of an unchanged root, checked in
+`routes/get_repo.rs` (`since=` deltas never limited) — all off when
 `[rate_limit] enabled = false`; the first four are tunable via `[rate_limit]` /
-`EZPDS_RATE_LIMIT_*` (a knob of `0` disables that limiter), the cool-down is a fixed constant.
+`EZPDS_RATE_LIMIT_*` (a knob of `0` disables that limiter), as is the `getRepo` cooldown
+(`get_repo_full_cooldown_secs`); the DID-refresh cool-down is a fixed constant.
 The family rosters, exemptions, and `RateLimit-*` header behavior: the module doc.
 
 ### `identity/`

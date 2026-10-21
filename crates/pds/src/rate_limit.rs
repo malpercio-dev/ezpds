@@ -39,6 +39,13 @@
 //!    bypasses the TTL-less `did_documents` cache — so a caller replaying one badly-signed token
 //!    buys an upstream plc.directory / did:web fetch per request. Keyed by the token's `iss`.
 //!
+//! 6. **Full-`getRepo` cooldown** — `getRepo` stays exempt from the global cap, but a repeat
+//!    *full* export (no `since`) of an unchanged repo to the same IP inside
+//!    `get_repo_full_cooldown_secs` answers 429. Keyed `(ip, did)` and remembering the root CID
+//!    served, so a new commit or a delta is always served. Enforced in the `get_repo` handler,
+//!    which alone knows the root and whether `since` is present. A cost control (a client stuck
+//!    re-downloading one rev every two minutes), not a security boundary.
+//!
 //! All limiters are pure pass-throughs when `[rate_limit] enabled = false` (the test harness sets
 //! this so unit tests are never throttled).
 
@@ -66,6 +73,10 @@ const ONE_DAY: Duration = Duration::from_secs(24 * 60 * 60);
 /// config knob: it bounds *our* upstream fetches, not a caller's service level, and one refresh
 /// per minute already heals a real key rotation on the next request.
 const DID_REFRESH_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// Above this many remembered full-`getRepo` exports, an insert first drops every entry older
+/// than the window.
+const GET_REPO_FULL_SWEEP_AT: usize = 10_000;
 
 /// Point cost of each repo-write action, matching the reference PDS write-point model.
 pub const WRITE_COST_CREATE: u64 = 3;
@@ -107,6 +118,11 @@ pub struct RateLimiterState {
     /// only because exhausting a DID's budget denies nothing a valid token needs: a valid token
     /// verifies against the cached document and never reaches this path.
     did_refresh: Mutex<MultiWindowLimiter>,
+    /// Full-`getRepo` cooldown window; zero disables it.
+    get_repo_full_window: Duration,
+    /// Last full export per `(ip, did)`: the root CID served and when.
+    // ponytail: plain map swept past a size cap; a real LRU if the keyspace ever matters.
+    get_repo_full: Mutex<HashMap<(String, String), (String, Instant)>>,
 }
 
 impl RateLimiterState {
@@ -213,7 +229,42 @@ impl RateLimiterState {
                 window: DID_REFRESH_COOLDOWN,
                 max_points: 1,
             }])),
+            get_repo_full_window: Duration::from_secs(cfg.get_repo_full_cooldown_secs),
+            get_repo_full: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Record a full `getRepo` export of `did` at `root` to `ip`, or refuse it with
+    /// [`ErrorCode::RateLimited`] (429, `Retry-After` = seconds left, `RateLimit-*` headers) when
+    /// the same root went to the same IP inside the cooldown window. Call only for full exports;
+    /// `since=` deltas are never limited. A no-op when rate limiting or the cooldown is disabled.
+    pub fn check_get_repo_full(&self, ip: &str, did: &str, root: &str) -> Result<(), ApiError> {
+        let window = self.get_repo_full_window;
+        if !self.enabled || window.is_zero() {
+            return Ok(());
+        }
+        let now = Instant::now();
+        let mut map = lock(&self.get_repo_full);
+        let key = (ip.to_string(), did.to_string());
+        if let Some((served, at)) = map.get(&key) {
+            let elapsed = now.duration_since(*at);
+            if served == root && elapsed < window {
+                let left = (window - elapsed).as_secs().max(1).to_string();
+                return Err(ApiError::new(
+                    ErrorCode::RateLimited,
+                    "this repo has not changed since your last full export; use `since` or retry later",
+                )
+                .with_header("retry-after", left.clone())
+                .with_header("ratelimit-limit", "1")
+                .with_header("ratelimit-remaining", "0")
+                .with_header("ratelimit-reset", left));
+            }
+        }
+        if map.len() >= GET_REPO_FULL_SWEEP_AT {
+            map.retain(|_, (_, at)| now.duration_since(*at) < window);
+        }
+        map.insert(key, (root.to_string(), now));
+        Ok(())
     }
 
     /// Charge one wallet-consent request creation against both the requesting IP and the
@@ -362,7 +413,7 @@ fn apply_rate_limit_headers(resp: &mut Response, decision: &RateLimitDecision) {
 
 /// Count one 429 into `rate_limit_rejections_total{limiter=...}`. The write-points limiter
 /// counts at its call site in `record_write` (it rejects deep in the write path, not here).
-fn count_rejection(state: &AppState, limiter: &'static str) {
+pub(crate) fn count_rejection(state: &AppState, limiter: &'static str) {
     state.metrics.rate_limit_rejections.add(
         1,
         &[crate::metrics::label(

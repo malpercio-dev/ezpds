@@ -4,7 +4,7 @@
 
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
@@ -31,8 +31,12 @@ pub struct GetRepoParams {
 /// so the declared root is always present), which a consumer applies on top of its existing state
 /// to reach the current root. The body is streamed block-by-block rather than buffered, so a large
 /// repo never materializes the whole CAR in memory.
+///
+/// A repeat full export of an unchanged repo to the same IP is cooled down (429) — see
+/// `crate::rate_limit`'s full-`getRepo` cooldown.
 pub async fn get_repo(
     State(state): State<AppState>,
+    headers: HeaderMap,
     LexiconParams(params): LexiconParams<GetRepoParams>,
 ) -> Result<Response, ApiError> {
     let did = &params.did;
@@ -63,6 +67,15 @@ pub async fn get_repo(
     let cids = match since {
         // Full export: every block reachable from the current commit.
         None => {
+            let ip = crate::rate_limit::client_ip_from_headers(&headers);
+            if let Err(e) = state
+                .rate_limiter
+                .check_get_repo_full(&ip, did, &root_cid_str)
+            {
+                crate::rate_limit::count_rejection(&state, "get_repo_cooldown");
+                tracing::info!(did = %did, ip = %ip, "getRepo: repeat full export of an unchanged repo cooled down");
+                return Err(e);
+            }
             let mut store = SqliteBlockStore::new(state.db.clone(), did.to_string());
             repo_engine::collect_reachable_cids(&mut store, root_cid)
                 .await
@@ -605,5 +618,80 @@ mod tests {
                 .is_err(),
             "no non-root block at the current rev should be in a since=current CAR"
         );
+    }
+
+    // ── full-export cooldown ────────────────────────────────────────────────────────
+
+    /// A rev-tagged account on a state whose limiter is on with the given cooldown.
+    async fn setup_cooldown_account(cooldown_secs: u64) -> (AppState, String) {
+        let (mut state, did) = setup_revtagged_account().await;
+        state.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
+            &common::RateLimitConfig {
+                enabled: true,
+                get_repo_full_cooldown_secs: cooldown_secs,
+                ..common::RateLimitConfig::default()
+            },
+        ));
+        (state, did)
+    }
+
+    async fn get_repo_from(app: &axum::Router, ip: &str, query: &str) -> Response {
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri(format!("/xrpc/com.atproto.sync.getRepo?{query}"))
+            .header("x-forwarded-for", ip)
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(request).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn repeat_full_export_of_unchanged_repo_is_cooled_down_per_ip() {
+        let (state, did) = setup_cooldown_account(3600).await;
+        let metrics = state.metrics.clone();
+        let app = crate::app::app(state.clone());
+        let full = format!("did={did}");
+
+        let first = get_repo_from(&app, "203.0.113.1", &full).await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let again = get_repo_from(&app, "203.0.113.1", &full).await;
+        assert_eq!(again.status(), StatusCode::TOO_MANY_REQUESTS);
+        let h = again.headers();
+        let retry: u64 = h["retry-after"].to_str().unwrap().parse().unwrap();
+        assert!((1..=3600).contains(&retry), "retry-after {retry}");
+        assert_eq!(h["ratelimit-limit"], "1");
+        assert_eq!(h["ratelimit-remaining"], "0");
+        assert_eq!(h["ratelimit-reset"], h["retry-after"]);
+        let rendered = metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains(r#"limiter="get_repo_cooldown""#),
+            "{rendered}"
+        );
+
+        // Another IP, and deltas from the same IP, are always served.
+        let other = get_repo_from(&app, "203.0.113.2", &full).await;
+        assert_eq!(other.status(), StatusCode::OK);
+        let rev = rev_of(&state, &did).await;
+        for _ in 0..3 {
+            let delta = get_repo_from(&app, "203.0.113.1", &format!("{full}&since={rev}")).await;
+            assert_eq!(delta.status(), StatusCode::OK);
+        }
+
+        // A new commit is a new root: the same IP gets the fresh export.
+        let token = access_jwt(&state.jwt_secret, &did);
+        assert_eq!(put_post(&app, &token, &did, "rec1").await, StatusCode::OK);
+        let fresh = get_repo_from(&app, "203.0.113.1", &full).await;
+        assert_eq!(fresh.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn zero_cooldown_never_limits_full_exports() {
+        let (state, did) = setup_cooldown_account(0).await;
+        let app = crate::app::app(state);
+        for _ in 0..3 {
+            let resp = get_repo_from(&app, "203.0.113.1", &format!("did={did}")).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
     }
 }
