@@ -702,10 +702,9 @@ async fn full_access_session(
 /// authenticated) and again whenever the APNs token changes. Idempotent on the server, which
 /// upserts on `(did, device_uuid)`, so a repeat is free — which is what lets the caller fire it
 /// without tracking whether it already has.
-#[tauri::command]
 pub async fn register_for_notifications(
+    state: &crate::oauth::Core,
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<RegistrationOutcome, NotificationsError> {
     // The topic is the app's own bundle identifier, read from the running configuration rather
@@ -828,7 +827,6 @@ async fn pin_sender_keys(
 /// Tauri command: what this device holds. Read-only, no network, no identity required — it is
 /// the Settings answer to "why am I not getting notifications", and it must work in exactly the
 /// states where nothing else does.
-#[tauri::command]
 pub fn get_notification_diagnostics() -> NotificationDiagnostics {
     NotificationDiagnostics {
         device_uuid: obsign_core::keystore::get_item(DEVICE_UUID_ACCOUNT)
@@ -854,7 +852,6 @@ pub fn get_notification_diagnostics() -> NotificationDiagnostics {
 /// noise, and noise is what stops the next real one from being read.
 ///
 /// Idempotent, and never an error: an absent log is the state this leaves behind anyway.
-#[tauri::command]
 pub fn clear_notification_failures() {
     if let Err(e) = obsign_core::keystore::delete_item(FAILURE_LOG_ACCOUNT) {
         if !obsign_core::keystore::is_not_found(&e) {

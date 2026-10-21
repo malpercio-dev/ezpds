@@ -169,9 +169,8 @@ async fn full_access_session(
 /// Tauri command: mint a named app password for the identity. Returns the generated
 /// secret ONCE — it is never retrievable again. The frontend gates this behind
 /// `authenticateBiometric()` (it creates a durable login credential).
-#[tauri::command]
 pub async fn create_app_password(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     name: String,
     privileged: bool,
@@ -184,9 +183,8 @@ pub async fn create_app_password(
 }
 
 /// Tauri command: list the identity's app passwords (metadata only, never secrets).
-#[tauri::command]
 pub async fn list_app_passwords(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<Vec<AppPasswordEntry>, AppPasswordsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
@@ -197,9 +195,8 @@ pub async fn list_app_passwords(
 
 /// Tauri command: revoke a named app password. The server deletes the credential and
 /// its sessions/refresh tokens atomically, so a signed-in client is cut off at once.
-#[tauri::command]
 pub async fn revoke_app_password(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     name: String,
 ) -> Result<(), AppPasswordsError> {

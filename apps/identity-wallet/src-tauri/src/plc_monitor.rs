@@ -1,7 +1,7 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
 
 //! PLC monitoring: detect directory operations the device key did not sign.
-//! [`PlcMonitor`] borrows the `AppState` `PdsClient` singleton and is constructed fresh
+//! [`PlcMonitor`] borrows the `Core` `PdsClient` singleton and is constructed fresh
 //! each cycle, avoiding long-lived borrows across async boundaries.
 //!
 //! **The monitorable set.** `check_all` sweeps only `did:plc:` identities
@@ -507,7 +507,6 @@ fn record_sweep(statuses: &[IdentityStatus], trigger: SweepTrigger) {
 ///
 /// Synchronous and stateless like the other `IdentityStore`-adjacent reads — the Keychain
 /// is a blocking API and there is no network here.
-#[tauri::command]
 pub fn get_monitor_history() -> MonitorHistory {
     MonitorHistory {
         interval_secs: MONITOR_INTERVAL_SECS,
@@ -546,7 +545,7 @@ pub async fn run_monitoring_loop(app_handle: tauri::AppHandle) {
     loop {
         interval.tick().await;
 
-        let state = app_handle.state::<crate::oauth::AppState>();
+        let state = app_handle.state::<crate::oauth::Core>();
         let monitor = PlcMonitor::new(state.pds_client());
         let statuses = run_monitoring_cycle(&monitor).await;
 
@@ -573,10 +572,9 @@ fn emit_if_alerts(app_handle: &tauri::AppHandle, statuses: &[IdentityStatus]) {
 
 /// Tauri IPC command: check all managed identities for unauthorized PLC operations.
 /// Also emits "plc_alert" event so IdentityListHome's event listener receives updates.
-#[tauri::command]
 pub async fn check_identity_status(
+    state: &crate::oauth::Core,
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::oauth::AppState>,
 ) -> Result<Vec<IdentityStatus>, MonitorError> {
     let monitor = PlcMonitor::new(state.pds_client());
     let statuses = monitor.check_all().await?;

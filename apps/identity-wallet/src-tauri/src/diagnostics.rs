@@ -5,7 +5,6 @@ pub use obsign_core::diagnostics::*;
 
 /// Tauri command: render the in-memory network-error breadcrumb log as plain text for the
 /// user to share from Settings. Synchronous (no state, no I/O) — mirrors `list_identities`.
-#[tauri::command]
 pub fn export_diagnostics() -> String {
     export()
 }

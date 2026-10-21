@@ -44,7 +44,6 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 
 use crate::identity_store::{IdentityStore, IdentityStoreError, PerDidSignError};
-use crate::oauth::AppState;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::sovereign_session::{fresh_nonce, unix_timestamp};
 
@@ -192,9 +191,8 @@ async fn resolve_safe_pds(pds_client: &PdsClient, did: &str) -> Result<String, C
 
 /// Preview a pending authorization by its typed `user_code`, resolved against the selected DID's
 /// hosting PDS. The typed path — the guaranteed fallback (no camera / accessibility).
-#[tauri::command]
 pub async fn preview_oauth_consent(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
     did: String,
     user_code: String,
 ) -> Result<ConsentPreview, ConsentError> {
@@ -205,9 +203,8 @@ pub async fn preview_oauth_consent(
 /// DID's hosting PDS. The QR-scan path: the wallet extracts only the `request_id` from the scanned
 /// QR and re-fetches the client/origin/scope from the server's record here — it never trusts the QR
 /// contents for what it displays. Otherwise identical to the typed path (same approval flow).
-#[tauri::command]
 pub async fn preview_oauth_consent_by_request_id(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
     did: String,
     request_id: String,
 ) -> Result<ConsentPreview, ConsentError> {
@@ -269,9 +266,8 @@ pub(crate) async fn preview_oauth_consent_impl(
 /// `match_code` is the number the user read off the sign-in page — required by the server
 /// when the request was push-delivered (`ConsentPreview.match_required`), `None` otherwise.
 /// It is a server-side visibility proof, deliberately outside the signed envelope.
-#[tauri::command]
 pub async fn confirm_oauth_consent(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
     did: String,
     request_id: String,
     client_id: String,

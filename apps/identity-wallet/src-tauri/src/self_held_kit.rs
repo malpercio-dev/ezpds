@@ -637,25 +637,22 @@ pub fn confirm_self_held_kit(did: &str) -> Result<(), SelfHeldKitError> {
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
 /// Tauri command: build the preview (stage shares, prove eligibility, return the diff).
-#[tauri::command]
 pub async fn build_self_held_kit_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<SelfHeldKitPreview, SelfHeldKitError> {
     build_self_held_kit(state.pds_client(), &did).await
 }
 
 /// Tauri command: install the kit (post op + Share 1 + refresh). Idempotent/resumable.
-#[tauri::command]
 pub async fn submit_self_held_kit_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<SelfHeldKitResult, SelfHeldKitError> {
     submit_self_held_kit(state.pds_client(), &did).await
 }
 
 /// Tauri command: confirm Shares 2 and 3 are saved and tear down the staging slot.
-#[tauri::command]
 pub fn confirm_self_held_kit_cmd(did: String) -> Result<(), SelfHeldKitError> {
     confirm_self_held_kit(&did)
 }
@@ -665,7 +662,6 @@ pub fn confirm_self_held_kit_cmd(did: String) -> Result<(), SelfHeldKitError> {
 /// The identity surface resurfaces "finish your recovery kit" on this, which is what catches a
 /// kit whose PLC op landed (so the document already shows the recovery key) but whose Share 1
 /// or user confirmation never completed.
-#[tauri::command]
 pub fn self_held_kit_in_progress_cmd(did: String) -> bool {
     crate::share_ceremony::self_held_kit_staging_exists(&did)
 }

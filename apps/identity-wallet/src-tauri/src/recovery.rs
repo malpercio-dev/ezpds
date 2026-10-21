@@ -14,7 +14,7 @@
 //! counter-op's contents are derived entirely from the audit log's pre-fork state — never
 //! from caller input — which is the mutation bound an allowlist would otherwise assert. The Tauri commands are `build_recovery_override_cmd` /
 //! `submit_recovery_override_cmd`; [`RecoveryState`] `{ did, signed_op }` rides
-//! `AppState.recovery_state` between them (`tokio::sync::Mutex`, held across `.await`).
+//! `Core.recovery_state` between them (`tokio::sync::Mutex`, held across `.await`).
 //!
 //! The window (`RECOVERY_WINDOW_HOURS` = 72, computed locally with `chrono` from the
 //! unauthorized op's `created_at`) is *enforced* by plc.directory; the local check exists
@@ -429,9 +429,8 @@ pub async fn submit_recovery_override(
 /// Tauri command: Build a recovery override operation.
 ///
 /// Stores the built operation in RecoveryState for subsequent submission.
-#[tauri::command]
 pub async fn build_recovery_override_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     operation_cid: String,
 ) -> Result<SignedRecoveryOp, RecoveryError> {
@@ -448,9 +447,8 @@ pub async fn build_recovery_override_cmd(
 }
 
 /// Tauri command: Submit the pending recovery override to plc.directory.
-#[tauri::command]
 pub async fn submit_recovery_override_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<ClaimResult, RecoveryError> {
     let recovery = state.recovery_state.lock().await;

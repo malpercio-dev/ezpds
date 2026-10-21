@@ -622,9 +622,8 @@ pub struct RemovalRoute {
 /// A host that could not be described is reported as requiring a password: the screen must show
 /// *something*, and a field the user can leave alone is a better failure than one that is missing.
 /// The confirm step re-checks and surfaces the real network error.
-#[tauri::command]
 pub async fn get_identity_removal_route(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<RemovalRoute, RemovalError> {
     let pds_client = state.pds_client();
@@ -644,9 +643,8 @@ pub async fn get_identity_removal_route(
 /// first if this returns `SessionRequired`) and calls `requestAccountDelete`. The PDS
 /// emails a 1-hour code to the account address; the user then supplies that code plus
 /// the account password to `confirm_identity_removal`.
-#[tauri::command]
 pub async fn request_identity_removal(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<(), RemovalError> {
     let now =
@@ -671,9 +669,8 @@ pub async fn request_identity_removal(
 /// `deleteAccount` is attempted FIRST, so a wrong credential leaves everything intact and
 /// the UI re-prompts. Once the account is deleted, `retire_and_wipe` runs the
 /// method-appropriate tail: the tombstone + wipe for a did:plc, the wipe alone for a did:web.
-#[tauri::command]
 pub async fn confirm_identity_removal(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     password: Option<String>,
     token: String,
@@ -718,9 +715,8 @@ pub async fn confirm_identity_removal(
 /// submitting a second, doomed operation; otherwise it completes the tombstone + wipe.
 /// For a did:web there is no tombstone to retry at all, so the resume is the local wipe
 /// alone: it cannot loop forever against a plc.directory that never hosted the DID.
-#[tauri::command]
 pub async fn tombstone_identity(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<RemovalOutcome, RemovalError> {
     let tombstone_cid = retire_and_wipe(state.pds_client(), &did).await?;
@@ -735,7 +731,6 @@ pub async fn tombstone_identity(
 /// can resume it (idempotent `tombstone_identity`) instead of re-entering the request
 /// flow. Infallible — any Keychain/decoding trouble reads as an empty list, so it can be
 /// called unconditionally on every launch.
-#[tauri::command]
 pub fn list_pending_removals() -> Vec<String> {
     load_pending_removals()
 }
@@ -758,7 +753,6 @@ pub fn list_pending_removals() -> Vec<String> {
 ///
 /// Returns `was_last_identity` (mirroring `RemovalOutcome`) so the UI can route back to
 /// onboarding rather than the identity list when the wallet is now empty.
-#[tauri::command]
 pub fn forget_identity_locally(did: String) -> Result<bool, RemovalError> {
     wipe_local(&IdentityStore, &did)?;
     clear_removal_pending_best_effort(&did);

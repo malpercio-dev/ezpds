@@ -743,7 +743,7 @@ pub(crate) async fn run_backup_for_did(
 ) -> Result<RepoBackupRunReport, RepoBackupError> {
     use tauri::Manager;
     let (root, _location) = resolve_backup_root(app).ok_or(RepoBackupError::BackupUnavailable)?;
-    let state = app.state::<crate::oauth::AppState>();
+    let state = app.state::<crate::oauth::Core>();
     let pds_client = state.pds_client();
     let pds_url = hosting_pds_url(pds_client, did).await?;
     run_backup_core(pds_client, &root, did, &pds_url).await
@@ -751,7 +751,6 @@ pub(crate) async fn run_backup_for_did(
 
 /// Tauri command: the backup surface's status readout — mirror location (or its absence), the
 /// opt-in flag, and the snapshot's size + rev (shown before and after opting in).
-#[tauri::command]
 pub async fn get_repo_backup_status(
     app: tauri::AppHandle,
     did: String,
@@ -763,7 +762,6 @@ pub async fn get_repo_backup_status(
 }
 
 /// Tauri command: flip the explicit opt-in flag. Returns the refreshed status.
-#[tauri::command]
 pub async fn set_repo_backup_enabled(
     app: tauri::AppHandle,
     did: String,
@@ -776,7 +774,6 @@ pub async fn set_repo_backup_enabled(
 /// Tauri command: run one backup pass for the identity. Reads only the public `getRepo`, so it
 /// needs no session. Also invoked opportunistically (fire-and-forget) on app open for opted-in
 /// identities.
-#[tauri::command]
 pub async fn run_repo_backup(
     app: tauri::AppHandle,
     did: String,

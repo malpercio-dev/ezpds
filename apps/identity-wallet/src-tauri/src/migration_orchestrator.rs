@@ -70,7 +70,7 @@
 //! probe → branch → cutover path, drivable against mock servers — which is what
 //! proves the non-Custos cutover never calls `/v1/sessions/sovereign`.
 //!
-//! Migration state is IN-MEMORY only (`AppState.orchestration_state`): an app kill
+//! Migration state is IN-MEMORY only (`Core.orchestration_state`): an app kill
 //! restarts from `prepare_migration`, but the destination session persisted via
 //! `{did}:oauth-tokens` survives — a restarted wallet reconstructs the destination
 //! client from that record (`sovereign_session::stored_bearer_client`), never from
@@ -109,7 +109,7 @@ pub enum MigrationPhase {
 
 // ── State types ────────────────────────────────────────────────────────────
 
-/// Outbound migration state persisted in `AppState`.
+/// Outbound migration state persisted in `Core`.
 ///
 /// Resolved by `prepare_migration` and used by subsequent migration commands
 /// within the same migration session. In-memory only; an app kill restarts from
@@ -326,9 +326,8 @@ pub(crate) fn ensure_phase_did<'a>(
 /// 1. discover_pds(did) → source_pds_url + preferred login identifier (handle, then DID)
 /// 2. describe_server(dest_pds_url) → dest_did (map PdsUnreachable → DESTINATION_UNREACHABLE)
 /// 3. store fresh OutboundMigrationState at phase Resolved (in-memory only; app kill restarts)
-#[tauri::command]
 pub async fn prepare_migration(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     dest_pds_url: String,
 ) -> Result<PreparedMigration, MigrationError> {
@@ -439,9 +438,8 @@ async fn prepare_migration_impl(
 /// re-invokes with that code as `Some`.
 ///
 /// Gate: `ensure_phase_did(..., Resolved)` — `prepare_migration` must have resolved the source PDS.
-#[tauri::command]
 pub async fn authenticate_migration_source(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     identifier: String,
     password: String,
@@ -701,9 +699,8 @@ pub(crate) async fn create_destination_account_with_token(
 ///
 /// Gate: ensure_phase_did(..., SourceAuthed) → extract source_client, dest_pds_url,
 /// dest_did, handle, existing dest_client; drop lock; call _impl; re-lock to update.
-#[tauri::command]
 pub async fn create_destination_account(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     email: String,
     invite_code: Option<String>,
@@ -856,10 +853,9 @@ async fn transfer_repo_impl(
 /// CID/commit-valid snapshot for the DID (`repo_backup::mirror_repo_car`), turning a dead source
 /// repo into a non-event for backed-up users; when no valid snapshot exists the original source
 /// failure is surfaced unchanged.
-#[tauri::command]
 pub async fn transfer_repo(
+    state: &crate::oauth::Core,
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<(), MigrationError> {
     tracing::info!(did = %did, "transfer_repo: fetching and importing repository");
@@ -1182,10 +1178,9 @@ async fn drain_missing_blobs(
 ///   advancing, so the UI can show the manifest and let the user decide.
 /// - `accept_loss = true` → record the (re-drained) losses on the state, advance anyway, and
 ///   `verify_import` later subtracts them so the migration still reconciles.
-#[tauri::command]
 pub async fn transfer_blobs(
+    state: &crate::oauth::Core,
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
     accept_loss: bool,
 ) -> Result<(), MigrationError> {
@@ -1306,9 +1301,8 @@ async fn transfer_preferences_impl(
 ///
 /// Gate: ensure_phase_did(..., BlobsTransferred) → clone source_client AND dest_client; drop lock
 /// Then: transfer_preferences_impl; re-lock + advance to PreferencesTransferred
-#[tauri::command]
 pub async fn transfer_preferences(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<(), MigrationError> {
     tracing::info!(did = %did, "transfer_preferences: getting and putting preferences");
@@ -1408,9 +1402,8 @@ pub(crate) fn import_reconciles_with_loss(
 /// Gate: ensure_phase_did(..., PreferencesTransferred) → clone dest_client; drop lock
 /// Then: check_account_status(dest_client); if import_reconciles → advance to Verified & return status;
 ///       else → VerificationIncomplete with counts, phase unchanged
-#[tauri::command]
 pub async fn verify_import(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<crate::pds_client::AccountStatus, MigrationError> {
     tracing::info!(did = %did, "verify_import: checking account completeness");
@@ -1490,11 +1483,10 @@ pub async fn verify_import(
 /// then advance to IdentityArmed.
 ///
 /// Gate: ensure_phase_did(..., Verified) → clone dest_client; drop lock
-/// Build fresh MigrationState { did, dest_oauth_client, signed_op: None, op_cid: None }; store in AppState
+/// Build fresh MigrationState { did, dest_oauth_client, signed_op: None, op_cid: None }; store in Core
 /// Advance phase → IdentityArmed
-#[tauri::command]
 pub async fn arm_identity_leg(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<(), MigrationError> {
     tracing::info!(did = %did, "arm_identity_leg: populating migration identity-leg state");
@@ -1776,9 +1768,8 @@ fn destination_credential(did: &str, destination: &ServerCapabilities) -> Destin
 /// already landed) using a fresh device-key proof; the frontend re-gates biometric before
 /// every finalize invocation, so a resumed attempt obtains fresh authorization before that
 /// signature (and the idempotent skip means an already-persisted session signs nothing at all).
-#[tauri::command]
 pub async fn finalize_migration(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<(), MigrationError> {
     // Proof material for the sovereign-session mint (imperative shell: clock + RNG). Minted

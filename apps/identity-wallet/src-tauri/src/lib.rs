@@ -23,7 +23,7 @@
 //!
 //! `run()` is the iOS/Android entry point (`#[cfg_attr(mobile, tauri::mobile_entry_point)]`;
 //! `main.rs` calls it on desktop). Its `setup` does the app wiring: command + plugin
-//! registration, the startup OAuth-token restore into `AppState.oauth_session`
+//! registration, the startup OAuth-token restore into `Core.oauth_session`
 //! (`expires_at = 0` forces an immediate refresh; `auth_ready` emitted after a 300 ms
 //! delay so SvelteKit can register its listener), `reconcile_share1_slots` (the two
 //! additive Share 1 launch hops — see its doc), the PLC monitoring loop spawn, and the
@@ -38,6 +38,7 @@ pub mod app_passwords;
 pub mod bg_backup;
 pub mod blob_backup;
 pub mod claim;
+mod commands;
 pub use obsign_core::device_key;
 pub mod diagnostics;
 pub mod disaster_recovery;
@@ -407,12 +408,11 @@ fn build_create_flow_did_doc(
 /// `POST /v1/accounts/mobile`, and stores the returned tokens in the Keychain on
 /// success. PDS refusals map to typed [`CreateAccountError`] variants the frontend
 /// routes back to the originating screen (e.g. `EXPIRED_CODE` → the claim-code step).
-#[tauri::command]
-async fn create_account(
+pub async fn create_account(
+    state: &crate::oauth::Core,
     claim_code: String,
     email: String,
     handle: String,
-    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<CreateAccountResult, CreateAccountError> {
     // 1. Get or create the device's SE-backed (or simulator-fallback) P-256 key.
     let device_key = device_key::get_or_create().map_err(|e| {
@@ -526,7 +526,7 @@ fn load_did_ceremony_context() -> Result<DidCeremonyContext, DIDCeremonyError> {
 
 /// Fetch the account's reserved repo key with consistent status mapping and diagnostics.
 async fn fetch_repo_signing_key(
-    state: &oauth::AppState,
+    state: &oauth::Core,
     pending_token: &str,
 ) -> Result<PdsSigningKey, DIDCeremonyError> {
     let response = state
@@ -572,16 +572,15 @@ async fn fetch_repo_signing_key(
 /// per-DID `recovery-share-1:{did}` slot with a read-back verify (per-DID, so a second
 /// identity's ceremony cannot overwrite the first's — the re-key flow's convention),
 /// and returns `{ did, share3, share3Words }` for the backup screen.
-#[tauri::command]
-async fn perform_did_ceremony(
+pub async fn perform_did_ceremony(
+    state: &crate::oauth::Core,
     handle: String,
     password: Option<String>,
-    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {
     let context = load_did_ceremony_context()?;
     let device_key = context.device_key;
     let pending_token = context.pending_token;
-    let pds_key = fetch_repo_signing_key(&state, &pending_token).await?;
+    let pds_key = fetch_repo_signing_key(state, &pending_token).await?;
 
     // Step 3.5: Generate (or reload from staging) the client-side share set — seed,
     // derived recovery key, and the 2-of-3 envelope split. Staged before the
@@ -750,8 +749,7 @@ pub enum ShareBackupError {
 /// the durability check reads the exact identity just created, mirroring the re-key epilogue's
 /// `confirm_rekey`. Idempotent; called by the frontend when the Shamir backup screen's
 /// confirmation completes.
-#[tauri::command]
-fn confirm_share_backup(did: String) -> Result<(), ShareBackupError> {
+pub fn confirm_share_backup(did: String) -> Result<(), ShareBackupError> {
     match rekey::load_share1(&did) {
         Ok(bytes) if !bytes.is_empty() => {}
         Ok(_) => {
@@ -777,13 +775,12 @@ fn confirm_share_backup(did: String) -> Result<(), ShareBackupError> {
     })
 }
 
-#[tauri::command]
 /// Prepare the device and reserved repository keys used to compose a did:web document.
-async fn prepare_did_web_ceremony(
-    state: tauri::State<'_, oauth::AppState>,
+pub async fn prepare_did_web_ceremony(
+    state: &crate::oauth::Core,
 ) -> Result<DidWebPreparation, DIDCeremonyError> {
     let context = load_did_ceremony_context()?;
-    let repo_key = fetch_repo_signing_key(&state, &context.pending_token).await?;
+    let repo_key = fetch_repo_signing_key(state, &context.pending_token).await?;
     Ok(DidWebPreparation {
         // The server validates the document's #device against the did:key's multicodec-prefixed
         // multibase (`rotation_key_public` with "did:key:" stripped), so the bare compressed-point
@@ -807,13 +804,12 @@ async fn prepare_did_web_ceremony(
     })
 }
 
-#[tauri::command]
 /// Verify a published did:web document, promote the account, and persist recovery state.
-async fn complete_did_web_ceremony(
+pub async fn complete_did_web_ceremony(
+    state: &crate::oauth::Core,
     document_text: String,
     password: Option<String>,
     enable_managed_hosting: bool,
-    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {
     let context = load_did_ceremony_context()?;
     let request = CreateDidRequest {
@@ -889,10 +885,9 @@ async fn complete_did_web_ceremony(
 /// `POST /v1/handles`.
 ///
 /// Returns the full handle and DNS propagation status on success.
-#[tauri::command]
-async fn register_handle(
+pub async fn register_handle(
+    state: &crate::oauth::Core,
     handle: String,
-    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<RegisterHandleResult, RegisterHandleError> {
     let full_handle = handle;
 
@@ -1001,9 +996,8 @@ pub enum AvailableDomainsError {
 ///
 /// Returns the (possibly empty) domain list on success; the caller decides what to do when the
 /// list is empty.
-#[tauri::command]
-async fn get_available_user_domains(
-    state: tauri::State<'_, oauth::AppState>,
+pub async fn get_available_user_domains(
+    state: &crate::oauth::Core,
 ) -> Result<Vec<String>, AvailableDomainsError> {
     let resp = state
         .custos_client()
@@ -1053,8 +1047,7 @@ fn configured_pds_url() -> Option<String> {
 ///
 /// The frontend calls this on mount to decide whether to show the PDS
 /// configuration screen.
-#[tauri::command]
-fn get_pds_url() -> Option<String> {
+pub fn get_pds_url() -> Option<String> {
     configured_pds_url()
 }
 
@@ -1080,8 +1073,7 @@ pub enum AppearanceError {
 /// A corrupt or unrecognized stored value is treated as absent rather than an
 /// error: the worst outcome of losing this preference is following the system
 /// appearance, which is the default anyway.
-#[tauri::command]
-fn get_appearance_preference() -> Option<String> {
+pub fn get_appearance_preference() -> Option<String> {
     keychain::load_appearance_preference().filter(|p| APPEARANCE_PREFERENCES.contains(&p.as_str()))
 }
 
@@ -1089,8 +1081,7 @@ fn get_appearance_preference() -> Option<String> {
 ///
 /// The frontend applies the appearance instantly before calling this; the
 /// Keychain write is what makes the choice survive app restarts.
-#[tauri::command]
-fn set_appearance_preference(preference: String) -> Result<(), AppearanceError> {
+pub fn set_appearance_preference(preference: String) -> Result<(), AppearanceError> {
     if !APPEARANCE_PREFERENCES.contains(&preference.as_str()) {
         return Err(AppearanceError::InvalidPreference);
     }
@@ -1106,11 +1097,7 @@ fn set_appearance_preference(preference: String) -> Result<(), AppearanceError> 
 /// After this call succeeds, all subsequent IPC commands that use the PDS
 /// will use the saved URL for the remainder of the app session and on all
 /// future launches.
-#[tauri::command]
-async fn save_pds_url(
-    url: String,
-    state: tauri::State<'_, oauth::AppState>,
-) -> Result<(), PdsConfigError> {
+pub async fn save_pds_url(state: &crate::oauth::Core, url: String) -> Result<(), PdsConfigError> {
     let normalized = normalize_pds_url(&url)?;
     let resp = http::new_configured(normalized.clone())
         .get("/xrpc/_health")
@@ -1162,9 +1149,8 @@ async fn save_pds_url(
 /// with capabilities switched off — reports an empty list rather than failing. **A host
 /// that cannot be reached reports the same empty list**: the caller learns "no capabilities
 /// to offer", which is the safe way to degrade, not "this feature is definitively absent".
-#[tauri::command]
-async fn get_pds_capabilities(
-    state: tauri::State<'_, oauth::AppState>,
+pub async fn get_pds_capabilities(
+    state: &crate::oauth::Core,
     pds_url: Option<String>,
 ) -> Result<pds_capabilities::ServerCapabilities, PdsConfigError> {
     let url = match pds_url {
@@ -1189,8 +1175,7 @@ async fn get_pds_capabilities(
 ///
 /// The frontend calls this on mount to check for existing identities and decide whether
 /// to skip the mode selector.
-#[tauri::command]
-fn list_identities() -> Result<Vec<String>, identity_store::IdentityStoreError> {
+pub fn list_identities() -> Result<Vec<String>, identity_store::IdentityStoreError> {
     identity_store::IdentityStore.list_identities()
 }
 
@@ -1201,8 +1186,7 @@ fn list_identities() -> Result<Vec<String>, identity_store::IdentityStoreError> 
 ///
 /// The frontend uses this to extract identity information (handle, PDS URL) for
 /// multi-identity card display in IdentityListHome.
-#[tauri::command]
-fn get_stored_did_doc(
+pub fn get_stored_did_doc(
     did: String,
 ) -> Result<Option<serde_json::Value>, identity_store::IdentityStoreError> {
     let store = identity_store::IdentityStore;
@@ -1240,9 +1224,8 @@ pub enum RefreshDidDocError {
 /// card's custody badge and hides the migrate entry. `IdentityListHome` calls this
 /// (best-effort) whenever a cached doc is missing or has no `rotationKeys`, so stale
 /// caches repair on the next home load without user action.
-#[tauri::command]
-async fn refresh_did_doc(
-    state: tauri::State<'_, oauth::AppState>,
+pub async fn refresh_did_doc(
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<serde_json::Value, RefreshDidDocError> {
     let did_doc = state
@@ -1269,8 +1252,7 @@ async fn refresh_did_doc(
 /// in the DID document to determine if the device key is the primary rotation key.
 ///
 /// The frontend uses this in IdentityListHome to show rotation key status badges.
-#[tauri::command]
-fn get_device_key_id(did: String) -> Result<String, identity_store::IdentityStoreError> {
+pub fn get_device_key_id(did: String) -> Result<String, identity_store::IdentityStoreError> {
     let store = identity_store::IdentityStore;
     let device_key = store.get_or_create_device_key(&did)?;
     Ok(device_key.key_id)
@@ -1284,11 +1266,10 @@ fn get_device_key_id(did: String) -> Result<String, identity_store::IdentityStor
 /// unreachable, DID mismatch). Returns `Result<bool, String>` for Tauri IPC compatibility, but
 /// never returns `Err` — callers can safely poll on an interval. The nominal `String` error
 /// type is the ADR-0031 allowance for a command that never rejects.
-#[tauri::command]
-async fn check_handle_resolution(
+pub async fn check_handle_resolution(
+    state: &crate::oauth::Core,
     handle: String,
     expected_did: String,
-    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<bool, String> {
     // ATProto handles are alphanumeric + hyphens + dots — all URL-safe; no percent-encoding needed.
     let path = format!("/xrpc/com.atproto.identity.resolveHandle?handle={handle}");
@@ -1340,11 +1321,10 @@ pub enum RegisterIdentityError {
 /// device key to it (keeps the "root key" badge and PLC monitoring honest).
 ///
 /// Idempotent — safe to retry; tolerates an already-registered DID.
-#[tauri::command]
-async fn register_created_identity(
+pub async fn register_created_identity(
+    state: &crate::oauth::Core,
     did: String,
     handle: String,
-    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<(), RegisterIdentityError> {
     let store = identity_store::IdentityStore;
 
@@ -1505,10 +1485,9 @@ fn persist_imported_did_web(
 /// account password and a byte-exact document publish on the domain.
 ///
 /// Idempotent — re-importing an already-managed DID refreshes its cached document.
-#[tauri::command]
-async fn import_did_web_identity(
+pub async fn import_did_web_identity(
+    state: &crate::oauth::Core,
     input: String,
-    state: tauri::State<'_, oauth::AppState>,
 ) -> Result<ImportedDidWebIdentity, ImportDidWebError> {
     let did = normalize_did_web_input(&input)?;
 
@@ -1771,7 +1750,7 @@ pub fn run() {
     let _ = obsign_core::signer::install(Box::new(obsign_core::signer::SoftwareSigner));
 
     let builder = tauri::Builder::default()
-        .manage(oauth::AppState::new())
+        .manage(oauth::Core::new())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Debug)
@@ -1797,7 +1776,7 @@ pub fn run() {
         .setup(|app| {
             // Restore PDS URL from Keychain if previously configured.
             if let Some(url) = configured_pds_url() {
-                app.state::<oauth::AppState>().set_custos_client(url);
+                app.state::<oauth::Core>().set_custos_client(url);
             }
 
             // Best-effort, idempotent: move a pre-unification install's global Share 1 into
@@ -1817,7 +1796,7 @@ pub fn run() {
             // before the event fires — emitting synchronously here would be dropped.
             if let Some((access, refresh)) = keychain::load_oauth_tokens() {
                 {
-                    let state = app.state::<oauth::AppState>();
+                    let state = app.state::<oauth::Core>();
                     *state
                         .oauth_session
                         .lock()
@@ -1857,120 +1836,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            create_account,
-            perform_did_ceremony,
-            confirm_share_backup,
-            prepare_did_web_ceremony,
-            complete_did_web_ceremony,
-            register_handle,
-            register_created_identity,
-            import_did_web_identity,
-            check_handle_resolution,
-            get_available_user_domains,
-            list_identities,
-            get_stored_did_doc,
-            refresh_did_doc,
-            get_device_key_id,
-            get_pds_url,
-            save_pds_url,
-            get_pds_capabilities,
-            get_appearance_preference,
-            set_appearance_preference,
-            diagnostics::export_diagnostics,
-            claim::resolve_identity,
-            claim::authenticate_source_pds,
-            claim::request_claim_verification,
-            claim::sign_and_verify_claim,
-            claim::submit_claim,
-            agents::list_agents,
-            agents::revoke_agent,
-            agents::get_agent_audit,
-            agents::preview_agent_claim,
-            agents::confirm_agent_claim,
-            agents::agent_accounts_provisioned,
-            agents::mint_child_from_claim,
-            agents::list_children,
-            agents::revoke_child,
-            agents::delete_child,
-            agents::remint_child_assertion,
-            agents::reconcile_children,
-            oauth_consent::preview_oauth_consent,
-            oauth_consent::preview_oauth_consent_by_request_id,
-            oauth_consent::confirm_oauth_consent,
-            app_passwords::create_app_password,
-            app_passwords::list_app_passwords,
-            app_passwords::revoke_app_password,
-            blob_backup::get_blob_backup_status,
-            blob_backup::set_blob_backup_enabled,
-            blob_backup::run_blob_backup,
-            blob_backup::restore_blob_backup,
-            repo_backup::get_repo_backup_status,
-            repo_backup::set_repo_backup_enabled,
-            repo_backup::run_repo_backup,
-            bg_backup::get_background_backup_settings,
-            bg_backup::set_background_backup_settings,
-            notifications::register_for_notifications,
-            notifications::get_notification_diagnostics,
-            notifications::clear_notification_failures,
-            notification_routes::take_pending_notification_route,
-            plc_monitor::check_identity_status,
-            plc_monitor::get_monitor_history,
-            recovery::build_recovery_override_cmd,
-            rotate_repo_key::build_repo_key_rotation_cmd,
-            rotate_repo_key::submit_repo_key_rotation_cmd,
-            rekey::build_rekey_cmd,
-            rekey::submit_rekey_cmd,
-            rekey::confirm_rekey_cmd,
-            rekey::rekey_in_progress_cmd,
-            self_held_kit::build_self_held_kit_cmd,
-            self_held_kit::submit_self_held_kit_cmd,
-            self_held_kit::confirm_self_held_kit_cmd,
-            self_held_kit::self_held_kit_in_progress_cmd,
-            recovery::submit_recovery_override_cmd,
-            identity_removal::get_identity_removal_route,
-            identity_removal::request_identity_removal,
-            identity_removal::confirm_identity_removal,
-            identity_removal::tombstone_identity,
-            identity_removal::list_pending_removals,
-            identity_removal::forget_identity_locally,
-            migrate::detect_migration_path_cmd,
-            migrate::build_migration_op_cmd,
-            migrate::submit_migration_op_cmd,
-            migrate::build_did_web_migration_document_cmd,
-            migrate::submit_did_web_migration_document_cmd,
-            migration_orchestrator::prepare_migration,
-            migration_orchestrator::authenticate_migration_source,
-            migration_orchestrator::create_destination_account,
-            migration_orchestrator::transfer_repo,
-            migration_orchestrator::transfer_blobs,
-            migration_orchestrator::transfer_preferences,
-            migration_orchestrator::verify_import,
-            migration_orchestrator::arm_identity_leg,
-            migration_orchestrator::finalize_migration,
-            disaster_recovery::prepare_disaster_recovery,
-            disaster_recovery::enroll_recovery_signing_key,
-            disaster_recovery::await_recovery_key_visibility,
-            disaster_recovery::create_recovery_destination_account,
-            disaster_recovery::recovery_transfer_repo,
-            sovereign_session::sovereign_login,
-            session_provider::ensure_identity_session,
-            password_unlock::get_identity_unlock_route,
-            password_unlock::unlock_identity_with_password,
-            handle_change::change_handle_cmd,
-            handle_change::get_identity_handle_domains,
-            handle_change::check_custom_handle_dns,
-            endpoint_repair::repair_hosting_endpoint,
-            share_recovery::start_share_recovery,
-            share_recovery::add_recovery_share,
-            share_recovery::initiate_escrow_release,
-            share_recovery::request_escrow_release,
-            share_recovery::verify_recovery_shares,
-            share_recovery::recover_identity,
-            share_recovery::run_recovery_epilogue,
-            share_recovery::get_pending_recovery_epilogue,
-            share_recovery::confirm_recovery_backup,
-        ])
+        .invoke_handler(commands::handler())
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {
