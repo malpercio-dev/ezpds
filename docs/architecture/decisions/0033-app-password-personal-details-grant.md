@@ -4,7 +4,7 @@
 - **Date:** 2026-08-19
 - **Deciders:** malpercio
 - **Related:** ADR-0021 (password source logins), `crates/pds/src/routes/preference_scope.rs`,
-  `apps/identity-wallet/src-tauri/src/app_passwords.rs`
+  `crates/obsign-core/src/app_passwords.rs`
 
 ## Context
 

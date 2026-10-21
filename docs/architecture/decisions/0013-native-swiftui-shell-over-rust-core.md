@@ -3,7 +3,7 @@
 - **Status:** Deferred — not scheduled; waits on a trigger below
 - **Date:** 2026-06-20 (recorded); migrated into the ADR log 2026-07-02; revised 2026-10-20
 - **Deciders:** ezpds maintainers
-- **Related:** [ADR-0039](0039-obsign-core-bound-rust-core.md) (the bound core, split out of this record and Accepted) · [`apps/identity-wallet/src-tauri/src/bg_backup.rs`](../../../apps/identity-wallet/src-tauri/src/bg_backup.rs) · [`apps/identity-wallet/src-tauri/src/plc_monitor.rs`](../../../apps/identity-wallet/src-tauri/src/plc_monitor.rs) · [ADR-0010](0010-toolchains-managed-outside-nix.md) · [`docs/design-plans/2026-09-06-v2-in-place.md`](../../design-plans/2026-09-06-v2-in-place.md) §4
+- **Related:** [ADR-0039](0039-obsign-core-bound-rust-core.md) (the bound core, split out of this record and Accepted) · [`apps/identity-wallet/src-tauri/src/bg_backup.rs`](../../../apps/identity-wallet/src-tauri/src/bg_backup.rs) · [`crates/obsign-core/src/plc_monitor.rs`](../../../crates/obsign-core/src/plc_monitor.rs) · [ADR-0010](0010-toolchains-managed-outside-nix.md) · [`docs/design-plans/2026-09-06-v2-in-place.md`](../../design-plans/2026-09-06-v2-in-place.md) §4
 
 > **Revised 2026-10-20.** This record used to hold two decisions. "The Rust core
 > is the asset; never reimplement it in Swift" now lives in

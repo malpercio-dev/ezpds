@@ -74,7 +74,7 @@ Managed by the Obsign identity-wallet app
   exists, then `adopt_global_device_key` aliases the per-DID slot to it.
 - **Shamir recovery shares** — at onboarding the **wallet** generates a fresh
   32-byte recovery seed and splits it 2-of-3 **client-side**
-  ([`share_ceremony.rs`](../../apps/identity-wallet/src-tauri/src/share_ceremony.rs),
+  ([`share_ceremony.rs`](../../crates/obsign-core/src/share_ceremony.rs),
   `split_secret_into_envelopes`). It derives the seed's recovery keypair
   (`derive_recovery_keypair`), puts that key at `rotationKeys[1]` of the genesis
   op it signs, and submits to the `POST /v1/dids` ceremony
@@ -96,7 +96,7 @@ Managed by the Obsign identity-wallet app
   recovers real identity-controlling authority. Both reconstruction ceremonies
   exist: escrow-assisted (iCloud Share 1 + released escrow Share 2) and
   escrow-free/sovereign (offline Shares 1 + 3), implemented wallet-side in
-  [`share_recovery.rs`](../../apps/identity-wallet/src-tauri/src/share_recovery.rs)
+  [`share_recovery.rs`](../../crates/obsign-core/src/share_recovery.rs)
   against the server's `/v1/recovery/*` endpoints
   ([`recovery_escrow.rs`](../../crates/pds/src/routes/recovery_escrow.rs),
   [`recovery_release.rs`](../../crates/pds/src/routes/recovery_release.rs)). The

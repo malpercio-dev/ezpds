@@ -27,7 +27,7 @@ use crate::app::AppState;
 /// configured — so its identity must not vary with `public_url`: every instance
 /// serves this same document, and third-party authorization servers fetch it from
 /// the canonical host. Must stay in sync with the V042-seeded `oauth_clients` row
-/// and the wallet's constants in `apps/identity-wallet/src-tauri/src/pds_client.rs`.
+/// and the wallet's constants in `crates/obsign-core/src/pds_client.rs`.
 pub const CANONICAL_WALLET_CLIENT_ID: &str =
     "https://identitywallet.obsign.org/oauth/client-metadata.json";
 

@@ -49,7 +49,7 @@ The product launches mobile-first. The PDS is a full PDS before any desktop is i
 
 > Since v0.7.2 the repo is no longer PDS-*only*: the identity wallet can keep an
 > opt-in, user-held CAR snapshot of the repo in the user's iCloud Drive
-> (`apps/identity-wallet/src-tauri/src/repo_backup.rs`, MM-447) — the self-custody
+> (`crates/obsign-core/src/repo_backup.rs`, MM-447) — the self-custody
 > sibling of the blob backup. The PDS stays the authoritative copy; the snapshot is a
 > disaster-recovery/export artifact fetched over public `getRepo`, not a second writer.
 > See [the design plan](archive/design-plans/2026-07-22-wallet-repo-icloud-backup.md).

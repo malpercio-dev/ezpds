@@ -4,7 +4,7 @@
 - **Date:** 2026-07-11
 - **Amended:** 2026-07-12 ([MM-302](https://linear.app/malpercio/issue/MM-302) — outbound-migration source login joins the password path; see Amendment below)
 - **Deciders:** Malpercio
-- **Related:** [MM-289](https://linear.app/malpercio/issue/MM-289), [MM-288](https://linear.app/malpercio/issue/MM-288), [MM-302](https://linear.app/malpercio/issue/MM-302), [ADR-0001](0001-client-held-rotation-key-custody.md) (client-held rotation key), [ADR-0002](0002-wallet-authorized-account-migration.md) (migration), `crates/pds/src/auth/oauth_scopes.rs`, `apps/identity-wallet/src-tauri/src/claim.rs`, `apps/identity-wallet/src-tauri/src/migration_orchestrator.rs`
+- **Related:** [MM-289](https://linear.app/malpercio/issue/MM-289), [MM-288](https://linear.app/malpercio/issue/MM-288), [MM-302](https://linear.app/malpercio/issue/MM-302), [ADR-0001](0001-client-held-rotation-key-custody.md) (client-held rotation key), [ADR-0002](0002-wallet-authorized-account-migration.md) (migration), `crates/pds/src/auth/oauth_scopes.rs`, `crates/obsign-core/src/claim.rs`, `crates/obsign-core/src/migration_orchestrator.rs`
 
 ## Context
 

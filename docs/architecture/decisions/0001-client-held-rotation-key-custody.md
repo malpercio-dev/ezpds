@@ -8,7 +8,7 @@
   "`[1]`" is now the historical slot.
 - **Date:** 2026-07-02 (backfilled; decision embodied in code since the DID ceremony landed)
 - **Deciders:** ezpds maintainers
-- **Related:** [ADR-0002](0002-wallet-authorized-account-migration.md) · [ADR-0027](0027-rotation-key-ordering.md) · [`../identity-and-key-custody.md`](../identity-and-key-custody.md) · [`crates/crypto/src/plc.rs`](../../../crates/crypto/src/plc.rs) · `apps/identity-wallet/src-tauri/src/{device_key,plc_monitor,recovery,claim}.rs`
+- **Related:** [ADR-0002](0002-wallet-authorized-account-migration.md) · [ADR-0027](0027-rotation-key-ordering.md) · [`../identity-and-key-custody.md`](../identity-and-key-custody.md) · [`crates/crypto/src/plc.rs`](../../../crates/crypto/src/plc.rs) · `crates/obsign-core/src/{device_key,plc_monitor,recovery,claim}.rs`
 
 ## Context
 

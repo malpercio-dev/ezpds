@@ -152,7 +152,7 @@ fragment `changelog.d/mm-597.changed.md`. No route changes, so no Bruno update.
 Both of the wallet's own full-export fetches would trip the cooldown, and one of them
 is a correctness hazard today regardless of this change.
 
-1. **Migration transfer** (`apps/identity-wallet/src-tauri/src/migration_orchestrator.rs`,
+1. **Migration transfer** (`crates/obsign-core/src/migration_orchestrator.rs`,
    `transfer_repo`). Today *any* source `getRepo` failure falls back to the iCloud repo
    snapshot. On `PdsClientError::RateLimited { retry_after, .. }` it must instead return
    `MigrationError::RateLimited { retry_after }` (the existing code, which the progress

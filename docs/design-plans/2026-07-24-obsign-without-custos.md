@@ -191,7 +191,7 @@ existing rotation keys. The existing sovereign recovery ceremony then works
 unchanged (its epilogue skips re-escrow on hosts without the `escrow`
 capability). The upsell seam is a single post-completion prompt, not pressure.
 
-**Shipped.** `apps/identity-wallet/src-tauri/src/self_held_kit.rs`, with
+**Shipped.** `crates/obsign-core/src/self_held_kit.rs`, with
 `guard_self_held_kit_op` as the seventh strict allowlist. The one design decision
 the plan left open was resolved by *gating* rather than layering: the flow refuses
 with `HOST_OFFERS_ESCROW` on a host advertising `escrow`, so the two ceremonies
@@ -221,7 +221,7 @@ blob restore for foreign identities — all already standard-lexicon features th
 are dark only for want of a session. ADR-0021's full-session requirement and the
 use-once-never-store password posture both hold.
 
-**Shipped.** `apps/identity-wallet/src-tauri/src/password_unlock.rs` supplies the
+**Shipped.** `crates/obsign-core/src/password_unlock.rs` supplies the
 second resolution of `NeedsUnlock`; its `UnlockMethod` chooses the sovereign
 device-key path or the password path by the host's advertised `sovereignSessions`
 capability. The password path runs a one-shot `createSession` through the
