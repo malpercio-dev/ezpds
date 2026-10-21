@@ -222,12 +222,13 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
 
 ## Keeping this current
 
-The gates that hold specific rows above are
-`just cap-check`,
+The gates that hold specific rows above are `just cap-check`,
 `just capability-docs-check`, `just runbook-parity-check`,
 `just bundle-identity-check`, `just audit`, and `just deny` — all part of
 `just ci` / `just ci-pds`, listed with what each one freezes in the root
-[`AGENTS.md`](../../AGENTS.md). A change that adds a new trust boundary, or an
+[`AGENTS.md`](../../AGENTS.md). The access-token, space-credential, and
+caller-influenced-fetch rows are held by the compiler instead (visibility and
+the `CallerUrl`/`HardenedClient` types), so no script guards them. A change that adds a new trust boundary, or an
 ADR whose subject is a security decision, adds or updates a row here in the
 same change — the same discipline `docs/architecture/decisions/README.md`
 asks of a fact doc when an ADR changes it.
