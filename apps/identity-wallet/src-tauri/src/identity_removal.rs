@@ -141,6 +141,10 @@ fn load_pending_removals() -> Vec<String> {
 
 /// Persist the pending-removals set. An empty set deletes the entry entirely so the
 /// Keychain never carries a stale `[]`.
+#[allow(
+    clippy::expect_used,
+    reason = "a Vec<String> always serializes to JSON"
+)]
 fn save_pending_removals(dids: &[String]) -> Result<(), crate::keychain::KeychainError> {
     if dids.is_empty() {
         return match crate::keychain::delete_item(PENDING_REMOVALS_ACCOUNT) {

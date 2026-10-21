@@ -350,6 +350,10 @@ where
 /// low-S ECDSA signature — see [`mint_service_auth_jwt`]). Shared by every account-key-signed
 /// token this server mints: service auth, and the Atproto Spaces delegation tokens and space
 /// credentials (`auth/space.rs`), which differ only in header `typ`/`kid` and claims.
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain struct or map with string keys infallibly"
+)]
 pub fn sign_jwt<F>(sign: F, header: &serde_json::Value, payload: &serde_json::Value) -> String
 where
     F: FnOnce(&[u8]) -> Vec<u8>,

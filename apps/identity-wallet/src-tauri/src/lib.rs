@@ -1741,6 +1741,10 @@ fn share1_backfill_dids() -> Vec<String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[allow(
+    clippy::expect_used,
+    reason = "Tauri's run only fails when the app cannot start, which is fatal"
+)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(oauth::AppState::new())
@@ -1790,13 +1794,17 @@ pub fn run() {
             if let Some((access, refresh)) = keychain::load_oauth_tokens() {
                 {
                     let state = app.state::<oauth::AppState>();
-                    *state.oauth_session.lock().unwrap() = Some(oauth::OAuthSession {
-                        access_token: access,
-                        refresh_token: refresh,
-                        // expires_at = 0 ensures OAuthClient refreshes immediately on first use.
-                        expires_at: 0,
-                        dpop_nonce: None,
-                    });
+                    *state
+                        .oauth_session
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some(oauth::OAuthSession {
+                            access_token: access,
+                            refresh_token: refresh,
+                            // expires_at = 0 ensures OAuthClient refreshes immediately on first use.
+                            expires_at: 0,
+                            dpop_nonce: None,
+                        });
                 }
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

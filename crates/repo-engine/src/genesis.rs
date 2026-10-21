@@ -91,7 +91,7 @@ impl CapturingBlockStore {
     pub fn blocks(&self) -> Vec<(Cid, Vec<u8>)> {
         self.blocks
             .lock()
-            .expect("block map mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .map(|(c, b)| (*c, b.clone()))
             .collect()
@@ -105,7 +105,10 @@ impl AsyncBlockStoreRead for CapturingBlockStore {
         contents: &mut Vec<u8>,
     ) -> Result<(), blockstore::Error> {
         let bytes = {
-            let map = self.blocks.lock().expect("block map mutex poisoned");
+            let map = self
+                .blocks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             map.get(&cid).ok_or(blockstore::Error::CidNotFound)?.clone()
         };
         contents.clear();
@@ -125,11 +128,12 @@ impl AsyncBlockStoreWrite for CapturingBlockStore {
             return Err(blockstore::Error::UnsupportedHash(hash));
         }
         let digest = sha2::Sha256::digest(contents);
+        #[allow(clippy::expect_used, reason = "a SHA-256 digest is 32 bytes")]
         let mh = Multihash::wrap(hash, digest.as_slice()).expect("SHA-256 digest is 32 bytes");
         let cid = Cid::new_v1(codec, mh);
         self.blocks
             .lock()
-            .expect("block map mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(cid, contents.to_vec());
         Ok(cid)
     }

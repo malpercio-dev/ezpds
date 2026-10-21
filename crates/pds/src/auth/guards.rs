@@ -205,17 +205,17 @@ pub async fn require_admin(
     // The master token is the root of trust / break-glass path: accept it whenever it
     // is valid, regardless of any (possibly malformed) device headers, so the
     // "master token OR device signature" contract holds even if both are present.
-    let token_result = require_admin_token(headers, state);
-    if token_result.is_ok() {
-        return Ok(AdminActor::MasterToken);
-    }
+    let token_err = match require_admin_token(headers, state) {
+        Ok(_) => return Ok(AdminActor::MasterToken),
+        Err(err) => err,
+    };
 
     // Otherwise a request carrying the device header is verified as a device signed
     // request; a request with neither credential surfaces the master-token error.
     if headers.contains_key(ADMIN_DEVICE_HEADER) {
         verify_admin_device_request(method, path, headers, body, &state.db).await
     } else {
-        Err(token_result.unwrap_err())
+        Err(token_err)
     }
 }
 

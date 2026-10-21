@@ -11,6 +11,7 @@
 //! These tests pin the two minimal orphan shapes plus a randomized model check, and
 //! fail against an unpatched atrium-repo — so a future dependency bump that drops the
 //! `[patch.crates-io]` entry without an upstream fix cannot merge quietly.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a panic is the failure signal
 
 use atrium_repo::blockstore::MemoryBlockStore;
 use atrium_repo::mst::Tree;

@@ -10,6 +10,7 @@
 //! implements: **low-S canonicalization** (a non-canonical high-S signature must be
 //! rejected on both P-256 and secp256k1) and **raw r‖s only** (a DER-encoded
 //! signature must be rejected).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a panic is the failure signal
 
 use base64::Engine;
 use crypto::{did_key_curve, verify_did_key_signature, DidKeyCurve, DidKeyUri};
