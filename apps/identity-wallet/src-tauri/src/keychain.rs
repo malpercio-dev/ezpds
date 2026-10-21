@@ -756,14 +756,15 @@ mod dpop_adapter {
                 report.contains("oauthRefresh"),
                 "the transport failure must be recorded"
             );
-            for secret in [
+            // Fake markers planted in the request; none may reach the exported report.
+            for marker in [
                 "private-access-token-oauthrs-test",
                 "private-refresh-token-oauthrs-test",
                 "private-identity-oauthrs-test",
             ] {
                 assert!(
-                    !report.contains(secret),
-                    "secret leaked into diagnostics report: {secret}"
+                    !report.contains(marker),
+                    "test marker leaked into diagnostics report: {marker}"
                 );
             }
         }
