@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: AppState (signing key, nonce store, DB), DPoP header, form body
+// Gathers: CoreState (signing key, nonce store, DB), DPoP header, form body
 // Processes: DPoP validation → grant dispatch → token issuance
 // Returns: JSON TokenResponse + DPoP-Nonce header on success;
 //          JSON OAuthTokenError on all failure paths
@@ -36,10 +36,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::app::AppState;
 use crate::auth::agent_assertion::POLL_INTERVAL_SECS;
 use crate::db::oauth::{cleanup_expired_auth_codes, cleanup_expired_refresh_tokens};
-use crate::routes::oauth_errors::{insert_no_store_headers, OAuthTokenError};
+use crate::oauth_errors::{insert_no_store_headers, OAuthTokenError};
+use custos_core::CoreState;
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -132,7 +132,7 @@ pub(super) const AGENT_ACCESS_TOKEN_TTL_SECS: u64 = 300;
 /// token, or `None` for a plain Bearer token (jwt-bearer grant) that carries no `cnf` binding.
 /// `registration_id` is set only for agent-derived tokens (jwt-bearer), marking them as such and
 /// tying them to their `agent_identities` row; `None` for ordinary session/OAuth grants.
-/// `ttl_secs` is the token's lifetime — [`crate::app::AppState`]'s configured
+/// `ttl_secs` is the token's lifetime — [`custos_core::CoreState`]'s configured
 /// `oauth.access_token_ttl_secs` for OAuth grants, [`AGENT_ACCESS_TOKEN_TTL_SECS`] for agent ones.
 fn issue_access_token(
     signing_key: &crate::auth::OAuthSigningKey,
@@ -175,7 +175,7 @@ fn issue_access_token(
 }
 
 /// Prune expired tokens and stale poll marks. Run on every token request.
-async fn cleanup_expired_state(state: &AppState) {
+async fn cleanup_expired_state(state: &CoreState) {
     // Drop claim-poll marks older than the interval: once a mark is older than `POLL_INTERVAL_SECS`
     // it can no longer trigger `slow_down`, so keeping it only grows the map. Bounds memory to the
     // set of claim tokens polled within the last interval.
@@ -224,7 +224,7 @@ fn token_response_headers(fresh_nonce: &str) -> Result<axum::http::HeaderMap, OA
 ///
 /// Dispatches to grant-specific handlers based on grant_type parameter.
 pub async fn post_token(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     headers: HeaderMap,
     Form(form): Form<TokenRequestForm>,
 ) -> Response {
@@ -267,7 +267,7 @@ pub(crate) mod test_support {
     use axum::{body::Body, http::Request};
     use uuid::Uuid;
 
-    use crate::app::AppState;
+    use custos_core::CoreState;
 
     pub(crate) fn post_token(body: &str) -> Request<Body> {
         Request::builder()
@@ -297,7 +297,7 @@ pub(crate) mod test_support {
     /// `POST /agent/identity` returns for a claimed registration. Shared by the jwt-bearer and
     /// claim-polling test modules (the claim grant hands back an assertion of this same shape).
     pub(crate) fn mint_assertion(
-        state: &AppState,
+        state: &CoreState,
         did: &str,
         registration_id: &str,
         scope: &str,
@@ -330,13 +330,13 @@ mod tests {
     use tower::ServiceExt;
 
     use super::test_support::{json_body, post_token};
-    use crate::app::{app, test_state};
+    use crate::test_support::{test_app, test_state};
 
     // ── Grant-type dispatch tests ─────────────────────────────────────────────
 
     #[tokio::test]
     async fn unknown_grant_type_returns_400_unsupported() {
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(post_token("grant_type=client_credentials"))
             .await
             .unwrap();
@@ -347,7 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_grant_type_returns_400_invalid_request() {
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(post_token("code=abc123"))
             .await
             .unwrap();
@@ -358,7 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn error_response_has_error_and_error_description_fields() {
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(post_token("grant_type=bad"))
             .await
             .unwrap();
@@ -377,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn get_token_endpoint_returns_405() {
         // Method routing (no AC)
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(
                 Request::builder()
                     .method("GET")

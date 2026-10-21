@@ -17,13 +17,13 @@ use super::{
     cleanup_expired_state, issue_access_token, token_response_headers, TokenRequestForm,
     TokenResponse,
 };
-use crate::app::AppState;
 use crate::auth::token::generate_token;
 use crate::db::oauth::{
     delete_authorization_code, get_authorization_code, store_initial_oauth_refresh_token,
 };
-use crate::routes::oauth_dpop::token_endpoint_dpop;
-use crate::routes::oauth_errors::{require, OAuthTokenError};
+use crate::oauth_dpop::token_endpoint_dpop;
+use crate::oauth_errors::{require, OAuthTokenError};
+use custos_core::CoreState;
 
 /// Verify the PKCE S256 code challenge.
 fn verify_pkce_s256(code_verifier: &str, stored_challenge: &str) -> bool {
@@ -34,7 +34,7 @@ fn verify_pkce_s256(code_verifier: &str, stored_challenge: &str) -> bool {
 }
 
 pub(super) async fn handle_authorization_code(
-    state: &AppState,
+    state: &CoreState,
     headers: &HeaderMap,
     form: TokenRequestForm,
 ) -> Response {
@@ -242,19 +242,20 @@ mod tests {
     use tower::ServiceExt;
 
     use super::super::test_support::{json_body, post_token, post_token_with_dpop};
-    use crate::app::{app, test_state, AppState};
     use crate::auth::token::{generate_token, sha256_hex};
     use crate::db::oauth::{register_oauth_client, store_authorization_code};
-    use crate::routes::test_utils;
+    use crate::test_support;
+    use crate::test_support::{test_app, test_state};
+    use custos_core::CoreState;
 
     /// Seed the DB with a test client + account + authorization code.
-    async fn seed_auth_code(state: &AppState, code_hash: &str, code_challenge: &str) {
+    async fn seed_auth_code(state: &CoreState, code_hash: &str, code_challenge: &str) {
         seed_auth_code_bound(state, code_hash, code_challenge, None).await
     }
 
     /// Seed an authorization code carrying a PAR-time DPoP key binding (V062).
     async fn seed_auth_code_bound(
-        state: &AppState,
+        state: &CoreState,
         code_hash: &str,
         code_challenge: &str,
         dpop_jkt: Option<&str>,
@@ -267,7 +268,7 @@ mod tests {
         .await
         .unwrap();
 
-        test_utils::seed_handle(
+        test_support::seed_handle(
             &state.db,
             "authcode.test.example.com",
             "did:plc:testaccount000000000000",
@@ -293,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_dpop_header_returns_invalid_dpop_proof() {
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(post_token(
                 "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
             ))
@@ -307,7 +308,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_wrong_htm_returns_invalid_dpop_proof() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let nonce = state.dpop_nonces.issue();
         // wrong — must be POST
         let dpop = key.proof_with(
@@ -317,7 +318,7 @@ mod tests {
             None,
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(
                 "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
@@ -335,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_wrong_htu_returns_invalid_dpop_proof() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let nonce = state.dpop_nonces.issue();
         let dpop = key.proof_with(
             "POST",
@@ -344,7 +345,7 @@ mod tests {
             Some(crate::time::unix_now_secs()),
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(
                 "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
@@ -359,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_stale_iat_returns_invalid_dpop_proof() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let nonce = state.dpop_nonces.issue();
         // 2 minutes ago — stale
         let dpop = key.proof_with(
@@ -369,7 +370,7 @@ mod tests {
             Some(crate::time::unix_now_secs() - 120),
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(
                 "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
@@ -386,11 +387,11 @@ mod tests {
     #[tokio::test]
     async fn dpop_without_nonce_returns_use_dpop_nonce_with_header() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         // no nonce
         let dpop = key.proof_with("POST", "https://test.example.com/oauth/token", None, None);
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(
                 "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
@@ -410,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_with_unknown_nonce_returns_use_dpop_nonce() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let dpop = key.proof_with(
             "POST",
             "https://test.example.com/oauth/token",
@@ -418,7 +419,7 @@ mod tests {
             Some(crate::time::unix_now_secs()),
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(
                 "grant_type=authorization_code&code=x&redirect_uri=x&client_id=x&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
                 &dpop,
@@ -435,7 +436,7 @@ mod tests {
     #[tokio::test]
     async fn authorization_code_happy_path_returns_200_with_tokens() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
 
         // Build PKCE S256 challenge.
         let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
@@ -463,7 +464,7 @@ mod tests {
              &code_verifier={code_verifier}"
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();
@@ -544,16 +545,16 @@ mod tests {
     #[tokio::test]
     async fn wrong_code_verifier_returns_invalid_grant() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
 
         let code_verifier = "correctverifier1234567890abcdefghijklmnopqr";
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
         let raw_code = "dGVzdGF1dGhvcml6YXRpb25jb2RlMTIzNDU2Nzg5MDEyMw";
         let code_hash = sha256_hex(&URL_SAFE_NO_PAD.decode(raw_code).unwrap());
         seed_auth_code(&state, &code_hash, &code_challenge).await;
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(
                 &format!(
                     "grant_type=authorization_code&code={raw_code}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json&code_verifier=wrong-verifier"
@@ -573,7 +574,7 @@ mod tests {
     #[tokio::test]
     async fn consumed_code_returns_invalid_grant() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
         let raw_code = "dGVzdGF1dGhvcml6YXRpb25jb2RlMTIzNDU2Nzg5MDEyMw";
@@ -585,11 +586,11 @@ mod tests {
         );
 
         // First use — should succeed.
-        let dpop1 = test_utils::token_proof(&state, &key);
+        let dpop1 = test_support::token_proof(&state, &key);
 
         // Build the app twice using different oneshot calls on the same state.
         // Clone state so the DB pool is shared across both calls.
-        let resp1 = app(state.clone())
+        let resp1 = test_app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop1))
             .await
             .unwrap();
@@ -604,7 +605,7 @@ mod tests {
             Some(&nonce2),
             Some(crate::time::unix_now_secs()),
         );
-        let resp2 = app(state2)
+        let resp2 = test_app(state2)
             .oneshot(post_token_with_dpop(&body, &dpop2))
             .await
             .unwrap();
@@ -618,15 +619,15 @@ mod tests {
     #[tokio::test]
     async fn client_id_mismatch_returns_invalid_grant() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
         let raw_code = "dGVzdGF1dGhvcml6YXRpb25jb2RlMTIzNDU2Nzg5MDEyMw";
         let code_hash = sha256_hex(&URL_SAFE_NO_PAD.decode(raw_code).unwrap());
         seed_auth_code(&state, &code_hash, &code_challenge).await;
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(
                 &format!(
                     "grant_type=authorization_code&code={raw_code}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&client_id=https%3A%2F%2Fwrong-client.example.com%2F&code_verifier={code_verifier}"
@@ -646,15 +647,15 @@ mod tests {
     #[tokio::test]
     async fn redirect_uri_mismatch_returns_invalid_grant() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
         let raw_code = "dGVzdGF1dGhvcml6YXRpb25jb2RlMTIzNDU2Nzg5MDEyMw";
         let code_hash = sha256_hex(&URL_SAFE_NO_PAD.decode(raw_code).unwrap());
         seed_auth_code(&state, &code_hash, &code_challenge).await;
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(
                 &format!(
                     "grant_type=authorization_code&code={raw_code}&redirect_uri=https%3A%2F%2Fwrong.example.com%2Fcallback&client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json&code_verifier={code_verifier}"
@@ -678,13 +679,13 @@ mod tests {
         // Verifies that the auth code is NOT deleted when client_id validation fails —
         // i.e., the validate-before-consume ordering is in effect.
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"; // 43-char S256 verifier
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let code = generate_token();
         seed_auth_code(&state, &code.hash, &challenge).await;
 
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
 
         // Attempt 1: wrong client_id — must fail.
         let bad_body = format!(
@@ -695,7 +696,7 @@ mod tests {
              &code_verifier={verifier}",
             raw_code = code.plaintext
         );
-        let bad_resp = app(state.clone())
+        let bad_resp = test_app(state.clone())
             .oneshot(post_token_with_dpop(&bad_body, &dpop))
             .await
             .unwrap();
@@ -704,7 +705,7 @@ mod tests {
         assert_eq!(bad_json["error"], "invalid_grant");
 
         // Attempt 2: correct client_id — must succeed (code was not consumed above).
-        let dpop2 = test_utils::token_proof(&state, &key);
+        let dpop2 = test_support::token_proof(&state, &key);
         let good_body = format!(
             "grant_type=authorization_code\
              &code={raw_code}\
@@ -713,7 +714,7 @@ mod tests {
              &code_verifier={verifier}",
             raw_code = code.plaintext
         );
-        let good_resp = app(state)
+        let good_resp = test_app(state)
             .oneshot(post_token_with_dpop(&good_body, &dpop2))
             .await
             .unwrap();
@@ -745,7 +746,7 @@ mod tests {
                  &code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
             ))
             .unwrap();
-        let resp = app(state).oneshot(req).await.unwrap();
+        let resp = test_app(state).oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let json = json_body(resp).await;
         assert_eq!(json["error"], "invalid_dpop_proof");
@@ -758,7 +759,7 @@ mod tests {
         // An auth code with code_challenge_method = "plain" must be rejected at the
         // token endpoint even if the PKCE check would otherwise pass.
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
 
         register_oauth_client(
             &state.db,
@@ -767,7 +768,7 @@ mod tests {
         )
         .await
         .unwrap();
-        test_utils::seed_handle(
+        test_support::seed_handle(
             &state.db,
             "authcode-plain.test.example.com",
             "did:plc:testaccount000000000000",
@@ -791,7 +792,7 @@ mod tests {
         .await
         .unwrap();
 
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
         let body = format!(
             "grant_type=authorization_code\
              &code={raw_code}\
@@ -801,7 +802,7 @@ mod tests {
             raw_code = code.plaintext
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();
@@ -820,13 +821,13 @@ mod tests {
         // RFC 7636 §4.1 requires 43–128 characters. A verifier shorter than 43
         // chars must be rejected before the PKCE hash comparison.
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let code = generate_token();
         seed_auth_code(&state, &code.hash, &challenge).await;
 
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
         let body = format!(
             "grant_type=authorization_code\
              &code={raw_code}\
@@ -836,7 +837,7 @@ mod tests {
             raw_code = code.plaintext
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();
@@ -853,13 +854,13 @@ mod tests {
     #[tokio::test]
     async fn authorization_code_success_response_has_cache_control_no_store() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let code = generate_token();
         seed_auth_code(&state, &code.hash, &challenge).await;
 
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
         let body = format!(
             "grant_type=authorization_code\
              &code={raw_code}\
@@ -869,7 +870,7 @@ mod tests {
             raw_code = code.plaintext
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();
@@ -883,103 +884,13 @@ mod tests {
         );
     }
 
-    // ── transition:generic end-to-end: exchange → DPoP-authenticated service auth ──
-
-    #[tokio::test]
-    async fn transition_generic_dpop_token_mints_service_auth_for_migration() {
-        // The wallet's outbound-migration source flow, end to end: an authorization
-        // code granted "atproto transition:generic" is exchanged for a DPoP-bound
-        // access token, which then mints service auth for a foreign destination
-        // (aud = the destination server DID, lxm = createAccount). transition:generic
-        // is app-password-equivalent and must permit this (allows_rpc), exactly as
-        // the reference PDS permits it — this is the first authenticated call the
-        // migration orchestrator makes against its source PDS.
-        let state = crate::routes::test_utils::state_with_master_key().await;
-        let key = test_utils::DpopProofKey::generate();
-        let did = "did:plc:migratesource00000000000";
-        crate::routes::test_utils::seed_account_with_repo(&state.db, did).await;
-
-        register_oauth_client(
-            &state.db,
-            "https://app.example.com/client-metadata.json",
-            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
-        )
-        .await
-        .unwrap();
-
-        let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
-        let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
-        let raw_code = "dGVzdGF1dGhvcml6YXRpb25jb2RlMTIzNDU2Nzg5MDEyMw";
-        let code_hash = sha256_hex(&URL_SAFE_NO_PAD.decode(raw_code).unwrap());
-        store_authorization_code(
-            &state.db,
-            &code_hash,
-            "https://app.example.com/client-metadata.json",
-            did,
-            &code_challenge,
-            "S256",
-            "https://app.example.com/callback",
-            "atproto transition:generic",
-            None,
-        )
-        .await
-        .unwrap();
-
-        let dpop = test_utils::token_proof(&state, &key);
-        let body = format!(
-            "grant_type=authorization_code\
-             &code={raw_code}\
-             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
-             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
-             &code_verifier={code_verifier}"
-        );
-        let resp = app(state.clone())
-            .oneshot(post_token_with_dpop(&body, &dpop))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "token exchange must succeed");
-        let json = json_body(resp).await;
-        assert_eq!(
-            json["scope"], "atproto transition:generic",
-            "the granted scope must survive the exchange intact"
-        );
-        let access_token = json["access_token"].as_str().unwrap().to_string();
-
-        // The orchestrator's first authenticated source call: mint service auth for
-        // the destination's createAccount. RFC 9449 request shape (DPoP scheme + proof).
-        let sa_path = "/xrpc/com.atproto.server.getServiceAuth";
-        let htu = format!("{}{sa_path}", state.config.public_url);
-        let proof = key.proof("GET", &htu, &access_token);
-        let resp = app(state)
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!(
-                        "{sa_path}?aud=did%3Aweb%3Adest.example.com&lxm=com.atproto.server.createAccount"
-                    ))
-                    .header("Authorization", format!("DPoP {access_token}"))
-                    .header("DPoP", proof)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "transition:generic must permit service auth for the migration flow"
-        );
-        let json = json_body(resp).await;
-        assert!(json["token"].is_string(), "must return a service-auth JWT");
-    }
-
     /// A code bound to a DPoP key at PAR time (RFC 9449 §10) is redeemable only by that
     /// key: an intercepted code presented with a different key is refused.
     #[tokio::test]
     async fn authorization_code_bound_to_another_dpop_key_is_rejected() {
         let state = test_state().await;
-        let flow_key = test_utils::DpopProofKey::generate();
-        let attacker_key = test_utils::DpopProofKey::generate();
+        let flow_key = test_support::DpopProofKey::generate();
+        let attacker_key = test_support::DpopProofKey::generate();
 
         let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
@@ -1003,8 +914,8 @@ mod tests {
         );
 
         // The attacker holds the code (and even the verifier) but not the flow's key.
-        let attacker_proof = test_utils::token_proof(&state, &attacker_key);
-        let resp = app(state.clone())
+        let attacker_proof = test_support::token_proof(&state, &attacker_key);
+        let resp = test_app(state.clone())
             .oneshot(post_token_with_dpop(&body, &attacker_proof))
             .await
             .unwrap();
@@ -1012,8 +923,8 @@ mod tests {
         assert_eq!(json_body(resp).await["error"], "invalid_grant");
 
         // The legitimate client, holding the bound key, still redeems it.
-        let flow_proof = test_utils::token_proof(&state, &flow_key);
-        let resp = app(state)
+        let flow_proof = test_support::token_proof(&state, &flow_key);
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &flow_proof))
             .await
             .unwrap();

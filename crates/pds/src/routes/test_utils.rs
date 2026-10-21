@@ -27,11 +27,6 @@ pub async fn state_with_err_dns() -> AppState {
     AppState::for_test(core::state_with_err_dns().await).await
 }
 
-/// `test_state()` with `mutate` applied to a clone of the config.
-pub async fn state_with(mutate: impl FnOnce(&mut common::Config)) -> AppState {
-    AppState::for_test(core::state_with(mutate).await).await
-}
-
 /// Minimal test state with admin_token set to `"test-admin-token"`.
 pub async fn test_state_with_admin_token() -> AppState {
     AppState::for_test(core::test_state_with_admin_token().await).await

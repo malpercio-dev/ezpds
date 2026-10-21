@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: AppState (DB + outbound HTTP client), form body (authorization request parameters)
+// Gathers: CoreState (DB + outbound HTTP client), form body (authorization request parameters)
 // Processes: client lookup (with ATProto URL-client_id metadata resolution on a cache miss)
 //            → redirect_uri validation → param validation → DB store
 // Returns:
@@ -25,13 +25,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::app::AppState;
 use crate::auth::token::generate_token;
 use crate::db::oauth::{
     cleanup_expired_par_requests, get_oauth_client, store_par_request, upsert_oauth_client,
     ClientMetadata, StoredPARParams,
 };
-use crate::routes::oauth_errors::{require, OAuthTokenError};
+use crate::oauth_errors::{require, OAuthTokenError};
+use custos_core::CoreState;
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -72,7 +72,7 @@ pub struct PARResponse {
 /// only asserts the client's own key rather than authorizing issuance. Requiring a nonce
 /// here is a known interop trap (bluesky-social/atproto#3078).
 async fn resolve_par_dpop_jkt(
-    state: &AppState,
+    state: &CoreState,
     headers: &HeaderMap,
     declared_jkt: Option<&str>,
 ) -> Result<Option<String>, Response> {
@@ -125,7 +125,7 @@ async fn resolve_par_dpop_jkt(
 /// large payloads (DPoP key assertions, PKCE challenges) out of query strings and
 /// browser history (RFC 9126).
 pub async fn post_par(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     headers: HeaderMap,
     Form(form): Form<PARForm>,
 ) -> Response {
@@ -340,8 +340,8 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state};
     use crate::db::oauth::register_oauth_client;
+    use crate::test_support::{test_app, test_state};
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";
@@ -381,7 +381,7 @@ mod tests {
             .join("&")
     }
 
-    async fn register_client(state: &crate::app::AppState) {
+    async fn register_client(state: &custos_core::CoreState) {
         register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
             .await
             .unwrap();
@@ -392,7 +392,7 @@ mod tests {
         let state = test_state().await;
         register_client(&state).await;
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -426,7 +426,7 @@ mod tests {
 
         // A non-URL client_id exercises the registered-only path: a URL-shaped one
         // would instead attempt live metadata resolution (covered by its own tests).
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -454,7 +454,7 @@ mod tests {
         let state = test_state().await;
         register_client(&state).await;
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -482,7 +482,7 @@ mod tests {
         let state = test_state().await;
         register_client(&state).await;
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -518,7 +518,7 @@ mod tests {
             let state = test_state().await;
             register_client(&state).await;
 
-            let response = app(state)
+            let response = test_app(state)
                 .oneshot(
                     Request::builder()
                         .method("POST")
@@ -551,7 +551,7 @@ mod tests {
         let state = test_state().await;
         register_client(&state).await;
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -571,8 +571,8 @@ mod tests {
         let state = test_state().await;
         register_client(&state).await;
 
-        async fn request_uri(state: crate::app::AppState) -> String {
-            let response = app(state)
+        async fn request_uri(state: custos_core::CoreState) -> String {
+            let response = test_app(state)
                 .oneshot(
                     Request::builder()
                         .method("POST")
@@ -629,10 +629,10 @@ mod tests {
     }
 
     async fn par_with_client_id(
-        state: crate::app::AppState,
+        state: custos_core::CoreState,
         client_id: &str,
     ) -> axum::response::Response {
-        app(state)
+        test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -822,7 +822,7 @@ mod tests {
         .await
         .unwrap();
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -861,7 +861,7 @@ mod tests {
         .await
         .unwrap();
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -902,7 +902,7 @@ mod tests {
         })
         .await;
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -929,7 +929,7 @@ mod tests {
         let state = test_state().await;
         register_client(&state).await;
 
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -967,7 +967,7 @@ mod tests {
         let state = test_state().await;
         register_client(&state).await;
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -997,7 +997,7 @@ mod tests {
         let state = test_state().await;
         register_client(&state).await;
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")

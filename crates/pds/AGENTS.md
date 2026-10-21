@@ -104,13 +104,9 @@ rev-comparison selection, the five-rung fallback ladder, the 10 MiB buffering ca
 
 ### `auth/`
 
-The auth modules only `pds` uses. The verification core (`extractors`, `jwt`, `dpop`, `guards`,
-`bearer`, scopes, permission sets, service auth, signing keys, password, validation) lives in
-[`custos_core::auth`](../custos-core/AGENTS.md) and is re-exported here. Submodules:
-
-| File | Pattern | Contents |
-|---|---|---|
-| `oauth_response_mode.rs` | Functional Core | `ResponseMode` (`query` \| `fragment`): parse the OAuth `response_mode` and pick the redirect separator; shared by four route surfaces — see module doc |
+`auth/mod.rs` only re-exports [`custos_core::auth`](../custos-core/AGENTS.md) (the verification
+core and the auth.md agent machinery), so `crate::auth::…` paths resolve to it. The OAuth server's
+response mode moved with the server to [`custos-oauth`](../custos-oauth/AGENTS.md).
 
 **Rule:** `auth/` has no knowledge of specific routes. Route handlers call into `auth/`; `auth/` never imports from `routes/`.
 
@@ -121,11 +117,11 @@ and async query functions; no business logic lives here.
 
 The pool, the migration log and runner, `DbError`, the unique-violation / retry helpers, and
 the cross-feature modules (`accounts`, `dids`, `handles`, `blobs`, `blocks`, `kek`,
-`admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`, plus `admin_devices`,
-`iroh_identity`, `jwt_secret`, `repo_keys`, `transfers`, which the auth guards and signing-key
-loaders read) live in
-[`crates/custos-db`](../custos-db/AGENTS.md); `db/mod.rs` re-exports them, so `db::accounts::…`
-paths resolve unchanged. The table below lists only what stays in `pds`.
+`admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`, `agent_auth`,
+`agent_audit`, plus `admin_devices`, `iroh_identity`, `jwt_secret`, `repo_keys`, `transfers`,
+which the auth guards and signing-key loaders read) live in
+[`crates/custos-db`](../custos-db/AGENTS.md); `db/mod.rs` re-exports those `pds` still reads, so
+`db::accounts::…` paths resolve unchanged. The table below lists only what stays in `pds`.
 
 | File | Contents |
 |---|---|
@@ -156,24 +152,13 @@ and return data; callers decide what to do with it.
 One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 **gather** (extract state/body/headers) → **process** (call `auth/` or `db/`) → **respond**.
 Rows below name the endpoint and the fact to know before opening the file; the module doc has
-the rest. The client-facing wire contract of the OAuth endpoints (`PAR → consent → token →
-authenticated call`) is pinned from the client's side by an out-of-crate suite,
-`tools/oauth-conformance/`; the interop failures it guards slipped past this crate's own Rust
-tests, so check it when changing an OAuth response shape — see its README.
+the rest. The OAuth endpoints live in [`custos-oauth`](../custos-oauth/AGENTS.md).
 
 | File | Endpoint |
 |---|---|
-| `oauth_authorize.rs` | `GET/POST /oauth/authorize` — consent page + code issuance; PAR-only (a GET without a PAR `request_uri`, or carrying a JAR `request` object, is refused), and the GET's wallet path owns the Phase C login-approval push dispatch |
-| `oauth_consent.rs` | `GET /oauth/authorize/{consent-request,status}`, `POST /oauth/authorize/{approve,complete}` — the wallet-confirmed (passwordless) consent half; approval is a device-key envelope verified against `identity::authority`, never the cached DID doc |
-| `oauth_par.rs` | `POST /oauth/par` — RFC 9126; enforces the atproto reverse-FQDN private-use-redirect rule (`auth/oauth_client_resolution.rs`) and stores `response_mode` |
-| `oauth_token/` | `POST /oauth/token` — one route module, per-grant submodules (`authorization_code`, `refresh`, `jwt_bearer`, `claim_polling`); grants incl. the RFC 7523 jwt-bearer exchange and the `urn:workos:agent-auth:grant-type:claim` poll — each submodule's doc carries its grant's rules |
-| `oauth_revoke.rs` | `POST /oauth/revoke` — RFC 7009; refresh tokens only, DPoP proof-of-possession, uniform 200-empty non-disclosure |
 | `atproto_did.rs` | `GET /.well-known/atproto-did` |
 | `did_json.rs` | `GET /.well-known/did.json` — the serving half of Custos-managed did:web hosting; module doc covers the opt-in gate and the config-synthesized server-DID exception |
 | `did_web_hosting.rs` | `POST /v1/did-web/hosting` + `POST /v1/did-web/document` — owner-authed did:web hosting opt-in and non-PLC document edit — see module doc |
-| `oauth_protected_resource.rs` | `GET /.well-known/oauth-protected-resource` |
-| `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |
-| `oauth_jwks.rs` | `GET /oauth/jwks` |
 | `agent_identity.rs` | `POST /agent/identity` — auth.md registration (Step 3), dispatching on `type` (`identity_assertion`/`service_auth`/`anonymous`); every flow operator-opt-in, scopes clamped to current config — see module doc |
 | `agent_claim.rs` | `POST /agent/identity/claim` + `/claim/confirm` — the auth.md claim ceremony (Step 4): public agent initiate, owner-authed confirm flips `active → claimed`; polling collection lives at the token endpoint. Confirm has two arms — bind the agent to the confirming account, or (with a `child` block, ownerless anonymous registrations only) mint it an account of its own via `agent_child_core.rs` and convert the registration in place — see module doc |
 | `agent_child.rs` | `POST /agent/child` (mint), `GET /agent/child` (list), `POST /agent/child/{assertion,revoke,delete}` — parent-owned sovereign child agents; the mint body lives in `agent_child_core.rs` so the claim ceremony can share it. Owner-guarded throughout: agent-derived callers are refused, a foreign child DID is a uniform 404, and its lifecycle verbs are the custody ladder (renew the capability / revoke it / schedule the hosting for deletion) — see module doc |
@@ -182,9 +167,6 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `notifications.rs` | `POST/DELETE /v1/notifications/register[/{deviceUuid}]`, `GET /v1/notifications/sender-keys` — the account push surface, keyed on `(did, device_uuid)`; the relay round trip stays out of the request path — see module doc |
 | `admin_notifications.rs` | `POST /v1/admin/notifications/register`, `GET /v1/admin/notifications/sender-keys` — the operator analog; registration is device-signed only (master token → 400) — see module doc |
 | `notification_views.rs` | shared handler-free support for both notification surfaces (routes may not import one another): enabled-check, registration validators, `sender-keys` shape |
-| `oauth_templates.rs` | pure HTML rendering helpers (Functional Core, no handler) |
-| `oauth_errors.rs` | shared `OAuthTokenError` — the RFC 6749 §5.2 responder used by `oauth_token/` and `oauth_revoke.rs` (Functional Core, no handler) |
-| `oauth_dpop.rs` | shared handler-free support for `oauth_token/`'s grant handlers and `oauth_revoke.rs` (routes may not import one another): `token_endpoint_dpop` — the RFC 9449 multiple-header check, proof extraction, and `validate_dpop_for_token_endpoint` dispatch against the caller's own URL |
 | `static_assets.rs` | `GET /static/*path` — embedded brand fonts and future web-UI assets |
 | `landing.rs` | `GET /` — the instance landing page (embedded `assets/landing.html`): config facts, a `_health` status chip, joiner/developer pointers |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` — password auth with app-password fallback — see module doc |
@@ -277,7 +259,6 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `request_account_delete.rs` | `POST /xrpc/com.atproto.server.requestAccountDelete` — mint + email the single-use 1-hour deletion token; full access required |
 | `delete_account.rs` | `POST /xrpc/com.atproto.server.deleteAccount` — body-credential deletion (password OR the `custos.proof` envelope) + email token; factor rules and no-oracle posture in the module doc |
 | `check_account_status.rs` | `GET /xrpc/com.atproto.server.checkAccountStatus` — activation/repo/blob completeness report for migration tooling |
-| `oauth_client_metadata.rs` | `GET /oauth/client-metadata.json` — the wallet's OAuth client metadata; fixed canonical client_id except under a loopback `public_url` — see module doc |
 | `provisioning_session.rs` | provisioning session creation (email + password → session token) |
 | `test_utils.rs` | test helpers (excluded from production builds): re-exports `custos_core::test_support`, shadows its state constructors with `AppState` versions, and adds the fixtures that need a `pds` type (failing email sender, `post_json_with_bearer` over `app()`) |
 
@@ -286,7 +267,7 @@ tests, so check it when changing an OAuth response shape — see its README.
 **Routes must not import from other routes.**
 If two routes share logic, that logic belongs in `auth/` (pure), `db/` (queries), `identity/`,
 a top-level module such as `account_genesis.rs`, or one of the handler-free support modules under
-`routes/` (`oauth_errors.rs`, `oauth_dpop.rs`, `preference_scope.rs`, `test_utils.rs`). A route importing from another route creates hidden
+`routes/` (`notification_views.rs`, `preference_scope.rs`, `test_utils.rs`). A route importing from another route creates hidden
 coupling and makes it impossible to reason about a handler in isolation. The rule bars route→route
 imports only — it is not a reason to copy a `db/`, `auth/`, or `test_utils` helper into a route.
 
@@ -319,7 +300,6 @@ Look here before writing a helper. Each row is the one home; copies elsewhere ar
 | the OAuth issuer / public URL without a trailing slash | `Config::issuer()` |
 | cache a freshly authored or resolved DID document | `db::dids::upsert_did_document` (UPDATE-only heal: `rewrite_did_document`) |
 | authenticate the account owner and map to XRPC errors | `auth::guards::authenticate_owner` |
-| the token-endpoint DPoP preamble | `routes::oauth_dpop::token_endpoint_dpop` |
 | insert a generated value, retrying on a UNIQUE collision | `db::insert_with_retry_on_collision` |
 | open an auth.md claim ceremony | `custos_core::auth::agent_assertion::start_claim_attempt` |
 | the account row + genesis repo + announce shared by account promotion | `account_genesis` |

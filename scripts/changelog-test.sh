@@ -38,9 +38,11 @@ EOF
 # real generator plus symlinks to the real sources it parses. Only Cargo.toml (the version it
 # stamps) is fixture-local, so the assertion below proves the stamp tracks the bumped version.
 cp "$repo_root/scripts/generate-docs-reference.mjs" scripts/
-mkdir -p crates/common/src crates/custos-spaces/src apps/identity-wallet/src/lib apps/admin-companion/src/lib
+mkdir -p crates/common/src crates/custos-oauth/src crates/custos-spaces/src apps/identity-wallet/src/lib apps/admin-companion/src/lib
 ln -s "$repo_root/crates/pds/src/app.rs" crates/pds/src/app.rs
 ln -s "$repo_root/crates/pds/src/capabilities.rs" crates/pds/src/capabilities.rs
+ln -s "$repo_root/crates/custos-oauth/src/router.rs" crates/custos-oauth/src/router.rs
+ln -s "$repo_root/crates/custos-oauth/src/capability.rs" crates/custos-oauth/src/capability.rs
 ln -s "$repo_root/crates/custos-spaces/src/router.rs" crates/custos-spaces/src/router.rs
 ln -s "$repo_root/crates/custos-spaces/src/capability.rs" crates/custos-spaces/src/capability.rs
 ln -s "$repo_root/crates/common/src/config.rs" crates/common/src/config.rs

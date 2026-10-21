@@ -14,7 +14,7 @@
 //!
 //! Polling faster than the advertised `interval`
 //! (`auth/agent_assertion.rs::POLL_INTERVAL_SECS`, 5s) yields `slow_down`, throttled by the
-//! in-memory `AppState.poll_tracker` keyed by the `claim_token`'s SHA-256 — never the raw
+//! in-memory `CoreState.poll_tracker` keyed by the `claim_token`'s SHA-256 — never the raw
 //! secret — and pruned in `cleanup_expired_state`.
 
 use std::time::{Duration, Instant};
@@ -28,14 +28,14 @@ use chrono::SecondsFormat;
 use serde::Serialize;
 
 use super::{cleanup_expired_state, issue_access_token, TokenRequestForm};
-use crate::app::AppState;
 use crate::auth::agent_assertion::{parse_sqlite_datetime, POLL_INTERVAL_SECS};
 use crate::auth::token::sha256_hex;
 use crate::db::agent_auth::{
     get_agent_identity, get_agent_identity_by_claim_token, latest_agent_claim_attempt_for_identity,
     AgentIdentityRow, AgentIdentityStatus,
 };
-use crate::routes::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
+use crate::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
+use custos_core::CoreState;
 
 /// Successful claim-polling response body. Like the jwt-bearer response it carries a plain Bearer
 /// access token and no refresh token, plus the post-claim `identity_assertion` the agent stores to
@@ -65,7 +65,7 @@ struct ClaimPollingResponse {
 ///   - `revoked` → `access_denied`
 ///
 /// Polling faster than the advertised `interval` ([`POLL_INTERVAL_SECS`]) → `slow_down`.
-pub(super) async fn handle_claim_polling(state: &AppState, form: TokenRequestForm) -> Response {
+pub(super) async fn handle_claim_polling(state: &CoreState, form: TokenRequestForm) -> Response {
     cleanup_expired_state(state).await;
 
     let claim_token = match require(form.claim_token.as_deref(), "claim_token") {
@@ -180,7 +180,7 @@ pub(super) async fn handle_claim_polling(state: &AppState, form: TokenRequestFor
 /// identity's granted scopes + `registration_id`, plus the stored post-claim assertion the agent
 /// re-exchanges (jwt-bearer) once the token expires. A `claimed` identity always has a bound DID and
 /// a stored assertion; a missing one is an internal inconsistency → `server_error`.
-async fn claim_success(state: &AppState, identity: &AgentIdentityRow) -> Response {
+async fn claim_success(state: &CoreState, identity: &AgentIdentityRow) -> Response {
     let (Some(did), Some(assertion)) = (
         identity.did.as_deref(),
         identity.identity_assertion.as_deref(),
@@ -256,7 +256,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::super::test_support::{json_body, mint_assertion, post_token};
-    use crate::app::{app, test_state, AppState};
+    use crate::test_support::{test_app, test_state};
+    use custos_core::CoreState;
 
     const CLAIM_GRANT: &str = "urn:workos:agent-auth:grant-type:claim";
 
@@ -315,7 +316,7 @@ mod tests {
             self
         }
 
-        async fn seed(self, state: &AppState) {
+        async fn seed(self, state: &CoreState) {
             if let Some(did) = self.did {
                 sqlx::query(
                     "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
@@ -352,7 +353,7 @@ mod tests {
     /// Seed a claim-ceremony attempt (`user_code`) for an identity. `expires_sql` is a SQLite
     /// datetime expression, so a test can seed a live (`+1 hour`) or lapsed (`-1 minute`) code.
     async fn seed_claim_attempt(
-        state: &AppState,
+        state: &CoreState,
         attempt_id: &str,
         identity_id: &str,
         user_code: &str,
@@ -373,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn claim_polling_missing_claim_token_returns_invalid_request() {
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(post_token(&format!("grant_type={CLAIM_GRANT}")))
             .await
             .unwrap();
@@ -383,7 +384,7 @@ mod tests {
 
     #[tokio::test]
     async fn claim_polling_unknown_claim_token_returns_invalid_grant() {
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(post_token(&format!(
                 "grant_type={CLAIM_GRANT}&claim_token=clm_nope"
             )))
@@ -453,7 +454,7 @@ mod tests {
                     .await;
             }
 
-            let resp = app(state)
+            let resp = test_app(state)
                 .oneshot(post_token(&format!(
                     "grant_type={CLAIM_GRANT}&claim_token={claim_token}"
                 )))
@@ -488,7 +489,7 @@ mod tests {
             .seed(&state)
             .await;
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token(&format!(
                 "grant_type={CLAIM_GRANT}&claim_token=clm_claimed"
             )))
@@ -534,11 +535,17 @@ mod tests {
         let body = format!("grant_type={CLAIM_GRANT}&claim_token=clm_fast");
 
         // First poll is accepted (still pending) and records the poll mark on the shared tracker.
-        let first = app(state.clone()).oneshot(post_token(&body)).await.unwrap();
+        let first = test_app(state.clone())
+            .oneshot(post_token(&body))
+            .await
+            .unwrap();
         assert_eq!(json_body(first).await["error"], "authorization_pending");
 
         // An immediate second poll (same claim_token, well within the interval) is throttled.
-        let second = app(state.clone()).oneshot(post_token(&body)).await.unwrap();
+        let second = test_app(state.clone())
+            .oneshot(post_token(&body))
+            .await
+            .unwrap();
         assert_eq!(second.status(), StatusCode::BAD_REQUEST);
         assert_eq!(json_body(second).await["error"], "slow_down");
     }

@@ -2,7 +2,7 @@
 //
 // Pure rendering functions for the OAuth consent UI. All inputs are plain data; all
 // outputs are plain strings or Axum response types that carry no side effects.
-// No I/O, no database, no AppState.
+// No I/O, no database, no CoreState.
 //
 // Visual system: "The Sealed Credential" (see DESIGN.md). Brand fonts are served by the
 // the PDS's own /static/fonts route (no third-party CDN — an auth page must not leak logins).
@@ -11,6 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, Redirect};
 
 use crate::auth::oauth_response_mode::ResponseMode;
+use common::html::html_escape;
 use custos_core::scope_display::{SpaceDisplay, SpaceDisplayMap};
 
 // ── Public rendering functions ────────────────────────────────────────────────
@@ -533,15 +534,6 @@ fn render_qr_svg(data: &str) -> Option<String> {
          <rect width=\"{dim}\" height=\"{dim}\" fill=\"#ffffff\"/>\
          <path d=\"{modules}\" fill=\"#1b1b1f\"/></svg>"
     ))
-}
-
-/// HTML-escape a string for safe embedding in HTML content or attribute values.
-pub(super) fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 // ── Static HTML fragments ─────────────────────────────────────────────────────

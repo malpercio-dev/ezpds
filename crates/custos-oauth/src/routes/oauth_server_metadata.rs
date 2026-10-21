@@ -10,7 +10,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::app::AppState;
+use custos_core::CoreState;
 
 /// RFC 8414 OAuth 2.0 Authorization Server Metadata response.
 ///
@@ -96,7 +96,7 @@ struct IdentityAssertionMetadata {
     assertion_types_supported: Vec<String>,
 }
 
-pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn oauth_server_metadata(State(state): State<CoreState>) -> impl IntoResponse {
     let base = state.config.issuer();
     Json(OAuthServerMetadata {
         issuer: base.to_string(),
@@ -163,11 +163,11 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state};
-    use crate::routes::test_utils;
+    use crate::test_support;
+    use crate::test_support::{test_app, test_state};
 
     async fn metadata_json() -> serde_json::Value {
-        let response = app(test_state().await)
+        let response = test_app(test_state().await)
             .oneshot(
                 Request::builder()
                     .uri("/.well-known/oauth-authorization-server")
@@ -246,9 +246,10 @@ mod tests {
     #[tokio::test]
     async fn trailing_slash_in_public_url_does_not_double_slash_endpoints() {
         let state =
-            test_utils::state_with(|c| c.public_url = "https://pds.example.com/".to_string()).await;
+            test_support::state_with(|c| c.public_url = "https://pds.example.com/".to_string())
+                .await;
 
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .uri("/.well-known/oauth-authorization-server")

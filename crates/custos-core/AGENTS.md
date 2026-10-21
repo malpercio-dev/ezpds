@@ -16,7 +16,7 @@ common · crypto · repo-engine
             ▼
         custos-core      this crate
             ▼
-  feature crates         custos-spaces (more to come)
+  feature crates         custos-oauth, custos-spaces (more to come)
             ▼
           pds            the binary: composes every feature, owns what is not yet extracted
 ```
@@ -35,7 +35,7 @@ src/
   lib.rs           — module list; re-exports `CoreState`, `FailedLoginStore`, `apply_shared_layers`
   state.rs         — `CoreState`: every field a core module reads or more than one feature reads. A feature's own fields live in its state, which embeds this one (`pds`'s `AppState`) and implements `FromRef<_> for CoreState`
   layers.rs        — `apply_shared_layers(router, &CoreState)`: Trace → HTTP metrics → rate limiting, generic over the router's state; each route group applies it before its own CORS layer
-  auth/            — the verification core plus the auth.md agent machinery the token endpoint and the agents surface share (table below); `pds` keeps the OAuth server's response mode in its own `auth/`; the Spaces seam is `custos-spaces`'
+  auth/            — the verification core plus the auth.md agent machinery the token endpoint and the agents surface share (table below); the OAuth server's response mode is `custos-oauth`'s; the Spaces seam is `custos-spaces`'
   test_support.rs  — `test-support` feature only: the test state constructor and shared fixtures (see "Tests from other crates")
   capability.rs    — the `Capability` type (`Clone, Copy`): wire name, operator controls, summary, `enabled` predicate. `pds` owns the `CAPABILITIES` table and its order; a feature crate exports its entry as `CAPABILITY`
   blob_store.rs    — blob storage backend: durable filesystem I/O, CID computation, MIME detection; blobs at `{data_dir}/blobs/{cid[0:2]}/{cid}` — see module doc

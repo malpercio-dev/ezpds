@@ -8,8 +8,8 @@
 
 use axum::http::HeaderMap;
 
-use crate::app::AppState;
 use crate::auth::{validate_dpop_for_token_endpoint, DpopTokenEndpointError};
+use custos_core::CoreState;
 
 use super::oauth_errors::OAuthTokenError;
 
@@ -17,7 +17,7 @@ use super::oauth_errors::OAuthTokenError;
 /// endpoint (`/oauth/token` or `/oauth/revoke`), bound into the proof's `htu` check. Returns the
 /// proof key's JWK thumbprint (`jkt`) on success.
 pub(super) fn token_endpoint_dpop(
-    state: &AppState,
+    state: &CoreState,
     headers: &HeaderMap,
     url: &str,
 ) -> Result<String, OAuthTokenError> {

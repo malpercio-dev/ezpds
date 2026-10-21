@@ -2,7 +2,7 @@
 //
 // The shared OAuth 2.0 error response type for the token-issuing and token-revocation
 // endpoints. Pure: given an error code, description, and optional DPoP nonce it builds an
-// Axum response; no I/O, no database, no AppState. Lives here (rather than in either
+// Axum response; no I/O, no database, no CoreState. Lives here (rather than in either
 // handler) so `oauth_token/`, `oauth_revoke.rs`, and `oauth_par.rs` share one responder
 // without a route→route import — the same pattern as `oauth_templates.rs`.
 

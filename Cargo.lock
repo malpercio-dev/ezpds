@@ -1544,6 +1544,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "custos-oauth"
+version = "0.16.2"
+dependencies = [
+ "axum",
+ "base64 0.21.7",
+ "chrono",
+ "common",
+ "crypto",
+ "custos-core",
+ "custos-db",
+ "jsonwebtoken",
+ "p256",
+ "qrcodegen",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "custos-spaces"
 version = "0.16.2"
 dependencies = [
@@ -5278,6 +5308,7 @@ dependencies = [
  "crypto",
  "custos-core",
  "custos-db",
+ "custos-oauth",
  "custos-spaces",
  "data-encoding",
  "futures-util",
