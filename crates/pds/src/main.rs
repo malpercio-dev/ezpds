@@ -674,8 +674,13 @@ async fn run() -> anyhow::Result<()> {
     if let Some(mirror) = blob_mirror.clone() {
         let mirror_interval =
             std::time::Duration::from_secs(state.config.blob_mirror.sync_interval_secs);
-        let _blob_mirror_sweep =
-            blob_mirror::spawn_blob_mirror(state.clone(), mirror, mirror_interval);
+        let _blob_mirror_sweep = sweep::spawn(
+            blob_mirror::BlobMirrorSweep {
+                interval: mirror_interval,
+                mirror,
+            },
+            state.clone(),
+        );
         tracing::info!(
             interval_secs = state.config.blob_mirror.sync_interval_secs,
             bucket = state.config.blob_mirror.bucket.as_deref().unwrap_or(""),
@@ -690,7 +695,13 @@ async fn run() -> anyhow::Result<()> {
     // verified copy. Like the GC tasks it is best-effort and runs for the life of the process,
     // so the handle is dropped on shutdown rather than joined.
     let scrub_interval = std::time::Duration::from_secs(state.config.blob_scrub.interval_secs);
-    let _blob_scrub = blob_scrub::spawn_blob_scrub(state.clone(), blob_mirror, scrub_interval);
+    let _blob_scrub = sweep::spawn(
+        blob_scrub::BlobScrub {
+            interval: scrub_interval,
+            mirror: blob_mirror,
+        },
+        state.clone(),
+    );
     tracing::info!(
         interval_secs = state.config.blob_scrub.interval_secs,
         auto_heal = state.config.blob_scrub.auto_heal,

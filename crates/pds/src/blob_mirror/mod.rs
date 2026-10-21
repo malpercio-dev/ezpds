@@ -40,11 +40,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::SqlitePool;
-use tokio::task::JoinHandle;
 
 use crate::app::AppState;
 use crate::blob_store;
 use crate::db::blobs::{self, PhysicalBlob};
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 
 /// A configured mirror target: the bucket client plus the object-key namespace it owns.
 pub struct BlobMirror {
@@ -120,6 +121,19 @@ pub struct MirrorStats {
     /// Blobs skipped due to an error (verification failure, unreadable file, failed
     /// transfer). Logged, never fatal to the pass.
     pub errors: u64,
+    /// The `blobs` rows or the bucket listing could not be read, so the pass did not complete
+    /// (and records nothing).
+    pub failed: bool,
+}
+
+impl MirrorStats {
+    /// The scheduler's view: `swept` is the bucket objects synced (uploads + deletes).
+    fn pass(self) -> anyhow::Result<Pass> {
+        if self.failed {
+            anyhow::bail!("blob mirror could not enumerate rows or bucket keys");
+        }
+        Ok(Pass::swept(self.uploaded + self.deleted))
+    }
 }
 
 /// Tally of one restore-on-boot pass.
@@ -134,26 +148,24 @@ pub struct RestoreStats {
     pub errors: u64,
 }
 
-/// Spawn the periodic blob-mirror sweep.
-///
-/// The first interval tick is consumed without running a pass (restore-on-boot has just
-/// reconciled the volume, and startup shouldn't pay for a bucket listing); the first pass
-/// runs one `interval` after boot. The task loops for the life of the process and is dropped
-/// on shutdown.
-pub fn spawn_blob_mirror(
-    state: AppState,
-    mirror: Arc<BlobMirror>,
-    interval: Duration,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        // `interval`'s first tick fires immediately — skip it so the sweep doesn't run mid-boot.
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_blob_mirror(&state, &mirror).await;
-        }
-    })
+/// Upload blobs the bucket is missing and delete bucket objects whose row is gone, once per
+/// `interval`. Restore-on-boot has just reconciled the volume, so the first pass runs one
+/// `interval` after boot.
+pub struct BlobMirrorSweep {
+    pub interval: Duration,
+    pub mirror: Arc<BlobMirror>,
+}
+
+impl Sweep for BlobMirrorSweep {
+    const NAME: &'static str = names::BLOB_MIRROR;
+
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        run_blob_mirror(state, &self.mirror).await.pass()
+    }
 }
 
 /// Run one mirror pass: upload every verified blob the bucket is missing, then delete bucket
@@ -170,6 +182,7 @@ pub async fn run_blob_mirror(state: &AppState, mirror: &BlobMirror) -> MirrorSta
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!(error = %e, "blob mirror: failed to list blob rows; skipping pass");
+            stats.failed = true;
             return stats;
         }
     };
@@ -183,6 +196,7 @@ pub async fn run_blob_mirror(state: &AppState, mirror: &BlobMirror) -> MirrorSta
             .collect(),
         Err(e) => {
             tracing::error!(error = %e, "blob mirror: failed to list bucket keys; skipping pass");
+            stats.failed = true;
             return stats;
         }
     };
@@ -255,10 +269,6 @@ pub async fn run_blob_mirror(state: &AppState, mirror: &BlobMirror) -> MirrorSta
         .metrics
         .blob_mirror_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
-    state.sweeps.record(
-        crate::sweep_status::names::BLOB_MIRROR,
-        crate::sweep_status::SweepRun::now(stats.uploaded + stats.deleted),
-    );
 
     stats
 }
@@ -398,28 +408,12 @@ mod tests {
             rendered.contains("blob_mirror_last_run_timestamp"),
             "missing blob_mirror_last_run_timestamp in:\n{rendered}"
         );
-        assert_eq!(
-            state
-                .sweeps
-                .snapshot()
-                .get(crate::sweep_status::names::BLOB_MIRROR)
-                .unwrap()
-                .swept,
-            2
-        );
+        assert_eq!(stats.pass().unwrap().swept, 2);
 
         // A second pass finds the bucket in sync and moves nothing.
         let stats = run_blob_mirror(&state, &mirror).await;
         assert_eq!(stats, MirrorStats::default());
-        assert_eq!(
-            state
-                .sweeps
-                .snapshot()
-                .get(crate::sweep_status::names::BLOB_MIRROR)
-                .unwrap()
-                .swept,
-            0
-        );
+        assert_eq!(stats.pass().unwrap().swept, 0);
     }
 
     /// Five blobs against the fake's two-key listing pages: a sync judgment spanning

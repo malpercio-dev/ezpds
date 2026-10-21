@@ -27,12 +27,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use crate::app::AppState;
 use crate::blob_mirror::BlobMirror;
 use crate::blob_store;
 use crate::db::blobs::{self, PhysicalBlob};
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 
 /// Tally of what one scrub pass did, for logging and tests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -51,9 +51,19 @@ pub struct ScrubStats {
     /// Checks skipped due to an I/O error unrelated to integrity (unreadable file, failed
     /// heal transfer). Logged, never fatal to the pass.
     pub errors: u64,
+    /// The `blobs` table could not be listed, so the pass did not complete (and records nothing).
+    pub failed: bool,
 }
 
 impl ScrubStats {
+    /// The scheduler's view: `swept` is the flagged count, the operator alarm.
+    fn pass(self) -> anyhow::Result<Pass> {
+        if self.failed {
+            anyhow::bail!("blob scrub could not list blob rows");
+        }
+        Ok(Pass::swept(self.flagged()))
+    }
+
     /// Unhealed integrity problems this pass flagged — the operator alarm count surfaced via
     /// `blob_scrub_flagged_total` and the readable sweep status.
     pub fn flagged(&self) -> u64 {
@@ -61,25 +71,23 @@ impl ScrubStats {
     }
 }
 
-/// Spawn the periodic blob-integrity scrub sweep.
-///
-/// The first interval tick is consumed without running a pass (a full re-hash of every stored
-/// blob is I/O-heavy, so it shouldn't run mid-boot); the first pass runs one `interval` after
-/// boot. The task loops for the life of the process and is dropped on shutdown.
-pub fn spawn_blob_scrub(
-    state: AppState,
-    mirror: Option<Arc<BlobMirror>>,
-    interval: Duration,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        // `interval`'s first tick fires immediately — skip it so the sweep doesn't run mid-boot.
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_blob_scrub(&state, mirror.as_deref()).await;
-        }
-    })
+/// Re-hash every stored blob and walk the blob directory for orphans once per `interval`. A
+/// full re-hash is I/O-heavy, so the first pass runs one `interval` after boot, not mid-boot.
+pub struct BlobScrub {
+    pub interval: Duration,
+    pub mirror: Option<Arc<BlobMirror>>,
+}
+
+impl Sweep for BlobScrub {
+    const NAME: &'static str = names::BLOB_SCRUB;
+
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        run_blob_scrub(state, self.mirror.as_deref()).await.pass()
+    }
 }
 
 /// The outcome of checking one physical blob's file against its row.
@@ -103,6 +111,7 @@ pub async fn run_blob_scrub(state: &AppState, mirror: Option<&BlobMirror>) -> Sc
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!(error = %e, "blob scrub: failed to list blob rows; skipping pass");
+            stats.failed = true;
             return stats;
         }
     };
@@ -198,10 +207,6 @@ pub async fn run_blob_scrub(state: &AppState, mirror: Option<&BlobMirror>) -> Sc
         .metrics
         .blob_scrub_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
-    state.sweeps.record(
-        crate::sweep_status::names::BLOB_SCRUB,
-        crate::sweep_status::SweepRun::now(flagged),
-    );
 
     stats
 }
@@ -343,15 +348,7 @@ mod tests {
         assert!(rendered.contains("blob_scrub_flagged_total"));
         assert!(rendered.contains("blob_scrub_healed_total"));
         assert!(rendered.contains("blob_scrub_last_run_timestamp"));
-        assert_eq!(
-            state
-                .sweeps
-                .snapshot()
-                .get(crate::sweep_status::names::BLOB_SCRUB)
-                .unwrap()
-                .swept,
-            0
-        );
+        assert_eq!(stats.pass().unwrap().swept, 0);
     }
 
     #[tokio::test]
@@ -367,15 +364,7 @@ mod tests {
         assert_eq!(stats.missing_files, 0);
         assert_eq!(stats.healed, 0);
         assert_eq!(stats.flagged(), 1);
-        assert_eq!(
-            state
-                .sweeps
-                .snapshot()
-                .get(crate::sweep_status::names::BLOB_SCRUB)
-                .unwrap()
-                .swept,
-            1
-        );
+        assert_eq!(stats.pass().unwrap().swept, 1);
 
         // Never auto-heals with no mirror: the corrupt bytes are left exactly as they were.
         let on_disk = tokio::fs::read(local_path(&state, &cid)).await.unwrap();
@@ -593,12 +582,14 @@ mod tests {
             .unwrap();
 
         let stats = run_blob_scrub(&state, None).await;
-        assert_eq!(stats, ScrubStats::default());
-        assert!(state
-            .sweeps
-            .snapshot()
-            .get(crate::sweep_status::names::BLOB_SCRUB)
-            .is_none());
+        assert_eq!(
+            stats,
+            ScrubStats {
+                failed: true,
+                ..Default::default()
+            }
+        );
+        assert!(stats.pass().is_err());
         let rendered = state.metrics.render().unwrap().unwrap();
         assert!(!rendered.contains("blob_scrub_last_run_timestamp"));
     }
