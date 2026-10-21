@@ -255,11 +255,10 @@ pub async fn run_blob_mirror(state: &AppState, mirror: &BlobMirror) -> MirrorSta
         .metrics
         .blob_mirror_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
-    state
-        .sweeps
-        .record_blob_mirror(crate::sweep_status::SweepRun::now(
-            stats.uploaded + stats.deleted,
-        ));
+    state.sweeps.record(
+        crate::sweep_status::names::BLOB_MIRROR,
+        crate::sweep_status::SweepRun::now(stats.uploaded + stats.deleted),
+    );
 
     stats
 }
@@ -399,12 +398,28 @@ mod tests {
             rendered.contains("blob_mirror_last_run_timestamp"),
             "missing blob_mirror_last_run_timestamp in:\n{rendered}"
         );
-        assert_eq!(state.sweeps.snapshot().blob_mirror.unwrap().swept, 2);
+        assert_eq!(
+            state
+                .sweeps
+                .snapshot()
+                .get(crate::sweep_status::names::BLOB_MIRROR)
+                .unwrap()
+                .swept,
+            2
+        );
 
         // A second pass finds the bucket in sync and moves nothing.
         let stats = run_blob_mirror(&state, &mirror).await;
         assert_eq!(stats, MirrorStats::default());
-        assert_eq!(state.sweeps.snapshot().blob_mirror.unwrap().swept, 0);
+        assert_eq!(
+            state
+                .sweeps
+                .snapshot()
+                .get(crate::sweep_status::names::BLOB_MIRROR)
+                .unwrap()
+                .swept,
+            0
+        );
     }
 
     /// Five blobs against the fake's two-key listing pages: a sync judgment spanning

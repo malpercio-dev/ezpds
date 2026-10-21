@@ -5,8 +5,8 @@
 //! The OTel gauges in `metrics.rs` are write-only from inside the process — only a
 //! Prometheus scrape observes them. The operator health endpoint
 //! (`GET /v1/admin/health`) reports the same "is the sweep alive" signal as JSON, so each
-//! sweep records its completion here, in the same place it writes its gauges, and the
-//! route reads it back. Unlike the gauges this works with `[telemetry] metrics_enabled`
+//! sweep pass records its completion here (the `sweep` scheduler does it for every `Sweep`),
+//! and the route reads it back. Unlike the gauges this works with `[telemetry] metrics_enabled`
 //! off.
 //!
 //! The recording sites share the sweeps' failure posture: a failed pass records nothing,
@@ -18,6 +18,7 @@
 //! count it could not do. Blob GC is the motivating case — it excludes accounts whose
 //! reconcile failed rather than deleting blobs it could not prove were unreferenced.
 
+use std::collections::HashMap;
 use std::sync::RwLock;
 
 /// One completed sweep pass.
@@ -54,88 +55,60 @@ impl SweepRun {
     }
 }
 
-/// Last completed pass per periodic sweep. Every field is `None` until that sweep's first
-/// completed pass after boot (each first pass runs one full interval after startup).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SweepSnapshot {
-    pub blob_gc: Option<SweepRun>,
-    /// The blob mirror is a replicator rather than a reclaimer, but shares the sweep
-    /// posture: `swept` counts bucket objects synced (uploads + deletes), and a stale
-    /// pass is the alarm.
-    pub blob_mirror: Option<SweepRun>,
-    /// The blob scrub is a verifier rather than a reclaimer: `swept` counts integrity
-    /// problems flagged this pass (missing files, hash/size mismatches, orphan files) that
-    /// were not auto-healed — the operator alarm count. A stale pass is still the alarm.
-    pub blob_scrub: Option<SweepRun>,
-    pub firehose_gc: Option<SweepRun>,
-    pub account_reaper: Option<SweepRun>,
-    pub agent_claim_sweep: Option<SweepRun>,
-    pub admin_nonce_sweep: Option<SweepRun>,
-    pub space_jti_sweep: Option<SweepRun>,
-    pub space_oplog_sweep: Option<SweepRun>,
-    /// The labeler watcher is a poller rather than a reclaimer, but shares the sweep
-    /// posture: `swept` counts label rows changed, and a stale pass is the alarm.
-    pub labeler_watch: Option<SweepRun>,
+/// Slot keys for [`SweepStatus`]; each is the `Sweep::NAME` of the sweep that records it and
+/// the lookup `GET /v1/admin/health` makes.
+pub mod names {
+    pub const BLOB_GC: &str = "blob_gc";
+    pub const BLOB_MIRROR: &str = "blob_mirror";
+    pub const BLOB_SCRUB: &str = "blob_scrub";
+    pub const FIREHOSE_GC: &str = "firehose_gc";
+    pub const ACCOUNT_REAPER: &str = "account_reaper";
+    pub const AGENT_CLAIM_SWEEP: &str = "agent_claim_sweep";
+    pub const ADMIN_NONCE_SWEEP: &str = "admin_nonce_sweep";
+    pub const SOVEREIGN_SESSION_NONCE_SWEEP: &str = "sovereign_session_nonce_sweep";
+    pub const SPACE_JTI_SWEEP: &str = "space_jti_sweep";
+    pub const SPACE_OPLOG_SWEEP: &str = "space_oplog_sweep";
+    pub const LABELER_WATCH: &str = "labeler_watch";
+}
+
+/// Last completed pass per periodic sweep, by [`names`] key. A sweep has no entry until its
+/// first completed pass after boot.
+///
+/// The blob mirror is a replicator and the labeler watcher a poller rather than reclaimers,
+/// but they share the posture: `swept` counts what they acted on, and a stale pass is the
+/// alarm. The blob scrub is a verifier: its `swept` counts integrity problems flagged and not
+/// auto-healed.
+#[derive(Debug, Default, Clone)]
+pub struct SweepSnapshot(HashMap<&'static str, SweepRun>);
+
+impl SweepSnapshot {
+    pub fn get(&self, name: &str) -> Option<SweepRun> {
+        self.0.get(name).copied()
+    }
 }
 
 /// Shared readable sweep state; one lives in `AppState` for the process lifetime.
 #[derive(Debug, Default)]
 pub struct SweepStatus {
-    inner: RwLock<SweepSnapshot>,
+    inner: RwLock<HashMap<&'static str, SweepRun>>,
 }
 
 impl SweepStatus {
-    pub fn record_blob_gc(&self, run: SweepRun) {
-        self.write().blob_gc = Some(run);
-    }
-
-    pub fn record_blob_mirror(&self, run: SweepRun) {
-        self.write().blob_mirror = Some(run);
-    }
-
-    pub fn record_blob_scrub(&self, run: SweepRun) {
-        self.write().blob_scrub = Some(run);
-    }
-
-    pub fn record_firehose_gc(&self, run: SweepRun) {
-        self.write().firehose_gc = Some(run);
-    }
-
-    pub fn record_account_reaper(&self, run: SweepRun) {
-        self.write().account_reaper = Some(run);
-    }
-
-    pub fn record_agent_claim_sweep(&self, run: SweepRun) {
-        self.write().agent_claim_sweep = Some(run);
-    }
-
-    pub fn record_admin_nonce_sweep(&self, run: SweepRun) {
-        self.write().admin_nonce_sweep = Some(run);
-    }
-
-    pub fn record_space_jti_sweep(&self, run: SweepRun) {
-        self.write().space_jti_sweep = Some(run);
-    }
-
-    pub fn record_space_oplog_sweep(&self, run: SweepRun) {
-        self.write().space_oplog_sweep = Some(run);
-    }
-
-    pub fn record_labeler_watch(&self, run: SweepRun) {
-        self.write().labeler_watch = Some(run);
+    pub fn record(&self, name: &'static str, run: SweepRun) {
+        self.write().insert(name, run);
     }
 
     pub fn snapshot(&self) -> SweepSnapshot {
-        // A poisoned lock means a writer panicked mid-assignment of a Copy value — the
-        // data cannot be torn, so read through the poison rather than propagating a panic
-        // into the health endpoint.
+        // A poisoned lock means a writer panicked mid-insert of a Copy value — the data
+        // cannot be torn, so read through the poison rather than propagating a panic into the
+        // health endpoint.
         match self.inner.read() {
-            Ok(guard) => *guard,
-            Err(poisoned) => *poisoned.into_inner(),
+            Ok(guard) => SweepSnapshot(guard.clone()),
+            Err(poisoned) => SweepSnapshot(poisoned.into_inner().clone()),
         }
     }
 
-    fn write(&self) -> std::sync::RwLockWriteGuard<'_, SweepSnapshot> {
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<&'static str, SweepRun>> {
         match self.inner.write() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -151,45 +124,57 @@ mod tests {
     fn snapshot_starts_empty_and_reflects_recorded_runs() {
         let status = SweepStatus::default();
         let before = status.snapshot();
-        assert!(before.blob_gc.is_none());
-        assert!(before.firehose_gc.is_none());
-        assert!(before.account_reaper.is_none());
-        assert!(before.agent_claim_sweep.is_none());
-        assert!(before.admin_nonce_sweep.is_none());
+        assert!(before.get(names::BLOB_GC).is_none());
+        assert!(before.get(names::FIREHOSE_GC).is_none());
+        assert!(before.get(names::ACCOUNT_REAPER).is_none());
+        assert!(before.get(names::AGENT_CLAIM_SWEEP).is_none());
+        assert!(before.get(names::ADMIN_NONCE_SWEEP).is_none());
 
-        status.record_blob_gc(SweepRun {
-            completed_at: 1000,
-            swept: 3,
-            errors: 0,
-        });
-        status.record_firehose_gc(SweepRun {
-            completed_at: 2000,
-            swept: 0,
-            errors: 0,
-        });
+        status.record(
+            names::BLOB_GC,
+            SweepRun {
+                completed_at: 1000,
+                swept: 3,
+                errors: 0,
+            },
+        );
+        status.record(
+            names::FIREHOSE_GC,
+            SweepRun {
+                completed_at: 2000,
+                swept: 0,
+                errors: 0,
+            },
+        );
 
         let after = status.snapshot();
-        assert_eq!(after.blob_gc.unwrap().completed_at, 1000);
-        assert_eq!(after.blob_gc.unwrap().swept, 3);
-        assert_eq!(after.firehose_gc.unwrap().swept, 0);
-        assert!(after.account_reaper.is_none());
+        assert_eq!(after.get(names::BLOB_GC).unwrap().completed_at, 1000);
+        assert_eq!(after.get(names::BLOB_GC).unwrap().swept, 3);
+        assert_eq!(after.get(names::FIREHOSE_GC).unwrap().swept, 0);
+        assert!(after.get(names::ACCOUNT_REAPER).is_none());
     }
 
     #[test]
     fn repeat_records_overwrite() {
         let status = SweepStatus::default();
-        status.record_account_reaper(SweepRun {
-            completed_at: 10,
-            swept: 1,
-            errors: 0,
-        });
-        status.record_account_reaper(SweepRun {
-            completed_at: 20,
-            swept: 0,
-            errors: 0,
-        });
+        status.record(
+            names::ACCOUNT_REAPER,
+            SweepRun {
+                completed_at: 10,
+                swept: 1,
+                errors: 0,
+            },
+        );
+        status.record(
+            names::ACCOUNT_REAPER,
+            SweepRun {
+                completed_at: 20,
+                swept: 0,
+                errors: 0,
+            },
+        );
         let snap = status.snapshot();
-        assert_eq!(snap.account_reaper.unwrap().completed_at, 20);
-        assert_eq!(snap.account_reaper.unwrap().swept, 0);
+        assert_eq!(snap.get(names::ACCOUNT_REAPER).unwrap().completed_at, 20);
+        assert_eq!(snap.get(names::ACCOUNT_REAPER).unwrap().swept, 0);
     }
 }

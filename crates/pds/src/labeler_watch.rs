@@ -163,9 +163,10 @@ pub async fn run_labeler_watch(state: &AppState) -> LabelerWatchStats {
         .metrics
         .labeler_watch_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
-    state
-        .sweeps
-        .record_labeler_watch(crate::sweep_status::SweepRun::now(changes));
+    state.sweeps.record(
+        crate::sweep_status::names::LABELER_WATCH,
+        crate::sweep_status::SweepRun::now(changes),
+    );
 
     stats
 }
@@ -411,7 +412,15 @@ mod tests {
             )]
         );
         // The pass records its instruments and readable sweep state.
-        assert_eq!(state.sweeps.snapshot().labeler_watch.unwrap().swept, 1);
+        assert_eq!(
+            state
+                .sweeps
+                .snapshot()
+                .get(crate::sweep_status::names::LABELER_WATCH)
+                .unwrap()
+                .swept,
+            1
+        );
         drop(first);
 
         // Second poll: the labeler has retracted alice's label.

@@ -198,9 +198,10 @@ pub async fn run_blob_scrub(state: &AppState, mirror: Option<&BlobMirror>) -> Sc
         .metrics
         .blob_scrub_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
-    state
-        .sweeps
-        .record_blob_scrub(crate::sweep_status::SweepRun::now(flagged));
+    state.sweeps.record(
+        crate::sweep_status::names::BLOB_SCRUB,
+        crate::sweep_status::SweepRun::now(flagged),
+    );
 
     stats
 }
@@ -342,7 +343,15 @@ mod tests {
         assert!(rendered.contains("blob_scrub_flagged_total"));
         assert!(rendered.contains("blob_scrub_healed_total"));
         assert!(rendered.contains("blob_scrub_last_run_timestamp"));
-        assert_eq!(state.sweeps.snapshot().blob_scrub.unwrap().swept, 0);
+        assert_eq!(
+            state
+                .sweeps
+                .snapshot()
+                .get(crate::sweep_status::names::BLOB_SCRUB)
+                .unwrap()
+                .swept,
+            0
+        );
     }
 
     #[tokio::test]
@@ -358,7 +367,15 @@ mod tests {
         assert_eq!(stats.missing_files, 0);
         assert_eq!(stats.healed, 0);
         assert_eq!(stats.flagged(), 1);
-        assert_eq!(state.sweeps.snapshot().blob_scrub.unwrap().swept, 1);
+        assert_eq!(
+            state
+                .sweeps
+                .snapshot()
+                .get(crate::sweep_status::names::BLOB_SCRUB)
+                .unwrap()
+                .swept,
+            1
+        );
 
         // Never auto-heals with no mirror: the corrupt bytes are left exactly as they were.
         let on_disk = tokio::fs::read(local_path(&state, &cid)).await.unwrap();
@@ -577,7 +594,11 @@ mod tests {
 
         let stats = run_blob_scrub(&state, None).await;
         assert_eq!(stats, ScrubStats::default());
-        assert!(state.sweeps.snapshot().blob_scrub.is_none());
+        assert!(state
+            .sweeps
+            .snapshot()
+            .get(crate::sweep_status::names::BLOB_SCRUB)
+            .is_none());
         let rendered = state.metrics.render().unwrap().unwrap();
         assert!(!rendered.contains("blob_scrub_last_run_timestamp"));
     }

@@ -213,12 +213,10 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
         .metrics
         .blob_gc_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
-    state
-        .sweeps
-        .record_blob_gc(crate::sweep_status::SweepRun::now_with_errors(
-            stats.deleted,
-            stats.errors,
-        ));
+    state.sweeps.record(
+        crate::sweep_status::names::BLOB_GC,
+        crate::sweep_status::SweepRun::now_with_errors(stats.deleted, stats.errors),
+    );
 
     stats
 }
@@ -615,7 +613,15 @@ mod tests {
             "missing blob_gc_last_run_timestamp in:\n{rendered}"
         );
         // The readable snapshot records the same completed pass with its literal count.
-        assert_eq!(state.sweeps.snapshot().blob_gc.unwrap().swept, 1);
+        assert_eq!(
+            state
+                .sweeps
+                .snapshot()
+                .get(crate::sweep_status::names::BLOB_GC)
+                .unwrap()
+                .swept,
+            1
+        );
 
         // Referenced blob: pinned permanent, file intact.
         assert!(blobs::get_blob_by_cid(&state.db, &referenced)
