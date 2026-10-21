@@ -121,7 +121,7 @@ Three commands, in order of how much of the protocol they touch:
 
 ```sh
 just interop spaces-test --name primary          # authority = self, one host
-just interop spaces-cross-host --member primary  # + delegation → DPoP credential → credential-authed reads
+just interop spaces-cross-host --member primary  # + delegation → space credential → credential-authed reads
 just interop spaces-allowlist --name primary     # allowList refuses an unattested credential request
 ```
 

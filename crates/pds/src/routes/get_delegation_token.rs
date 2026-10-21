@@ -32,8 +32,10 @@ pub struct GetDelegationTokenResponse {
 /// GET /xrpc/com.atproto.space.getDelegationToken
 ///
 /// Mint a delegation token for `space` on behalf of the authenticated account — the user's side
-/// of the Atproto Spaces credential flow. The app presents it (with a DPoP proof) to the space
-/// authority's `getSpaceCredential`. Requires an OAuth (or full-access) session whose grant
+/// of the Atproto Spaces credential flow. The app presents it as a Bearer token to the space
+/// authority's `getSpaceCredential`, under an RFC 9421 `atproto-space` signature by a fresh key
+/// that becomes the minted credential's `cnf.kid` (`auth/http_signature.rs`) — never a DPoP
+/// proof. Requires an OAuth (or full-access) session whose grant
 /// covers `read` on the space; the token says nothing about membership, which is the
 /// authority's call. This PDS need not know the space at all.
 pub async fn get_delegation_token(
