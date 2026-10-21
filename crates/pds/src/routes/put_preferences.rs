@@ -480,7 +480,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.appview.url = "http://127.0.0.1:1".to_string();
         let state = crate::app::AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         insert_account(&state.db, "did:plc:carol", "carol@example.com").await;

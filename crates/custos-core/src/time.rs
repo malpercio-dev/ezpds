@@ -15,7 +15,7 @@ use common::{ApiError, ApiResultExt};
 ///
 /// Used where a bad clock must surface as a `500` rather than silently produce a nonsense
 /// timestamp (e.g. service-auth `exp` validation).
-pub(crate) fn unix_now() -> Result<u64, ApiError> {
+pub fn unix_now() -> Result<u64, ApiError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -26,7 +26,7 @@ pub(crate) fn unix_now() -> Result<u64, ApiError> {
 ///
 /// Used where the caller applies its own timestamp-window check, which such a request fails
 /// anyway, so there is no need to distinguish the clock error.
-pub(crate) fn unix_now_secs() -> i64 {
+pub fn unix_now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -34,7 +34,7 @@ pub(crate) fn unix_now_secs() -> i64 {
 }
 
 /// Current UTC time as an RFC 3339 / ISO-8601 string with millisecond precision.
-pub(crate) fn now_rfc3339() -> String {
+pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
@@ -42,6 +42,6 @@ pub(crate) fn now_rfc3339() -> String {
 /// as an unambiguous RFC 3339 / ISO-8601 UTC instant. Unlike most timestamps the API
 /// returns informationally, values that drive client-side validity math must carry an
 /// explicit zone designator rather than relying on an implied UTC convention.
-pub(crate) fn to_rfc3339_utc(sqlite_datetime: &str) -> String {
+pub fn to_rfc3339_utc(sqlite_datetime: &str) -> String {
     format!("{}Z", sqlite_datetime.replace(' ', "T"))
 }

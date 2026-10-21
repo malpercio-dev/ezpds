@@ -102,7 +102,7 @@ mod tests {
         let mut state = test_state().await;
         let mut config = (*state.config).clone();
         config.contact.email = Some("ops@example.com<script>".to_string());
-        state.config = std::sync::Arc::new(config);
+        state.core.config = std::sync::Arc::new(config);
 
         let response = app(state)
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())

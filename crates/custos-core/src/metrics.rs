@@ -2,7 +2,7 @@
 
 //! OTel metrics meter + Prometheus registry behind `GET /metrics`.
 //!
-//! One [`Metrics`] value lives in `AppState` for the process lifetime and exposes a typed
+//! One [`Metrics`] value lives in `CoreState` for the process lifetime and exposes a typed
 //! handle per instrument — call sites record measurements through these fields rather than
 //! looking instruments up by name. The meter rides the same `opentelemetry` 0.32 line as the
 //! trace pipeline in `telemetry.rs`; the `opentelemetry-prometheus` bridge collects into a
@@ -31,7 +31,7 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::Resource;
 use prometheus::{Encoder, TextEncoder};
 
-use crate::app::AppState;
+use crate::CoreState;
 
 /// Instrument names (as constructed on the meter; counters gain `_total` when rendered)
 /// and label keys — the authoritative inventory of the instrument set.
@@ -154,7 +154,7 @@ pub struct Metrics {
     /// `Some` only when metrics are enabled; `None` means measurements are dropped and
     /// there is nothing to render.
     registry: Option<prometheus::Registry>,
-    /// Owns the metric pipeline; dropped with `AppState` at process exit. A scrape-driven
+    /// Owns the metric pipeline; dropped with `CoreState` at process exit. A scrape-driven
     /// pull exporter needs no explicit shutdown flush (unlike the span exporter's
     /// `OtelGuard`).
     _provider: SdkMeterProvider,
@@ -325,7 +325,7 @@ impl Drop for SubscriberGuard {
 /// match no route fall into a single `unmatched` series. Layered outside the rate limiter
 /// (so 429s are counted) and inside CORS (so short-circuited preflights are not).
 pub async fn http_metrics_middleware(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     req: Request,
     next: Next,
 ) -> Response {

@@ -1,7 +1,7 @@
 # lexgen
 
 TypeScript declarations generated from the vendored lexicons in
-[`crates/pds/lexicons/`](../../crates/pds/lexicons/), so the Node tools type their XRPC calls
+[`crates/custos-core/lexicons/`](../../crates/custos-core/lexicons/), so the Node tools type their XRPC calls
 against the same schemas the PDS validates with instead of re-describing them by hand.
 
 - `types/<namespace>.d.ts`: one file per lexicon namespace (`com.atproto.repo`, `app.bsky.feed`, …).

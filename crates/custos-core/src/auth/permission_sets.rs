@@ -14,9 +14,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::app::AppState;
 use crate::identity::proxy;
 use crate::identity::resolution;
+use crate::CoreState;
 
 use super::oauth_scopes::{format_scope, normalize_scope_request, normalize_token, ScopeSyntax};
 
@@ -35,17 +35,17 @@ const POSITIVE_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// broken authority don't re-trigger the full resolution chain on every retry.
 const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(60);
 
-pub(crate) enum CacheEntry<T> {
+pub enum CacheEntry<T> {
     Resolved { value: T, expires_at: Instant },
     Failed { expires_at: Instant },
 }
 
 /// A TTL cache over one flavour of Lexicon resolution, keyed by whatever identifies a result.
-pub(crate) type ResolutionCache<T> = Arc<Mutex<HashMap<String, CacheEntry<T>>>>;
+pub type ResolutionCache<T> = Arc<Mutex<HashMap<String, CacheEntry<T>>>>;
 
 /// In-memory cache of resolved permission sets, keyed on the full `include:` token (NSID + any
 /// `aud` param — a different `aud` can change the expansion via `inheritAud` entries).
-/// `Arc<Mutex<HashMap<...>>>`, held in `AppState`.
+/// `Arc<Mutex<HashMap<...>>>`, held in `CoreState`.
 pub type PermissionSetCache = ResolutionCache<Vec<String>>;
 
 /// Create an empty `PermissionSetCache`.
@@ -64,7 +64,7 @@ fn cache_key(nsid: &str, include_aud: Option<&str>) -> String {
 /// work — constructing an async fn's future does nothing until it is awaited, and this only
 /// awaits it on a miss. `cached_failure` builds the error a negatively-cached entry reports,
 /// which is per-caller wording rather than a shared string.
-pub(super) async fn resolve_cached<T: Clone>(
+pub async fn resolve_cached<T: Clone>(
     cache: &ResolutionCache<T>,
     key: String,
     cached_failure: impl FnOnce() -> String,
@@ -103,7 +103,7 @@ pub(super) async fn resolve_cached<T: Clone>(
 /// populating it (positively or negatively) after resolving. Fails closed exactly like
 /// `resolve_permission_set`, whose outcome this wraps rather than replaces.
 pub(crate) async fn resolve_permission_set_cached(
-    state: &AppState,
+    state: &CoreState,
     cache: &PermissionSetCache,
     nsid: &str,
     include_aud: Option<&str>,
@@ -133,7 +133,7 @@ const MAX_INCLUDE_TOKENS_PER_REQUEST: usize = 5;
 /// attempting any resolution — if the request carries more than `MAX_INCLUDE_TOKENS_PER_REQUEST`
 /// `include:` references.
 pub async fn expand_include_scopes(
-    state: &AppState,
+    state: &CoreState,
     cache: &PermissionSetCache,
     scope: &str,
 ) -> Result<String, String> {
@@ -165,7 +165,7 @@ pub async fn expand_include_scopes(
 
 /// A Lexicon authority's validated, SSRF-checked PDS service endpoint, ready to fetch from.
 #[derive(Debug)]
-pub(crate) struct AuthorityEndpoint {
+pub struct AuthorityEndpoint {
     pub did: common::Did,
     pub url: String,
 }
@@ -185,7 +185,7 @@ fn nsid_authority_domain(nsid: &str) -> Option<String> {
 
 /// Resolve a Lexicon authority domain to its publishing DID via `_lexicon.<domain>` DNS TXT,
 /// mirroring `resolution::resolve_handle_to_did`'s `_atproto.<handle>` lookup.
-async fn resolve_authority_did(state: &AppState, domain: &str) -> Result<common::Did, String> {
+async fn resolve_authority_did(state: &CoreState, domain: &str) -> Result<common::Did, String> {
     let resolver = state
         .txt_resolver
         .as_ref()
@@ -212,8 +212,8 @@ async fn resolve_authority_did(state: &AppState, domain: &str) -> Result<common:
 }
 
 /// Resolve `nsid`'s publishing authority to a validated, SSRF-checked PDS service endpoint.
-pub(crate) async fn resolve_authority_endpoint(
-    state: &AppState,
+pub async fn resolve_authority_endpoint(
+    state: &CoreState,
     nsid: &str,
 ) -> Result<AuthorityEndpoint, String> {
     let domain =
@@ -304,7 +304,7 @@ enum PermissionEntry {
 /// urlencoded-form deserializer used by `routes::oauth_authorize::ConsentForm` represents a
 /// single repeated-key occurrence as a bare string rather than a one-element sequence. Shared
 /// by both, since the generic `Deserializer` bound makes it format-agnostic.
-pub(crate) fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+pub fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -425,7 +425,7 @@ struct GetRecordResponse {
 /// string, so the fetch goes through the shared SSRF-hardened client (`state.hardened_http_client`)
 /// — redirects disabled + a DNS resolver enforcing the public-address allowlist at connect time —
 /// the same client `routes::service_proxy` uses for its own caller-controlled targets.
-pub(super) async fn fetch_lexicon_schema(
+pub async fn fetch_lexicon_schema(
     client: &crate::identity::proxy::HardenedClient,
     authority: &AuthorityEndpoint,
     nsid: &str,
@@ -472,7 +472,7 @@ pub(super) async fn fetch_lexicon_schema(
 /// Skipping only ever narrows the grant, and the display and authoritative expansions
 /// share this path, so what the user sees stays what is granted.
 pub(crate) async fn resolve_permission_set(
-    state: &AppState,
+    state: &CoreState,
     nsid: &str,
     include_aud: Option<&str>,
 ) -> Result<Vec<String>, String> {
@@ -551,43 +551,14 @@ pub(crate) async fn resolve_permission_set(
         .collect())
 }
 
-/// Doubles for a mocked Lexicon authority, shared with `auth::space_consent`'s tests — both
+/// The mocked Lexicon authority, shared with `auth::space_consent`'s tests — both
 /// modules resolve through the same DNS-TXT-then-DID-document chain, so they mock the same one.
-#[cfg(test)]
-pub(super) mod tests_support {
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Arc;
-
-    use crate::app::AppState;
-    use crate::identity::dns::{DnsError, TxtResolver};
-
-    pub(crate) const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
-
-    pub(crate) struct FixedTxtResolver {
-        pub records: Vec<String>,
-    }
-
-    impl TxtResolver for FixedTxtResolver {
-        fn txt_lookup<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
-        }
-    }
-
-    /// `state` with its DNS TXT resolver replaced by one that always answers `records`.
-    pub(crate) fn state_with_dns(state: AppState, records: Vec<String>) -> AppState {
-        AppState {
-            txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
-            ..state
-        }
-    }
+#[cfg(any(test, feature = "test-support"))]
+pub mod tests_support {
+    pub const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
 
     /// A DID document for `AUTHORITY_DID` advertising `endpoint` as its PDS.
-    pub(crate) fn pds_doc(endpoint: &str) -> serde_json::Value {
+    pub fn pds_doc(endpoint: &str) -> serde_json::Value {
         serde_json::json!({
             "id": AUTHORITY_DID,
             "service": [{
@@ -605,12 +576,14 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Arc;
 
-    use crate::app::{test_state, AppState};
-    use crate::db::dids::seed_did_document;
     use crate::identity::dns::{DnsError, TxtResolver};
+    use crate::test_support::test_state;
+    use crate::CoreState;
+    use custos_db::dids::seed_did_document;
 
-    use super::tests_support::{pds_doc, state_with_dns, AUTHORITY_DID};
+    use super::tests_support::{pds_doc, AUTHORITY_DID};
     use super::*;
+    use crate::test_support::state_with_txt_records as state_with_dns;
 
     // ── nsid_authority_domain ────────────────────────────────────────────────
 
@@ -673,7 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn dns_transport_error_fails_resolution() {
-        let state = AppState {
+        let state = CoreState {
             txt_resolver: Some(Arc::new(ErrTxtResolver)),
             ..test_state().await
         };
@@ -729,7 +702,7 @@ mod tests {
         server: &MockServer,
         nsid: &str,
         schema: serde_json::Value,
-    ) -> AppState {
+    ) -> CoreState {
         let state = state_with_dns(test_state().await, vec![format!("did={AUTHORITY_DID}")]);
         seed_did_document(&state.db, AUTHORITY_DID, pds_doc(&server.uri())).await;
 

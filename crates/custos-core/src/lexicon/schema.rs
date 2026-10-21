@@ -1,6 +1,6 @@
 // pattern: Functional Core
 
-//! Typed model of the vendored lexicon documents (`crates/pds/lexicons/`) plus a strict parser.
+//! Typed model of the vendored lexicon documents (`crates/custos-core/lexicons/`) plus a strict parser.
 //!
 //! The parser is deliberately hand-rolled over an order-preserving JSON value rather than
 //! serde-derived, for two reasons:
@@ -327,7 +327,7 @@ impl<'a> Node<'a> {
             if !allowed.contains(&key.as_str()) {
                 return Err(format!(
                     "{}: unsupported key {key:?} (the validator does not implement it; \
-                     extend crates/pds/src/lexicon before vendoring this document)",
+                     extend crates/custos-core/src/lexicon before vendoring this document)",
                     self.context
                 ));
             }
@@ -646,7 +646,7 @@ fn parse_schema(value: &OrderedValue, context: &str) -> Result<LexSchema, String
                 Some(name) => Some(StringFormat::parse(name).ok_or_else(|| {
                     format!(
                         "{context}: unsupported string format {name:?} \
-                         (extend crates/pds/src/lexicon/formats.rs before vendoring this document)"
+                         (extend crates/custos-core/src/lexicon/formats.rs before vendoring this document)"
                     )
                 })?),
             };
@@ -742,7 +742,7 @@ fn parse_schema(value: &OrderedValue, context: &str) -> Result<LexSchema, String
         }
         other => Err(format!(
             "{context}: unsupported schema type {other:?} \
-             (extend crates/pds/src/lexicon before vendoring this document)"
+             (extend crates/custos-core/src/lexicon before vendoring this document)"
         )),
     }
 }

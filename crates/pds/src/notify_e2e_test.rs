@@ -122,7 +122,7 @@ async fn start_pds(relay_addr: EndpointAddr) -> (AppState, Endpoint) {
     config.notifications.relay = Some(relay_addr.id.to_string());
     config.iroh.enabled = true;
     config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(MASTER_KEY)));
-    state.config = Arc::new(config);
+    state.core.config = Arc::new(config);
 
     let dialer = loopback_endpoint(false).await;
     let client =

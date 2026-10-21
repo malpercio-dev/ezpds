@@ -1,3 +1,10 @@
+// pattern: Imperative Shell
+
+//! Shared test fixtures for every crate that builds on `custos-core`: the test state
+//! constructor (a migrated in-memory pool, fixed `jwt_secret`, rate limiting off) and the account,
+//! token, DPoP-proof, request-builder, and body-decoding helpers. Compiled only under `cfg(test)`
+//! or the `test-support` feature, which other crates enable from `[dev-dependencies]` alone.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -7,7 +14,170 @@ use argon2::{
     Argon2, PasswordHasher,
 };
 
-use crate::app::{test_state, AppState};
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use common::Config;
+use reqwest::Client;
+
+use crate::CoreState;
+
+/// A fresh in-memory, fully migrated state with a fixed `jwt_secret`, Spaces on, rate limiting
+/// off, and loopback proxy targets allowed.
+pub async fn test_state() -> CoreState {
+    test_state_with_plc_url("https://plc.directory".to_string()).await
+}
+
+/// [`test_state`] pointed at `plc_directory_url` (a wiremock server, usually).
+pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
+    use crate::auth::new_permission_set_cache;
+    use common::{
+        AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, FirehoseConfig, IrohConfig,
+        OAuthConfig, RateLimitConfig, TelemetryConfig,
+    };
+    use custos_db::{open_pool, run_migrations};
+    use p256::pkcs8::EncodePrivateKey;
+    use rand_core::OsRng;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    let db = open_pool("sqlite::memory:").await.expect("test pool");
+    run_migrations(&db).await.expect("test migrations");
+
+    let http_client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("test http client");
+
+    // Loopback allowed so tests can proxy to a local wiremock server standing in for a
+    // caller-controlled target, mirroring `allow_loopback_proxy_targets` below.
+    let hardened_http_client =
+        crate::identity::proxy::build_hardened_client(true).expect("test hardened http client");
+
+    // Generate a fresh ephemeral P-256 keypair for tests (no DB persistence needed).
+    let test_signing_key = {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let pkcs8 = sk
+            .to_pkcs8_der()
+            .expect("PKCS#8 encoding must succeed for test key");
+        let vk = sk.verifying_key();
+        let point = vk.to_encoded_point(false);
+        let x = URL_SAFE_NO_PAD.encode(point.x().expect("P-256 x"));
+        let y = URL_SAFE_NO_PAD.encode(point.y().expect("P-256 y"));
+        let public_key_jwk = serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": x,
+            "y": y,
+        });
+        crate::auth::OAuthSigningKey {
+            key_id: "test-oauth-key-01".to_string(),
+            encoding_key: jsonwebtoken::EncodingKey::from_ec_der(pkcs8.as_bytes()),
+            public_key_jwk,
+        }
+    };
+    // Matches the fixed `jwt_secret` below, mirroring production's derivation.
+    let dpop_nonces = Arc::new(crate::auth::DpopNonceRotator::from_jwt_secret(
+        &[0x42u8; 32],
+    ));
+
+    // Enabled in tests so instrument assertions can read the rendered output; each test
+    // state gets its own registry (no global exporter state to collide on).
+    let metrics = Arc::new(crate::metrics::Metrics::new("test-pds").expect("test metrics"));
+
+    CoreState {
+        config: Arc::new(Config {
+            bind_address: "127.0.0.1".to_string(),
+            port: 8080,
+            data_dir: PathBuf::from("/tmp"),
+            database_url: "sqlite::memory:".to_string(),
+            public_url: "https://test.example.com".to_string(),
+            service_name: "custos".to_string(),
+            server_did: None,
+            available_user_domains: vec!["example.com".to_string()],
+            reserved_handles: common::default_reserved_handles(),
+            invite_code_required: true,
+            links: common::ServerLinksConfig::default(),
+            contact: common::ContactConfig::default(),
+            blobs: BlobsConfig::default(),
+            blob_mirror: common::BlobMirrorConfig::default(),
+            blob_scrub: common::BlobScrubConfig::default(),
+            firehose: FirehoseConfig::default(),
+            accounts: common::AccountsConfig::default(),
+            recovery: common::RecoveryConfig::default(),
+            waitlist: common::WaitlistConfig::default(),
+            // Spaces on in the shared test config — most space tests exercise the route
+            // surface — while the production default stays off (pre-launch alpha). The
+            // gating tests opt back out by swapping the config on the returned state.
+            spaces: common::SpacesConfig { enabled: true },
+            admin_devices: common::AdminDevicesConfig::default(),
+            oauth: OAuthConfig::default(),
+            agent_auth: common::AgentAuthConfig::default(),
+            iroh: IrohConfig::default(),
+            // Notifications off by default in tests, like the real default: the send path
+            // must stay inert unless a test explicitly configures a relay.
+            notifications: common::NotificationsConfig::default(),
+            appview: AppViewConfig::default(),
+            chat: ChatConfig::default(),
+            // Tests must never make outbound crawl notifications.
+            crawlers: CrawlersConfig { urls: vec![] },
+            // No labelers watched by default; the labeler-watch tests opt in by swapping
+            // the config on the returned state.
+            labeler: common::LabelerConfig::default(),
+            // Rate limiting off by default in tests so unit tests are never throttled; the
+            // rate-limit tests opt back in by swapping `rate_limiter` on the returned state.
+            rate_limit: RateLimitConfig {
+                enabled: false,
+                ..RateLimitConfig::default()
+            },
+            telemetry: TelemetryConfig::default(),
+            email: common::EmailConfig::default(),
+            admin_token: None,
+            signing_key_master_key: None,
+            plc_directory_url,
+        }),
+        db,
+        http_client: http_client.clone(),
+        hardened_http_client: hardened_http_client.clone(),
+        dns_provider: None,
+        txt_resolver: None,
+        well_known_resolver: None,
+        // Real HTTP fetcher, but no test exercises it unless the test swaps in a mock fetcher
+        // (the JWKS-trust tests in `routes/agent_identity.rs` do exactly that).
+        jwks_cache: Arc::new(crate::auth::jwks::JwksCache::new(
+            Arc::new(crate::auth::jwks::HttpJwksFetcher::new(http_client.clone())),
+            Duration::from_secs(3600),
+            // Cooldown disabled so a test's every lookup reaches its injected mock fetcher.
+            Duration::ZERO,
+        )),
+        // Loopback-permitting hardened client (see above), matching production's wiring of a
+        // confidential client's attacker-reachable `jwks_uri`. Cooldown disabled for the same
+        // reason as `jwks_cache`.
+        oauth_client_jwks_cache: Arc::new(crate::auth::jwks::JwksCache::new(
+            Arc::new(crate::auth::jwks::HttpJwksFetcher::new(
+                hardened_http_client.clone().into_inner(),
+            )),
+            Duration::from_secs(3600),
+            Duration::ZERO,
+        )),
+        // Fixed key for tests — predictable JWTs in unit tests.
+        jwt_secret: [0x42u8; 32],
+        oauth_signing_keypair: test_signing_key,
+        dpop_nonces,
+        permission_set_cache: new_permission_set_cache(),
+        did_document_cache: crate::identity::resolution::new_did_document_cache(),
+        failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
+        rate_limiter: Arc::new(crate::rate_limit::RateLimiterState::new(&RateLimitConfig {
+            enabled: false,
+            ..RateLimitConfig::default()
+        })),
+        allow_loopback_proxy_targets: true,
+        metrics,
+        sweeps: Arc::new(crate::sweep_status::SweepStatus::default()),
+        started_at: std::time::Instant::now(),
+    }
+}
 
 // ── DNS provider test doubles ──────────────────────────────────────────────
 
@@ -62,8 +232,8 @@ impl crate::identity::dns::DnsProvider for AlwaysErrDns {
 /// `TxtResolver` that returns a fixed set of TXT records for every lookup, regardless of the
 /// queried name — for tests that need `did=...`-style handle-verification TXT records without a
 /// real DNS round trip.
-pub(crate) struct FixedTxtResolver {
-    pub(crate) records: Vec<String>,
+pub struct FixedTxtResolver {
+    pub records: Vec<String>,
 }
 
 impl crate::identity::dns::TxtResolver for FixedTxtResolver {
@@ -79,64 +249,31 @@ impl crate::identity::dns::TxtResolver for FixedTxtResolver {
 }
 
 /// `test_state()` with an `AlwaysOkDns` provider wired in.
-pub async fn state_with_ok_dns() -> AppState {
+pub async fn state_with_ok_dns() -> CoreState {
     let base = test_state().await;
-    AppState {
+    CoreState {
         dns_provider: Some(Arc::new(AlwaysOkDns)),
         ..base
     }
 }
 
 /// `test_state()` with an `AlwaysErrDns` provider wired in.
-pub async fn state_with_err_dns() -> AppState {
+pub async fn state_with_err_dns() -> CoreState {
     let base = test_state().await;
-    AppState {
+    CoreState {
         dns_provider: Some(Arc::new(AlwaysErrDns)),
-        ..base
-    }
-}
-
-// ── Email sender test double ───────────────────────────────────────────────
-
-/// Email sender that fails on every `send`, for exercising the delivery-failure branches of the
-/// token-minting routes (which map a send error to `ServiceUnavailable`).
-pub struct AlwaysErrEmail;
-
-impl crate::email::EmailSender for AlwaysErrEmail {
-    fn send<'a>(
-        &'a self,
-        _message: crate::email::EmailMessage,
-    ) -> Pin<Box<dyn Future<Output = Result<(), crate::email::EmailError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(crate::email::EmailError(
-                "simulated delivery failure".to_string(),
-            ))
-        })
-    }
-
-    #[cfg(test)]
-    fn kind(&self) -> crate::email::EmailSenderKind {
-        crate::email::EmailSenderKind::Fake
-    }
-}
-
-/// `test_state()` with an email sender that always fails delivery.
-pub async fn state_with_failing_email() -> AppState {
-    let base = test_state().await;
-    AppState {
-        email: Arc::new(AlwaysErrEmail),
         ..base
     }
 }
 
 /// `test_state()` with `mutate` applied to a clone of the config. Collapses the repeated
 /// `let base = test_state().await; let mut config = (*base.config).clone(); config.x = …;
-/// AppState { config: Arc::new(config), ..base }` dance into `state_with(|c| c.x = …).await`.
-pub async fn state_with(mutate: impl FnOnce(&mut common::Config)) -> AppState {
+/// CoreState { config: Arc::new(config), ..base }` dance into `state_with(|c| c.x = …).await`.
+pub async fn state_with(mutate: impl FnOnce(&mut common::Config)) -> CoreState {
     let base = test_state().await;
     let mut config = (*base.config).clone();
     mutate(&mut config);
-    AppState {
+    CoreState {
         config: Arc::new(config),
         ..base
     }
@@ -149,11 +286,11 @@ pub async fn state_with(mutate: impl FnOnce(&mut common::Config)) -> AppState {
 /// Wraps `test_state()` and overrides the single config field that most
 /// admin-endpoint tests need. Defined once here rather than duplicated in
 /// every route test module.
-pub async fn test_state_with_admin_token() -> AppState {
+pub async fn test_state_with_admin_token() -> CoreState {
     let base = test_state().await;
     let mut config = (*base.config).clone();
     config.admin_token = Some(common::Sensitive("test-admin-token".to_string()));
-    AppState {
+    CoreState {
         config: Arc::new(config),
         ..base
     }
@@ -165,13 +302,13 @@ pub fn test_master_key() -> [u8; 32] {
 }
 
 /// `test_state()` with the signing-key master key configured (see [`test_master_key`]).
-pub async fn state_with_master_key() -> AppState {
+pub async fn state_with_master_key() -> CoreState {
     let base = test_state().await;
     let mut config = (*base.config).clone();
     config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
         test_master_key(),
     )));
-    AppState {
+    CoreState {
         config: Arc::new(config),
         ..base
     }
@@ -198,10 +335,10 @@ pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) -> crypto:
     let kp = crypto::generate_p256_keypair().unwrap();
     let private_key_encrypted =
         crypto::encrypt_private_key(&kp.private_key_bytes, &master).unwrap();
-    crate::db::repo_keys::insert_did_signing_key(
+    custos_db::repo_keys::insert_did_signing_key(
         db,
         did,
-        &crate::db::repo_keys::RepoSigningKey {
+        &custos_db::repo_keys::RepoSigningKey {
             key_id: kp.key_id.to_string(),
             public_key: kp.public_key.clone(),
             private_key_encrypted,
@@ -211,13 +348,13 @@ pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) -> crypto:
     .unwrap();
 
     let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
-    let block_store = crate::db::blocks::SqliteBlockStore::new(db.clone(), did.to_string());
+    let block_store = custos_db::blocks::SqliteBlockStore::new(db.clone(), did.to_string());
     let root = repo_engine::create_genesis_repo(block_store, did, &signer)
         .await
         .unwrap();
     // Persist repo_root_cid + repo_rev together, mirroring the production write paths so
     // tests exercise the stored-rev path rather than the legacy commit-block fallback.
-    let reopen = crate::db::blocks::SqliteBlockStore::new(db.clone(), did.to_string());
+    let reopen = custos_db::blocks::SqliteBlockStore::new(db.clone(), did.to_string());
     let rev = repo_engine::Repository::open(reopen, root)
         .await
         .unwrap()
@@ -234,14 +371,14 @@ pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) -> crypto:
         .unwrap();
     // Tag the genesis blocks with the repo rev, mirroring the production genesis insert, so tests
     // that exercise getRepo?since see correctly-revisioned blocks. Tag the exact reachable set.
-    let mut store = crate::db::blocks::SqliteBlockStore::new(db.clone(), did.to_string());
+    let mut store = custos_db::blocks::SqliteBlockStore::new(db.clone(), did.to_string());
     let cids: Vec<String> = repo_engine::collect_reachable_cids(&mut store, root)
         .await
         .unwrap()
         .into_iter()
         .map(|c| c.to_string())
         .collect();
-    crate::db::blocks::tag_blocks_rev(db, did, &cids, &rev)
+    custos_db::blocks::tag_blocks_rev(db, did, &cids, &rev)
         .await
         .unwrap();
     kp
@@ -276,10 +413,10 @@ pub async fn seed_account_with_signing_key(
     let kp = crypto::generate_p256_keypair().unwrap();
     let private_key_encrypted =
         crypto::encrypt_private_key(&kp.private_key_bytes, &test_master_key()).unwrap();
-    crate::db::repo_keys::insert_did_signing_key(
+    custos_db::repo_keys::insert_did_signing_key(
         db,
         did,
-        &crate::db::repo_keys::RepoSigningKey {
+        &custos_db::repo_keys::RepoSigningKey {
             key_id: kp.key_id.to_string(),
             public_key: kp.public_key.clone(),
             private_key_encrypted,
@@ -351,7 +488,7 @@ pub async fn seed_handle(db: &sqlx::SqlitePool, handle: &str, did: &str) {
 
 /// Insert a DID document row directly into `did_documents`. Lives in `db::dids` (not here) so
 /// non-route test code can depend on it too; re-exported for existing route test call sites.
-pub(crate) use crate::db::dids::seed_did_document;
+pub use custos_db::dids::seed_did_document;
 
 /// Register a fixed test client, seed an account for it, and insert an `oauth_tokens` refresh
 /// row bound to `jkt` (`None` for the pre-V012 legacy shape with no DPoP binding) carrying
@@ -361,8 +498,8 @@ pub(crate) use crate::db::dids::seed_did_document;
 /// the base64url plaintext of the seeded refresh token. Client id, DID, and handle are fixed
 /// literals shared by every `oauth_token`/`oauth_revoke` test that needs a refresh-token fixture;
 /// callers that need a distinct account should seed one directly instead.
-pub(crate) async fn seed_refresh_row(
-    state: &AppState,
+pub async fn seed_refresh_row(
+    state: &CoreState,
     jkt: Option<&str>,
     scope: &str,
     expires_sql: &str,
@@ -370,7 +507,7 @@ pub(crate) async fn seed_refresh_row(
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const DID: &str = "did:plc:testaccount000000000000";
 
-    crate::db::oauth::register_oauth_client(
+    custos_db::oauth::register_oauth_client(
         &state.db,
         CLIENT_ID,
         r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
@@ -446,7 +583,7 @@ pub async fn seed_device(db: &sqlx::SqlitePool) -> (String, String) {
 
 /// Mint a short-lived HS256 access JWT (`com.atproto.access` scope) for `sub`,
 /// signed with `secret`. Used by the repo record-write/read route tests.
-pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
+pub fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
     let now = crate::time::unix_now_secs() as u64;
@@ -467,7 +604,7 @@ pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
 /// shape of a DPoP-bound OAuth access token. Presented as plain `Bearer` with no proof, such a
 /// token must be rejected on every access-authed route (RFC 9449 binding-downgrade protection);
 /// presented as `DPoP` with a matching proof it is accepted. Used by the repo-write route tests.
-pub(crate) fn cnf_bound_access_jwt(secret: &[u8; 32], sub: &str, jkt: &str) -> String {
+pub fn cnf_bound_access_jwt(secret: &[u8; 32], sub: &str, jkt: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
     let now = crate::time::unix_now_secs() as u64;
@@ -489,7 +626,7 @@ pub(crate) fn cnf_bound_access_jwt(secret: &[u8; 32], sub: &str, jkt: &str) -> S
 /// header, and in a `private_key_jwt` client assertion's registered `jwks`). Free function (not a
 /// `DpopProofKey` method) so callers holding a raw `SigningKey` outside that wrapper — the
 /// client-assertion tests, which need to tag the JWK with a `kid` — can build one too.
-pub(crate) fn ec_jwk(signing_key: &p256::ecdsa::SigningKey) -> serde_json::Value {
+pub fn ec_jwk(signing_key: &p256::ecdsa::SigningKey) -> serde_json::Value {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     let point = signing_key.verifying_key().to_encoded_point(false);
     serde_json::json!({
@@ -500,100 +637,43 @@ pub(crate) fn ec_jwk(signing_key: &p256::ecdsa::SigningKey) -> serde_json::Value
     })
 }
 
-/// A P-256 key a space client binds its credential to, plus the RFC 9421 `atproto-space`
-/// signatures it attaches: [`SpaceSigKey::delegation_headers`] for the `getSpaceCredential`
-/// exchange (whose `keyid` becomes the credential's `cnf.kid`), and
-/// [`SpaceSigKey::credential_headers`] for each credential-authed request. Both return the full
-/// header set, so a request builder takes them with `headers_mut().extend(..)`.
-pub(crate) struct SpaceSigKey {
-    signer: repo_engine::CommitSigner,
-    key_id: String,
-}
-
-impl SpaceSigKey {
-    pub(crate) fn generate() -> Self {
-        let kp = crypto::generate_p256_keypair().unwrap();
-        Self {
-            signer: repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap(),
-            key_id: kp.key_id.0,
-        }
-    }
-
-    /// The key's `did:key` — what a credential minted for it carries as `cnf.kid`.
-    pub(crate) fn key_id(&self) -> &str {
-        &self.key_id
-    }
-
-    fn signed(&self, authorization: &str, audience: Option<&str>) -> axum::http::HeaderMap {
-        use crate::auth::http_signature::{sign_space_request, AUDIENCE_HEADER};
-        let (input, signature) = sign_space_request(
-            |b| self.signer.sign(b),
-            &self.key_id,
-            authorization,
-            audience,
-        );
-        let mut h = axum::http::HeaderMap::new();
-        h.insert("authorization", authorization.parse().unwrap());
-        h.insert("signature-input", input.parse().unwrap());
-        h.insert("signature", signature.parse().unwrap());
-        if let Some(audience) = audience {
-            h.insert(AUDIENCE_HEADER, audience.parse().unwrap());
-        }
-        h
-    }
-
-    /// `Authorization: Bearer <delegation token>` signed for the credential exchange.
-    pub(crate) fn delegation_headers(&self, delegation_token: &str) -> axum::http::HeaderMap {
-        self.signed(&format!("Bearer {delegation_token}"), None)
-    }
-
-    /// `Authorization: Atproto-Space <credential>` addressed to `audience` and signed.
-    pub(crate) fn credential_headers(
-        &self,
-        credential: &str,
-        audience: &str,
-    ) -> axum::http::HeaderMap {
-        self.signed(&format!("Atproto-Space {credential}"), Some(audience))
-    }
-}
-
 /// A P-256 DPoP proof-of-possession key for tests, plus proof construction. Mirrors the DPoP
 /// machinery a real OAuth client holds: the key's RFC 7638 thumbprint goes in the access token's
 /// `cnf.jkt` (via [`cnf_bound_access_jwt`]), and [`DpopProofKey::proof`] builds the per-request
 /// proof binding that token to a method + URI.
-pub(crate) struct DpopProofKey {
+pub struct DpopProofKey {
     signing_key: p256::ecdsa::SigningKey,
 }
 
 impl DpopProofKey {
     /// Generate a fresh random P-256 key.
-    pub(crate) fn generate() -> Self {
+    pub fn generate() -> Self {
         Self {
             signing_key: p256::ecdsa::SigningKey::random(&mut rand_core::OsRng),
         }
     }
 
     /// The public key as a minimal EC JWK (the form embedded in a DPoP proof header).
-    pub(crate) fn jwk(&self) -> serde_json::Value {
+    pub fn jwk(&self) -> serde_json::Value {
         ec_jwk(&self.signing_key)
     }
 
     /// The RFC 7638 thumbprint of this key — the value that goes in the token's `cnf.jkt`.
-    pub(crate) fn thumbprint(&self) -> String {
+    pub fn thumbprint(&self) -> String {
         crate::auth::dpop::jwk_thumbprint(&self.jwk()).unwrap()
     }
 
     /// Build a fresh, valid DPoP proof JWT binding `access_token` (via its `ath`) to the given
     /// HTTP method and URL, with `iat = now`. `htu` must be the full request URL
     /// (`{public_url}{path}`), matching how the extractor reconstructs the expected value.
-    pub(crate) fn proof(&self, htm: &str, htu: &str, access_token: &str) -> String {
+    pub fn proof(&self, htm: &str, htu: &str, access_token: &str) -> String {
         self.proof_full(htm, htu, Some(access_token), None, None)
     }
 
     /// A proof with no `ath` but an explicit `nonce` and/or `iat` override — the knobs the OAuth
     /// token/revoke endpoint tests need to exercise DPoP-Nonce binding and stale-`iat` rejection.
     /// `iat` defaults to now when `None`.
-    pub(crate) fn proof_with(
+    pub fn proof_with(
         &self,
         htm: &str,
         htu: &str,
@@ -605,13 +685,13 @@ impl DpopProofKey {
 
     /// Like [`DpopProofKey::proof`], but with an explicit `iat` override — a resource-endpoint
     /// proof bound to `access_token` for tests that also need to exercise staleness rejection.
-    pub(crate) fn proof_at(&self, htm: &str, htu: &str, access_token: &str, iat: i64) -> String {
+    pub fn proof_at(&self, htm: &str, htu: &str, access_token: &str, iat: i64) -> String {
         self.proof_full(htm, htu, Some(access_token), None, Some(iat))
     }
 
     /// The raw signing key, for callers that need to hand-build a proof this API doesn't shape
     /// (e.g. a malformed `typ` or `jti`) while still sharing the same keypair.
-    pub(crate) fn signing_key(&self) -> &p256::ecdsa::SigningKey {
+    pub fn signing_key(&self) -> &p256::ecdsa::SigningKey {
         &self.signing_key
     }
 
@@ -654,7 +734,7 @@ impl DpopProofKey {
 /// Issue a fresh DPoP nonce from `state` and mint a proof for it, bound to the OAuth token
 /// endpoint's fixed test URL — the "issue nonce → mint token-endpoint proof" pair every
 /// token-grant test performs before calling `POST /oauth/token`.
-pub(crate) fn token_proof(state: &AppState, key: &DpopProofKey) -> String {
+pub fn token_proof(state: &CoreState, key: &DpopProofKey) -> String {
     let nonce = state.dpop_nonces.issue();
     key.proof_with(
         "POST",
@@ -667,7 +747,7 @@ pub(crate) fn token_proof(state: &AppState, key: &DpopProofKey) -> String {
 /// Mint a short-lived HS256 access JWT with an arbitrary granular `scope` claim — the shape of
 /// an OAuth token. Used by tests that exercise a `require_*` scope gate, which distinguishes the
 /// legacy `com.atproto.access` claim (blanket permission) from a granular grant string.
-pub(crate) fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
+pub fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
     let now = crate::time::unix_now_secs() as u64;
@@ -688,12 +768,7 @@ pub(crate) fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> St
 /// agent-derived token from the jwt-bearer / claim-polling grants. Used by tests that exercise
 /// agent attribution (audit rows) and the agent-refusal gates. Callers must seed a matching
 /// `agent_identities` row first: the audit table's FK rejects an unknown registration id.
-pub(crate) fn agent_jwt(
-    secret: &[u8; 32],
-    sub: &str,
-    scope: &str,
-    registration_id: &str,
-) -> String {
+pub fn agent_jwt(secret: &[u8; 32], sub: &str, scope: &str, registration_id: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
     let now = crate::time::unix_now_secs() as u64;
@@ -714,7 +789,7 @@ pub(crate) fn agent_jwt(
 /// Mint a short-lived HS256 access JWT with an app-password scope (`com.atproto.appPass` or,
 /// when `privileged`, `com.atproto.appPassPrivileged`) for `sub`. Used by tests that exercise
 /// the app-password scope gates.
-pub(crate) fn app_pass_jwt(secret: &[u8; 32], sub: &str, privileged: bool) -> String {
+pub fn app_pass_jwt(secret: &[u8; 32], sub: &str, privileged: bool) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
     let now = crate::time::unix_now_secs() as u64;
@@ -784,7 +859,7 @@ pub async fn seed_personal_details_app_password(
 
 /// Issue an app-password-scoped HS256 access JWT carrying the ADR-0033 personal-details claim.
 #[allow(dead_code)]
-pub(crate) fn personal_details_app_pass_jwt(secret: &[u8; 32], sub: &str) -> String {
+pub fn personal_details_app_pass_jwt(secret: &[u8; 32], sub: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
     let now = crate::time::unix_now_secs() as u64;
@@ -882,14 +957,14 @@ pub fn sign_p256(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
 /// Reserve an unbound repo signing key encrypted under [`test_master_key`], the way
 /// `com.atproto.server.reserveSigningKey` does. A child mint's genesis op must name a key that is
 /// already reserved here, so every child-minting test starts with one.
-pub(crate) async fn reserve_repo_key(db: &sqlx::SqlitePool) -> crypto::P256Keypair {
+pub async fn reserve_repo_key(db: &sqlx::SqlitePool) -> crypto::P256Keypair {
     let key = crypto::generate_p256_keypair().unwrap();
     let encrypted =
         crypto::encrypt_private_key(&key.private_key_bytes, &test_master_key()).unwrap();
-    crate::db::repo_keys::insert_reserved_repo_key(
+    custos_db::repo_keys::insert_reserved_repo_key(
         db,
         None,
-        &crate::db::repo_keys::RepoSigningKey {
+        &custos_db::repo_keys::RepoSigningKey {
             key_id: key.key_id.to_string(),
             public_key: key.public_key.clone(),
             private_key_encrypted: encrypted,
@@ -903,7 +978,7 @@ pub(crate) async fn reserve_repo_key(db: &sqlx::SqlitePool) -> crypto::P256Keypa
 /// A wallet-signed did:plc genesis op for a child account: a throwaway rotation key in
 /// `rotationKeys[0]` (the slot the server requires to have signed the op) and `signing_key` as the
 /// `atproto` verification method.
-pub(crate) fn child_genesis_op(handle: &str, pds: &str, signing_key: &str) -> serde_json::Value {
+pub fn child_genesis_op(handle: &str, pds: &str, signing_key: &str) -> serde_json::Value {
     let rotation = crypto::generate_p256_keypair().unwrap();
     let op = crypto::build_did_plc_genesis_op(
         &rotation.key_id,
@@ -923,12 +998,12 @@ pub(crate) fn child_genesis_op(handle: &str, pds: &str, signing_key: &str) -> se
 
 /// Insert a minimal active account row. Lives in `db::accounts` (not here) so non-route test
 /// code can depend on it too; re-exported for existing route test call sites.
-pub(crate) use crate::db::accounts::insert_bare_account;
+pub use custos_db::accounts::insert_bare_account;
 
 /// Insert an active account row with a caller-supplied email and `password_hash` NULL — the
 /// fixture for tests that exercise an email-adjacent flow (confirmation, subject status, agent
 /// auth) without minting a real password hash or handle row.
-pub(crate) async fn insert_account_with_email(db: &sqlx::SqlitePool, did: &str, email: &str) {
+pub async fn insert_account_with_email(db: &sqlx::SqlitePool, did: &str, email: &str) {
     sqlx::query(
         "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
          VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
@@ -944,7 +1019,7 @@ pub(crate) async fn insert_account_with_email(db: &sqlx::SqlitePool, did: &str, 
 /// single current entry naming `rotation_keys`, with empty `verificationMethods`/`services` and
 /// a fixed `owner.example.com` `alsoKnownAs` — the shape an ownership-binding test needs to
 /// resolve rotation-key authority without caring about the rest of the DID document.
-pub(crate) async fn mount_owner_audit_log(
+pub async fn mount_owner_audit_log(
     server: &wiremock::MockServer,
     did: &str,
     rotation_keys: &[&str],
@@ -974,15 +1049,15 @@ pub(crate) async fn mount_owner_audit_log(
 }
 
 /// `state` with a [`FixedTxtResolver`] wired in, answering every TXT lookup with `records`.
-pub(crate) fn state_with_txt_records(state: AppState, records: Vec<String>) -> AppState {
-    AppState {
+pub fn state_with_txt_records(state: CoreState, records: Vec<String>) -> CoreState {
+    CoreState {
         txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
         ..state
     }
 }
 
 /// Build a bare GET request to `uri`, with an optional `Bearer` auth header.
-pub(crate) fn get_request_with_bearer(
+pub fn get_request_with_bearer(
     uri: &str,
     token: Option<&str>,
 ) -> axum::http::Request<axum::body::Body> {
@@ -998,7 +1073,7 @@ pub(crate) fn get_request_with_bearer(
 /// [`state_with_master_key`] plus a promoted account with a genesis repo (via
 /// [`seed_account_with_repo`]), for the many repo read/write route tests that just need "an
 /// account with a repo" and don't care which DID names it.
-pub(crate) async fn setup_account_with_repo() -> (AppState, String) {
+pub async fn setup_account_with_repo() -> (CoreState, String) {
     let state = state_with_master_key().await;
     let did = "did:plc:repotestaccount0000".to_string();
     seed_account_with_repo(&state.db, &did).await;
@@ -1007,12 +1082,12 @@ pub(crate) async fn setup_account_with_repo() -> (AppState, String) {
 
 /// [`state_with_master_key`] with `public_url` overridden and invite codes not required — the
 /// migration-mode `createAccount` fixture both did:plc and did:web outbound-migration tests use.
-pub(crate) async fn state_with_master_key_and_url(public_url: &str) -> AppState {
+pub async fn state_with_master_key_and_url(public_url: &str) -> CoreState {
     let base = state_with_master_key().await;
     let mut config = (*base.config).clone();
     config.public_url = public_url.to_string();
     config.invite_code_required = false;
-    AppState {
+    CoreState {
         config: Arc::new(config),
         ..base
     }
@@ -1020,53 +1095,19 @@ pub(crate) async fn state_with_master_key_and_url(public_url: &str) -> AppState 
 
 /// `test_state()` with the given agent-auth config swapped in (every flow is off by default) —
 /// the fixture the auth.md agent-flow route tests use to turn on just the flow under test.
-pub(crate) async fn state_with_agent_auth(agent_auth: common::AgentAuthConfig) -> AppState {
+pub async fn state_with_agent_auth(agent_auth: common::AgentAuthConfig) -> CoreState {
     let base = test_state().await;
     let mut config = (*base.config).clone();
     config.agent_auth = agent_auth;
-    AppState {
+    CoreState {
         config: Arc::new(config),
         ..base
     }
 }
 
-/// POST `body` as JSON to `uri` against a fresh `app(state)` router, with an optional `Bearer`
-/// token, and return `(status, parsed_json_body)` (`Value::Null` if the body doesn't parse) —
-/// the auth.md agent-flow route tests' one-shot request/response helper.
-pub(crate) async fn post_json_with_bearer(
-    state: AppState,
-    uri: &str,
-    body: serde_json::Value,
-    token: Option<&str>,
-) -> (axum::http::StatusCode, serde_json::Value) {
-    use tower::ServiceExt;
-
-    let mut builder = axum::http::Request::builder()
-        .method(axum::http::Method::POST)
-        .uri(uri)
-        .header("content-type", "application/json");
-    if let Some(t) = token {
-        builder = builder.header("Authorization", format!("Bearer {t}"));
-    }
-    let response = crate::app::app(state)
-        .oneshot(
-            builder
-                .body(axum::body::Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-    (status, json)
-}
-
 /// A fresh ES256 (P-256) keypair as (PKCS#8 private PEM, SPKI public PEM) — the shape a trusted
 /// agent-auth issuer's static key configuration takes.
-pub(crate) fn es256_keys() -> (String, String) {
+pub fn es256_keys() -> (String, String) {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use p256::pkcs8::{spki::EncodePublicKey, EncodePrivateKey};
 
@@ -1092,7 +1133,7 @@ pub(crate) fn es256_keys() -> (String, String) {
 /// A static-key `TrustedIssuer` entry for `issuer`, carrying `public_key_pem` as its ES256
 /// verification key (no `jwks_url`) — the agent-auth trust-config fixture for tests that don't
 /// exercise the dynamic-JWKS path.
-pub(crate) fn trusted_issuer(issuer: &str, public_key_pem: String) -> common::TrustedIssuer {
+pub fn trusted_issuer(issuer: &str, public_key_pem: String) -> common::TrustedIssuer {
     common::TrustedIssuer {
         issuer: issuer.to_string(),
         audience: None,
@@ -1105,7 +1146,7 @@ pub(crate) fn trusted_issuer(issuer: &str, public_key_pem: String) -> common::Tr
 /// PUT a fixed text record at `rkey` in `app.bsky.feed.post` via the real `putRecord` handler,
 /// returning just the response status — the sync route tests' "plant a record" fixture, which
 /// don't care about its content, only that it exists.
-pub(crate) async fn put_fixed_record(
+pub async fn put_fixed_record(
     app: &axum::Router,
     token: &str,
     did: &str,
@@ -1127,7 +1168,7 @@ pub(crate) async fn put_fixed_record(
 
 /// Build a request with an optional `Bearer` header — the two-independent-servers migration
 /// tests' request builder (source/destination or old-PDS/Custos, driven through the real router).
-pub(crate) fn bearer_request(
+pub fn bearer_request(
     method: &str,
     uri: String,
     token: Option<&str>,
@@ -1142,7 +1183,7 @@ pub(crate) fn bearer_request(
 
 /// Buffer a response body to its raw bytes, with no size cap — for tests that need the exact
 /// wire content (a CAR export) rather than a JSON-parsed body.
-pub(crate) async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+pub async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
     axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap()
@@ -1155,7 +1196,7 @@ pub(crate) async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
 /// is always set: harmless when `body` is `None` (`NoInputBody` rejects only a non-empty body,
 /// never checks the header) and required when it's `Some` (`LexiconInput` 400s a JSON body sent
 /// without it).
-pub(crate) fn post_req(
+pub fn post_req(
     uri: &str,
     token: Option<&str>,
     body: Option<serde_json::Value>,
@@ -1174,7 +1215,7 @@ pub(crate) fn post_req(
 /// Insert a bare active account with a randomly generated `did:plc:<uuid-derived>` and an email
 /// derived from it, returning the did — the transfer-flow tests' fixture for "some account that
 /// exists", where the exact did/email values don't matter, only that they're unique per call.
-pub(crate) async fn seed_account_random_did(db: &sqlx::SqlitePool) -> String {
+pub async fn seed_account_random_did(db: &sqlx::SqlitePool) -> String {
     let did = format!(
         "did:plc:{}",
         &uuid::Uuid::new_v4().to_string().replace('-', "")[..24]
@@ -1194,7 +1235,7 @@ pub(crate) async fn seed_account_random_did(db: &sqlx::SqlitePool) -> String {
 /// Insert an active account (`owner@example.com`, NULL password) plus a fixed `owner.example.com`
 /// handle for it — the sovereign-session route tests' "an owning account with a resolvable
 /// handle" fixture.
-pub(crate) async fn seed_owner_account_with_handle(db: &sqlx::SqlitePool, did: &str) {
+pub async fn seed_owner_account_with_handle(db: &sqlx::SqlitePool, did: &str) {
     insert_account_with_email(db, did, "owner@example.com").await;
     sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES ('owner.example.com', ?, datetime('now'))")
         .bind(did)

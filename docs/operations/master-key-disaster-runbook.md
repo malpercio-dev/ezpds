@@ -44,7 +44,7 @@ re-wrap tool iterates. There are **eight** KEK-wrapped storage families:
 
 The three "easy" secrets are **self-healing**: delete the single row, and
 `load_or_create_*` in
-[`crates/pds/src/auth/signing_key.rs`](../../crates/pds/src/auth/signing_key.rs)
+[`crates/custos-core/src/auth/signing_key.rs`](../../crates/custos-core/src/auth/signing_key.rs)
 mints a fresh one under the current KEK on next boot. The cost is bounded and
 acceptable — sessions invalidated (users re-auth), Iroh node id changes (devices
 re-resolve via `GET /v1/devices/:id/pds`). **The commit-signing keys are the
@@ -206,5 +206,5 @@ new account promotion writes only ciphertext. Two consequences:
 - [ADR-0025](../architecture/decisions/0025-wallet-driven-repo-key-rotation.md) — wallet-driven per-account repo-key rotation
 - KEK rotation / re-wrap tool: [deploy.md → Rotating the Master Key](../deploy.md#rotating-the-master-key)
 - KEK-wrapped inventory: [`crates/custos-db/src/kek.rs`](../../crates/custos-db/src/kek.rs) (`SecretFamily`)
-- Loaders: [`crates/pds/src/auth/signing_key.rs`](../../crates/pds/src/auth/signing_key.rs) (`load_or_create_*`, `load_repo_signer`)
+- Loaders: [`crates/custos-core/src/auth/signing_key.rs`](../../crates/custos-core/src/auth/signing_key.rs) (`load_or_create_*`, `load_repo_signer`)
 - Crypto: [`crates/crypto/src/keys.rs`](../../crates/crypto/src/keys.rs) (`encrypt_private_key` / `decrypt_private_key`)

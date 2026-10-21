@@ -81,7 +81,7 @@ pub fn supported_scopes() -> Vec<&'static str> {
 /// consent screen (`routes::oauth_templates::render_permission_groups`). Kept alongside
 /// `SCOPE_PREFIX_SUMMARY` — the two lists name the same resource types — so a future resource
 /// type is at least a one-file change instead of two independently-maintained matches.
-pub(crate) fn resource_group_label(token: &str) -> &'static str {
+pub fn resource_group_label(token: &str) -> &'static str {
     match token.split(':').next().unwrap_or(token) {
         "repo" => "Repository writes",
         "rpc" => "Cross-service requests",
@@ -585,15 +585,15 @@ fn normalize_identity(syntax: &ScopeSyntax) -> Option<String> {
 /// `space_type`/`authority`/`skey` select **which spaces** the grant covers (the first three
 /// segments of a space URI); `action` + `collection` govern the records in them; `manage`
 /// governs the spaces themselves.
-pub(super) struct SpaceGrant {
-    pub(super) space_type: String,
-    pub(super) authority: String,
-    pub(super) skey: String,
+pub struct SpaceGrant {
+    pub space_type: String,
+    pub authority: String,
+    pub skey: String,
     /// Explicit `collection=` values. Empty means the grant named none — the space type
     /// declaration then supplies the write targets at match time. Empty is never "all".
-    pub(super) collection: Vec<String>,
-    pub(super) action: Vec<String>,
-    pub(super) manage: Vec<String>,
+    pub collection: Vec<String>,
+    pub action: Vec<String>,
+    pub manage: Vec<String>,
 }
 
 /// Parse a whole `space:` scope token into its grant, for callers outside the grammar itself.
@@ -602,7 +602,7 @@ pub(super) struct SpaceGrant {
 /// matcher uses; routing it through this one parse is what keeps what the user is shown and what
 /// the token actually authorizes from drifting apart. Returns `None` for any non-`space:` or
 /// malformed token.
-pub(super) fn parse_space_token(token: &str) -> Option<SpaceGrant> {
+pub fn parse_space_token(token: &str) -> Option<SpaceGrant> {
     let syntax = ScopeSyntax::parse(token);
     if syntax.prefix != "space" {
         return None;
@@ -613,7 +613,7 @@ pub(super) fn parse_space_token(token: &str) -> Option<SpaceGrant> {
 /// Whether a grant's `action` set contains a verb that writes records — the only case in which
 /// its `collection` set means anything (`read`/`read_self` are all-or-nothing at the space
 /// boundary and ignore `collection` entirely).
-pub(super) fn space_grant_writes_records(grant: &SpaceGrant) -> bool {
+pub fn space_grant_writes_records(grant: &SpaceGrant) -> bool {
     grant
         .action
         .iter()

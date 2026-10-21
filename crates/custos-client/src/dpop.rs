@@ -120,7 +120,7 @@ impl DpopKeypair {
     /// Compute the RFC 7638 JWK thumbprint: `base64url(SHA-256(canonical_jwk_json))`.
     ///
     /// The canonical JSON uses lexicographically-sorted keys (crv, kty, x, y) per RFC 7638 §3.2.
-    /// This matches the PDS's `jwk_thumbprint()` function in `crates/pds/src/auth/dpop.rs`.
+    /// This matches the PDS's `jwk_thumbprint()` function in `crates/custos-core/src/auth/dpop.rs`.
     #[allow(
         clippy::expect_used,
         reason = "serializing a map of JSON strings cannot fail"

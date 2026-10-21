@@ -4,8 +4,11 @@
 //!
 //! A sweep is a [`Sweep`] impl: its cadence plus one `run` pass. [`Scheduler`] owns everything
 //! else — the interval loop, the skipped boot tick (or an opt-in first pass at boot), jitter,
-//! missed-tick policy, shutdown, the failure posture, and writing `AppState.sweeps` for
+//! missed-tick policy, shutdown, the failure posture, and writing `CoreState.sweeps` for
 //! `GET /v1/admin/health`.
+//!
+//! Both are generic over the state a sweep reads (`St`): any state the scheduler can project a
+//! [`CoreState`] out of, so a feature's sweep can take that feature's state.
 //!
 //! Failure posture: a pass that returns `Err` is logged and records nothing, so a stale (or
 //! absent) status entry stays the operator's alarm. A pass that returns `Ok` records, even
@@ -15,12 +18,14 @@
 use std::future::Future;
 use std::time::Duration;
 
+use axum::extract::FromRef;
+
 use rand_core::{OsRng, RngCore};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::app::AppState;
 use crate::sweep_status::SweepRun;
+use crate::CoreState;
 
 /// What one completed pass did; the scheduler stamps the completion time.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +42,8 @@ impl Pass {
     }
 }
 
-pub trait Sweep: Send + Sync + 'static {
-    /// Log label and `AppState.sweeps` key; one of `sweep_status::names`.
+pub trait Sweep<St>: Send + Sync + 'static {
+    /// Log label and `CoreState.sweeps` key; one of `sweep_status::names`.
     const NAME: &'static str;
 
     /// Whether a completed pass is published to `GET /v1/admin/health`. Only the
@@ -67,16 +72,19 @@ pub trait Sweep: Send + Sync + 'static {
     }
 
     /// One pass. `Err` means the pass did not complete and must record nothing.
-    fn run(&self, state: &AppState) -> impl Future<Output = anyhow::Result<Pass>> + Send;
+    fn run(&self, state: &St) -> impl Future<Output = anyhow::Result<Pass>> + Send;
 }
 
 /// Run one pass and publish it per the failure posture above. The loop's body, and what tests
 /// call to exercise a sweep end to end.
-pub async fn run_once<S: Sweep>(sweep: &S, state: &AppState) -> Option<Pass> {
+pub async fn run_once<St, S: Sweep<St>>(sweep: &S, state: &St) -> Option<Pass>
+where
+    CoreState: FromRef<St>,
+{
     match sweep.run(state).await {
         Ok(pass) => {
             if S::REPORTS_STATUS {
-                state
+                CoreState::from_ref(state)
                     .sweeps
                     .record(S::NAME, SweepRun::now_with_errors(pass.swept, pass.errors));
             }
@@ -101,14 +109,18 @@ fn jitter_delay(max: Duration) -> Duration {
 /// Owns the running sweeps. Spawn each with [`Scheduler::spawn`]; at process shutdown call
 /// [`Scheduler::shutdown`], which stops every loop between passes and waits for any pass in
 /// flight (a half-finished GC pass is not something to abort).
-pub struct Scheduler {
-    state: AppState,
+pub struct Scheduler<St> {
+    state: St,
     stop: watch::Sender<bool>,
     handles: Vec<JoinHandle<()>>,
 }
 
-impl Scheduler {
-    pub fn new(state: AppState) -> Self {
+impl<St> Scheduler<St>
+where
+    St: Clone + Send + Sync + 'static,
+    CoreState: FromRef<St>,
+{
+    pub fn new(state: St) -> Self {
         Self {
             state,
             stop: watch::channel(false).0,
@@ -119,7 +131,7 @@ impl Scheduler {
     /// Start the sweep's loop: consume the first tick without running a pass (so nothing sweeps
     /// mid-boot) unless it asks for [`Sweep::first_pass_at_boot`], then run once per interval,
     /// each pass after a random [`Sweep::max_jitter`] delay.
-    pub fn spawn<S: Sweep>(&mut self, sweep: S) {
+    pub fn spawn<S: Sweep<St>>(&mut self, sweep: S) {
         let state = self.state.clone();
         let mut stop = self.stop.subscribe();
         self.handles.push(tokio::spawn(async move {
@@ -162,7 +174,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
+    use crate::test_support::test_state;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::time::sleep;
@@ -173,7 +185,7 @@ mod tests {
         at_boot: bool,
     }
 
-    impl Sweep for Probe {
+    impl Sweep<CoreState> for Probe {
         const NAME: &'static str = "probe";
 
         fn interval(&self) -> Duration {
@@ -184,7 +196,7 @@ mod tests {
             self.at_boot
         }
 
-        async fn run(&self, _state: &AppState) -> anyhow::Result<Pass> {
+        async fn run(&self, _state: &CoreState) -> anyhow::Result<Pass> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail {
                 anyhow::bail!("boom");

@@ -4,7 +4,7 @@ use common::{ApiError, ApiResultExt, ErrorCode};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
-use crate::app::AppState;
+use crate::CoreState;
 
 /// Scope embedded in the JWT `scope` claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,10 +31,10 @@ impl AuthScope {
 }
 
 /// The `scope` claim string for a full-access session token.
-pub(crate) const SCOPE_ACCESS: &str = "com.atproto.access";
+pub const SCOPE_ACCESS: &str = "com.atproto.access";
 
 /// The `scope` claim string for an app-password session, selected by privilege.
-pub(crate) fn app_pass_scope(privileged: bool) -> &'static str {
+pub fn app_pass_scope(privileged: bool) -> &'static str {
     if privileged {
         "com.atproto.appPassPrivileged"
     } else {
@@ -102,7 +102,7 @@ pub fn peek_jwt_iss(token: &str) -> Option<String> {
 /// Uses `typ` header as algorithm discriminator to prevent algorithm confusion attacks.
 pub(super) fn verify_access_token(
     token: &str,
-    state: &AppState,
+    state: &CoreState,
 ) -> Result<AccessTokenClaims, ApiError> {
     if peek_jwt_typ(token).as_deref() == Some("at+jwt") {
         verify_es256_access_token(token, state)
@@ -116,7 +116,7 @@ pub(super) fn verify_access_token(
 /// Shared by every verifier of a token this server signed with that key — the AT+JWT access-token
 /// verifier below and the agent `identity_assertion` verifier in `routes/oauth_token/jwt_bearer.rs` — so the
 /// JWK-parsing/error-handling shape lives in one place and can't drift between the two.
-pub(crate) fn oauth_es256_decoding_key(state: &AppState) -> Result<DecodingKey, ApiError> {
+pub fn oauth_es256_decoding_key(state: &CoreState) -> Result<DecodingKey, ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid token");
     let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(
         state.oauth_signing_keypair.public_key_jwk.clone(),
@@ -132,7 +132,10 @@ pub(crate) fn oauth_es256_decoding_key(state: &AppState) -> Result<DecodingKey, 
 }
 
 /// Verify ES256 AT+JWT tokens issued by the OAuth token endpoint.
-fn verify_es256_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
+fn verify_es256_access_token(
+    token: &str,
+    state: &CoreState,
+) -> Result<AccessTokenClaims, ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid token");
     let decoding_key = oauth_es256_decoding_key(state)?;
     let mut validation = Validation::new(Algorithm::ES256);
@@ -173,7 +176,10 @@ fn apply_audience_validation(validation: &mut Validation, config: &common::Confi
 }
 
 /// Verify HS256 access/refresh JWT issued by this server (legacy tokens).
-fn verify_hs256_access_token(token: &str, state: &AppState) -> Result<AccessTokenClaims, ApiError> {
+fn verify_hs256_access_token(
+    token: &str,
+    state: &CoreState,
+) -> Result<AccessTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
 
     let mut validation = Validation::new(Algorithm::HS256);
@@ -230,7 +236,7 @@ pub fn parse_scope(scope: &str) -> Result<AuthScope, ApiError> {
 /// authoritative DID is read from the DB row after the token is confirmed to
 /// exist — never trusted directly from the JWT claim.
 #[derive(Debug, Deserialize)]
-pub(crate) struct RefreshTokenClaims {
+pub struct RefreshTokenClaims {
     pub scope: String,
     /// Token ID embedded in the JWT and stored in `refresh_tokens.jti`.
     /// `None` when an access token (which has no `jti`) is mistakenly presented.
@@ -242,7 +248,10 @@ pub(crate) struct RefreshTokenClaims {
 /// Validates signature, expiry, and audience (when `server_did` is configured).
 /// Does NOT check that `scope == "com.atproto.refresh"` — callers are responsible
 /// for that check so that the error message can be precise.
-pub fn verify_refresh_token(token: &str, state: &AppState) -> Result<RefreshTokenClaims, ApiError> {
+pub fn verify_refresh_token(
+    token: &str,
+    state: &CoreState,
+) -> Result<RefreshTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
     let mut validation = Validation::new(Algorithm::HS256);
     apply_audience_validation(&mut validation, &state.config);
@@ -278,7 +287,7 @@ pub fn verify_refresh_token(token: &str, state: &AppState) -> Result<RefreshToke
 /// Does NOT check `scope` — callers must verify `scope == "com.atproto.refresh"`.
 pub fn verify_refresh_token_allow_expired(
     token: &str,
-    state: &AppState,
+    state: &CoreState,
 ) -> Result<RefreshTokenClaims, ApiError> {
     let decoding_key = DecodingKey::from_secret(&state.jwt_secret);
     let mut validation = Validation::new(Algorithm::HS256);
@@ -614,7 +623,7 @@ struct LegacyRefreshClaims {
 /// `personal_details` embeds the app-password personal-details grant (ADR-0033). It is
 /// meaningful only for app-pass scopes — full access already implies it — so setting it on a
 /// [`SCOPE_ACCESS`] token is rejected here for the same centralization reason.
-pub(crate) fn issue_access_jwt(
+pub fn issue_access_jwt(
     secret: &[u8; 32],
     did: &str,
     aud: &str,
@@ -654,7 +663,7 @@ pub(crate) fn issue_access_jwt(
 }
 
 /// Sign an HS256 refresh JWT (scope: com.atproto.refresh) with a 90-day lifetime.
-pub(crate) fn issue_refresh_jwt(
+pub fn issue_refresh_jwt(
     secret: &[u8; 32],
     did: &str,
     aud: &str,

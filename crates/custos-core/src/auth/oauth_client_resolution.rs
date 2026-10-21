@@ -179,7 +179,7 @@ fn host_is_loopback(url: &Url) -> bool {
 /// Whether a URL string's host is loopback (pure; unparseable → false). Shared policy
 /// point: loopback is the one place plain-http client_ids and locally-derived (rather
 /// than canonical) wallet client_ids are acceptable.
-pub(crate) fn url_is_loopback(url: &str) -> bool {
+pub fn url_is_loopback(url: &str) -> bool {
     Url::parse(url)
         .map(|u| host_is_loopback(&u))
         .unwrap_or(false)
@@ -214,10 +214,7 @@ fn validate_metadata_document(client_id: &str, body: &str) -> Result<(), ClientR
 /// Shared policy point for both request surfaces that validate a redirect target —
 /// `routes/oauth_par.rs` and `routes/oauth_authorize.rs` (routes cannot import each
 /// other, and a security check restated per route is a check that drifts per route).
-pub(crate) fn validate_private_use_redirect(
-    client_id: &str,
-    redirect_uri: &str,
-) -> Result<(), String> {
+pub fn validate_private_use_redirect(client_id: &str, redirect_uri: &str) -> Result<(), String> {
     let Ok(client_url) = Url::parse(client_id) else {
         return Ok(());
     };

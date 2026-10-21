@@ -184,7 +184,7 @@ pub async fn apply_writes(
                 .map_err(|message| ApiError::new(ErrorCode::InvalidRequest, message))?;
             crate::lexicon::registry()
                 .validate_record(&collection, &rkey, value, body.validate)
-                .map_err(crate::record_write::record_validation_error)?
+                .map_err(crate::lexicon::record_validation_error)?
         } else {
             None
         };

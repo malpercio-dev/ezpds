@@ -3,7 +3,7 @@
 Byte-identical copies of `com.atproto.*` and `app.bsky.*` lexicon JSON documents from the
 reference implementation, vendored so Custos can validate XRPC request bodies, query parameters,
 response outputs, and repo-write records against the same schemas the reference PDS enforces
-(`crates/pds/src/lexicon/` — see MM-364 for the input-body layer, MM-397 for the query-params
+(`crates/custos-core/src/lexicon/` — see MM-364 for the input-body layer, MM-397 for the query-params
 layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag record layer).
 
 - **Source:** <https://github.com/bluesky-social/atproto>, `lexicons/` tree
@@ -81,10 +81,10 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
      "https://raw.githubusercontent.com/bluesky-social/atproto/619c6e8556db7dd37bb7df1d92a5eae83da8d8b0/lexicons/com/atproto/space/example.json"
    ```
 
-2. Add it to `LEXICON_SOURCES` in `crates/pds/src/lexicon/mod.rs` (also vendor anything its
+2. Add it to `LEXICON_SOURCES` in `crates/custos-core/src/lexicon/mod.rs` (also vendor anything its
    input schema, its JSON `output` schema, or — for a record — its `record` body `ref`s/`union`s
    reach).
-3. `cargo test -p pds --bins lexicon` — the registry parser rejects any construct the validator
+3. `cargo test -p custos-core lexicon` — the registry parser rejects any construct the validator
    doesn't implement (unknown keys, def types, string formats) and any dangling ref, so an
    unsupported document fails loudly here instead of validating laxer than the reference.
 4. `just lexgen` — regenerates the TypeScript types the Node tools import

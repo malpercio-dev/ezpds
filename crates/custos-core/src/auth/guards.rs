@@ -29,8 +29,8 @@ use subtle::ConstantTimeEq;
 
 use common::{ApiError, ApiResultExt, ErrorCode, ADMIN_TIMESTAMP_WINDOW_SECS};
 
-use crate::app::AppState;
 use crate::time::unix_now_secs;
+use crate::CoreState;
 
 /// Information about an authenticated pending session.
 #[derive(Debug)]
@@ -56,7 +56,7 @@ pub struct SessionInfo {
 /// no token configured.
 ///
 /// Call this at the top of any handler that requires admin access.
-pub fn require_admin_token(headers: &HeaderMap, state: &AppState) -> Result<(), ApiError> {
+pub fn require_admin_token(headers: &HeaderMap, state: &CoreState) -> Result<(), ApiError> {
     let expected_token = state
         .config
         .admin_token
@@ -200,7 +200,7 @@ pub async fn require_admin(
     path: &str,
     headers: &HeaderMap,
     body: &[u8],
-    state: &AppState,
+    state: &CoreState,
 ) -> Result<AdminActor, ApiError> {
     // The master token is the root of trust / break-glass path: accept it whenever it
     // is valid, regardless of any (possibly malformed) device headers, so the
@@ -234,7 +234,7 @@ pub async fn require_admin_json(
     path: &str,
     headers: &HeaderMap,
     body: &[u8],
-    state: &AppState,
+    state: &CoreState,
 ) -> Result<AdminActor, Response> {
     // The media-type guard runs first: it is cheap and side-effect-free, whereas
     // `require_admin` may consume a nonce and bump `last_seen_at`. Checking it first
@@ -268,7 +268,7 @@ async fn verify_admin_device_request(
     body: &[u8],
     db: &sqlx::SqlitePool,
 ) -> Result<AdminActor, ApiError> {
-    use crate::db::admin_devices::{get_device, insert_nonce_if_absent, touch_last_seen};
+    use custos_db::admin_devices::{get_device, insert_nonce_if_absent, touch_last_seen};
 
     let device_id = header_str(headers, ADMIN_DEVICE_HEADER).ok_or_else(invalid_admin_signature)?;
     let timestamp = header_str(headers, ADMIN_TIMESTAMP_HEADER)
@@ -335,7 +335,7 @@ async fn verify_admin_device_request(
 /// handler reuses it for the pairing-code state checks it owns.
 pub const INVALID_REGISTRATION_CREDENTIALS: &str = "invalid registration credentials";
 
-pub(crate) fn invalid_registration_credentials() -> ApiError {
+pub fn invalid_registration_credentials() -> ApiError {
     ApiError::new(ErrorCode::Unauthorized, INVALID_REGISTRATION_CREDENTIALS)
 }
 
@@ -504,7 +504,7 @@ pub async fn require_device_token(
     }
 
     let transfer_device_found =
-        crate::db::transfers::transfer_device_token_exists(db, device_id, &token_hash)
+        custos_db::transfers::transfer_device_token_exists(db, device_id, &token_hash)
             .await
             .or_internal_as(
                 "failed to query transfer device token",
@@ -603,7 +603,7 @@ pub async fn authenticate_account_owner(
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
-    state: &AppState,
+    state: &CoreState,
 ) -> Result<common::Did, OwnerAuthError> {
     if let Ok(session) = require_session(headers, &state.db).await {
         return Ok(session.did);
@@ -628,7 +628,7 @@ pub async fn authenticate_owner(
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
-    state: &AppState,
+    state: &CoreState,
 ) -> Result<common::Did, ApiError> {
     authenticate_account_owner(headers, method, uri, state)
         .await
@@ -651,13 +651,13 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue};
     use std::sync::Arc;
 
-    use crate::app::test_state;
+    use crate::test_support::test_state;
 
-    async fn state_with_token(token: &str) -> AppState {
+    async fn state_with_token(token: &str) -> CoreState {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.admin_token = Some(common::Sensitive(token.to_string()));
-        AppState {
+        CoreState {
             config: Arc::new(config),
             ..base
         }
@@ -1028,7 +1028,7 @@ mod tests {
 
     // ── require_device_token tests ────────────────────────────────────────────
 
-    use crate::routes::test_utils::seed_device;
+    use crate::test_support::seed_device;
 
     fn bearer(token: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -1095,7 +1095,7 @@ mod tests {
 #[cfg(test)]
 mod device_registration_tests {
     use super::*;
-    use crate::routes::test_utils::sign_p256;
+    use crate::test_support::sign_p256;
 
     #[test]
     fn sign_string_is_newline_separated() {
@@ -1157,16 +1157,17 @@ mod device_registration_tests {
 mod require_admin_tests {
     use super::*;
 
-    use crate::app::{test_state, AppState};
-    use crate::db::admin_devices::{insert_device, revoke_device, NewAdminDevice};
-    use crate::routes::test_utils::sign_p256;
+    use crate::test_support::sign_p256;
+    use crate::test_support::test_state;
+    use crate::CoreState;
+    use custos_db::admin_devices::{insert_device, revoke_device, NewAdminDevice};
 
     const METHOD: &str = "POST";
     const PATH: &str = "/v1/accounts/claim-codes";
     const BODY: &[u8] = br#"{"count":1}"#;
 
     /// Seed an active admin device, returning its id and the keypair that signs for it.
-    async fn seed_admin_device(state: &AppState) -> (String, crypto::P256Keypair) {
+    async fn seed_admin_device(state: &CoreState) -> (String, crypto::P256Keypair) {
         let keypair = crypto::generate_p256_keypair().expect("keypair");
         let device_id = uuid::Uuid::new_v4().to_string();
         insert_device(
@@ -1448,7 +1449,7 @@ mod require_admin_tests {
     async fn last_seen_at_is_bumped_after_auth() {
         let state = test_state().await;
         let (device_id, keypair) = seed_admin_device(&state).await;
-        assert!(crate::db::admin_devices::get_device(&state.db, &device_id)
+        assert!(custos_db::admin_devices::get_device(&state.db, &device_id)
             .await
             .unwrap()
             .unwrap()
@@ -1469,7 +1470,7 @@ mod require_admin_tests {
             .unwrap();
 
         assert!(
-            crate::db::admin_devices::get_device(&state.db, &device_id)
+            custos_db::admin_devices::get_device(&state.db, &device_id)
                 .await
                 .unwrap()
                 .unwrap()

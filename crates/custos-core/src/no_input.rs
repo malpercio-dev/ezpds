@@ -18,7 +18,7 @@
 //! ```rust,ignore
 //! async fn handler(
 //!     user: AuthenticatedUser,
-//!     State(state): State<AppState>,
+//!     State(state): State<CoreState>,
 //!     _: NoInputBody,
 //! ) -> Result<StatusCode, ApiError> { ... }
 //! ```

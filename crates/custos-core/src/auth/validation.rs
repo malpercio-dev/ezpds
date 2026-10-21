@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use common::{ApiError, ErrorCode};
 
-use crate::app::FailedLoginStore;
+use crate::state::FailedLoginStore;
 
 /// Maximum allowed length for a device public key string.
 ///

@@ -396,7 +396,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.blobs.max_blob_size = 100;
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }
@@ -408,7 +411,10 @@ mod tests {
         config.blobs.max_blob_size = 1000;
         config.blobs.max_storage_per_account = 250;
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }

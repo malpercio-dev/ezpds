@@ -12,7 +12,7 @@
 //!      because we are the authority for those documents; `resolve_did_document_force_refresh`
 //!      is the only path that un-stales a row (`db::dids::rewrite_did_document`, UPDATE-only),
 //!      backing `refreshIdentity` and the migration-`createAccount` verify retry.
-//!   2. `AppState::did_document_cache` — every *remote* document, held on the reference PDS's
+//!   2. `CoreState::did_document_cache` — every *remote* document, held on the reference PDS's
 //!      1h-stale / 24h-hard TTLs with stale-while-revalidate. Without it every proxied request,
 //!      service-auth verification, and Lexicon-authority lookup pays a live fetch of
 //!      plc.directory or a did:web endpoint, which puts a third party's latency (and its 504s)
@@ -38,7 +38,7 @@ use common::{ApiError, ErrorCode};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::app::AppState;
+use crate::CoreState;
 
 use super::proxy::validate_proxy_endpoint;
 
@@ -50,7 +50,7 @@ pub const INVALID_HANDLE: &str = "handle.invalid";
 /// Infrastructure errors in DNS / well-known are logged and treated as misses so later fallbacks
 /// still get a chance to resolve the handle. Database errors fail closed.
 pub async fn resolve_handle_to_did(
-    state: &AppState,
+    state: &CoreState,
     handle: &str,
 ) -> Result<Option<String>, ApiError> {
     super::handle::validate_handle_structure(handle)
@@ -147,7 +147,7 @@ pub struct CachedDidDocument {
     refreshing: bool,
 }
 
-/// TTL cache of *remote* DID documents, held in [`AppState`] and shared across all requests.
+/// TTL cache of *remote* DID documents, held in [`CoreState`] and shared across all requests.
 pub type DidDocumentCache = Arc<Mutex<HashMap<String, CachedDidDocument>>>;
 
 /// Create an empty [`DidDocumentCache`].
@@ -178,7 +178,7 @@ fn cache_decision(age: Duration, refreshing: &mut bool) -> Option<bool> {
 /// Returns `(document, needs_refresh)` while the entry is servable per [`cache_decision`]. An
 /// entry past the hard bound is dropped and reported as a miss, so the next read blocks on the
 /// authority rather than serving it.
-async fn cached_did_document(state: &AppState, did: &str) -> Option<(Value, bool)> {
+async fn cached_did_document(state: &CoreState, did: &str) -> Option<(Value, bool)> {
     let mut map = state.did_document_cache.lock().await;
 
     let hit = match map.get_mut(did) {
@@ -198,7 +198,7 @@ async fn cached_did_document(state: &AppState, did: &str) -> Option<(Value, bool
 
 /// Record a freshly resolved remote document, replacing any existing entry (and clearing its
 /// in-flight refresh flag).
-async fn store_did_document(state: &AppState, did: &str, doc: &Value) {
+async fn store_did_document(state: &CoreState, did: &str, doc: &Value) {
     let mut map = state.did_document_cache.lock().await;
 
     // ponytail: prune-on-insert rather than LRU eviction — a cache this cheap to rebuild does not
@@ -228,7 +228,7 @@ async fn store_did_document(state: &AppState, did: &str, doc: &Value) {
 /// logged warning and nothing more — the entry keeps its old `fetched_at` and goes on being
 /// served (and re-attempted) until [`DID_CACHE_MAX_TTL`] retires it. That is deliberate: an
 /// authority that is down must not cost us a document we already hold.
-fn spawn_did_document_refresh(state: &AppState, did: &str) {
+fn spawn_did_document_refresh(state: &CoreState, did: &str) {
     let state = state.clone();
     let did = did.to_string();
 
@@ -247,7 +247,7 @@ fn spawn_did_document_refresh(state: &AppState, did: &str) {
 }
 
 /// Fetch a DID document from its authority, consulting no cache.
-async fn fetch_did_document(state: &AppState, did: &str) -> Result<Value, ApiError> {
+async fn fetch_did_document(state: &CoreState, did: &str) -> Result<Value, ApiError> {
     if did.starts_with("did:plc:") {
         resolve_plc_did_document(state, did).await
     } else if did.starts_with("did:web:") {
@@ -263,7 +263,7 @@ async fn fetch_did_document(state: &AppState, did: &str) -> Result<Value, ApiErr
 /// neither reaches its authority — `did:plc` values through the configured PLC directory,
 /// `did:web` values through the method's `did.json` URL. Returned documents must assert the
 /// requested DID in their `id` field.
-pub async fn resolve_did_document(state: &AppState, did: &str) -> Result<Value, ApiError> {
+pub async fn resolve_did_document(state: &CoreState, did: &str) -> Result<Value, ApiError> {
     resolve_did_document_inner(state, did, false).await
 }
 
@@ -275,7 +275,7 @@ pub async fn resolve_did_document(state: &AppState, did: &str) -> Result<Value, 
 /// identity-migration leg) is otherwise served against the fossil key forever. This is the
 /// "force refresh" the reference PDS's `refreshIdentity` performs, and the retry the migration
 /// `createAccount` verifier takes on a signature failure. On success the fresh document is written
-/// back over the existing cache row (UPDATE-only — see [`crate::db::dids::rewrite_did_document`]),
+/// back over the existing cache row (UPDATE-only — see [`custos_db::dids::rewrite_did_document`]),
 /// so a subsequent cache-first read (including this server's own `resolveDid`/`getSession`)
 /// reflects it.
 ///
@@ -284,7 +284,7 @@ pub async fn resolve_did_document(state: &AppState, did: &str) -> Result<Value, 
 /// [`DID_CACHE_STALE_TTL`] — the service-auth verifier takes it on a signature failure precisely
 /// so a stale cached key can never be the last word.
 pub async fn resolve_did_document_force_refresh(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
 ) -> Result<Value, ApiError> {
     resolve_did_document_inner(state, did, true).await
@@ -310,7 +310,7 @@ pub async fn resolve_did_document_force_refresh(
 /// and `activateAccount` call that as an explicit operator/user action, and throttling a refresh
 /// someone asked for would break the healing they came for.
 pub async fn refresh_did_document_after_signature_mismatch(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
 ) -> Result<Value, ApiError> {
     let outcome = |o: &'static str| {
@@ -353,7 +353,7 @@ pub async fn refresh_did_document_after_signature_mismatch(
 }
 
 async fn resolve_did_document_inner(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
     force_refresh: bool,
 ) -> Result<Value, ApiError> {
@@ -362,7 +362,7 @@ async fn resolve_did_document_inner(
     }
 
     if !force_refresh {
-        if let Some(doc) = crate::db::dids::get_did_document(&state.db, did).await? {
+        if let Some(doc) = custos_db::dids::get_did_document(&state.db, did).await? {
             return validate_did_doc_id(doc, did, ErrorCode::InternalError);
         }
         if let Some((doc, needs_refresh)) = cached_did_document(state, did).await {
@@ -380,7 +380,7 @@ async fn resolve_did_document_inner(
     // resolution. The UPDATE's row count also tells us which tier this DID belongs to.
     let mut has_db_row = false;
     if force_refresh {
-        match crate::db::dids::rewrite_did_document(&state.db, did, &doc).await {
+        match custos_db::dids::rewrite_did_document(&state.db, did, &doc).await {
             Ok(updated) => has_db_row = updated,
             Err(e) => {
                 tracing::warn!(did = %did, error = %e, "failed to rewrite cached DID document after force refresh (non-fatal)");
@@ -401,7 +401,7 @@ async fn resolve_did_document_inner(
 /// Return the verified handle for `did` and `did_doc`, or `handle.invalid` when the document's
 /// `alsoKnownAs` handles do not resolve back to the DID.
 pub async fn verified_handle_for_did(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
     did_doc: &Value,
 ) -> Result<String, ApiError> {
@@ -416,7 +416,7 @@ pub async fn verified_handle_for_did(
 
 /// Verify a caller-provided handle against a DID document and the handle-resolution chain.
 pub async fn verified_handle_for_identifier(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
     did_doc: &Value,
     handle: &str,
@@ -435,7 +435,7 @@ pub async fn verified_handle_for_identifier(
     }
 }
 
-async fn resolve_plc_did_document(state: &AppState, did: &str) -> Result<Value, ApiError> {
+async fn resolve_plc_did_document(state: &CoreState, did: &str) -> Result<Value, ApiError> {
     let plc_url = format!(
         "{}/{}",
         state.config.plc_directory_url.trim_end_matches('/'),
@@ -478,7 +478,7 @@ async fn resolve_plc_did_document(state: &AppState, did: &str) -> Result<Value, 
 }
 
 pub(crate) async fn resolve_web_did_document(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
 ) -> Result<Value, ApiError> {
     let url = did_web_document_url(did)?;
@@ -528,8 +528,8 @@ pub(crate) async fn resolve_web_did_document(
 
 /// Fetch the authoritative did:web response without normalizing JSON whitespace or key order.
 /// The wallet mint ceremony uses this to prove the user published the exact reviewed bytes.
-pub(crate) async fn resolve_web_did_document_bytes(
-    state: &AppState,
+pub async fn resolve_web_did_document_bytes(
+    state: &CoreState,
     did: &str,
 ) -> Result<String, ApiError> {
     let url = did_web_document_url(did)?;
@@ -778,7 +778,8 @@ mod tests {
     #[tokio::test]
     async fn signature_mismatch_refresh_is_cooled_down_per_did() {
         let mut state =
-            crate::app::test_state_with_plc_url("http://127.0.0.1:1/plc".to_string()).await;
+            crate::test_support::test_state_with_plc_url("http://127.0.0.1:1/plc".to_string())
+                .await;
         state.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
             &common::RateLimitConfig {
                 enabled: true,
@@ -983,7 +984,7 @@ mod tests {
     async fn remote_documents_round_trip_through_the_cache() {
         use super::{cached_did_document, store_did_document};
 
-        let state = crate::state::test_state().await;
+        let state = crate::test_support::test_state().await;
         let did = "did:web:api.bsky.app";
         let doc = serde_json::json!({ "id": did });
 

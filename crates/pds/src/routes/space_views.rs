@@ -47,7 +47,7 @@ pub fn validate_record(
 ) -> Result<Option<RecordValidation>, ApiError> {
     crate::lexicon::registry()
         .validate_record(collection, rkey, record, validate)
-        .map_err(crate::record_write::record_validation_error)
+        .map_err(crate::lexicon::record_validation_error)
 }
 
 /// The `{uri, cid, validationStatus}` body a single-record write answers with.

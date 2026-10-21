@@ -33,12 +33,12 @@ use serde_json::Value;
 
 use common::{ApiError, ErrorCode};
 
-use crate::app::AppState;
 use crate::auth::jwt::{peek_jwt_iss, verify_service_auth_jwt, ServiceAuthError};
-use crate::db::accounts::{account_lifecycle, AccountLifecycle};
 use crate::identity::resolution::{
     atproto_verification_key, refresh_did_document_after_signature_mismatch, resolve_did_document,
 };
+use crate::CoreState;
+use custos_db::accounts::{account_lifecycle, AccountLifecycle};
 
 /// A caller authenticated by an atproto service-auth JWT, authorized for **exactly one** lexicon
 /// method. Carries only the issuing account's DID — no scope, no session identity — because a
@@ -83,7 +83,7 @@ pub fn is_service_auth_request(headers: &HeaderMap) -> bool {
 /// new effect. If a future consumer authorizes a non-idempotent method this way, add replay
 /// tracking here before doing so.
 pub async fn require_service_auth(
-    state: &AppState,
+    state: &CoreState,
     headers: &HeaderMap,
     lxm: &str,
     now: u64,
@@ -147,7 +147,7 @@ pub async fn require_service_auth(
 /// Shared by the `uploadBlob` service-auth guard and migration-mode `createAccount`; each passes
 /// its own `iss`/`aud`/`lxm`.
 pub async fn verify_service_auth_resolving_key(
-    state: &AppState,
+    state: &CoreState,
     token: &str,
     iss: &str,
     aud: &str,
@@ -204,9 +204,9 @@ fn unauthorized() -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{test_state, test_state_with_plc_url};
     use crate::auth::jwt::mint_service_auth_jwt;
-    use crate::routes::test_utils::seed_did_document;
+    use crate::test_support::seed_did_document;
+    use crate::test_support::{test_state, test_state_with_plc_url};
     use axum::http::{header::AUTHORIZATION, HeaderValue};
 
     const UPLOAD_BLOB_LXM: &str = "com.atproto.repo.uploadBlob";
@@ -226,7 +226,7 @@ mod tests {
     }
 
     /// Seed a local active account with a cached DID document whose `#atproto` key is `kp`.
-    async fn seed_active_account(state: &AppState, did: &str, kp: &crypto::P256Keypair) {
+    async fn seed_active_account(state: &CoreState, did: &str, kp: &crypto::P256Keypair) {
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES (?, 'svc@example.com', NULL, datetime('now'), datetime('now'))",

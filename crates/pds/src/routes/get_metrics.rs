@@ -119,8 +119,11 @@ mod tests {
         let mut config = (*base.config).clone();
         config.telemetry.metrics_enabled = false;
         let state = crate::app::AppState {
-            config: Arc::new(config),
-            metrics: Arc::new(crate::metrics::Metrics::disabled()),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                metrics: Arc::new(crate::metrics::Metrics::disabled()),
+                ..base.core
+            },
             ..base
         };
 
@@ -142,7 +145,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.telemetry.metrics_require_admin = true;
         let state = crate::app::AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         let router = app(state);

@@ -1,7 +1,7 @@
 // pattern: Functional Core
 //
 // Offline atproto inter-service auth JWT minting. The wallet-side twin of the PDS's
-// `mint_service_auth_jwt` (crates/pds/src/auth/jwt.rs): the same
+// `mint_service_auth_jwt` (crates/custos-core/src/auth/jwt.rs): the same
 // `base64url(header).base64url(payload).base64url(signature)` ES256 triple, but taking
 // the crate's standard fallible external-signer callback so a wallet-held key (software
 // scalar or Secure Enclave) can sign it. This is what makes sovereign disaster recovery

@@ -104,7 +104,10 @@ mod tests {
 
     fn state_with_well_known(state: AppState, did: Option<String>) -> AppState {
         AppState {
-            well_known_resolver: Some(Arc::new(FixedWellKnownResolver { did })),
+            core: custos_core::CoreState {
+                well_known_resolver: Some(Arc::new(FixedWellKnownResolver { did })),
+                ..state.core
+            },
             ..state
         }
     }
@@ -195,9 +198,15 @@ mod tests {
     /// and surface transient DNS failures as server errors.
     #[tokio::test]
     async fn dns_error_falls_through_to_404() {
-        let state = AppState {
-            txt_resolver: Some(Arc::new(ErrTxtResolver)),
-            ..test_state().await
+        let state = {
+            let base_state = test_state().await;
+            AppState {
+                core: custos_core::CoreState {
+                    txt_resolver: Some(Arc::new(ErrTxtResolver)),
+                    ..base_state.core
+                },
+                ..base_state
+            }
         };
 
         let response = app(state)
@@ -220,12 +229,18 @@ mod tests {
     #[tokio::test]
     async fn dns_error_falls_through_to_well_known() {
         let did = "did:plc:wellknownuser12345678901234";
-        let state = AppState {
-            txt_resolver: Some(Arc::new(ErrTxtResolver)),
-            well_known_resolver: Some(Arc::new(FixedWellKnownResolver {
-                did: Some(did.to_string()),
-            })),
-            ..test_state().await
+        let state = {
+            let base_state = test_state().await;
+            AppState {
+                core: custos_core::CoreState {
+                    txt_resolver: Some(Arc::new(ErrTxtResolver)),
+                    well_known_resolver: Some(Arc::new(FixedWellKnownResolver {
+                        did: Some(did.to_string()),
+                    })),
+                    ..base_state.core
+                },
+                ..base_state
+            }
         };
 
         let response = app(state)
@@ -246,11 +261,17 @@ mod tests {
     #[tokio::test]
     async fn dns_lookup_uses_atproto_prefix() {
         let captured = Arc::new(Mutex::new(None::<String>));
-        let state = AppState {
-            txt_resolver: Some(Arc::new(CapturingTxtResolver {
-                last_name: captured.clone(),
-            })),
-            ..test_state().await
+        let state = {
+            let base_state = test_state().await;
+            AppState {
+                core: custos_core::CoreState {
+                    txt_resolver: Some(Arc::new(CapturingTxtResolver {
+                        last_name: captured.clone(),
+                    })),
+                    ..base_state.core
+                },
+                ..base_state
+            }
         };
 
         app(state)
@@ -335,11 +356,17 @@ mod tests {
         // (and its own SSRF-relevant structural check) ever runs, matching the reference PDS
         // (`resolveHandle`'s `handle` param is lexicon-validated the same way).
         let last_name = Arc::new(Mutex::new(None));
-        let state = AppState {
-            txt_resolver: Some(Arc::new(CapturingTxtResolver {
-                last_name: last_name.clone(),
-            })),
-            ..test_state().await
+        let state = {
+            let base_state = test_state().await;
+            AppState {
+                core: custos_core::CoreState {
+                    txt_resolver: Some(Arc::new(CapturingTxtResolver {
+                        last_name: last_name.clone(),
+                    })),
+                    ..base_state.core
+                },
+                ..base_state
+            }
         };
 
         let response = app(state)

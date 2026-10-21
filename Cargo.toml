@@ -8,6 +8,7 @@ members = [
     "crates/ios-device-key",
     "crates/custos-client",
     "crates/custos-db",
+    "crates/custos-core",
     "apps/identity-wallet/src-tauri",
     "apps/admin-companion/src-tauri",
 ]
@@ -277,6 +278,8 @@ ios-device-key = { path = "crates/ios-device-key" }
 custos-client = { path = "crates/custos-client" }
 # The SQLite pool, migration log + runner, and cross-feature query modules the PDS crates share.
 custos-db = { path = "crates/custos-db" }
+# CoreState, the auth verification seam, identity, lexicons, rate limiting, metrics, sweeps.
+custos-core = { path = "crates/custos-core" }
 
 # ── Local patches ─────────────────────────────────────────────────────────────
 #

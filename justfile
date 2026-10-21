@@ -84,7 +84,7 @@ docs-check:
     scripts/docs-check.sh
 
 # Regenerate the TypeScript types the Node tools import from the vendored lexicons
-# (crates/pds/lexicons → tools/lexgen/types). Run after any lexicon bump.
+# (crates/custos-core/lexicons → tools/lexgen/types). Run after any lexicon bump.
 lexgen:
     node tools/lexgen/generate.mjs
 

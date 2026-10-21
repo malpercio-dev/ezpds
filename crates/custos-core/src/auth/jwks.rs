@@ -12,7 +12,7 @@
 //!
 //! `JwksCache` is generic over trust source: agent-auth's dynamic-trust issuers are one consumer,
 //! `routes::oauth_token::client_auth` is a second — a confidential OAuth client's `jwks_uri`. The
-//! two get **separate `JwksCache` instances** (each in `AppState`, distinct `[agent_auth]` vs.
+//! two get **separate `JwksCache` instances** (each in `CoreState`, distinct `[agent_auth]` vs.
 //! `[oauth]` TTL/cooldown config) rather than sharing one: an agent-auth issuer URL is operator-
 //! typed into config, while a client's `jwks_uri` is supplied by whoever registers the client, so
 //! the two sides of the URL-keyed cache have different trust models and should not share tuning or
@@ -149,7 +149,7 @@ enum Consult {
 
 /// A TTL cache over a [`JwksFetcher`], keyed by JWKS URL.
 ///
-/// Shared via `Arc` in `AppState`. A verification consults the cache first; on a miss, a stale
+/// Shared via `Arc` in `CoreState`. A verification consults the cache first; on a miss, a stale
 /// entry, or a fetched-but-absent `kid` (a rotated key not yet cached), it fetches and re-selects —
 /// so a key rotation is picked up by the first request that names the new `kid` once the refetch
 /// cooldown (below) allows it.

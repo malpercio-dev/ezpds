@@ -27,12 +27,12 @@
 //! per-algorithm verifiers are private to `jwt`.
 
 use axum::{
-    extract::FromRequestParts,
+    extract::{FromRef, FromRequestParts},
     http::{request::Parts, HeaderMap, Method, Uri},
 };
 use common::ApiError;
 
-use crate::app::AppState;
+use crate::CoreState;
 
 use common::ErrorCode;
 
@@ -111,7 +111,7 @@ pub fn authenticate_access(
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
-    state: &AppState,
+    state: &CoreState,
 ) -> Result<AuthenticatedUser, ApiError> {
     // 1. Extract the access token from the Authorization header. Both schemes are accepted here
     //    (RFC 9449 §7.1): a DPoP-bound OAuth token arrives as `Authorization: DPoP <token>`, a
@@ -217,24 +217,28 @@ pub fn authenticate_access(
     })
 }
 
-impl FromRequestParts<AppState> for AuthenticatedUser {
+impl<S> FromRequestParts<S> for AuthenticatedUser
+where
+    S: Send + Sync,
+    CoreState: FromRef<S>,
+{
     type Rejection = ApiError;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        authenticate_access(&parts.headers, &parts.method, &parts.uri, state)
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        authenticate_access(
+            &parts.headers,
+            &parts.method,
+            &parts.uri,
+            &CoreState::from_ref(state),
+        )
     }
 }
 
 /// Test-only: authenticate `token` as a plain `Bearer` GET through [`authenticate_access`], so
 /// tests outside `auth` check an issued token against the real seam instead of a raw verifier.
-#[cfg(test)]
-pub(crate) fn authenticate_bearer(
-    token: &str,
-    state: &AppState,
-) -> Result<AuthenticatedUser, ApiError> {
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::expect_used)] // test tokens are ASCII JWTs, so the header value always parses
+pub fn authenticate_bearer(token: &str, state: &CoreState) -> Result<AuthenticatedUser, ApiError> {
     let mut headers = HeaderMap::new();
     headers.insert(
         axum::http::header::AUTHORIZATION,

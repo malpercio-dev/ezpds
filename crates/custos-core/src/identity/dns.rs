@@ -4,7 +4,7 @@
 //!
 //! `DnsProvider` manages DNS records for handles: `create_record` on registration
 //! (POST /v1/handles), `delete_record` on removal (DELETE /v1/handles/:handle). v0.1 ships no
-//! provider — `AppState` carries `dns_provider: None` and operators manage DNS manually; real
+//! provider — `CoreState` carries `dns_provider: None` and operators manage DNS manually; real
 //! implementations (Cloudflare, Route53) are wired in when configured.
 //!
 //! `TxtResolver` resolves DNS TXT records for the resolveHandle fallback
@@ -22,7 +22,7 @@ pub struct DnsError(pub String);
 /// Abstraction over DNS TXT record resolution.
 ///
 /// Used by `resolveHandle` to perform the DNS-based handle fallback lookup.
-/// `AppState.txt_resolver` holds `None` when DNS resolution is not needed (tests
+/// `CoreState.txt_resolver` holds `None` when DNS resolution is not needed (tests
 /// exercising only the local-DB path, or configurations without DNS fallback).
 ///
 /// Object-safe: uses `Pin<Box<dyn Future>>` so `dyn TxtResolver` works with `Arc`.

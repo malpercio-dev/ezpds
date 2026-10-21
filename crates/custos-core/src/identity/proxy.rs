@@ -17,7 +17,7 @@
 //! (`build_hardened_client`: redirects disabled + allowlist-enforcing DNS). Re-applying the
 //! allowlist to every address a name resolves to at connect time closes the
 //! redirect/re-resolution TOCTOU gap. One pooled client, stored in
-//! `AppState::hardened_http_client`, serves every SSRF-guarded call site without a fresh client
+//! `CoreState::hardened_http_client`, serves every SSRF-guarded call site without a fresh client
 //! (and TLS handshake) per request — `routes::service_proxy`'s header-target proxying,
 //! `identity::resolution`'s did:web and handle well-known fetches, the Lexicon-authority fetch
 //! behind `auth::permission_sets`/`auth::space_consent`, `labeler_watch`, the OAuth-client JWKS
@@ -34,7 +34,7 @@ use std::time::Duration;
 use common::{ApiError, ErrorCode};
 use serde_json::Value;
 
-use crate::app::AppState;
+use crate::CoreState;
 
 use super::resolution::resolve_did_document;
 
@@ -112,7 +112,7 @@ const HARDENED_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// to provide; folding it into a resolver lets one pooled client serve every SSRF-guarded call
 /// site instead of a fresh client (and TLS handshake) per request.
 ///
-/// `allow_loopback` mirrors [`AppState::allow_loopback_proxy_targets`]: baked in when the client is
+/// `allow_loopback` mirrors [`CoreState::allow_loopback_proxy_targets`]: baked in when the client is
 /// built (`false` in production, `true` only under the test harness). The one test that flips the
 /// flag after construction targets an IP literal, so it never reaches this resolver.
 #[derive(Debug)]
@@ -166,7 +166,7 @@ impl reqwest::dns::Resolve for SsrfResolver {
 /// Lexicon-authority permission-set record (`auth::permission_sets`), an OAuth client's metadata
 /// document and JWKS (`auth::client_attestation`, `auth::jwks`), and a space's managing-app
 /// authorization check (`auth::space`). Built once and stored in
-/// [`AppState::hardened_http_client`], so all SSRF-guarded call sites share one connection pool +
+/// [`CoreState::hardened_http_client`], so all SSRF-guarded call sites share one connection pool +
 /// TLS context instead of constructing a fresh client (and handshaking anew) per request.
 ///
 /// Three hardenings, all always on:
@@ -183,9 +183,7 @@ impl reqwest::dns::Resolve for SsrfResolver {
 ///
 /// `allow_loopback` is baked into the resolver (see [`SsrfResolver`]); production always passes
 /// `false`.
-pub(crate) fn build_hardened_client(
-    allow_loopback: bool,
-) -> Result<HardenedClient, reqwest::Error> {
+pub fn build_hardened_client(allow_loopback: bool) -> Result<HardenedClient, reqwest::Error> {
     reqwest::Client::builder()
         .timeout(HARDENED_CLIENT_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
@@ -210,7 +208,7 @@ pub(crate) fn build_hardened_client(
 /// anything — this is the only thing standing between an authenticated request and an SSRF into
 /// the PDS's private network.
 pub async fn resolve_atproto_proxy_target(
-    state: &AppState,
+    state: &CoreState,
     header_value: &str,
 ) -> Result<ProxyTarget, ApiError> {
     let (did, service_id) = header_value.split_once('#').ok_or_else(|| {
@@ -269,7 +267,7 @@ pub async fn resolve_atproto_proxy_target(
 /// old per-request pinned client while keeping the DNS-rebinding TOCTOU closed. This function's job
 /// on a domain host is therefore only the URL-shape checks; the address check is the resolver's.
 ///
-/// `allow_loopback` is a test-only relaxation (see `AppState::allow_loopback_proxy_targets`):
+/// `allow_loopback` is a test-only relaxation (see `CoreState::allow_loopback_proxy_targets`):
 /// production always passes `false`.
 ///
 /// `pub(crate)`: also reused by `auth::permission_sets` to guard the Lexicon-authority service
@@ -419,8 +417,8 @@ mod tests {
     use std::str::FromStr;
 
     use super::{ip_allowed, resolve_atproto_proxy_target, validate_proxy_endpoint, SsrfResolver};
-    use crate::app::test_state;
-    use crate::routes::test_utils::seed_did_document;
+    use crate::test_support::seed_did_document;
+    use crate::test_support::test_state;
 
     // IP literals (not domain names) throughout: they exercise the exact same validation as a
     // resolved domain without depending on live DNS, keeping these tests hermetic and fast.

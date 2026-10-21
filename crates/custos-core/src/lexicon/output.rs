@@ -29,7 +29,7 @@ use axum::{
 ///
 /// Only successful endpoints with a registered JSON output are inspected. Error envelopes and
 /// streaming endpoints have different contracts and remain covered by their route tests.
-pub(crate) async fn validate_xrpc_output(request: Request, next: Next) -> Response {
+pub async fn validate_xrpc_output(request: Request, next: Next) -> Response {
     let nsid = request
         .uri()
         .path()

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fail on a new raw-string DID parameter or field in the PDS's auth/ and routes/ trees.
+# Fail on a new raw-string DID parameter or field in the PDS's auth/ and routes/ trees (pds's
+# and custos-core's auth/, pds's routes/).
 #
 # DIDs cross these boundaries as `common::Did`, which can only be built by the syntax
 # validator. A `did: &str` / `did: String` (or `user_did`, `authority_did`, ...) lets a handle
@@ -38,7 +39,8 @@ count_file() {
 }
 
 list_files() {
-  git ls-files 'crates/pds/src/auth/*.rs' 'crates/pds/src/routes/*.rs' 'crates/pds/src/routes/**/*.rs' |
+  git ls-files 'crates/pds/src/auth/*.rs' 'crates/custos-core/src/auth/*.rs' \
+    'crates/pds/src/routes/*.rs' 'crates/pds/src/routes/**/*.rs' |
     grep -vE '(_test|_tests|test_utils|_test_support)\.rs$' | sort -u
 }
 
@@ -70,4 +72,4 @@ while read -r f _; do
 done < "$baseline"
 
 [ "$fail" -eq 0 ] || exit 1
-echo "✓ no new raw-string DID parameters in crates/pds/src/{auth,routes}"
+echo "✓ no new raw-string DID parameters in crates/{pds,custos-core}/src/auth or crates/pds/src/routes"

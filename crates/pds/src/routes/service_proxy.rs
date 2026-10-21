@@ -399,7 +399,10 @@ mod tests {
         with_master_key(&mut config);
         seed_repo_key(&base.db).await;
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }
@@ -413,7 +416,10 @@ mod tests {
         with_master_key(&mut config);
         seed_repo_key(&base.db).await;
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }
@@ -793,7 +799,10 @@ mod tests {
         with_master_key(&mut config);
         seed_repo_key(&base.db).await;
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         let auth = bearer(&state);
@@ -1061,7 +1070,10 @@ mod tests {
         with_master_key(&mut config);
         seed_repo_key(&base.db).await;
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         let auth = bearer(&state);
@@ -1091,7 +1103,10 @@ mod tests {
         with_master_key(&mut config);
         seed_repo_key(&base.db).await;
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }
@@ -1431,7 +1446,10 @@ mod tests {
         with_master_key(&mut config);
         seed_repo_key(&base.db).await;
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         crate::routes::test_utils::seed_did_document(
@@ -1487,7 +1505,10 @@ mod tests {
         with_master_key(&mut config);
         seed_repo_key(&base.db).await;
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         crate::routes::test_utils::seed_did_document(
@@ -1581,7 +1602,10 @@ mod tests {
         with_master_key(&mut config);
         seed_repo_key(&base.db).await;
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         crate::routes::test_utils::seed_did_document(
@@ -1619,7 +1643,7 @@ mod tests {
     #[tokio::test]
     async fn appbsky_header_target_private_address_is_rejected() {
         let mut state = state_with_master_key_and_repo().await;
-        state.allow_loopback_proxy_targets = false;
+        state.core.allow_loopback_proxy_targets = false;
 
         crate::routes::test_utils::seed_did_document(
             &state.db,
@@ -1675,7 +1699,10 @@ mod tests {
         with_master_key(&mut config);
         seed_repo_key(&base.db).await;
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         crate::routes::test_utils::seed_did_document(

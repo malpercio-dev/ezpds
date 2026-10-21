@@ -1478,6 +1478,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "custos-core"
+version = "0.16.2"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "base64 0.21.7",
+ "chrono",
+ "common",
+ "crypto",
+ "custos-db",
+ "data-encoding",
+ "hickory-resolver",
+ "hmac",
+ "infer",
+ "jsonwebtoken",
+ "k256",
+ "multibase",
+ "opentelemetry",
+ "opentelemetry-prometheus",
+ "opentelemetry_sdk",
+ "p256",
+ "prometheus",
+ "rand_core 0.6.4",
+ "repo-engine",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-opentelemetry",
+ "unicode-segmentation",
+ "url",
+ "urlencoding",
+ "uuid",
+ "wiremock",
+ "zeroize",
+]
+
+[[package]]
 name = "custos-db"
 version = "0.16.2"
 dependencies = [
@@ -5185,6 +5232,7 @@ dependencies = [
  "clap",
  "common",
  "crypto",
+ "custos-core",
  "custos-db",
  "data-encoding",
  "futures-util",

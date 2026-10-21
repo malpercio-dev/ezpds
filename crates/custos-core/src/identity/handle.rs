@@ -20,7 +20,7 @@
 //!   check for served domains — updateHandle's served-domain branch — apply `is_reserved_name`
 //!   themselves.
 
-pub(crate) use common::validate_handle_structure;
+pub use common::validate_handle_structure;
 use common::Handle;
 
 /// Whether `name` (a handle's first DNS label) is one of the operator's reserved
@@ -30,7 +30,7 @@ use common::Handle;
 ///
 /// Callers that bypass [`validate_handle`] for served domains (updateHandle's
 /// served-domain branch skips external resolution) must apply this check themselves.
-pub(crate) fn is_reserved_name(name: &str, reserved: &[String]) -> bool {
+pub fn is_reserved_name(name: &str, reserved: &[String]) -> bool {
     reserved.iter().any(|r| name.eq_ignore_ascii_case(r))
 }
 
@@ -42,7 +42,7 @@ pub(crate) fn is_reserved_name(name: &str, reserved: &[String]) -> bool {
 /// A reserved name on a *foreign* domain (e.g. `about.someco.com`) is deliberately allowed —
 /// the reservation defends only this server's own wildcard space, so migration can't be used
 /// to claim `identitywallet.obsign.org` while a genuinely foreign handle is unaffected.
-pub(crate) fn reserved_on_served_domain(
+pub fn reserved_on_served_domain(
     handle: &str,
     available_domains: &[String],
     reserved: &[String],
@@ -61,7 +61,7 @@ pub(crate) fn reserved_on_served_domain(
 ///
 /// # Errors
 /// Returns a static message suitable for a 400 response body.
-pub(crate) fn validate_handle(
+pub fn validate_handle(
     handle: &str,
     available_domains: &[String],
     reserved_handles: &[String],
@@ -80,7 +80,7 @@ pub(crate) fn validate_handle(
 /// as-is, or a handle that has been unwrapped of its `at://`/`@` decoration, lowercased, and
 /// confirmed structurally valid. Neither variant is resolved to a DID — callers on an
 /// unauthenticated surface may need local-only resolution, so that step stays theirs.
-pub(crate) enum LoginHint {
+pub enum LoginHint {
     Did(String),
     Handle(String),
 }
@@ -89,7 +89,7 @@ pub(crate) enum LoginHint {
 /// [`LoginHint`]. Returns `None` for a handle-shaped hint that fails [`validate_handle_structure`]
 /// — an attacker-suppliable hint on an unauthenticated surface, so an invalid one means "no
 /// usable hint" rather than an error.
-pub(crate) fn normalize_login_hint(hint: &str) -> Option<LoginHint> {
+pub fn normalize_login_hint(hint: &str) -> Option<LoginHint> {
     if hint.starts_with("did:") {
         return Some(LoginHint::Did(hint.to_string()));
     }

@@ -1,14 +1,10 @@
-pub mod agent_assertion;
-pub mod client_attestation;
 pub mod dpop;
 pub mod extractors;
 pub mod guards;
-pub mod http_signature;
 pub mod issuer_trust;
 pub mod jwks;
 pub mod jwt;
 pub mod oauth_client_resolution;
-pub mod oauth_response_mode;
 pub mod oauth_scopes;
 pub mod password;
 pub mod permission_sets;
@@ -16,22 +12,18 @@ pub mod rate_limit;
 pub mod service_auth;
 pub mod signed_proof;
 pub mod signing_key;
-pub mod space;
-pub mod space_consent;
 pub use common::token;
 pub mod validation;
 
-mod bearer;
-pub(crate) use bearer::extract_bearer_token;
+pub mod bearer;
+pub use bearer::extract_bearer_token;
 
 // Re-export the public API so callers don't need to know the internal layout.
-pub use agent_assertion::{new_claim_poll_tracker, ClaimPollTracker};
 pub use dpop::{
     validate_dpop_for_par, validate_dpop_for_token_endpoint, DpopNonceRotator, DpopNonces,
     DpopTokenEndpointError,
 };
 pub use permission_sets::{new_permission_set_cache, PermissionSetCache};
-pub use space_consent::{new_space_type_cache, SpaceTypeCache};
 // Foundational types: used once authenticated routes are wired up.
 #[allow(unused_imports)]
 pub use extractors::{authenticate_access, AuthenticatedUser};
@@ -65,8 +57,9 @@ mod tests {
     use serde::Serialize;
     use tower::ServiceExt;
 
-    use crate::app::{test_state, AppState};
-    use crate::routes::test_utils;
+    use crate::test_support;
+    use crate::test_support::test_state;
+    use crate::CoreState;
 
     // ── Test token helpers ────────────────────────────────────────────────────
 
@@ -114,7 +107,7 @@ mod tests {
 
     // ── Minimal test router ───────────────────────────────────────────────────
 
-    fn protected_app(state: AppState) -> Router {
+    fn protected_app(state: CoreState) -> Router {
         Router::new()
             .route(
                 "/protected",
@@ -296,7 +289,7 @@ mod tests {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.server_did = Some("did:plc:server".to_string());
-        let state = AppState {
+        let state = CoreState {
             config: Arc::new(config),
             ..base
         };
@@ -320,7 +313,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_bound_token_without_dpop_header_returns_401() {
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
 
         // Access token has cnf.jkt → DPoP-bound.
@@ -345,7 +338,7 @@ mod tests {
         // not earlier (the old test used "dummy.dpop.value" which failed at base64
         // decode and never reached the binding check).
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let token = mint_token(
             "did:plc:user",
             "com.atproto.access",
@@ -393,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn valid_dpop_bound_token_is_accepted() {
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
 
         let token = mint_token(
@@ -424,8 +417,8 @@ mod tests {
     async fn dpop_proof_with_forged_signature_returns_401() {
         let state = test_state().await;
         // Attacker's key — different from the key that signed the access token.
-        let attacker_key = test_utils::DpopProofKey::generate();
-        let legit_key = test_utils::DpopProofKey::generate();
+        let attacker_key = test_support::DpopProofKey::generate();
+        let legit_key = test_support::DpopProofKey::generate();
         let thumbprint = legit_key.thumbprint();
 
         let token = mint_token(
@@ -457,7 +450,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_wrong_htm_returns_401() {
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
@@ -485,7 +478,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_wrong_htu_returns_401() {
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
@@ -516,7 +509,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_wrong_typ_returns_401() {
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
@@ -560,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_empty_jti_returns_401() {
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
@@ -604,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_stale_proof_returns_401() {
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
@@ -635,7 +628,7 @@ mod tests {
     #[tokio::test]
     async fn dpop_future_dated_proof_returns_401() {
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
@@ -670,7 +663,7 @@ mod tests {
         // `now - i64::MIN` overflows in debug (panic → DoS) and wraps in release
         // (magnitude check bypass). The widened arithmetic must reject it as stale.
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
@@ -702,7 +695,7 @@ mod tests {
         // RFC 9449 §11.1: multiple DPoP headers must be rejected.
         // A header-prepending proxy could inject a forged proof as the first value.
         let state = test_state().await;
-        let dpop_key = test_utils::DpopProofKey::generate();
+        let dpop_key = test_support::DpopProofKey::generate();
         let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",

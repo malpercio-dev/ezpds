@@ -92,7 +92,7 @@ pub struct BlobGc {
     pub interval: Duration,
 }
 
-impl Sweep for BlobGc {
+impl Sweep<AppState> for BlobGc {
     const NAME: &'static str = names::BLOB_GC;
 
     fn interval(&self) -> Duration {
@@ -487,7 +487,10 @@ mod tests {
             test_master_key(),
         )));
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         (state, dir)

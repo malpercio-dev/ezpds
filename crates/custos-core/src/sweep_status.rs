@@ -82,7 +82,7 @@ impl SweepSnapshot {
     }
 }
 
-/// Shared readable sweep state; one lives in `AppState` for the process lifetime.
+/// Shared readable sweep state; one lives in `CoreState` for the process lifetime.
 #[derive(Debug, Default)]
 pub struct SweepStatus {
     inner: RwLock<HashMap<&'static str, SweepRun>>,

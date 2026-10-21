@@ -1,7 +1,7 @@
 // pattern: Functional Core
 
 //! The lexicon registry: the vendored `com.atproto.*` and `app.bsky.*` lexicon documents
-//! (`crates/pds/lexicons/`, pinned upstream — scope and re-vendoring workflow in the README there)
+//! (`crates/custos-core/lexicons/`, pinned upstream — scope and re-vendoring workflow in the README there)
 //! compiled into the binary and parsed once, plus four validation entry points:
 //!
 //! * `validate_input` — the single place asserting "this request body conforms to the procedure's
@@ -40,7 +40,7 @@
 
 mod extractor;
 mod formats;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod output;
 mod params;
 mod schema;
@@ -55,8 +55,8 @@ use schema::{LexDef, LexObject, LexRecord, LexSchema, LexXrpcBody};
 
 pub use extractor::{validate_procedure_body, LexiconInput};
 pub(crate) use formats::is_valid_record_key;
-#[cfg(test)]
-pub(crate) use output::validate_xrpc_output;
+#[cfg(any(test, feature = "test-support"))]
+pub use output::validate_xrpc_output;
 pub use params::{parse_raw_query, validate_params_map, LexiconParams};
 pub use validate::{RecordValidation, ValidationError};
 
@@ -410,7 +410,7 @@ impl Registry {
     /// tests) rather than a serve-path guard. The production-side value is `check_refs` walking the
     /// output closure at build time (a dangling output ref fails `registry_builds`); the registered
     /// schemas themselves are consumed only from `#[cfg(test)]` code today.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn output(&self, nsid: &str) -> Option<&LexSchema> {
         self.outputs.get(nsid)
     }
@@ -420,7 +420,7 @@ impl Registry {
     /// *our* shape regression, not the client's — this is drift detection, wired into tests rather
     /// than the production serve path (`Lexicon(...)` when the nsid declares no vendored JSON
     /// output, so a caller can tell "not validatable" from "invalid").
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn validate_output(&self, nsid: &str, body: &Value) -> Result<(), ValidationError> {
         let schema = self.output(nsid).ok_or_else(|| {
             ValidationError::Lexicon(format!("no lexicon output is vendored for {nsid}"))
@@ -504,6 +504,22 @@ fn qualify(reference: &str, base_id: &str) -> String {
         reference.to_owned()
     } else {
         format!("lex:{reference}")
+    }
+}
+
+/// Map a lexicon record-validation error to an `ApiError`: an `Invalid` record is a client-facing
+/// 400 `InvalidRequest` (the reference's `InvalidRecordError` → `InvalidRequest`), a `Lexicon`
+/// inconsistency (unreachable — registry-build-checked) a 500. Shared by the repo and space record-write paths.
+pub fn record_validation_error(e: ValidationError) -> common::ApiError {
+    match e {
+        ValidationError::Invalid(message) => {
+            common::ApiError::new(common::ErrorCode::InvalidRequest, message)
+        }
+        ValidationError::Lexicon(message) => common::ApiError::internal_as(
+            message,
+            "vendored lexicon set is inconsistent",
+            "server lexicon configuration error",
+        ),
     }
 }
 

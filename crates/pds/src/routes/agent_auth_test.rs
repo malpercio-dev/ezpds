@@ -1204,7 +1204,10 @@ async fn child_mint_state(agent_auth: AgentAuthConfig) -> (AppState, wiremock::M
     config.available_user_domains = vec!["example.com".to_string()];
     (
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         },
         plc,

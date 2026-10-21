@@ -159,7 +159,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.iroh.endpoint = Some("abc123nodeid".to_string());
         let state = crate::app::AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         let (device_id, token) = seed_device(&state.db).await;
@@ -204,7 +207,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.iroh.endpoint = Some("manual-override".to_string());
         let state = crate::app::AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             iroh: Some(Arc::new(iroh)),
             ..base
         };

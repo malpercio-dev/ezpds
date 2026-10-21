@@ -213,7 +213,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.plc_directory_url = plc_uri;
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }

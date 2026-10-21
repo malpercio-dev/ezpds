@@ -31,7 +31,7 @@ pub struct AccountReaper {
     pub interval: Duration,
 }
 
-impl Sweep for AccountReaper {
+impl Sweep<AppState> for AccountReaper {
     const NAME: &'static str = names::ACCOUNT_REAPER;
 
     fn interval(&self) -> Duration {

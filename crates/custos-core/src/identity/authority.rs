@@ -15,7 +15,7 @@
 use common::ApiError;
 use serde_json::Value;
 
-use crate::app::AppState;
+use crate::CoreState;
 
 use super::plc::fetch_current_plc_state;
 use super::resolution::{fragment_id_matches, resolve_web_did_document};
@@ -84,7 +84,7 @@ fn is_plc_did(value: &str) -> bool {
 
 /// Resolve the account's current signing authority from its DID method's authoritative source.
 pub async fn authorized_signing_keys(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
 ) -> Result<AuthoritySet, AuthorityError> {
     if is_plc_did(did) {
@@ -100,7 +100,7 @@ pub async fn authorized_signing_keys(
 /// under exactly the same PLC semantics as any other, granting Custos no power over an account it
 /// already hosts: rewriting the rotation set requires an existing rotation key, and plc.directory
 /// is external to this server.
-async fn plc_authority(state: &AppState, did: &str) -> Result<AuthoritySet, AuthorityError> {
+async fn plc_authority(state: &CoreState, did: &str) -> Result<AuthoritySet, AuthorityError> {
     let plc = fetch_current_plc_state(&state.http_client, &state.config.plc_directory_url, did)
         .await
         .map_err(AuthorityError::Lookup)?;
@@ -125,9 +125,9 @@ async fn plc_authority(state: &AppState, did: &str) -> Result<AuthoritySet, Auth
 /// `did_web_hosting_enabled_at IS NULL` **is** the condition "no session-authed rewrite is
 /// possible", with no gap in either direction. Making `#device` immutable across such an edit
 /// would let this gate be dropped later without redesigning anything.
-async fn web_authority(state: &AppState, did: &str) -> Result<AuthoritySet, AuthorityError> {
+async fn web_authority(state: &CoreState, did: &str) -> Result<AuthoritySet, AuthorityError> {
     // Cheap DB gate before the outbound fetch.
-    if crate::db::dids::did_web_hosting_enabled(&state.db, did)
+    if custos_db::dids::did_web_hosting_enabled(&state.db, did)
         .await
         .map_err(AuthorityError::Lookup)?
     {

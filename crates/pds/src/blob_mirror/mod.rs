@@ -156,7 +156,7 @@ pub struct BlobMirrorSweep {
     pub mirror: Arc<BlobMirror>,
 }
 
-impl Sweep for BlobMirrorSweep {
+impl Sweep<AppState> for BlobMirrorSweep {
     const NAME: &'static str = names::BLOB_MIRROR;
 
     fn interval(&self) -> Duration {

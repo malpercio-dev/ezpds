@@ -64,7 +64,7 @@ pub struct DpopNonceRotator {
     secret: [u8; 32],
 }
 
-/// Shared handle to the rotator, held in `AppState`.
+/// Shared handle to the rotator, held in `CoreState`.
 pub type DpopNonces = Arc<DpopNonceRotator>;
 
 impl DpopNonceRotator {

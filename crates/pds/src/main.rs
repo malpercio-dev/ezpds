@@ -16,20 +16,15 @@ mod auth;
 mod blob_gc;
 mod blob_mirror;
 mod blob_scrub;
-mod blob_store;
 mod capabilities;
 mod crawler;
 mod db;
 mod email;
 mod firehose;
 mod firehose_gc;
-mod identity;
 mod iroh_tunnel;
 mod label_state;
 mod labeler_watch;
-mod lexicon;
-mod metrics;
-mod no_input;
 mod notifications;
 // The cross-crate loopback e2e (pds ↔ notify-relay ↔ a stand-in Apple). Lives in the crate
 // rather than `tests/` because `pds` is a binary — an integration test cannot import it.
@@ -37,13 +32,13 @@ mod notifications;
 mod notify_e2e_test;
 mod notify_relay_client;
 mod platform;
-mod rate_limit;
+#[cfg(test)]
+mod rate_limit_test;
 mod read_after_write;
 mod record_write;
 mod recovery_share;
 mod relay_status;
 mod repo_rev;
-mod request_host;
 mod rewrap;
 mod routes;
 mod session_issuer;
@@ -52,18 +47,19 @@ mod space_jti_sweep;
 mod space_notify;
 mod space_oplog_sweep;
 mod space_record_write;
-mod space_uri;
 mod state;
-mod sweep;
-mod sweep_status;
 mod telemetry;
-mod time;
 mod transfer;
 mod uniqueness;
 mod xrpc_dispatch;
-mod xrpc_error_shape;
 
 use common::code_gen;
+// Modules that moved to custos-core, aliased at the crate root so `crate::identity::…` and its
+// siblings keep resolving.
+use custos_core::{
+    blob_store, identity, lexicon, metrics, no_input, rate_limit, request_host, space_uri, sweep,
+    sweep_status, time, xrpc_error_shape,
+};
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
 ///
@@ -592,34 +588,38 @@ async fn run() -> anyhow::Result<()> {
     }
 
     let state = app::AppState {
-        config: Arc::new(config),
-        db: pool,
-        http_client,
-        hardened_http_client,
-        dns_provider: None,
-        txt_resolver,
-        well_known_resolver,
-        jwks_cache,
-        oauth_client_jwks_cache,
-        jwt_secret,
-        oauth_signing_keypair,
-        dpop_nonces: Arc::new(auth::DpopNonceRotator::from_jwt_secret(&jwt_secret)),
+        core: custos_core::CoreState {
+            config: Arc::new(config),
+            db: pool,
+            http_client,
+            hardened_http_client,
+            dns_provider: None,
+            txt_resolver,
+            well_known_resolver,
+            jwks_cache,
+            oauth_client_jwks_cache,
+            jwt_secret,
+            oauth_signing_keypair,
+            dpop_nonces: Arc::new(auth::DpopNonceRotator::from_jwt_secret(&jwt_secret)),
+            permission_set_cache: auth::new_permission_set_cache(),
+            did_document_cache: identity::resolution::new_did_document_cache(),
+            failed_login_attempts: Arc::new(
+                std::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
+            rate_limiter,
+            allow_loopback_proxy_targets: false,
+            metrics,
+            sweeps: Arc::new(sweep_status::SweepStatus::default()),
+            started_at,
+        },
         poll_tracker: auth::new_claim_poll_tracker(),
-        permission_set_cache: auth::new_permission_set_cache(),
         space_type_cache: auth::new_space_type_cache(),
-        did_document_cache: identity::resolution::new_did_document_cache(),
-        failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         firehose,
         crawlers,
         iroh,
         notify_sender,
-        rate_limiter,
         email,
-        allow_loopback_proxy_targets: false,
-        metrics,
         repo_write_locks: Arc::new(record_write::RepoWriteLocks::new()),
-        sweeps: Arc::new(sweep_status::SweepStatus::default()),
-        started_at,
     };
 
     // Blob mirror: when a bucket is configured, reconcile the volume against it BEFORE the

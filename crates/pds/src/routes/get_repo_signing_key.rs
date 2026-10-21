@@ -109,7 +109,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.signing_key_master_key = Some(Sensitive(Zeroizing::new([7u8; 32])));
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }

@@ -22,7 +22,7 @@ pub const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 pub struct SpaceJtiSweep;
 
-impl Sweep for SpaceJtiSweep {
+impl Sweep<AppState> for SpaceJtiSweep {
     const NAME: &'static str = names::SPACE_JTI_SWEEP;
 
     fn interval(&self) -> Duration {

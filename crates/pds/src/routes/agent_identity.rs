@@ -833,7 +833,16 @@ mod tests {
             // Cooldown disabled: these tests pin fetch counts, not the cooldown (jwks.rs does).
             std::time::Duration::ZERO,
         ));
-        (AppState { jwks_cache, ..base }, calls)
+        (
+            AppState {
+                core: custos_core::CoreState {
+                    jwks_cache,
+                    ..base.core
+                },
+                ..base
+            },
+            calls,
+        )
     }
 
     /// Build a state whose `jwks_cache` fetcher always fails, to exercise the fetch-failure path.
@@ -849,7 +858,13 @@ mod tests {
             std::time::Duration::from_secs(3600),
             std::time::Duration::ZERO,
         ));
-        AppState { jwks_cache, ..base }
+        AppState {
+            core: custos_core::CoreState {
+                jwks_cache,
+                ..base.core
+            },
+            ..base
+        }
     }
 
     // ── state + request helpers ──────────────────────────────────────────

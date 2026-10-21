@@ -7,7 +7,7 @@ use rand_core::{OsRng, RngCore};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-/// The server's persistent ES256 signing keypair, held in `AppState`.
+/// The server's persistent ES256 signing keypair, held in `CoreState`.
 ///
 /// `encoding_key` is derived from the P-256 private key in PKCS#8 DER format, as required by
 /// `jsonwebtoken`. `key_id` is a UUID that appears as the `kid` header in issued access tokens.
@@ -33,7 +33,7 @@ pub async fn load_or_create_oauth_signing_key(
     pool: &SqlitePool,
     master_key: Option<&[u8; 32]>,
 ) -> anyhow::Result<OAuthSigningKey> {
-    use crate::db::oauth::{get_oauth_signing_key, store_oauth_signing_key};
+    use custos_db::oauth::{get_oauth_signing_key, store_oauth_signing_key};
 
     // Attempt to load an existing key.
     if let Some(row) = get_oauth_signing_key(pool).await? {
@@ -108,7 +108,7 @@ pub async fn load_or_create_jwt_secret(
     pool: &SqlitePool,
     master_key: Option<&[u8; 32]>,
 ) -> anyhow::Result<[u8; 32]> {
-    use crate::db::jwt_secret::{get_jwt_secret, store_jwt_secret};
+    use custos_db::jwt_secret::{get_jwt_secret, store_jwt_secret};
 
     // Load and decrypt an existing secret.
     if let Some(row) = get_jwt_secret(pool).await? {
@@ -164,7 +164,7 @@ pub async fn load_or_create_iroh_secret_key(
     pool: &SqlitePool,
     master_key: Option<&[u8; 32]>,
 ) -> anyhow::Result<[u8; 32]> {
-    use crate::db::iroh_identity::{get_iroh_identity, store_iroh_identity};
+    use custos_db::iroh_identity::{get_iroh_identity, store_iroh_identity};
 
     // Load and decrypt an existing secret key.
     if let Some(row) = get_iroh_identity(pool).await? {
@@ -256,7 +256,7 @@ pub async fn load_repo_signing_key(
     did: &str,
     master_key: &[u8; 32],
 ) -> Result<zeroize::Zeroizing<[u8; 32]>, ApiError> {
-    use crate::db::repo_keys::get_signing_key_by_did;
+    use custos_db::repo_keys::get_signing_key_by_did;
 
     let key = get_signing_key_by_did(pool, did)
         .await
@@ -322,7 +322,7 @@ pub async fn mint_account_service_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{iroh_identity::get_iroh_identity, jwt_secret::get_jwt_secret, test_pool};
+    use custos_db::{iroh_identity::get_iroh_identity, jwt_secret::get_jwt_secret, test_pool};
 
     #[tokio::test]
     async fn jwt_secret_persists_across_loads_with_master_key() {

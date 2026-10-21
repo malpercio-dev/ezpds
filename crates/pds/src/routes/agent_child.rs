@@ -457,7 +457,10 @@ mod tests {
         config.available_user_domains = vec!["example.com".to_string()];
         (
             AppState {
-                config: Arc::new(config),
+                core: custos_core::CoreState {
+                    config: Arc::new(config),
+                    ..base.core
+                },
                 ..base
             },
             plc,
@@ -492,7 +495,10 @@ mod tests {
         config.accounts.child_deletion_grace_secs = grace_secs;
         (
             AppState {
-                config: Arc::new(config),
+                core: custos_core::CoreState {
+                    config: Arc::new(config),
+                    ..base.core
+                },
                 ..base
             },
             plc,

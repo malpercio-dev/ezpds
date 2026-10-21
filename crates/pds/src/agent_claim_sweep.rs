@@ -30,7 +30,7 @@ pub struct AgentClaimSweep {
     pub interval: Duration,
 }
 
-impl Sweep for AgentClaimSweep {
+impl Sweep<AppState> for AgentClaimSweep {
     const NAME: &'static str = names::AGENT_CLAIM_SWEEP;
 
     fn interval(&self) -> Duration {

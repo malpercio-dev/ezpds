@@ -6,12 +6,10 @@ at commit `056e5741bb330757205d6b16db5266fffcae937b` under CC0-1.0.
 
 | Files | Consumed by |
 |---|---|
-| `handle_syntax_{valid,invalid}.txt` | `src/identity/handle.rs` |
-| `did_syntax_{valid,invalid}.txt` | `src/identity/did.rs` |
 | `commit-proof-fixtures.json` | `src/routes/sync_subscribe_repos.rs` (`mod tests::firehose_interop_gate`) |
 
-Refresh each valid/invalid pair together from the upstream `syntax/` directory. The loaders preserve
-case whitespace because leading and trailing spaces are part of the invalid vectors.
+The handle and DID syntax vectors from the same commit live with their consumers in
+[`crates/custos-core/tests/fixtures/interop/`](../../../../custos-core/tests/fixtures/interop/README.md).
 
 ## `commit-proof-fixtures.json` (firehose interop gate — MM-384)
 

@@ -14,7 +14,7 @@ use common::{ApiError, ApiResultExt, ErrorCode};
 /// Callers must handle `CorruptHash` separately from `WrongPassword`:
 /// - `WrongPassword` → increment rate-limit counter, return 401
 /// - `CorruptHash`   → log with identifier, return 500, do NOT increment counter
-pub(crate) enum VerifyResult {
+pub enum VerifyResult {
     /// Password is correct.
     Ok,
     /// Password is wrong (argon2 computed but didn't match).
@@ -33,7 +33,7 @@ pub(crate) enum VerifyResult {
 /// and hash are 16 and 32 bytes of zeros respectively, expressed as base64 without
 /// padding (standard alphabet). Using a compile-time constant avoids the panic risk
 /// of the `OnceLock` + `unwrap` pattern.
-pub(crate) const TIMING_DUMMY_HASH: &str =
+pub const TIMING_DUMMY_HASH: &str =
     "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 /// Hash `password` with argon2id and return the PHC string.
@@ -41,7 +41,7 @@ pub(crate) const TIMING_DUMMY_HASH: &str =
 /// Uses `Argon2::default()` (argon2id, m=19456 KiB ≈19 MiB, t=2, p=1) with a freshly
 /// generated random salt. The PHC string embeds the algorithm, parameters, salt, and
 /// hash — everything `verify_password` needs for later verification.
-pub(crate) fn hash_password(password: &str) -> Result<String, ApiError> {
+pub fn hash_password(password: &str) -> Result<String, ApiError> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
@@ -51,7 +51,7 @@ pub(crate) fn hash_password(password: &str) -> Result<String, ApiError> {
 
 /// What a newly created account's `accounts.password_hash` column will become — decided from the
 /// request shape and the operator's policy, before any state is written and before any hashing.
-pub(crate) enum PasswordPlan<'a> {
+pub enum PasswordPlan<'a> {
     /// Hash this password and store the PHC string. The account can `createSession` with it.
     Hash(&'a str),
     /// Store NULL. The account authenticates through the device-key paths (wallet-confirmed
@@ -71,7 +71,7 @@ impl PasswordPlan<'_> {
     /// password and an otherwise-garbage body, which the public `createAccount` endpoint bounds
     /// only by a per-IP rate limit. Splitting the two keeps the cheap rejection early *and* the
     /// expensive work late; moving the whole decision late would have sacrificed the former.
-    pub(crate) fn hash(&self) -> Result<Option<String>, ApiError> {
+    pub fn hash(&self) -> Result<Option<String>, ApiError> {
         match self {
             Self::Hash(password) => hash_password(password).map(Some),
             Self::None => Ok(None),
@@ -94,7 +94,7 @@ impl PasswordPlan<'_> {
 /// Shared by the two account-creation routes (`create_did`, `create_account_xrpc`), which cannot
 /// import each other, so the policy cannot drift between the native ceremony and the standard
 /// XRPC path.
-pub(crate) fn resolve_password(
+pub fn resolve_password(
     supplied: Option<&str>,
     password_optional: bool,
 ) -> Result<PasswordPlan<'_>, ApiError> {
@@ -123,7 +123,7 @@ pub(crate) fn resolve_password(
 /// The caller is responsible for logging with the account identifier and returning a
 /// 500 without incrementing the rate-limit counter — corrupt hash is a server-side
 /// defect, not a user authentication failure.
-pub(crate) fn verify_password(stored_hash: &str, password: &str) -> VerifyResult {
+pub fn verify_password(stored_hash: &str, password: &str) -> VerifyResult {
     let Ok(hash) = PasswordHash::new(stored_hash) else {
         return VerifyResult::CorruptHash;
     };

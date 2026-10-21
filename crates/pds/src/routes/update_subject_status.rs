@@ -496,7 +496,10 @@ mod tests {
         let mut config = (*state.config).clone();
         config.admin_token = Some(common::Sensitive("test-admin-token".to_string()));
         let state = crate::app::AppState {
-            config: std::sync::Arc::new(config),
+            core: custos_core::CoreState {
+                config: std::sync::Arc::new(config),
+                ..state.core
+            },
             ..state
         };
 

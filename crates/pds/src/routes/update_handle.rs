@@ -411,7 +411,10 @@ mod tests {
 
     fn state_with_well_known(state: AppState, did: Option<String>) -> AppState {
         AppState {
-            well_known_resolver: Some(Arc::new(FixedWellKnownResolver { did })),
+            core: custos_core::CoreState {
+                well_known_resolver: Some(Arc::new(FixedWellKnownResolver { did })),
+                ..state.core
+            },
             ..state
         }
     }
@@ -475,7 +478,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.plc_directory_url = plc_url;
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }

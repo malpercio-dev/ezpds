@@ -663,7 +663,7 @@ mod tests {
     async fn sovereign_endpoint_has_a_per_ip_session_creation_limit() {
         let plc = MockServer::start().await;
         let mut state = state_with_plc(&plc).await;
-        state.rate_limiter = Arc::new(crate::rate_limit::RateLimiterState::new(
+        state.core.rate_limiter = Arc::new(crate::rate_limit::RateLimiterState::new(
             &common::RateLimitConfig {
                 enabled: true,
                 global_ip_per_5min: 100,
