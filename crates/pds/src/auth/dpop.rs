@@ -456,7 +456,7 @@ pub fn validate_dpop_for_token_endpoint(
 /// while every endpoint behind `AuthenticatedUser` stays idempotent / content-addressed; if one
 /// ever authorizes a non-idempotent side effect, add `jti` (or nonce) tracking there first. Same
 /// posture as `service_auth::require_service_auth`.
-pub fn validate_dpop(
+pub(super) fn validate_dpop(
     dpop_token: &str,
     method: &Method,
     uri: &axum::http::Uri,

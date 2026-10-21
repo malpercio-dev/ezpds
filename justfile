@@ -169,14 +169,6 @@ workspace-dep-check:
 runbook-parity-check:
     scripts/runbook-parity-check.sh
 
-# Freeze the space-read auth seam: every Atproto Spaces read/sync route authenticates through
-# auth::space::authenticate_space_read (OAuth grant OR a space credential bound by an RFC 9421
-# signature over the request's audience, never bearer or DPoP). Fails on any direct
-# verify_space_credential / verify_space_signature call outside the space seam (or
-# validate_dpop outside the OAuth seam).
-space-auth-seam-check:
-    scripts/space-auth-seam-check.sh
-
 # Guard the operator capability documentation against drift from the capability table in
 # crates/pds/src/capabilities.rs — the source of truth for what describeServer advertises
 # under the `custos` extension and which config gates each capability. Fails if a
@@ -296,7 +288,7 @@ oauth-conformance-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check space-auth-seam-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
+checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny

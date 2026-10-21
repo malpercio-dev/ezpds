@@ -18,7 +18,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::client_attestation::verify_client_attestation;
 use crate::auth::extract_bearer_token;
-use crate::auth::http_signature::{verify_space_signature, SignedFor};
+use crate::auth::http_signature::verify_delegation_signature;
 use crate::auth::space::{
     authorize_credential_request, mint_space_credential, space_host_aud, unix_now,
     verify_delegation_token,
@@ -86,7 +86,7 @@ pub async fn get_space_credential(
 
     // Stateless checks first, so a bad signature doesn't burn the single-use delegation token.
     // The signature covers the whole Authorization field, so it binds this key to this token.
-    let key_id = verify_space_signature(&headers, SignedFor::Delegation)?;
+    let key_id = verify_delegation_signature(&headers)?;
     let now = unix_now()?;
     // The delegation token rides the Authorization header as a Bearer token (it is the grant
     // being exchanged, not the credential being minted).

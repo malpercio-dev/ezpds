@@ -37,9 +37,9 @@
 //!   `cnf.kid`; the audience must be the DID the request is for (the repo owner on a repo read,
 //!   the authority on a space-level one), which is what stops a credential captured at one repo
 //!   host being replayed at another. Replay against the same audience is allowed until expiry,
-//!   by spec. `just space-auth-seam-check` (`scripts/space-auth-seam-check.sh`) confines
-//!   `verify_space_credential` and `verify_space_signature` to this seam and the mint route, so
-//!   no route grows its own credential parsing.
+//!   by spec. The compiler confines it: `verify_space_credential` is private to this module and
+//!   `verify_space_signature` to `auth`, and the mint route's only signature check is
+//!   `verify_delegation_signature`, so no route grows its own credential parsing.
 //! * **The operator cut** — [`require_space_servable`] refuses a space the operator took down
 //!   (V070), the per-space counterpart to [`require_serviceable_caller`]'s account-level one and
 //!   the only lever that reaches a space whose authority is a foreign server. Every seam above
@@ -679,8 +679,8 @@ pub struct VerifiedCredential {
 /// compromise cannot mint credentials, and the presenter chooses `kid`.
 ///
 /// Only [`authenticate_space_credential`] may call this — the proof-of-possession check that
-/// makes a verified credential usable lives there, and `just space-auth-seam-check` enforces it.
-pub async fn verify_space_credential(
+/// makes a verified credential usable lives there; this function is private to hold that.
+async fn verify_space_credential(
     state: &AppState,
     token: &str,
     now: u64,

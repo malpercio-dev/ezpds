@@ -39,7 +39,7 @@ pub const AUDIENCE_HEADER: &str = "atproto-space-audience";
 
 /// Which of the two profile shapes a request must carry.
 #[derive(Debug, Clone, Copy)]
-pub enum SignedFor<'a> {
+pub(super) enum SignedFor<'a> {
     /// The delegation-token exchange: covers `authorization` alone, key named by `keyid`.
     Delegation,
     /// A credential-authed request: covers `authorization` then the audience, signed by
@@ -47,10 +47,17 @@ pub enum SignedFor<'a> {
     Credential { key_id: &'a str, audience: &'a str },
 }
 
+/// Verify a delegation exchange's `atproto-space` signature and return the `did:key` that made
+/// it. The one shape a route may check itself; a credential-use signature is checked only
+/// inside `auth::space`, against the credential it is bound to.
+pub fn verify_delegation_signature(headers: &HeaderMap) -> Result<String, ApiError> {
+    verify_space_signature(headers, SignedFor::Delegation)
+}
+
 /// Verify the request's `atproto-space` signature and return the `did:key` that made it.
 ///
 /// Every failure is `InvalidToken` (401): the caller has not proven possession of the key.
-pub fn verify_space_signature(
+pub(super) fn verify_space_signature(
     headers: &HeaderMap,
     signed_for: SignedFor<'_>,
 ) -> Result<String, ApiError> {
