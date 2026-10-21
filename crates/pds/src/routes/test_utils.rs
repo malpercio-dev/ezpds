@@ -94,36 +94,12 @@ pub async fn state_with_failing_email() -> AppState {
     }
 }
 
-/// POST `body` as JSON to `uri` against a fresh `app(state)` router, with an optional `Bearer`
-/// token, and return `(status, parsed_json_body)` (`Value::Null` if the body doesn't parse) —
-/// the auth.md agent-flow route tests' one-shot request/response helper.
+/// [`custos_core::test_support::post_json_with_bearer`] against a fresh `app(state)` router.
 pub(crate) async fn post_json_with_bearer(
     state: AppState,
     uri: &str,
     body: serde_json::Value,
     token: Option<&str>,
 ) -> (axum::http::StatusCode, serde_json::Value) {
-    use tower::ServiceExt;
-
-    let mut builder = axum::http::Request::builder()
-        .method(axum::http::Method::POST)
-        .uri(uri)
-        .header("content-type", "application/json");
-    if let Some(t) = token {
-        builder = builder.header("Authorization", format!("Bearer {t}"));
-    }
-    let response = crate::app::app(state)
-        .oneshot(
-            builder
-                .body(axum::body::Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-    (status, json)
+    core::post_json_with_bearer(crate::app::app(state), uri, body, token).await
 }

@@ -15,11 +15,12 @@ use std::time::Duration;
 use anyhow::Context;
 use uuid::Uuid;
 
-use crate::app::AppState;
 use crate::db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
 use crate::db::agent_auth::{expire_pending_agent_claim_attempts, expired_pending_claim_attempts};
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
+use axum::extract::FromRef;
+use custos_core::CoreState;
 
 /// Expire every lapsed pending attempt and audit each expiry once per `interval`.
 ///
@@ -30,14 +31,19 @@ pub struct AgentClaimSweep {
     pub interval: Duration,
 }
 
-impl Sweep<AppState> for AgentClaimSweep {
+impl<St> Sweep<St> for AgentClaimSweep
+where
+    St: Send + Sync + 'static,
+    CoreState: FromRef<St>,
+{
     const NAME: &'static str = names::AGENT_CLAIM_SWEEP;
 
     fn interval(&self) -> Duration {
         self.interval
     }
 
-    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+    async fn run(&self, state: &St) -> anyhow::Result<Pass> {
+        let state = CoreState::from_ref(state);
         let mut tx = state.db.begin().await.context("open transaction")?;
         let due = expired_pending_claim_attempts(&mut *tx)
             .await
@@ -80,9 +86,9 @@ impl Sweep<AppState> for AgentClaimSweep {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
     use crate::db::accounts::insert_bare_account as seed_account;
     use crate::sweep::run_once;
+    use crate::test_support::test_state;
 
     fn sweep() -> AgentClaimSweep {
         AgentClaimSweep {

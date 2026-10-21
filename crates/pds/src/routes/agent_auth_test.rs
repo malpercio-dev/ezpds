@@ -1659,3 +1659,22 @@ async fn agent_token_is_forbidden_on_account_and_app_password_routes() {
         "an agent token must not deactivate the account"
     );
 }
+
+/// The pre-claim anonymous identity is `active`, not `claimed`, so the jwt-bearer grant refuses
+/// to exchange its assertion until a claim ceremony binds a DID.
+#[tokio::test]
+async fn anonymous_pre_claim_assertion_cannot_be_exchanged_yet() {
+    let state = state_with(anonymous_cfg()).await;
+    let (_status, body) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "anonymous" }),
+        None,
+    )
+    .await;
+    let assertion = body["identity_assertion"].as_str().unwrap().to_string();
+
+    let (status, json) = exchange_assertion(state, &assertion).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"], "invalid_grant");
+}

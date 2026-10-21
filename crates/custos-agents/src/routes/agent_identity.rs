@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: AppState (config, OAuth signing key, DB), JSON request body
+// Gathers: CoreState (config, OAuth signing key, DB), JSON request body
 // Processes: dispatch on registration `type` → validate/mint → persist agent-identity state
 // Returns: JSON registration result on success; OAuth-style `{error, error_description}` on failure
 
@@ -52,7 +52,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::app::AppState;
 use crate::auth::agent_assertion::{
     claim_block, mint_identity_assertion, record_agent_audit, scopes_to_json, start_claim_attempt,
     to_sqlite_datetime, verification_uri, AgentAuthError,
@@ -68,6 +67,7 @@ use crate::db::agent_auth::{
     AgentIdentityRow, AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity,
     RegistrationType,
 };
+use custos_core::CoreState;
 
 /// The one assertion type this server accepts for the `identity_assertion` flow.
 const ID_JAG_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:token-type:id-jag";
@@ -125,7 +125,7 @@ struct ServiceAuthResponse {
 
 /// `POST /agent/identity` — dispatch on the registration `type`.
 pub async fn post_agent_identity(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Json(req): Json<AgentIdentityRequest>,
 ) -> Response {
     let result = match req.typ.as_deref() {
@@ -154,7 +154,7 @@ pub async fn post_agent_identity(
 /// claim ceremony. The identity persists with a NULL `did` (V038) and `active` status until a claim
 /// binds an account.
 async fn handle_anonymous(
-    state: &AppState,
+    state: &CoreState,
     req: &AgentIdentityRequest,
 ) -> Result<Response, AgentAuthError> {
     if !state.config.agent_auth.anonymous_enabled {
@@ -257,7 +257,7 @@ async fn handle_anonymous(
 // ── service_auth ─────────────────────────────────────────────────────────────────
 
 async fn handle_service_auth(
-    state: &AppState,
+    state: &CoreState,
     req: &AgentIdentityRequest,
 ) -> Result<Response, AgentAuthError> {
     if !state.config.agent_auth.service_auth_enabled {
@@ -333,7 +333,7 @@ struct PendingRegistration {
 /// `Ok(None)` means the insert collided with an existing row — the caller decides whether that is
 /// a lost race to recover from or a server fault.
 async fn register_with_claim_ceremony(
-    state: &AppState,
+    state: &CoreState,
     registration_type: RegistrationType,
     issuer: Option<&str>,
     subject: Option<&str>,
@@ -417,7 +417,7 @@ struct IdJagClaims {
 }
 
 async fn handle_identity_assertion(
-    state: &AppState,
+    state: &CoreState,
     req: &AgentIdentityRequest,
 ) -> Result<Response, AgentAuthError> {
     // If the client names an assertion_type, it must be the ID-JAG type we support.
@@ -491,7 +491,7 @@ async fn handle_identity_assertion(
 
 /// An `(iss, sub)` already registered: mint when confirmed, else re-issue the claim challenge.
 async fn existing_identity_assertion(
-    state: &AppState,
+    state: &CoreState,
     existing: AgentIdentityRow,
 ) -> Result<Response, AgentAuthError> {
     match existing.status {
@@ -566,7 +566,7 @@ async fn existing_identity_assertion(
 /// A first-seen `(iss, sub)`: bind it to the local account matching the asserted email and start a
 /// claim ceremony (`interaction_required`).
 async fn new_identity_assertion(
-    state: &AppState,
+    state: &CoreState,
     iss: &str,
     claims: &IdJagClaims,
 ) -> Result<Response, AgentAuthError> {
@@ -676,11 +676,12 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    use crate::app::{app, AppState};
-    use crate::routes::test_utils::{
+    use crate::test_support::test_app;
+    use crate::test_support::{
         es256_keys, insert_account_with_email as insert_account,
         state_with_agent_auth as state_with, trusted_issuer as trusted,
     };
+    use custos_core::CoreState;
 
     const PUBLIC_URL: &str = "https://test.example.com";
 
@@ -819,7 +820,7 @@ mod tests {
     async fn state_with_jwks(
         agent_auth: AgentAuthConfig,
         set: jsonwebtoken::jwk::JwkSet,
-    ) -> (AppState, Arc<AtomicUsize>) {
+    ) -> (CoreState, Arc<AtomicUsize>) {
         let base = state_with(agent_auth).await;
         let calls = Arc::new(AtomicUsize::new(0));
         let fetcher = Arc::new(TestJwksFetcher {
@@ -833,20 +834,11 @@ mod tests {
             // Cooldown disabled: these tests pin fetch counts, not the cooldown (jwks.rs does).
             std::time::Duration::ZERO,
         ));
-        (
-            AppState {
-                core: custos_core::CoreState {
-                    jwks_cache,
-                    ..base.core
-                },
-                ..base
-            },
-            calls,
-        )
+        (CoreState { jwks_cache, ..base }, calls)
     }
 
     /// Build a state whose `jwks_cache` fetcher always fails, to exercise the fetch-failure path.
-    async fn state_with_jwks_err(agent_auth: AgentAuthConfig) -> AppState {
+    async fn state_with_jwks_err(agent_auth: AgentAuthConfig) -> CoreState {
         let base = state_with(agent_auth).await;
         let fetcher = Arc::new(TestJwksFetcher {
             set: serde_json::from_value(json!({ "keys": [] })).unwrap(),
@@ -858,19 +850,13 @@ mod tests {
             std::time::Duration::from_secs(3600),
             std::time::Duration::ZERO,
         ));
-        AppState {
-            core: custos_core::CoreState {
-                jwks_cache,
-                ..base.core
-            },
-            ..base
-        }
+        CoreState { jwks_cache, ..base }
     }
 
     // ── state + request helpers ──────────────────────────────────────────
 
-    async fn post(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
-        let response = app(state)
+    async fn post(state: CoreState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -972,39 +958,6 @@ mod tests {
         assert_eq!(row.0, None, "anonymous identity has no owning did");
         assert_eq!(row.1, "active");
         assert_eq!(row.2.as_deref(), Some(assertion));
-    }
-
-    #[tokio::test]
-    async fn anonymous_pre_claim_assertion_cannot_be_exchanged_yet() {
-        // The pre-claim identity is `active`, not `claimed`, so the jwt-bearer grant refuses to
-        // exchange its assertion for an access token until a claim ceremony binds a DID.
-        let cfg = AgentAuthConfig {
-            anonymous_enabled: true,
-            ..AgentAuthConfig::default()
-        };
-        let state = state_with(cfg).await;
-        let (_status, body) = post(state.clone(), json!({ "type": "anonymous" })).await;
-        let assertion = body["identity_assertion"].as_str().unwrap().to_string();
-
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/oauth/token")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(format!(
-                        "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion={assertion}"
-                    )))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["error"], "invalid_grant");
     }
 
     // ── service_auth ─────────────────────────────────────────────────────

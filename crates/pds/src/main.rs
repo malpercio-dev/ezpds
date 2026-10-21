@@ -9,8 +9,6 @@ mod account_delete;
 mod account_genesis;
 mod account_reaper;
 mod admin_nonce_sweep;
-mod agent_child_core;
-mod agent_claim_sweep;
 mod app;
 mod auth;
 mod blob_gc;
@@ -727,19 +725,7 @@ async fn run() -> anyhow::Result<()> {
         "scheduled account-deletion reaper started"
     );
 
-    // Spawn the agent-claim-attempt expiry sweep. Each pass flips lapsed pending claim attempts to
-    // `expired` and records a `claim_expired` audit event for each, so a wallet's per-agent history
-    // reports how every ceremony ended; like the GC tasks it is best-effort and runs for the life
-    // of the process, and the scheduler stops it at shutdown.
-    let claim_sweep_interval =
-        std::time::Duration::from_secs(state.config.agent_auth.claim_sweep_interval_secs);
-    sweeps.spawn(agent_claim_sweep::AgentClaimSweep {
-        interval: claim_sweep_interval,
-    });
-    tracing::info!(
-        interval_secs = state.config.agent_auth.claim_sweep_interval_secs,
-        "agent claim-attempt expiry sweep started"
-    );
+    custos_agents::spawn_sweeps(&mut sweeps, &state.config.agent_auth);
 
     // Spawn the admin-nonce retention sweep. Each pass deletes `admin_nonces` rows older than
     // the configured max age; anti-replay is enforced by the `(device_id, nonce)` primary key

@@ -24,16 +24,8 @@ use crate::routes::admin_request_crawl::request_crawl;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
 use crate::routes::admin_waitlist::admin_waitlist;
-use crate::routes::agent_child::{
-    delete_child, list_children, mint_child, remint_child_assertion, revoke_child,
-};
-use crate::routes::agent_claim::{post_agent_claim, post_agent_claim_confirm};
-use crate::routes::agent_event::post_agent_event;
-use crate::routes::agent_identity::post_agent_identity;
-use crate::routes::agents::{agent_audit_log, claim_preview, list_agents, revoke_agent};
 use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
-use crate::routes::auth_md::serve_auth_md;
 use crate::routes::check_account_status::check_account_status;
 use crate::routes::claim_codes::{claim_codes, list_claim_code_inventory, revoke_claim_code_route};
 use crate::routes::confirm_email::confirm_email;
@@ -145,20 +137,8 @@ use crate::xrpc_dispatch::xrpc_handler;
 pub fn app(state: AppState) -> Router {
     let public = Router::new()
         .route("/", get(landing))
-        .route("/auth.md", get(serve_auth_md))
         .route("/.well-known/atproto-did", get(atproto_did_handler))
         .route("/.well-known/did.json", get(did_json_handler))
-        .route("/agent/identity", post(post_agent_identity))
-        .route("/agent/child", get(list_children).post(mint_child))
-        .route("/agent/child/assertion", post(remint_child_assertion))
-        .route("/agent/child/revoke", post(revoke_child))
-        .route("/agent/child/delete", post(delete_child))
-        .route("/agent/identity/claim", post(post_agent_claim))
-        .route(
-            "/agent/identity/claim/confirm",
-            post(post_agent_claim_confirm),
-        )
-        .route("/agent/event/notify", post(post_agent_event))
         // Public + credential-free by design (the `waitlist` capability): a marketing
         // page on another origin posts here, so it belongs on this CORS'd group, not
         // `/v1/*`. The handler itself 404s unless `[waitlist] enabled`.
@@ -357,6 +337,7 @@ pub fn app(state: AppState) -> Router {
     // methods fall into the `/xrpc/{method}` catch-all's `MethodNotImplemented`.
     let public = public
         .merge(custos_oauth::router())
+        .merge(custos_agents::router())
         .merge(custos_spaces::router(&state.config.spaces));
     // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
     // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
@@ -415,10 +396,6 @@ pub fn app(state: AppState) -> Router {
             "/v1/repo-keys/rotation/complete",
             post(complete_repo_key_rotation),
         )
-        .route("/v1/agents", get(list_agents))
-        .route("/v1/agents/claim-preview", post(claim_preview))
-        .route("/v1/agents/{registration_id}/revoke", post(revoke_agent))
-        .route("/v1/agents/{registration_id}/audit", get(agent_audit_log))
         .route("/v1/notifications/register", post(register_notifications))
         .route(
             "/v1/notifications/register/{deviceUuid}",
@@ -474,7 +451,9 @@ pub fn app(state: AppState) -> Router {
             get(get_pds_signing_key).post(create_signing_key),
         )
         .route("/v1/repo-signing-key", get(get_repo_signing_key));
-    let internal = internal.merge(custos_spaces::internal_router(&state.config.spaces));
+    let internal = internal
+        .merge(custos_agents::internal_router())
+        .merge(custos_spaces::internal_router(&state.config.spaces));
     let internal = apply_shared_layers(internal, &state);
 
     let router = public.merge(internal);

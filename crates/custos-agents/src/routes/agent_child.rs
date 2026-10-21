@@ -15,7 +15,6 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::agent_child_core::{mint_child_account, ChildRegistration};
-use crate::app::AppState;
 use crate::auth::agent_assertion::{mint_identity_assertion, parse_sqlite_datetime};
 use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
 use crate::db::accounts::{deactivate_account, AccountStateChange};
@@ -25,6 +24,7 @@ use crate::db::agent_auth::{
     set_agent_identity_assertion, AgentIdentityStatus, RegistrationType,
 };
 use crate::db::agent_child_deletions::{list_child_deletions_of_parent, upsert_child_deletion};
+use custos_core::CoreState;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -130,7 +130,7 @@ fn owner_error(error: OwnerAuthError) -> ApiError {
 /// child's rotation key and signs its genesis operation; this server only verifies that operation,
 /// hosts the resulting account, and issues the revocable, scope-clamped capability.
 pub async fn mint_child(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -170,7 +170,7 @@ fn rfc3339_expiry(sqlite_datetime: &str) -> String {
 }
 
 pub async fn list_children(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -206,7 +206,7 @@ pub async fn list_children(
 }
 
 pub async fn revoke_child(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -242,7 +242,7 @@ pub async fn revoke_child(
 /// `identity_assertion` re-mint path, so narrowing the config narrows every subsequent renewal
 /// without re-minting the child.
 pub async fn remint_child_assertion(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -324,7 +324,7 @@ pub async fn remint_child_assertion(
 /// The did:plc identity is untouched — ezpds holds no rotation key, so a full identity retirement is
 /// delete-on-PDS (here) plus a wallet-driven PLC tombstone (see `account_delete.rs`'s doctrine).
 pub async fn delete_child(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -417,119 +417,20 @@ pub async fn delete_child(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use tower::ServiceExt;
     use wiremock::{
         matchers::{method, path_regex},
-        Mock, MockServer, ResponseTemplate,
+        Mock, ResponseTemplate,
     };
 
     use super::*;
-    use crate::app::app;
     use crate::firehose::FirehoseEvent;
-    use crate::routes::test_utils::{
-        access_jwt, agent_jwt, child_genesis_op as genesis, cnf_bound_access_jwt,
-        reserve_repo_key as reserve, seed_account_with_repo, test_master_key, DpopProofKey,
+    use crate::test_support::{
+        access_jwt, agent_jwt, child_genesis_op as genesis, child_request as request,
+        cnf_bound_access_jwt, get_request, mint_child_for, reserve_repo_key as reserve,
+        seed_account_with_repo, state_with_grace, state_with_plc, test_app, DpopProofKey,
     };
-
-    /// Callers must keep the returned `MockServer` alive for the whole test. `MockServer::start`
-    /// hands out servers from wiremock's shared process-wide pool; dropping the guard returns the
-    /// server to the pool while its listener stays up, and the next test to check it out *resets*
-    /// it — silently unmounting the plc mock under a state that still points at its URL, so a
-    /// mid-test mint's plc POST 404s and surfaces as a 502 (observed as a parallel-load CI flake).
-    async fn state_with_plc() -> (AppState, MockServer) {
-        let plc = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&plc)
-            .await;
-        let base = crate::app::test_state_with_plc_url(plc.uri()).await;
-        let mut config = (*base.config).clone();
-        config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
-            test_master_key(),
-        )));
-        config.available_user_domains = vec!["example.com".to_string()];
-        (
-            AppState {
-                core: custos_core::CoreState {
-                    config: Arc::new(config),
-                    ..base.core
-                },
-                ..base
-            },
-            plc,
-        )
-    }
-
-    fn request(uri: &str, token: Option<&str>, body: serde_json::Value) -> Request<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("content-type", "application/json");
-        if let Some(token) = token {
-            builder = builder.header("authorization", format!("Bearer {token}"));
-        }
-        builder.body(Body::from(body.to_string())).unwrap()
-    }
-
-    fn get_request(uri: &str, token: &str) -> Request<Body> {
-        Request::builder()
-            .method("GET")
-            .uri(uri)
-            .header("authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap()
-    }
-
-    /// A `state_with_plc()` whose child-deletion grace window is overridden — `0` makes the next
-    /// reaper run purge, a large value keeps a scheduled child parked in its window.
-    async fn state_with_grace(grace_secs: u64) -> (AppState, MockServer) {
-        let (base, plc) = state_with_plc().await;
-        let mut config = (*base.config).clone();
-        config.accounts.child_deletion_grace_secs = grace_secs;
-        (
-            AppState {
-                core: custos_core::CoreState {
-                    config: Arc::new(config),
-                    ..base.core
-                },
-                ..base
-            },
-            plc,
-        )
-    }
-
-    /// Mint a sovereign child of `parent` and return its DID. Reserves a fresh repo key and drives
-    /// the real `POST /agent/child` path so the child has an account, repo, handle, provisioning
-    /// row, and a claimed capability — exactly what a delete must later unwind.
-    async fn mint_child_for(state: &AppState, handle: &str, token: &str) -> String {
-        let repo_key = reserve(&state.db).await;
-        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
-        let response = app(state.clone())
-            .oneshot(request(
-                "/agent/child",
-                Some(token),
-                serde_json::json!({"handle": handle, "plcOp": op}),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "child mint should succeed"
-        );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let minted: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        minted["did"].as_str().unwrap().to_string()
-    }
 
     /// Minting a child emits an `#identity` firehose frame carrying the child's handle, so relays
     /// and AppViews learn the new DID's handle binding immediately — without it, every app shows
@@ -551,7 +452,7 @@ mod tests {
         let mut rx = firehose.subscribe();
         let frontier = firehose.current_seq();
 
-        let app = crate::app::app(state);
+        let app = crate::test_support::test_app(state);
         let response = app
             .oneshot(request(
                 "/agent/child",
@@ -603,7 +504,7 @@ mod tests {
         let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
         let token = access_jwt(&[0x42; 32], parent);
 
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child",
                 Some(&token),
@@ -634,7 +535,7 @@ mod tests {
             .unwrap();
         assert_eq!(row.status, AgentIdentityStatus::Claimed);
 
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(get_request("/agent/child", &token))
             .await
             .unwrap();
@@ -657,7 +558,7 @@ mod tests {
             "a live child carries no purge date"
         );
 
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/revoke",
                 Some(&token),
@@ -689,7 +590,7 @@ mod tests {
         let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
         let token = access_jwt(&[0x42; 32], parent);
 
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child",
                 Some(&token),
@@ -706,7 +607,7 @@ mod tests {
 
         // The child's own tokens are agent-derived and never pass the owner guard, so the
         // parent is the only party that can read the child's audit trail.
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(get_request(
                 &format!("/v1/agents/{registration_id}/audit"),
                 &token,
@@ -717,7 +618,7 @@ mod tests {
 
         // A foreign account still sees the uniform 404 (no existence oracle).
         let foreign = access_jwt(&[0x42; 32], "did:plc:someoneelse1111111");
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(get_request(
                 &format!("/v1/agents/{registration_id}/audit"),
                 &foreign,
@@ -739,7 +640,7 @@ mod tests {
         let dpop_key = DpopProofKey::generate();
         let token = cnf_bound_access_jwt(&state.jwt_secret, parent, &dpop_key.thumbprint());
 
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child",
                 Some(&token),
@@ -771,7 +672,7 @@ mod tests {
             &repo_key.key_id.0,
         );
         let token = access_jwt(&[0x42; 32], "did:plc:not-local-parent1111");
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child",
                 Some(&token),
@@ -815,7 +716,7 @@ mod tests {
         .did;
         let token = access_jwt(&[0x42; 32], parent);
 
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child",
                 Some(&token),
@@ -846,7 +747,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200))
             .mount(&plc)
             .await;
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child",
                 Some(&token),
@@ -882,7 +783,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/assertion",
                 Some(&token),
@@ -966,7 +867,7 @@ mod tests {
 
         // A foreign account gets the same uniform 404 as an unknown child — no existence oracle.
         let foreign = access_jwt(&[0x42; 32], "did:plc:someoneelse3333333");
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/assertion",
                 Some(&foreign),
@@ -979,7 +880,7 @@ mod tests {
         // The child's own agent-derived token is exactly the credential it would renew itself
         // with; the owner guard refuses it, so a child can never extend its own capability.
         let agent = agent_jwt(&[0x42; 32], &child, "com.atproto.access", "reg_impostor");
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/assertion",
                 Some(&agent),
@@ -996,7 +897,7 @@ mod tests {
         );
 
         // Revocation walked the custody ladder down; renewal must not walk it back up.
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/revoke",
                 Some(&token),
@@ -1005,7 +906,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/assertion",
                 Some(&token),
@@ -1032,8 +933,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parent_deletes_child_then_reaper_purges_and_tombstone_survives() {
-        // grace = 0 → the child is due the moment it is scheduled, so one reaper pass purges it.
+    async fn parent_deletes_child_schedules_it_and_records_a_tombstone() {
+        // The purge itself is `pds`'s account reaper; `account_reaper.rs` tests that half.
         let (state, _plc) = state_with_grace(0).await;
         let parent = "did:plc:parentchilddelete1111";
         seed_account_with_repo(&state.db, parent).await;
@@ -1043,7 +944,7 @@ mod tests {
 
         // Subscribe *after* the mint so only the delete/purge frames are observed.
         let mut rx = state.firehose.subscribe();
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/delete",
                 Some(&token),
@@ -1087,7 +988,7 @@ mod tests {
 
         // Deletion revokes as a side effect, so `status` alone cannot tell a retired child from a
         // merely revoked one — the list has to carry the purge date for the wallet to say which.
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(get_request("/agent/child", &token))
             .await
             .unwrap();
@@ -1109,46 +1010,6 @@ mod tests {
         assert_eq!(event.did, child);
         assert!(!event.active);
         assert_eq!(event.status.as_deref(), Some("deactivated"));
-
-        // The reaper permanently purges the child (account/repo/handle gone) and emits #account
-        // deleted — the FK-ordered purge also drops the provisioning row without a constraint error.
-        let reaper = crate::account_reaper::AccountReaper {
-            interval: std::time::Duration::from_secs(1),
-        };
-        let stats = crate::sweep::run_once(&reaper, &state).await.unwrap();
-        assert_eq!(stats.swept, 1);
-        assert!(!crate::db::accounts::account_exists(&state.db, &child)
-            .await
-            .unwrap());
-        let provisioning: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM agent_child_provisionings WHERE child_did = ?",
-        )
-        .bind(&child)
-        .fetch_one(&state.db)
-        .await
-        .unwrap();
-        assert_eq!(
-            provisioning, 0,
-            "the child's provisioning row must be purged"
-        );
-
-        // The deletion stays auditable after the fact: the tombstone outlives the purged child.
-        let after =
-            crate::db::agent_child_deletions::list_child_deletions_of_parent(&state.db, parent)
-                .await
-                .unwrap();
-        assert_eq!(
-            after.len(),
-            1,
-            "the deletion tombstone must survive the child's purge"
-        );
-
-        let FirehoseEvent::Account(event) = rx.try_recv().unwrap() else {
-            panic!("expected an #account firehose event for the deletion");
-        };
-        assert_eq!(event.did, child);
-        assert!(!event.active);
-        assert_eq!(event.status.as_deref(), Some("deleted"));
     }
 
     #[tokio::test]
@@ -1160,7 +1021,7 @@ mod tests {
         let child = mint_child_for(&state, "foreign-target.example.com", &token).await;
 
         let foreign = access_jwt(&[0x42; 32], "did:plc:someoneelse2222222");
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/delete",
                 Some(&foreign),
@@ -1196,7 +1057,7 @@ mod tests {
         // revoked child would try to act with; the owner guard must refuse it so a child can never
         // delete itself or a sibling.
         let agent = agent_jwt(&[0x42; 32], &child, "com.atproto.access", "reg_impostor");
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/delete",
                 Some(&agent),
@@ -1227,7 +1088,7 @@ mod tests {
         let token = access_jwt(&[0x42; 32], parent);
         let child = mint_child_for(&state, "idem-target.example.com", &token).await;
 
-        let first = app(state.clone())
+        let first = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/delete",
                 Some(&token),
@@ -1240,7 +1101,7 @@ mod tests {
         // Subscribe after the first schedule: the second call is an already-deactivated no-op and
         // must not emit a second #account frame.
         let mut rx = state.firehose.subscribe();
-        let second = app(state.clone())
+        let second = test_app(state.clone())
             .oneshot(request(
                 "/agent/child/delete",
                 Some(&token),

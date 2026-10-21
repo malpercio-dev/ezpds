@@ -1265,3 +1265,37 @@ pub async fn seed_owner_account_with_handle(db: &sqlx::SqlitePool, did: &str) {
         .await
         .unwrap();
 }
+
+/// POST `body` as JSON to `uri` against `router`, with an optional `Bearer` token, and return `(status, parsed_json_body)` (`Value::Null` if the body doesn't parse) —
+/// the auth.md agent-flow route tests' one-shot request/response helper. Each crate wraps it
+/// with its own router.
+pub async fn post_json_with_bearer(
+    router: axum::Router,
+    uri: &str,
+    body: serde_json::Value,
+    token: Option<&str>,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+
+    let mut builder = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        builder = builder.header("Authorization", format!("Bearer {t}"));
+    }
+    let response = router
+        .oneshot(
+            builder
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
