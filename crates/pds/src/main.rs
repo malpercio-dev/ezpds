@@ -604,18 +604,22 @@ async fn run() -> anyhow::Result<()> {
         metrics,
         sweeps: Arc::new(sweep_status::SweepStatus::default()),
         started_at,
-    };
-    let state = app::AppState {
-        spaces: custos_spaces::SpacesState::new(core.clone()),
-        core,
         poll_tracker: auth::new_claim_poll_tracker(),
+        account_notifier: None,
+        space_type_cache: custos_core::scope_display::new_space_type_cache(),
+    };
+    let mut state = app::AppState {
+        core,
         firehose,
         crawlers,
         iroh,
-        notify_sender,
+        notify_sender: None,
         email,
         repo_write_locks: Arc::new(record_write::RepoWriteLocks::new()),
     };
+    if let Some(sender) = notify_sender {
+        state.set_notify_sender(sender);
+    }
 
     // Blob mirror: when a bucket is configured, reconcile the volume against it BEFORE the
     // listener binds — a (Litestream-)restored database must never serve against a volume

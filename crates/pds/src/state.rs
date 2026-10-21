@@ -7,20 +7,11 @@ use axum::extract::FromRef;
 use custos_core::CoreState;
 use custos_spaces::SpacesState;
 
-use crate::auth::ClaimPollTracker;
-
 /// The state every `pds` handler extracts: the shared [`CoreState`] plus the fields only `pds`'s
 /// features read. Core helpers take `&CoreState`; a `&AppState` reaches them through [`Deref`].
 #[derive(Clone)]
 pub struct AppState {
     pub core: CoreState,
-    /// In-memory last-poll clock for the auth.md claim-polling grant, keyed by the SHA-256 of each
-    /// agent's `claim_token`. Paces polling to the advertised `interval` (returns `slow_down` when
-    /// exceeded). Shared across all token endpoint requests; ephemeral (resets on restart).
-    pub poll_tracker: ClaimPollTracker,
-    /// The Spaces feature's state. Extracted through `FromRef`, which pins its `core` to this
-    /// struct's, so a state built with a swapped config is seen the same way by every handler.
-    pub spaces: SpacesState,
     /// In-memory firehose pipeline: every repo commit emits a sequenced event here, which
     /// `com.atproto.sync.subscribeRepos` fans out to connected relays/BGSes. Shared via Arc.
     pub firehose: Arc<crate::firehose::Firehose>,
@@ -45,6 +36,17 @@ pub struct AppState {
     pub repo_write_locks: Arc<crate::record_write::RepoWriteLocks>,
 }
 
+impl AppState {
+    /// Turn notifications on: the relay queue `pds`'s own triggers send through, and the
+    /// [`custos_core::notify::AccountNotifier`] features push through. One switch, so the two
+    /// never disagree about whether notifications are configured.
+    pub fn set_notify_sender(&mut self, sender: crate::notify_relay_client::NotifySender) {
+        let notifier = crate::notifications::RelayNotifier::new(self.core.clone(), sender.clone());
+        self.core.account_notifier = Some(Arc::new(notifier));
+        self.notify_sender = Some(sender);
+    }
+}
+
 // Field access only, not a smart pointer: lets `state.db` and `helper(&state)` keep compiling
 // where a helper takes `&CoreState`. Writes go through `state.core`.
 impl Deref for AppState {
@@ -63,10 +65,7 @@ impl FromRef<AppState> for CoreState {
 
 impl FromRef<AppState> for SpacesState {
     fn from_ref(state: &AppState) -> SpacesState {
-        SpacesState {
-            core: state.core.clone(),
-            ..state.spaces.clone()
-        }
+        SpacesState::new(state.core.clone())
     }
 }
 
@@ -93,8 +92,6 @@ impl AppState {
             Arc::new(c)
         };
         AppState {
-            poll_tracker: crate::auth::new_claim_poll_tracker(),
-            spaces: SpacesState::new(core.clone()),
             firehose,
             crawlers,
             iroh: None,

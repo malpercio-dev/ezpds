@@ -40,7 +40,7 @@ use crate::auth::OAuthSigningKey;
 /// advertised `interval`. Read by both the claim-block emitter (`routes/agent_claim.rs`, which
 /// advertises it) and the claim-polling grant's `slow_down` gate (`routes/oauth_token/claim_polling.rs`, which
 /// enforces it) so the advertised and enforced values can never drift apart.
-pub(crate) const POLL_INTERVAL_SECS: u64 = 5;
+pub const POLL_INTERVAL_SECS: u64 = 5;
 
 /// In-memory last-poll clock for the claim-polling grant (`urn:workos:agent-auth:grant-type:claim`).
 /// Keyed by the SHA-256 hex of the agent's `claim_token` (never the raw secret), the value is the
@@ -62,7 +62,7 @@ pub fn new_claim_poll_tracker() -> ClaimPollTracker {
 /// auth.md / OAuth-style error body, distinct from the codebase's XRPC `ApiError` envelope. Carries
 /// an optional `claim` block and `claim_token` for the `interaction_required` / claim-ceremony
 /// responses.
-pub(crate) struct AgentAuthError {
+pub struct AgentAuthError {
     status: StatusCode,
     error: &'static str,
     error_description: String,
@@ -71,7 +71,7 @@ pub(crate) struct AgentAuthError {
 }
 
 impl AgentAuthError {
-    pub(crate) fn new(
+    pub fn new(
         status: StatusCode,
         error: &'static str,
         error_description: impl Into<String>,
@@ -85,7 +85,7 @@ impl AgentAuthError {
         }
     }
 
-    pub(crate) fn server_error() -> Self {
+    pub fn server_error() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",
@@ -94,7 +94,7 @@ impl AgentAuthError {
     }
 
     /// The `interaction_required` response: 401 with a claim block the user must confirm.
-    pub(crate) fn interaction_required(claim: Value, claim_token: String) -> Self {
+    pub fn interaction_required(claim: Value, claim_token: String) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
             error: "interaction_required",
@@ -132,10 +132,10 @@ impl IntoResponse for AgentAuthError {
 
 // ── Service-signed identity_assertion minting ─────────────────────────────────
 
-pub(crate) struct MintedAssertion {
-    pub(crate) jwt: String,
-    pub(crate) expires_sqlite: String,
-    pub(crate) expires_rfc3339: String,
+pub struct MintedAssertion {
+    pub jwt: String,
+    pub expires_sqlite: String,
+    pub expires_rfc3339: String,
 }
 
 /// Claims of a service-signed `identity_assertion` — the token the confirmed agent later exchanges
@@ -156,7 +156,7 @@ struct ServiceAssertionClaims {
 /// Mint a service-signed `identity_assertion` bound to `subject` (the account DID once claimed, or
 /// the registration id for a pre-claim anonymous assertion), carrying the granted `scopes` and the
 /// registration's id/type. Signed with the server's ES256 OAuth key.
-pub(crate) fn mint_identity_assertion(
+pub fn mint_identity_assertion(
     keypair: &OAuthSigningKey,
     public_url: &str,
     ttl_secs: u64,
@@ -198,7 +198,7 @@ pub(crate) fn mint_identity_assertion(
 // ── Claim-ceremony helpers ────────────────────────────────────────────────────
 
 /// Where the user enters the claim `user_code`. Configurable; defaults to `{public_url}/agent/claim`.
-pub(crate) fn verification_uri(agent_auth: &AgentAuthConfig, public_url: &str) -> String {
+pub fn verification_uri(agent_auth: &AgentAuthConfig, public_url: &str) -> String {
     agent_auth
         .verification_uri
         .clone()
@@ -206,11 +206,7 @@ pub(crate) fn verification_uri(agent_auth: &AgentAuthConfig, public_url: &str) -
 }
 
 /// The `claim` block an agent shows the user to route them through a confirmation ceremony.
-pub(crate) fn claim_block(
-    user_code: &str,
-    verification_uri: &str,
-    expires: &DateTime<Utc>,
-) -> Value {
+pub fn claim_block(user_code: &str, verification_uri: &str, expires: &DateTime<Utc>) -> Value {
     json!({
         "user_code": user_code,
         "verification_uri": verification_uri,
@@ -219,17 +215,17 @@ pub(crate) fn claim_block(
 }
 
 /// A fresh `cla_`-prefixed claim-attempt id.
-pub(crate) fn new_claim_attempt_id() -> String {
+pub fn new_claim_attempt_id() -> String {
     format!("cla_{}", Uuid::new_v4().simple())
 }
 
 /// The freshly opened claim attempt, as the caller needs it to build its own response — the
 /// registration flows put `user_code`/`expires` into a [`claim_block`], the claim endpoint into
 /// its own `claim_attempt` block.
-pub(crate) struct StartedClaim {
-    pub(crate) attempt_id: String,
-    pub(crate) user_code: String,
-    pub(crate) expires: DateTime<Utc>,
+pub struct StartedClaim {
+    pub attempt_id: String,
+    pub user_code: String,
+    pub expires: DateTime<Utc>,
 }
 
 /// Open a fresh claim attempt against `registration_id`: mint the `user_code`, insert the
@@ -238,7 +234,7 @@ pub(crate) struct StartedClaim {
 /// Every ceremony start goes through here — the registration endpoint's two flows, the
 /// re-challenge of an unconfirmed registration, and the claim endpoint's fresh-attempt branch —
 /// so the code's TTL and the audit trail can't drift apart between them.
-pub(crate) async fn start_claim_attempt(
+pub async fn start_claim_attempt(
     db: &sqlx::SqlitePool,
     agent_auth: &AgentAuthConfig,
     registration_id: &str,
@@ -246,12 +242,12 @@ pub(crate) async fn start_claim_attempt(
     email: Option<&str>,
 ) -> Result<StartedClaim, ApiError> {
     let attempt_id = new_claim_attempt_id();
-    let user_code = crate::code_gen::generate_code();
+    let user_code = common::code_gen::generate_code();
     let expires = Utc::now() + Duration::seconds(agent_auth.user_code_ttl_secs as i64);
 
-    crate::db::agent_auth::insert_agent_claim_attempt(
+    custos_db::agent_auth::insert_agent_claim_attempt(
         db,
-        &crate::db::agent_auth::NewAgentClaimAttempt {
+        &custos_db::agent_auth::NewAgentClaimAttempt {
             id: &attempt_id,
             identity_id: registration_id,
             user_code: &user_code,
@@ -265,7 +261,7 @@ pub(crate) async fn start_claim_attempt(
         db,
         registration_id,
         did,
-        crate::db::agent_audit::AgentAuditEventType::ClaimInitiated,
+        custos_db::agent_audit::AgentAuditEventType::ClaimInitiated,
         json!({ "claim_attempt_id": attempt_id }),
     )
     .await?;
@@ -278,19 +274,19 @@ pub(crate) async fn start_claim_attempt(
 }
 
 /// Serialize a scope list to the JSON array string stored in `agent_identities.scopes`.
-pub(crate) fn scopes_to_json(scopes: &[String]) -> String {
+pub fn scopes_to_json(scopes: &[String]) -> String {
     serde_json::to_string(scopes).unwrap_or_else(|_| "[]".to_string())
 }
 
 /// SQLite `datetime()`-comparable timestamp (`YYYY-MM-DD HH:MM:SS`, UTC), matching the format
 /// `datetime('now')` produces so the DB layer's expiry comparisons parse it reliably.
-pub(crate) fn to_sqlite_datetime(dt: &DateTime<Utc>) -> String {
+pub fn to_sqlite_datetime(dt: &DateTime<Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 /// Parse a SQLite `datetime()` timestamp (`YYYY-MM-DD HH:MM:SS`, UTC) back into a `DateTime<Utc>`.
 /// Falls back to "now" on a malformed value (defensive — the DB always writes this format).
-pub(crate) fn parse_sqlite_datetime(s: &str) -> DateTime<Utc> {
+pub fn parse_sqlite_datetime(s: &str) -> DateTime<Utc> {
     NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|n| n.and_utc())
         .unwrap_or_else(|_| Utc::now())
@@ -299,14 +295,14 @@ pub(crate) fn parse_sqlite_datetime(s: &str) -> DateTime<Utc> {
 /// Append one agent audit event (V040), minting the row id. Shared by the registration and
 /// claim-ceremony routes (which may not import each other) and the token endpoint. `detail`
 /// carries mechanical facts only — never request bodies, user codes, or token material.
-pub(crate) async fn record_agent_audit(
+pub async fn record_agent_audit(
     db: &sqlx::SqlitePool,
     registration_id: &str,
     did: Option<&str>,
-    event_type: crate::db::agent_audit::AgentAuditEventType,
+    event_type: custos_db::agent_audit::AgentAuditEventType,
     detail: Value,
 ) -> Result<(), ApiError> {
-    crate::db::agent_audit::insert_agent_audit_event(
+    custos_db::agent_audit::insert_agent_audit_event(
         db,
         &Uuid::new_v4().to_string(),
         registration_id,

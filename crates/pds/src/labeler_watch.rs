@@ -534,7 +534,7 @@ mod tests {
         .unwrap();
 
         let (sender, rx) = NotifySender::capturing();
-        state.notify_sender = Some(sender);
+        state.set_notify_sender(sender);
         (state, rx)
     }
 

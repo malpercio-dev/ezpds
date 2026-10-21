@@ -98,4 +98,16 @@ pub struct CoreState {
     pub sweeps: Arc<crate::sweep_status::SweepStatus>,
     /// Process start, for the health endpoint's uptime readout.
     pub started_at: std::time::Instant,
+    /// In-memory last-poll clock for the auth.md claim-polling grant, keyed by the SHA-256 of each
+    /// agent's `claim_token`. Paces polling to the advertised `interval` (returns `slow_down` when
+    /// exceeded). Read by the OAuth token endpoint and the agents surface; ephemeral (resets on
+    /// restart).
+    pub poll_tracker: crate::auth::ClaimPollTracker,
+    /// Pushes to an account's registered devices. `None` when `[notifications] relay` is unset,
+    /// which turns every account push into a no-op. `pds` installs it (`AppState::
+    /// set_notify_sender`); features push through it without seeing the relay client.
+    pub account_notifier: Option<Arc<dyn crate::notify::AccountNotifier>>,
+    /// TTL cache of resolved space type declarations, read by the consent page's `space:` scope
+    /// display and by a bare `space:` grant's collection fallback in the Spaces auth seam.
+    pub space_type_cache: crate::scope_display::SpaceTypeCache,
 }

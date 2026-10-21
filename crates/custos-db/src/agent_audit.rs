@@ -12,7 +12,7 @@ use sqlx::Sqlite;
 /// What an agent identity did, recorded at the points where activity is attributable via the
 /// `registration_id` token claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentAuditEventType {
+pub enum AgentAuditEventType {
     /// The identity was registered (`POST /agent/identity`).
     Registered,
     /// A claim ceremony was opened and a `user_code` issued.
@@ -34,7 +34,7 @@ pub(crate) enum AgentAuditEventType {
 }
 
 impl AgentAuditEventType {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             AgentAuditEventType::Registered => "registered",
             AgentAuditEventType::ClaimInitiated => "claim_initiated",
@@ -52,20 +52,20 @@ impl AgentAuditEventType {
 /// One audit row, newest-first in list queries. The registration id is not carried back — list
 /// queries are already scoped to one registration.
 #[derive(Debug, Clone)]
-pub(crate) struct AgentAuditEventRow {
+pub struct AgentAuditEventRow {
     /// Insertion-order sequence (the table's rowid) — the pagination cursor. The table is
     /// append-only, so rowid order is exactly event order.
-    pub(crate) seq: i64,
-    pub(crate) id: String,
-    pub(crate) did: Option<String>,
-    pub(crate) event_type: String,
-    pub(crate) detail: Option<String>,
-    pub(crate) created_at: String,
+    pub seq: i64,
+    pub id: String,
+    pub did: Option<String>,
+    pub event_type: String,
+    pub detail: Option<String>,
+    pub created_at: String,
 }
 
 /// Append one audit event. Generic over the executor so callers can write it inside the same
 /// transaction as the state change it records (claim confirm, revocation).
-pub(crate) async fn insert_agent_audit_event<'e, E>(
+pub async fn insert_agent_audit_event<'e, E>(
     executor: E,
     id: &str,
     registration_id: &str,
@@ -100,7 +100,7 @@ where
 
 /// Page an identity's audit events newest-first. `before_seq` is the previous page's last `seq`
 /// (exclusive); `None` starts from the newest event.
-pub(crate) async fn list_agent_audit_events(
+pub async fn list_agent_audit_events(
     db: &sqlx::SqlitePool,
     registration_id: &str,
     before_seq: Option<i64>,
@@ -144,9 +144,9 @@ pub(crate) async fn list_agent_audit_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
-    use crate::db::accounts::insert_bare_account as seed_account;
-    use crate::db::agent_auth::{self, NewAgentIdentity, RegistrationType};
+    use crate::accounts::insert_bare_account as seed_account;
+    use crate::agent_auth::{self, NewAgentIdentity, RegistrationType};
+    use crate::test_pool;
 
     async fn seed_identity(db: &sqlx::SqlitePool, id: &str) {
         agent_auth::insert_agent_identity(
@@ -174,14 +174,14 @@ mod tests {
 
     #[tokio::test]
     async fn insert_and_list_pages_newest_first() {
-        let state = test_state().await;
-        seed_account(&state.db, "did:plc:other").await;
-        seed_identity(&state.db, "reg_a").await;
-        seed_identity(&state.db, "reg_b").await;
+        let db = test_pool().await;
+        seed_account(&db, "did:plc:other").await;
+        seed_identity(&db, "reg_a").await;
+        seed_identity(&db, "reg_b").await;
 
         for i in 0..3 {
             insert_agent_audit_event(
-                &state.db,
+                &db,
                 &format!("evt_{i}"),
                 "reg_a",
                 None,
@@ -192,7 +192,7 @@ mod tests {
             .expect("insert");
         }
         insert_agent_audit_event(
-            &state.db,
+            &db,
             "evt_other",
             "reg_b",
             Some("did:plc:other"),
@@ -202,7 +202,7 @@ mod tests {
         .await
         .expect("insert");
 
-        let page1 = list_agent_audit_events(&state.db, "reg_a", None, 2)
+        let page1 = list_agent_audit_events(&db, "reg_a", None, 2)
             .await
             .expect("page 1");
         assert_eq!(
@@ -211,7 +211,7 @@ mod tests {
             "newest first, scoped to reg_a"
         );
 
-        let page2 = list_agent_audit_events(&state.db, "reg_a", Some(page1[1].seq), 2)
+        let page2 = list_agent_audit_events(&db, "reg_a", Some(page1[1].seq), 2)
             .await
             .expect("page 2");
         assert_eq!(
@@ -223,11 +223,11 @@ mod tests {
 
     #[tokio::test]
     async fn detail_and_did_round_trip() {
-        let state = test_state().await;
-        seed_account(&state.db, "did:plc:owner").await;
-        seed_identity(&state.db, "reg_detail").await;
+        let db = test_pool().await;
+        seed_account(&db, "did:plc:owner").await;
+        seed_identity(&db, "reg_detail").await;
         insert_agent_audit_event(
-            &state.db,
+            &db,
             "evt_d",
             "reg_detail",
             Some("did:plc:owner"),
@@ -237,7 +237,7 @@ mod tests {
         .await
         .expect("insert");
 
-        let events = list_agent_audit_events(&state.db, "reg_detail", None, 10)
+        let events = list_agent_audit_events(&db, "reg_detail", None, 10)
             .await
             .expect("list");
         assert_eq!(events.len(), 1);
@@ -248,9 +248,9 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_registration_id_is_a_foreign_key_error() {
-        let state = test_state().await;
+        let db = test_pool().await;
         let result = insert_agent_audit_event(
-            &state.db,
+            &db,
             "evt_orphan",
             "reg_missing",
             None,

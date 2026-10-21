@@ -24,7 +24,7 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; `[telemetry]` config incl. `log_format = "json"` — see module doc
   app.rs           — router construction (route table; the shared middleware is `custos_core::apply_shared_layers`); re-exports `AppState` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged. Each feature crate's `router`/`internal_router` merges in unconditionally before the layer stack; the feature gate lives inside the crate
-  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (firehose, crawlers, iroh, notify sender, claim-poll tracker, email, repo write locks) and each feature crate's state (`spaces: SpacesState`). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (which takes `core` from `AppState`, never from its own copy); writes go through `state.core`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
+  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (firehose, crawlers, iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (built from `AppState.core`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.account_notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
   rate_limit_test.rs — the rate-limit middleware tests that need the full `app()` router (CORS on a 429, the `getRepo` exemption, per-endpoint caps); the limiter's unit tests are in `custos_core::rate_limit`
   xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (`xrpc_handler` at `/xrpc/{method}`): upstream resolution for the three proxied namespaces + the read-after-write branch — see module doc
   firehose/        — persistent subscribeRepos event pipeline (see section below)
@@ -37,7 +37,7 @@ src/
   email.rs         — pluggable outbound email (`Arc<dyn EmailSender>`: log default, SMTP, Mailtrap HTTPS) behind the token-delivery flows; `[email]` / `EZPDS_EMAIL_*` — see module doc
   iroh_tunnel.rs   — opt-in (`[iroh] enabled`) NAT-traversing QUIC endpoint devices dial by node id; v0.1 echo ALPN, IPv6 gate for v4-only hosts — see module doc
   notify_relay_client.rs — outbound iroh leg to the notification relay (`ezpds/notify/0`) + the fire-and-forget send worker; lazy cached connection, self-healing enrollment — see module doc
-  notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; inert when `[notifications] relay` is unset — see module doc
+  notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; `RelayNotifier` is the `custos_core::notify::AccountNotifier` features push through, `notify_admin_devices` the operator channel; inert when `[notifications] relay` is unset — see module doc
   record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (one reachability walk per commit); every commit passes the MST integrity check (new head's key count vs the maintained `accounts.record_count` witness, V068) before the CAS — see module doc
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   account_delete.rs— shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, `#account` deleted frame), used by deleteAccount and the reaper — see module doc
@@ -110,7 +110,6 @@ The auth modules only `pds` uses. The verification core (`extractors`, `jwt`, `d
 
 | File | Pattern | Contents |
 |---|---|---|
-| `agent_assertion.rs` | Mixed (unavoidable) | shared auth.md agent machinery both `routes/agent_identity.rs` and `routes/agent_claim.rs` need (routes can't import each other): assertion minting, claim-block helpers, `AgentAuthError`, agent audit — see module doc |
 | `oauth_response_mode.rs` | Functional Core | `ResponseMode` (`query` \| `fragment`): parse the OAuth `response_mode` and pick the redirect separator; shared by four route surfaces — see module doc |
 
 **Rule:** `auth/` has no knowledge of specific routes. Route handlers call into `auth/`; `auth/` never imports from `routes/`.
@@ -322,7 +321,7 @@ Look here before writing a helper. Each row is the one home; copies elsewhere ar
 | authenticate the account owner and map to XRPC errors | `auth::guards::authenticate_owner` |
 | the token-endpoint DPoP preamble | `routes::oauth_dpop::token_endpoint_dpop` |
 | insert a generated value, retrying on a UNIQUE collision | `db::insert_with_retry_on_collision` |
-| open an auth.md claim ceremony | `auth::agent_assertion::start_claim_attempt` |
+| open an auth.md claim ceremony | `custos_core::auth::agent_assertion::start_claim_attempt` |
 | the account row + genesis repo + announce shared by account promotion | `account_genesis` |
 | a periodic background pass | `custos_core::sweep::Sweep` run by `custos_core::sweep::Scheduler` (tests call `custos_core::sweep::run_once`) |
 | a nonce store's retention-above-replay rule | `common::{replay_span_secs, retention_covers_replay}` |

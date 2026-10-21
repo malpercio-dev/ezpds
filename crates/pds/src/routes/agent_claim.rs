@@ -191,23 +191,23 @@ async fn initiate(
                 // agent that holds a valid claim token spam the owner's lock screen.
                 //
                 // An `anonymous` registration has no DID yet (the claim is what binds one), so
-                // there is nobody to notify; `notify_device` is a no-op on an unknown DID
+                // there is nobody to notify; `notify_account` is a no-op on an unknown DID
                 // anyway, but the intent is worth naming.
                 if let Some(did) = identity.did.as_deref() {
-                    crate::notifications::notify_device(
-                        state,
-                        did,
-                        crate::notifications::NotificationPayload::new(
-                            "agent_claim_pending",
-                            "Confirm agent access",
-                            "An agent is waiting for you to approve it.",
+                    state
+                        .notify_account(
+                            did,
+                            crate::notifications::NotificationPayload::new(
+                                "agent_claim_pending",
+                                "Confirm agent access",
+                                "An agent is waiting for you to approve it.",
+                            )
+                            // The app deep-links straight to the confirm screen; the user_code is
+                            // deliberately absent — it is the credential the human types, and a
+                            // notification payload is not where it belongs.
+                            .with_data(serde_json::json!({ "claimAttemptId": started.attempt_id })),
                         )
-                        // The app deep-links straight to the confirm screen; the user_code is
-                        // deliberately absent — it is the credential the human types, and a
-                        // notification payload is not where it belongs.
-                        .with_data(serde_json::json!({ "claimAttemptId": started.attempt_id })),
-                    )
-                    .await;
+                        .await;
                 }
 
                 (started.attempt_id, started.user_code, started.expires)

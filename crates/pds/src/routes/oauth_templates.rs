@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, Redirect};
 
 use crate::auth::oauth_response_mode::ResponseMode;
-use custos_spaces::consent::{SpaceDisplay, SpaceDisplayMap};
+use custos_core::scope_display::{SpaceDisplay, SpaceDisplayMap};
 
 // ── Public rendering functions ────────────────────────────────────────────────
 /// Render the `state` parameter for an authorization response, or nothing at all.
@@ -142,7 +142,7 @@ const WALLET_HANDOFF_SCHEME: &str = "obsign";
 /// `wallet` renders the wallet-approval path (typed code + handoff link + status polling) above
 /// the password form; `None` on a password-error re-render, where no pending request exists.
 /// `spaces` supplies the user-legible text for the request's `space:` tokens (see
-/// `custos_spaces::consent`); tokens missing from it render as the raw token.
+/// `custos_core::scope_display`); tokens missing from it render as the raw token.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_consent_page(
     client_name: &str,
@@ -984,7 +984,7 @@ mod tests {
         let spaces = SpaceDisplayMap::from([(
             token.to_string(),
             SpaceDisplay {
-                type_label: custos_spaces::consent::WILDCARD_TYPE_LABEL.to_string(),
+                type_label: custos_core::scope_display::WILDCARD_TYPE_LABEL.to_string(),
                 any_authority: true,
                 broad: true,
                 ..SpaceDisplay::default()

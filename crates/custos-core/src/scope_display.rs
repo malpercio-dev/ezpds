@@ -20,7 +20,7 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 
 use crate::identity::resolution;
-use custos_core::CoreState;
+use crate::CoreState;
 
 use crate::auth::oauth_scopes::{parse_space_token, space_grant_writes_records, SpaceGrant};
 use crate::auth::permission_sets::{
@@ -68,7 +68,7 @@ impl SpaceTypeDecl {
     }
 }
 
-/// TTL cache of resolved space type declarations, keyed by the type NSID. Held in `SpacesState`
+/// TTL cache of resolved space type declarations, keyed by the type NSID. Held in `CoreState`
 /// alongside `PermissionSetCache`, and on the same TTLs — the spec gives space-type declarations
 /// the permission-set dynamic-update semantics, so a widened `collections` propagates on the
 /// same schedule a widened permission set does.
@@ -97,7 +97,7 @@ async fn resolve_space_type(state: &CoreState, nsid: &str) -> Result<SpaceTypeDe
 }
 
 /// `resolve_space_type` behind the TTL cache.
-pub(crate) async fn resolve_space_type_cached(
+pub async fn resolve_space_type_cached(
     state: &CoreState,
     cache: &SpaceTypeCache,
     nsid: &str,
@@ -305,9 +305,9 @@ pub fn preferred_languages(accept_language: Option<&str>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::auth::permission_sets::tests_support::{pds_doc, AUTHORITY_DID};
-    use crate::db::dids::seed_did_document;
     use crate::test_support::state_with_txt_records as state_with_dns;
     use crate::test_support::test_state;
+    use custos_db::dids::seed_did_document;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -331,7 +331,7 @@ mod tests {
         server: &MockServer,
         nsid: &str,
         main: serde_json::Value,
-    ) -> crate::SpacesState {
+    ) -> crate::CoreState {
         let state = state_with_dns(test_state().await, vec![format!("did={AUTHORITY_DID}")]);
         seed_did_document(&state.db, AUTHORITY_DID, pds_doc(&server.uri())).await;
 

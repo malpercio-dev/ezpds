@@ -132,7 +132,7 @@ async fn start_pds(relay_addr: EndpointAddr) -> (AppState, Endpoint) {
         state.db.clone(),
         state.metrics.clone(),
     );
-    state.notify_sender = Some(sender);
+    state.set_notify_sender(sender);
 
     seed_account(&state, ACCOUNT_DID).await;
 
@@ -268,17 +268,17 @@ async fn a_notification_travels_from_custos_through_the_relay_to_a_device_that_o
 
     let (kid, sender_public_key) = published_sender_key(&state).await;
 
-    crate::notifications::notify_device(
-        &state,
-        ACCOUNT_DID,
-        crate::notifications::NotificationPayload::new(
-            "agent_claim_pending",
-            "Confirm agent access",
-            "An agent is waiting for you to approve it.",
+    state
+        .notify_account(
+            ACCOUNT_DID,
+            crate::notifications::NotificationPayload::new(
+                "agent_claim_pending",
+                "Confirm agent access",
+                "An agent is waiting for you to approve it.",
+            )
+            .with_data(json!({ "claimAttemptId": "clm_e2e" })),
         )
-        .with_data(json!({ "claimAttemptId": "clm_e2e" })),
-    )
-    .await;
+        .await;
 
     // Apple's first request is the registration-time nothing; the push is the one with a body
     // carrying our envelope. Wait for it rather than assuming ordering.
@@ -380,16 +380,16 @@ async fn a_ping_registration_receives_no_ciphertext_at_the_relay() {
     let device = crypto::generate_p256_keypair().expect("device keypair");
     register_identity(&state, ACCOUNT_DID, &device.key_id.0, true).await;
 
-    let enqueued = crate::notifications::notify_device(
-        &state,
-        ACCOUNT_DID,
-        crate::notifications::NotificationPayload::new(
-            "agent_claim_pending",
-            "Confirm agent access",
-            "SECRET-BODY-THAT-MUST-NOT-LEAVE",
-        ),
-    )
-    .await;
+    let enqueued = state
+        .notify_account(
+            ACCOUNT_DID,
+            crate::notifications::NotificationPayload::new(
+                "agent_claim_pending",
+                "Confirm agent access",
+                "SECRET-BODY-THAT-MUST-NOT-LEAVE",
+            ),
+        )
+        .await;
     assert_eq!(enqueued, 1);
 
     let request = await_condition("the pushed APNs request", || async {
@@ -603,16 +603,16 @@ async fn two_identities_on_one_device_both_keep_receiving() {
 
     let (_kid, sender_public_key) = published_sender_key(&state).await;
     for did in [ACCOUNT_DID, SECOND_DID] {
-        crate::notifications::notify_device(
-            &state,
-            did,
-            crate::notifications::NotificationPayload::new(
-                "agent_claim_pending",
-                "Confirm agent access",
-                "An agent is waiting for you to approve it.",
-            ),
-        )
-        .await;
+        state
+            .notify_account(
+                did,
+                crate::notifications::NotificationPayload::new(
+                    "agent_claim_pending",
+                    "Confirm agent access",
+                    "An agent is waiting for you to approve it.",
+                ),
+            )
+            .await;
     }
 
     // The relay refuses a push on a rotated-away handle before ever calling Apple, so "two
@@ -677,12 +677,12 @@ async fn a_dead_device_token_prunes_its_registration() {
     let device = crypto::generate_p256_keypair().expect("device keypair");
     register_device(&state, &device.key_id.0).await;
 
-    crate::notifications::notify_device(
-        &state,
-        ACCOUNT_DID,
-        crate::notifications::NotificationPayload::new("agent_claim_pending", "t", "b"),
-    )
-    .await;
+    state
+        .notify_account(
+            ACCOUNT_DID,
+            crate::notifications::NotificationPayload::new("agent_claim_pending", "t", "b"),
+        )
+        .await;
 
     await_condition("the registration to be pruned", || async {
         let rows = store::list_registrations(&state.db, ACCOUNT_DID)

@@ -1,10 +1,10 @@
 // pattern: Imperative Shell
 
-//! The sending side of the notification relay: `notify_device(state, did, payload)` and
-//! `notify_admin_devices` turn a notification into one HPKE-sealed, length-quantized payload
-//! *per registered device* and hand each to the relay worker. Inert when
-//! `[notifications] relay` is unset (`AppState.notify_sender` is `None`), down to never
-//! minting key material.
+//! The sending side of the notification relay: [`RelayNotifier`] (account pushes, installed as
+//! `CoreState.account_notifier`) and `notify_admin_devices` turn a notification into one
+//! HPKE-sealed, length-quantized payload *per registered device* and hand each to the relay
+//! worker. Inert when `[notifications] relay` is unset (`AppState.notify_sender` and
+//! `account_notifier` are `None`), down to never minting key material.
 //!
 //! Three properties this module is responsible for, in the order they matter:
 //!
@@ -32,76 +32,67 @@
 //! the app talks to Custos, whereas a trigger that fails because a push relay is unwell has
 //! turned a courtesy into an outage.
 
-use serde::Serialize;
+use std::future::Future;
+use std::pin::Pin;
+
+use custos_core::notify::AccountNotifier;
+use custos_core::CoreState;
 use zeroize::Zeroizing;
+
+pub use custos_core::notify::NotificationPayload;
 
 use crate::app::AppState;
 use crate::db::notifications as store;
 use crate::notify_relay_client::{NotifyJob, RegistrationOwner};
 
-/// The plaintext a device's Notification Service Extension decrypts and renders.
+/// The [`AccountNotifier`] `pds` installs in `CoreState.account_notifier` when a relay is
+/// configured: notify every device registered to a DID.
 ///
-/// Serialized camelCase, matching the wallet's decoder. `pad` is the length-quantizing
-/// filler; it is meaningless to the reader and is the last field so the arithmetic below can
-/// reason about it as a suffix.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NotificationPayload {
-    /// Machine-readable kind, e.g. `agent_claim_pending`. The app routes on this.
-    #[serde(rename = "type")]
-    pub kind: &'static str,
-    pub title: String,
-    pub body: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
-    /// Spaces, sized so the serialized APNs body lands on a padding bucket.
-    pub pad: String,
+/// Silent and harmless when the account has no registered devices or when the relay is
+/// unreachable. Returns how many sealed payloads were enqueued toward the relay — delivery stays
+/// fire-and-forget beyond that, but "zero devices could even be attempted" is a fact some
+/// triggers branch on (the consent push makes number matching mandatory only when a push
+/// actually went out).
+pub struct RelayNotifier {
+    /// Read for `db` and `config` only. Cloned before the notifier is installed, so its own
+    /// `account_notifier` is `None` and the two never form a reference cycle.
+    core: CoreState,
+    sender: crate::notify_relay_client::NotifySender,
 }
 
-impl NotificationPayload {
-    /// A payload with no padding yet — [`seal_for`] computes and applies it.
-    pub fn new(kind: &'static str, title: impl Into<String>, body: impl Into<String>) -> Self {
-        Self {
-            kind,
-            title: title.into(),
-            body: body.into(),
-            data: None,
-            pad: String::new(),
-        }
-    }
-
-    /// Attach structured routing data (a claim attempt id, a subject DID, …).
-    pub fn with_data(mut self, data: serde_json::Value) -> Self {
-        self.data = Some(data);
-        self
+impl RelayNotifier {
+    pub fn new(core: CoreState, sender: crate::notify_relay_client::NotifySender) -> Self {
+        Self { core, sender }
     }
 }
 
-/// Notify every device registered to `did`.
-///
-/// Silent and harmless when notifications are unconfigured, when the account has no
-/// registered devices, or when the relay is unreachable. Returns how many sealed payloads
-/// were enqueued toward the relay — delivery stays fire-and-forget beyond that, but "zero
-/// devices could even be attempted" is a fact some triggers branch on (the consent push
-/// makes number matching mandatory only when a push actually went out).
-pub async fn notify_device(state: &AppState, did: &str, payload: NotificationPayload) -> usize {
-    let Some(sender) = state.notify_sender.as_ref() else {
-        return 0;
-    };
-    let registrations = match store::list_registrations(&state.db, did).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load notification registrations");
-            return 0;
-        }
-    };
-    fan_out(state, sender, registrations, payload, |device_id| {
-        RegistrationOwner::Account {
-            did: did.to_string(),
-            device_uuid: device_id,
-        }
-    })
-    .await
+impl AccountNotifier for RelayNotifier {
+    fn notify_account<'a>(
+        &'a self,
+        did: &'a str,
+        payload: NotificationPayload,
+    ) -> Pin<Box<dyn Future<Output = usize> + Send + 'a>> {
+        Box::pin(async move {
+            let registrations = match store::list_registrations(&self.core.db, did).await {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load notification registrations");
+                    return 0;
+                }
+            };
+            fan_out(
+                &self.core,
+                &self.sender,
+                registrations,
+                payload,
+                |device_id| RegistrationOwner::Account {
+                    did: did.to_string(),
+                    device_uuid: device_id,
+                },
+            )
+            .await
+        })
+    }
 }
 
 /// Notify every *active* admin-companion device — the operator alert channel.
@@ -129,7 +120,7 @@ pub async fn notify_admin_devices(state: &AppState, payload: NotificationPayload
 
 /// Seal-and-enqueue one payload per registration, returning how many jobs were enqueued.
 async fn fan_out(
-    state: &AppState,
+    state: &CoreState,
     sender: &crate::notify_relay_client::NotifySender,
     registrations: Vec<store::RegistrationRow>,
     payload: NotificationPayload,
@@ -287,7 +278,7 @@ const P256_POINT_LEN: usize = 65;
 /// Lazy generation rather than a startup step: an instance that has notifications configured
 /// but never sends one should not mint key material, and the first send is the earliest
 /// moment the key is genuinely needed.
-async fn active_sender_key(state: &AppState) -> Option<(i64, Zeroizing<[u8; 32]>)> {
+async fn active_sender_key(state: &CoreState) -> Option<(i64, Zeroizing<[u8; 32]>)> {
     let master_key = master_key(state)?;
 
     let existing = match store::get_active_sender_key(&state.db).await {
@@ -313,7 +304,7 @@ async fn active_sender_key(state: &AppState) -> Option<(i64, Zeroizing<[u8; 32]>
 
 /// Mint, wrap, and store a fresh sender key.
 pub(crate) async fn generate_sender_key(
-    state: &AppState,
+    state: &CoreState,
     master_key: &[u8; 32],
 ) -> Option<(i64, Zeroizing<[u8; 32]>)> {
     let keypair = match crypto::generate_p256_keypair() {
@@ -352,7 +343,9 @@ pub(crate) async fn generate_sender_key(
 /// as well as on send matters for onboarding order: an app that fetches the set before the
 /// instance has ever sent anything would otherwise pin an empty set and be unable to verify
 /// the first notification it receives.
-pub async fn published_sender_keys(state: &AppState) -> Result<Vec<(i64, String)>, SenderKeyError> {
+pub async fn published_sender_keys(
+    state: &CoreState,
+) -> Result<Vec<(i64, String)>, SenderKeyError> {
     // No master key means no key can be minted *or* unwrapped, so the honest answer is an
     // error, not an empty set. Answering `200 {"keys": []}` would let a client conclude it has
     // successfully pinned nothing — and then fail to verify every notification it receives,
@@ -414,7 +407,7 @@ pub enum SenderKeyError {
 
 /// The master KEK, if configured. Callers report its absence — logging here would emit a line
 /// per request on the read path, where the caller already turns it into a visible error.
-fn master_key(state: &AppState) -> Option<&[u8; 32]> {
+fn master_key(state: &CoreState) -> Option<&[u8; 32]> {
     state.config.signing_key_master_key.as_ref().map(|s| &*s.0)
 }
 
@@ -555,12 +548,12 @@ mod tests {
         assert!(state.notify_sender.is_none());
 
         // No relay, no panic, no rows touched — the whole feature is absent.
-        notify_device(
-            &state,
-            "did:plc:nobody",
-            NotificationPayload::new("agent_claim_pending", "t", "b"),
-        )
-        .await;
+        state
+            .notify_account(
+                "did:plc:nobody",
+                NotificationPayload::new("agent_claim_pending", "t", "b"),
+            )
+            .await;
         notify_admin_devices(&state, NotificationPayload::new("ops_alert", "t", "b")).await;
 
         let keys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_sender_keys")
