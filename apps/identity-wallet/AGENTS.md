@@ -112,18 +112,15 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 `migrate.rs`, `handle_change.rs`, `rotate_repo_key.rs`, `disaster_recovery.rs`,
 `endpoint_repair.rs`, `self_held_kit.rs`.
 
-`src-tauri` is the shell: the Tauri wiring (`lib.rs`, `commands.rs`) and the iOS implementations of the core's platform traits (`keychain.rs`, `enclave_signer.rs`, `icloud.rs`), plus the two iOS bridges (`apns.rs`, `bg_backup.rs`). Everything else — the identity store, every ceremony, the network clients, `Core` — is `crates/obsign-core`, re-exported by `lib.rs` under each module's old name so `crate::claim::…` still resolves here; those modules' rows are in that crate's AGENTS.md.
+`src-tauri` is the shell: the Tauri wiring (`lib.rs`, `commands.rs`), the app's Keychain names (`keychain.rs`), and the APNs bridge (`apns.rs`), which patches the Tauri app delegate. `run()` installs the iOS implementations of the core's platform traits from `crates/obsign-platform-ios` (Keychain, Secure Enclave, iCloud, BGTaskScheduler); `lib.rs` also owns the background-backup task identifier, which must match `Info.ios.plist`. Everything else — the identity store, every ceremony, the network clients, `Core` — is `crates/obsign-core`, re-exported by `lib.rs` under each module's old name so `crate::claim::…` still resolves here; those modules' rows are in that crate's AGENTS.md.
 
 | Module (src-tauri/src/) | What it is |
 |---|---|
 | `lib.rs` | crate root and app wiring: the cross-cutting IPC commands (account creation, both DID ceremonies, PDS config/capabilities, IdentityStore reads, appearance) plus `run()`'s startup sequence — see module doc |
 | `main.rs` | desktop entry point (calls `lib::run()`) |
-| `keychain.rs` | `AppleKeychain`, the iOS `KeyStore` that `run()` installs into `obsign_core::keystore` (whose module doc owns the two-store and protection-class semantics, the accessors every module calls, and the Share 1 cloud-slot allowlist); the access-group entitlement invariant; and the **canonical account inventory**: the module doc is the authority on every account name |
+| `keychain.rs` | the wallet's Keychain service name, access groups (and the entitlement-order invariant), and the **canonical account inventory** — the module doc is the authority on every account name; also the small account helpers (PDS URL, appearance, legacy OAuth tokens) and the account-name pin test. The Keychain itself is `obsign_platform_ios::keychain::AppleKeychain`, which `run()` installs under this service |
 | `diagnostics.rs` | the Settings `export_diagnostics` command; the log itself is `obsign_core::diagnostics` |
-| `enclave_signer.rs` | `EnclaveSigner`, the Secure Enclave `obsign_core::signer::Signer` that `run()` installs on a real iOS device (software elsewhere), plus `classify_se_fast_path`, the host-tested decision behind its restore-safe fast path — see module doc |
 | `commands.rs` | the IPC command table: one line per registered command, from which the `commands!` macro generates every `#[tauri::command]` wrapper and the invoke handler. **A new command is a new line here**; the function it names takes `&Core`/`AppHandle` ahead of its IPC arguments and carries no Tauri attribute |
-| `icloud.rs` | `AppBackupStore`, the `obsign_core::backup_store::BackupStore` `run()` installs: the iCloud Drive ubiquity container, no location on a device with iCloud Drive off, an app-data folder off-device; and the evicted-placeholder download restore needs — see module doc |
-| `bg_backup.rs` | iOS `BGProcessingTask` keeping both iCloud mirrors topped up: alternating two-mirror sweep, per-DID opt-ins, app-global settings; scheduler-bridge invariants (plist sync, completion latch, wifiOnly path) in the module doc |
 | `apns.rs` | iOS-only APNs bridge: add-only delegate-method installation for the token callbacks + the notification-tap deep link — see module doc |
 
 **Guarantees (cross-cutting):**
@@ -151,10 +148,10 @@ PDS running at the configured URL for account creation to succeed at runtime.
   endpoint inventory is each client module's doc: `http.rs`, `pds_client.rs`).
 - Rust/frontend → `tauri-plugin-auth-session` (**vendored** in
   `vendor/tauri-plugin-auth-session/`; see VENDORED.md for provenance + audit).
-- iOS-only target deps: `security-framework` (Keychain + Secure Enclave),
-  `objc2-foundation` (iCloud ubiquity container), `objc2-background-tasks` + `block2`
-  (BGTaskScheduler), `objc2-ui-kit`/`objc2-user-notifications` (APNs bridge),
-  `system-configuration` (Wi-Fi-only check).
+- Rust → `crates/obsign-platform-ios`: the Keychain, the Secure Enclave, iCloud, and
+  BGTaskScheduler (`security-framework`, `objc2-foundation`, `objc2-background-tasks`,
+  `system-configuration` live there). iOS-only target deps left here are the APNs bridge's:
+  `objc2-foundation`, `objc2-ui-kit`/`objc2-user-notifications`, `objc2`, `block2`.
 - `src-tauri/gen/` is NOT tracked — generated per developer by `cargo tauri ios init`.
 
 ## Prerequisites (macOS/iOS Development)

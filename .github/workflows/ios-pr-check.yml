@@ -29,6 +29,7 @@ on:
       - "crates/crypto/**"
       - "crates/custos-client/**"
       - "crates/obsign-core/**"
+      - "crates/obsign-platform-ios/**"
       - "crates/ios-device-key/**"
       - "Cargo.toml"
       - "Cargo.lock"

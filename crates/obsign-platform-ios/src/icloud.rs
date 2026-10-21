@@ -1,22 +1,28 @@
-//! The wallet's [`BackupStore`]: where the user-held media and posts mirrors live, and how an
-//! evicted iCloud file is brought back. `run()` installs [`AppBackupStore`] in `setup`.
+//! [`ICloudBackupStore`], the iOS [`BackupStore`]: where the user-held media and posts mirrors
+//! live, and how an evicted iCloud file is brought back.
 //!
 //! The rules (see `obsign_core::backup_store` for why): the iCloud Drive ubiquity container
 //! when the user has iCloud Drive on; on a real device with it off, **no** location; on every
-//! other target (macOS, the Simulator), a local app-data directory so the surface stays
-//! exercisable off-device.
+//! other target (macOS, the Simulator), the local folder the shell supplies, so the surface
+//! stays exercisable off-device.
 
 use std::path::{Path, PathBuf};
 
 use obsign_core::backup_store::{BackupLocation, BackupStore, Materialize};
 
-pub(crate) struct AppBackupStore {
-    /// Resolves the app-data directory for the off-device fallback.
+pub struct ICloudBackupStore {
+    /// The off-device fallback folder (an app-data directory). Never used on a real device.
     #[cfg_attr(all(target_os = "ios", not(target_env = "sim")), allow(dead_code))]
-    pub(crate) app: tauri::AppHandle,
+    local_fallback: Option<PathBuf>,
 }
 
-impl BackupStore for AppBackupStore {
+impl ICloudBackupStore {
+    pub fn new(local_fallback: Option<PathBuf>) -> Self {
+        Self { local_fallback }
+    }
+}
+
+impl BackupStore for ICloudBackupStore {
     fn root(&self) -> Option<(PathBuf, BackupLocation)> {
         if let Some(dir) = ubiquity_documents_dir() {
             return Some((dir, BackupLocation::Icloud));
@@ -27,9 +33,9 @@ impl BackupStore for AppBackupStore {
         }
         #[cfg(not(all(target_os = "ios", not(target_env = "sim"))))]
         {
-            use tauri::Manager;
-            let dir = self.app.path().app_data_dir().ok()?.join("blob-backup");
-            Some((dir, BackupLocation::Local))
+            self.local_fallback
+                .clone()
+                .map(|dir| (dir, BackupLocation::Local))
         }
     }
 
@@ -55,7 +61,7 @@ impl BackupStore for AppBackupStore {
 /// extends the sandbox to it; iOS syncs anything written there and the mirror is
 /// user-visible in the Files app. Returns `None` when the user has iCloud Drive off
 /// (or the entitlement is absent). Called off the main thread by construction —
-/// Tauri async commands run on a worker pool, and Apple documents the call as
+/// the app's async commands run on a worker pool, and Apple documents the call as
 /// potentially slow.
 #[cfg(target_os = "ios")]
 fn ubiquity_documents_dir() -> Option<PathBuf> {

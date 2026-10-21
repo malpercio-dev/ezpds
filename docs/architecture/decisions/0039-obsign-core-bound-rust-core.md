@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-20
 - **Deciders:** mal
-- **Related:** [ADR-0013](0013-native-swiftui-shell-over-rust-core.md) (the native shell, split out of the same record and still Deferred) · [ADR-0005](0005-functional-core-imperative-shell.md) · [ADR-0030](0030-stable-keychain-group-and-frozen-icloud-container.md) · [`docs/design-plans/2026-09-06-v2-in-place.md`](../../design-plans/2026-09-06-v2-in-place.md) §4 · [`crates/ios-device-key`](../../../crates/ios-device-key) · [`apps/identity-wallet/src-tauri/src/bg_backup.rs`](../../../apps/identity-wallet/src-tauri/src/bg_backup.rs)
+- **Related:** [ADR-0013](0013-native-swiftui-shell-over-rust-core.md) (the native shell, split out of the same record and still Deferred) · [ADR-0005](0005-functional-core-imperative-shell.md) · [ADR-0030](0030-stable-keychain-group-and-frozen-icloud-container.md) · [`docs/design-plans/2026-09-06-v2-in-place.md`](../../design-plans/2026-09-06-v2-in-place.md) §4 · [`crates/ios-device-key`](../../../crates/ios-device-key) · [`crates/obsign-platform-ios/src/scheduler.rs`](../../../crates/obsign-platform-ios/src/scheduler.rs)
 
 ## Context
 

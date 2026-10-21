@@ -534,7 +534,7 @@ fn load_enabled(did: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether `did` has opted into the repo backup. The background sweep (`bg_backup`)
+/// Whether `did` has opted into the repo backup. The background sweep (`backup_policy`)
 /// reads this to decide which identities to snapshot; a never-opted-in or Keychain-error
 /// read is `false` (never back up without an explicit opt-in). Read independently of the
 /// blob opt-in, so a user can enable one mirror and not the other. Only the iOS background
@@ -733,7 +733,7 @@ async fn hosting_pds_url(pds_client: &PdsClient, did: &str) -> Result<String, Re
 }
 
 /// One backup pass for `did`, resolving the mirror root, hosting PDS, and shared `PdsClient` from
-/// the app's `Core`. Shared body of the `run_repo_backup` command and the `bg_backup` background
+/// the app's `Core`. Shared body of the `run_repo_backup` command and the `backup_policy` background
 /// sweep: resolve root → discover PDS → fetch + validate + write. Reads only the public
 /// `getRepo`, so it needs no session.
 pub async fn run_backup_for_did(

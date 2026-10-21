@@ -47,7 +47,9 @@ The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decis
 | `src/sovereign_session.rs` | passwordless per-DID sovereign login: resolves the device key + signer from `IdentityStore`, delegates the network ceremony to `custos_client::sovereign_session::sovereign_login`, and persists a validated Bearer session to `{did}:oauth-tokens`; re-exports the crate's `bearer_jwt_claims`/`audience_matches_server` sub/aud binding helpers and its `fresh_nonce`/`unix_timestamp` (reused by several other device-key-signed flows, not just this one) — see module doc |
 | `src/events.rs` | `EventSink` (core → UI events, fire-and-forget), `install`, `emit` |
 | `src/backup_store.rs` | `BackupStore` (where the user-held mirrors live, and downloading an evicted cloud file), `install`, `BackupLocation` |
-| `src/platform.rs` | `Scheduler`, `Clock`: declared, not yet wired (see the plan for which step wires each) |
+| `src/backup_policy.rs` | the background-backup policy (the wallet re-exports it as `bg_backup`): settings, the request it asks `Scheduler` for, and the sweep that keeps both mirrors topped up: alternating two-mirror sweep, per-DID opt-ins, app-global settings; scheduler-bridge invariants (plist sync, completion latch, wifiOnly path) in the module doc |
+| `src/scheduler.rs` | `Scheduler` (periodic background requests: the core says what and under which conditions, the platform how), `install`, `run` (the job bodies) |
+| `src/platform.rs` | `Clock`: declared, not yet wired (it lands with the wasm build) |
 
 ## Contracts
 
