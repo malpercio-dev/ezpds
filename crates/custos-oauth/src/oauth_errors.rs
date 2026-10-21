@@ -1,0 +1,131 @@
+// pattern: Functional Core
+//
+// The shared OAuth 2.0 error response type for the token-issuing and token-revocation
+// endpoints. Pure: given an error code, description, and optional DPoP nonce it builds an
+// Axum response; no I/O, no database, no CoreState. Lives here (rather than in either
+// handler) so `oauth_token/`, `oauth_revoke.rs`, and `oauth_par.rs` share one responder
+// without a route→route import — the same pattern as `oauth_templates.rs`.
+
+use axum::{
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Json, Response},
+};
+
+/// OAuth 2.0 error response body (RFC 6749 §5.2).
+///
+/// All token-endpoint and revocation-endpoint errors use this format, distinct from the
+/// codebase's `ApiError` envelope (`{ "error": { "code": "...", "message": "..." } }`).
+#[derive(Debug)]
+pub(super) struct OAuthTokenError {
+    pub error: &'static str,
+    pub error_description: std::borrow::Cow<'static, str>,
+    /// Optional DPoP-Nonce value to include in the response header.
+    /// Required for `use_dpop_nonce` errors so the client can retry.
+    pub dpop_nonce: Option<String>,
+}
+
+impl OAuthTokenError {
+    /// `error_description` takes either a fixed `&'static str` or a `String` built at
+    /// runtime (e.g. naming the offending value) — descriptions stay mechanical facts,
+    /// never secrets.
+    pub(super) fn new(
+        error: &'static str,
+        error_description: impl Into<std::borrow::Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            error,
+            error_description: error_description.into(),
+            dpop_nonce: None,
+        }
+    }
+
+    pub(super) fn with_nonce(
+        error: &'static str,
+        error_description: &'static str,
+        nonce: String,
+    ) -> Self {
+        Self {
+            error,
+            error_description: std::borrow::Cow::Borrowed(error_description),
+            dpop_nonce: Some(nonce),
+        }
+    }
+}
+
+impl IntoResponse for OAuthTokenError {
+    fn into_response(self) -> Response {
+        // Structured trace of every token/revocation-endpoint rejection. Without it, a
+        // third-party client's failed exchange is a bare 4xx in the request counters and
+        // diagnosing which check fired means counter archaeology. Mechanical facts only —
+        // codes and fixed descriptions, never token material.
+        tracing::info!(
+            error = self.error,
+            description = %self.error_description,
+            "OAuth endpoint rejecting request"
+        );
+        let body = serde_json::json!({
+            "error": self.error,
+            "error_description": self.error_description,
+        });
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/json"),
+        );
+        if let Some(nonce) = self.dpop_nonce {
+            match axum::http::HeaderValue::from_str(&nonce) {
+                Ok(hval) => {
+                    headers.insert("DPoP-Nonce", hval);
+                }
+                Err(e) => {
+                    // This should never happen: nonces are base64url ASCII, always valid
+                    // header values. If it does happen, returning use_dpop_nonce without
+                    // the nonce header leaves the client with no retry path (RFC 9449 §7.1).
+                    // Return server_error instead.
+                    tracing::error!(nonce = ?nonce, error = %e, "nonce string cannot be encoded as HTTP header value; this is a server bug");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            axum::http::HeaderValue::from_static("application/json"),
+                        )],
+                        Json(serde_json::json!({
+                            "error": "server_error",
+                            "error_description": "internal server error",
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+
+        // RFC 6749 §5.2: most errors are 400, but server_error is 500.
+        let status = if self.error == "server_error" {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        (status, headers, Json(body)).into_response()
+    }
+}
+
+/// Confirm a required form field was supplied and non-empty, or fail with the standard
+/// `invalid_request` shape every token/PAR/revocation endpoint uses for a missing parameter.
+/// Settles the wording too: callers had drifted between "X is required" and "missing
+/// parameter: X" for the same condition.
+pub(super) fn require<'a>(field: Option<&'a str>, name: &str) -> Result<&'a str, OAuthTokenError> {
+    field.filter(|s| !s.is_empty()).ok_or_else(|| {
+        OAuthTokenError::new("invalid_request", format!("missing parameter: {name}"))
+    })
+}
+
+/// Insert the `Cache-Control: no-store` + `Pragma: no-cache` pair every token-endpoint and
+/// revocation success response carries (RFC 6749 §5.1): the body is sensitive token material,
+/// or a revocation outcome tied to it, so caching it anywhere downstream is unsafe.
+pub(super) fn insert_no_store_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
+}

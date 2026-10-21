@@ -473,7 +473,7 @@ pub async fn require_space_grant(
     let SpaceOp::Record { .. } = op else {
         return Err(insufficient_space_scope());
     };
-    let declared = crate::consent::resolve_space_type_cached(
+    let declared = custos_core::scope_display::resolve_space_type_cached(
         state,
         &state.space_type_cache,
         &space.space_type,

@@ -6,13 +6,17 @@
 pub mod auth;
 pub mod blob_store;
 pub mod capability;
+pub mod crawler;
+pub mod firehose;
 pub mod identity;
 mod layers;
 pub mod lexicon;
 pub mod metrics;
 pub mod no_input;
+pub mod notify;
 pub mod rate_limit;
 pub mod request_host;
+pub mod scope_display;
 pub mod space_uri;
 pub mod state;
 pub mod sweep;

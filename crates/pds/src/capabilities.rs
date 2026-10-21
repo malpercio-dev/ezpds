@@ -58,24 +58,8 @@ pub const CAPABILITIES: &[Capability] = &[
         summary: "Passwordless full-access sessions minted from a fresh proof signed by one of the identity's current PLC rotation keys.",
         enabled: |_| true,
     },
-    Capability {
-        name: "agents",
-        control: "agent_auth.service_auth_enabled agent_auth.anonymous_enabled agent_auth.trusted_issuers",
-        summary: "The auth.md agent surface: agent registration, the owner-confirmed claim ceremony, and agent-derived access tokens.",
-        // Every registration flow is opt-in and off by default; with none enabled there is
-        // no way for an agent to register at all, so the capability is not offered.
-        enabled: |config| {
-            config.agent_auth.service_auth_enabled
-                || config.agent_auth.anonymous_enabled
-                || !config.agent_auth.trusted_issuers.is_empty()
-        },
-    },
-    Capability {
-        name: "walletConsent",
-        control: CONTROL_ALWAYS,
-        summary: "OAuth authorization can be approved in the identity wallet with a device-key-signed decision instead of a browser password.",
-        enabled: |_| true,
-    },
+    custos_agents::CAPABILITY,
+    custos_oauth::CAPABILITY,
     Capability {
         name: "optionalPassword",
         control: "accounts.password_optional",

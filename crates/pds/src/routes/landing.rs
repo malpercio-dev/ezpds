@@ -12,7 +12,7 @@ use axum::{extract::State, response::Html};
 use common::Config;
 
 use crate::app::AppState;
-use crate::routes::oauth_templates::html_escape;
+use common::html::html_escape;
 
 const LANDING_TEMPLATE: &str = include_str!("../../assets/landing.html");
 

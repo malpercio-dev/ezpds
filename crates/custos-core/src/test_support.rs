@@ -85,6 +85,23 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
     // Enabled in tests so instrument assertions can read the rendered output; each test
     // state gets its own registry (no global exporter state to collide on).
     let metrics = Arc::new(crate::metrics::Metrics::new("test-pds").expect("test metrics"));
+    // A live firehose and crawler notifier over the test pool and metrics (no crawler URLs).
+    let firehose = {
+        let mut f = crate::firehose::Firehose::new(db.clone())
+            .await
+            .expect("test firehose");
+        f.attach_metrics(metrics.clone());
+        Arc::new(f)
+    };
+    let crawlers = {
+        let mut c = crate::crawler::CrawlerNotifier::new(
+            http_client.clone(),
+            "test.example.com".into(),
+            &[],
+        );
+        c.attach_metrics(metrics.clone());
+        Arc::new(c)
+    };
 
     CoreState {
         config: Arc::new(Config {
@@ -176,6 +193,11 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
         metrics,
         sweeps: Arc::new(crate::sweep_status::SweepStatus::default()),
         started_at: std::time::Instant::now(),
+        poll_tracker: crate::auth::new_claim_poll_tracker(),
+        notifier: None,
+        space_type_cache: crate::scope_display::new_space_type_cache(),
+        firehose,
+        crawlers,
     }
 }
 
@@ -1242,4 +1264,38 @@ pub async fn seed_owner_account_with_handle(db: &sqlx::SqlitePool, did: &str) {
         .execute(db)
         .await
         .unwrap();
+}
+
+/// POST `body` as JSON to `uri` against `router`, with an optional `Bearer` token, and return `(status, parsed_json_body)` (`Value::Null` if the body doesn't parse) —
+/// the auth.md agent-flow route tests' one-shot request/response helper. Each crate wraps it
+/// with its own router.
+pub async fn post_json_with_bearer(
+    router: axum::Router,
+    uri: &str,
+    body: serde_json::Value,
+    token: Option<&str>,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+
+    let mut builder = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        builder = builder.header("Authorization", format!("Bearer {t}"));
+    }
+    let response = router
+        .oneshot(
+            builder
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
 }

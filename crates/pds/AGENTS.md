@@ -24,27 +24,18 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; `[telemetry]` config incl. `log_format = "json"` — see module doc
   app.rs           — router construction (route table; the shared middleware is `custos_core::apply_shared_layers`); re-exports `AppState` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged. Each feature crate's `router`/`internal_router` merges in unconditionally before the layer stack; the feature gate lives inside the crate
-  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (firehose, crawlers, iroh, notify sender, claim-poll tracker, email, repo write locks) and each feature crate's state (`spaces: SpacesState`). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (which takes `core` from `AppState`, never from its own copy); writes go through `state.core`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
+  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (built from `AppState.core`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
   rate_limit_test.rs — the rate-limit middleware tests that need the full `app()` router (CORS on a 429, the `getRepo` exemption, per-endpoint caps); the limiter's unit tests are in `custos_core::rate_limit`
   xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (`xrpc_handler` at `/xrpc/{method}`): upstream resolution for the three proxied namespaces + the read-after-write branch — see module doc
-  firehose/        — persistent subscribeRepos event pipeline (see section below)
-  firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
-  blob_gc.rs       — periodic blob GC over per-account ownership rows (`blob_owners`, V039); references union the public MST and stored space records (V065); fails closed on a failed reconcile (that account leaks disk until fixed) — see module doc
-  blob_mirror/     — off-volume blob replication to an S3-compatible bucket (`[blob_mirror]` / `EZPDS_BLOB_MIRROR_*`); boot restore runs before the listener binds; `s3.rs` is a hand-rolled SigV4 client — see module doc
-  blob_scrub.rs    — periodic blob-integrity scrub: re-hash every stored blob + walk both orphan directions; auto-heals from the mirror when configured — see module doc
-  crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget) — see section below
-  relay_status.rs  — inbound `com.atproto.sync.getHostStatus` client (total, never fatal) backing `GET /v1/admin/relay-status` — see section below
   email.rs         — pluggable outbound email (`Arc<dyn EmailSender>`: log default, SMTP, Mailtrap HTTPS) behind the token-delivery flows; `[email]` / `EZPDS_EMAIL_*` — see module doc
   iroh_tunnel.rs   — opt-in (`[iroh] enabled`) NAT-traversing QUIC endpoint devices dial by node id; v0.1 echo ALPN, IPv6 gate for v4-only hosts — see module doc
   notify_relay_client.rs — outbound iroh leg to the notification relay (`ezpds/notify/0`) + the fire-and-forget send worker; lazy cached connection, self-healing enrollment — see module doc
-  notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; inert when `[notifications] relay` is unset — see module doc
+  notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; `RelayNotifier` is the `custos_core::notify::Notifier` features push through, `notify_admin_devices` the operator channel; inert when `[notifications] relay` is unset — see module doc
   record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (one reachability walk per commit); every commit passes the MST integrity check (new head's key count vs the maintained `accounts.record_count` witness, V068) before the CAS — see module doc
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   account_delete.rs— shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, `#account` deleted frame), used by deleteAccount and the reaper — see module doc
   account_genesis.rs— the steps the two account-genesis transactions (`create_did.rs`, `create_account_xrpc.rs`) share: the `accounts` row, the genesis blocks + staged `#commit`/`#sync`, and the post-commit announce. Deliberately not one merged promotion — the module doc says what differs around it
   account_reaper.rs— periodic sweep permanently deleting deactivated accounts past `deleteAfter`
-  agent_claim_sweep.rs— periodic sweep flipping lapsed agent claim attempts to `expired` — see module doc
-  agent_child_core.rs— the verify → provision → publish → finalize core behind sovereign child accounts, shared by every route that provisions one; resumable rather than atomic, because the plc.directory publish can't join a SQLite transaction — see module doc
   labeler_watch.rs — periodic labeler watcher reconciling `account_labels` (V051) to the labels currently in force; first pass runs at boot; genuinely new flags fire ONE batched operator push per pass, seeding-suppressed via `labels_seeded` (V072) — see module doc
   label_state.rs   — Functional Core for the watcher: reduce raw label events to the in-force set and diff against persisted rows
   admin_nonce_sweep.rs— periodic stale `admin_nonces` sweep (pure storage reclamation; retention stays above the replay-acceptance window) — see module doc
@@ -62,37 +53,6 @@ src/
   routes/          — HTTP handlers, one file per endpoint
 ```
 
-### `firehose/`
-
-The persistent event pipeline behind `com.atproto.sync.subscribeRepos`: a durable monotonic
-sequencer (`repo_seq`, V028) plus a Tokio broadcast fan-out, shared as `AppState.firehose`.
-Three files — `mod.rs` (sequencer, bare `emit_*` primitives, and the staged-transaction path
-`lock_emit`/`EmitGuard`/`Pending*`), `events.rs` (wire-facing event model + DAG-CBOR stored
-encoding), `replay.rs` (cursor replay over the durable log) — with every public type
-re-exported at `crate::firehose::*`. The invariants that make it subtle (persist-before-
-broadcast under one `emit_lock`, the lock-before-transaction deadlock rule on this crate's
-single-connection pool, staging into a caller's transaction, cancellation recovery via
-`insert_at_frontier`, and the emission map of which routes emit which frames) are documented
-in `firehose/mod.rs`'s module and item docs — read those before touching any emit path.
-
-### `crawler.rs`
-
-Outbound `com.atproto.sync.requestCrawl` notifier (`AppState.crawlers`). Fires on startup and on
-**every** firehose broadcast frame — lifecycle frames included, so a relay that silently dropped
-its subscription is re-invited even when the only news is a post-migration `#account`/`#sync`.
-Fire-and-forget, rate-limited to one notification per crawler per 30s, retried with backoff;
-configured via `[crawlers] urls` / `EZPDS_CRAWLERS` (default `["https://bsky.network"]`, empty
-disables). Mechanism and invariants: the module doc in `src/crawler.rs`.
-
-### `relay_status.rs`
-
-The inbound half of federation health: a `com.atproto.sync.getHostStatus` client asking the
-upstream relay what it knows about this PDS, backing `GET /v1/admin/relay-status` (which compares
-the relay's cursor against our exact sequencer head — see that route's row below, and
-`admin_request_crawl.rs` for the companion action). Total, never fatal: every failure becomes a
-`RelayReport` variant, so the readout always renders the outcome — what the relay said, or that
-it could not be asked. Details: the module doc in `src/relay_status.rs`.
-
 ### `read_after_write/`
 
 Buffered munge path for the six munged AppView NSIDs — merges the requester's not-yet-indexed
@@ -104,14 +64,9 @@ rev-comparison selection, the five-rung fallback ladder, the 10 MiB buffering ca
 
 ### `auth/`
 
-The auth modules only `pds` uses. The verification core (`extractors`, `jwt`, `dpop`, `guards`,
-`bearer`, scopes, permission sets, service auth, signing keys, password, validation) lives in
-[`custos_core::auth`](../custos-core/AGENTS.md) and is re-exported here. Submodules:
-
-| File | Pattern | Contents |
-|---|---|---|
-| `agent_assertion.rs` | Mixed (unavoidable) | shared auth.md agent machinery both `routes/agent_identity.rs` and `routes/agent_claim.rs` need (routes can't import each other): assertion minting, claim-block helpers, `AgentAuthError`, agent audit — see module doc |
-| `oauth_response_mode.rs` | Functional Core | `ResponseMode` (`query` \| `fragment`): parse the OAuth `response_mode` and pick the redirect separator; shared by four route surfaces — see module doc |
+`auth/mod.rs` only re-exports [`custos_core::auth`](../custos-core/AGENTS.md) (the verification
+core and the auth.md agent machinery), so `crate::auth::…` paths resolve to it. The OAuth server's
+response mode moved with the server to [`custos-oauth`](../custos-oauth/AGENTS.md).
 
 **Rule:** `auth/` has no knowledge of specific routes. Route handlers call into `auth/`; `auth/` never imports from `routes/`.
 
@@ -122,11 +77,11 @@ and async query functions; no business logic lives here.
 
 The pool, the migration log and runner, `DbError`, the unique-violation / retry helpers, and
 the cross-feature modules (`accounts`, `dids`, `handles`, `blobs`, `blocks`, `kek`,
-`admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`, plus `admin_devices`,
-`iroh_identity`, `jwt_secret`, `repo_keys`, `transfers`, which the auth guards and signing-key
-loaders read) live in
-[`crates/custos-db`](../custos-db/AGENTS.md); `db/mod.rs` re-exports them, so `db::accounts::…`
-paths resolve unchanged. The table below lists only what stays in `pds`.
+`admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`, `agent_auth`,
+`agent_audit`, plus `admin_devices`, `iroh_identity`, `jwt_secret`, `repo_keys`, `transfers`,
+which the auth guards and signing-key loaders read) live in
+[`crates/custos-db`](../custos-db/AGENTS.md); `db/mod.rs` re-exports those `pds` still reads, so
+`db::accounts::…` paths resolve unchanged. The table below lists only what stays in `pds`.
 
 | File | Contents |
 |---|---|
@@ -142,7 +97,6 @@ paths resolve unchanged. The table below lists only what stays in `pds`.
 | `recovery_escrow.rs` | PDS-held Shamir Share 2 escrow (V050) plus the release state machine — see module doc |
 | `recovery_otps.rs` | recovery-release email OTP store (V053) — see module doc |
 | `recovery_audit.rs` | append-only recovery-escrow audit log (V050, the V040 doctrine) — see module doc |
-| `firehose_seq.rs` | persistent firehose event log (V028): boot seed, append, cursor-replay page — see module doc |
 | `sovereign_session_nonces.rs` | sovereign-session anti-replay store (V043); the sweep-retention rule is in the module doc |
 | `waitlist.rs` | public waitlist signup store (V057, no FKs — off the purge path) — see module doc |
 | `account_labels.rs` | watched-labeler flag store (V051) — see module doc; the filtered listing predicates live beside `list_accounts_admin` in `accounts.rs` |
@@ -157,35 +111,16 @@ and return data; callers decide what to do with it.
 One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 **gather** (extract state/body/headers) → **process** (call `auth/` or `db/`) → **respond**.
 Rows below name the endpoint and the fact to know before opening the file; the module doc has
-the rest. The client-facing wire contract of the OAuth endpoints (`PAR → consent → token →
-authenticated call`) is pinned from the client's side by an out-of-crate suite,
-`tools/oauth-conformance/`; the interop failures it guards slipped past this crate's own Rust
-tests, so check it when changing an OAuth response shape — see its README.
+the rest. The OAuth endpoints live in [`custos-oauth`](../custos-oauth/AGENTS.md).
 
 | File | Endpoint |
 |---|---|
-| `oauth_authorize.rs` | `GET/POST /oauth/authorize` — consent page + code issuance; PAR-only (a GET without a PAR `request_uri`, or carrying a JAR `request` object, is refused), and the GET's wallet path owns the Phase C login-approval push dispatch |
-| `oauth_consent.rs` | `GET /oauth/authorize/{consent-request,status}`, `POST /oauth/authorize/{approve,complete}` — the wallet-confirmed (passwordless) consent half; approval is a device-key envelope verified against `identity::authority`, never the cached DID doc |
-| `oauth_par.rs` | `POST /oauth/par` — RFC 9126; enforces the atproto reverse-FQDN private-use-redirect rule (`auth/oauth_client_resolution.rs`) and stores `response_mode` |
-| `oauth_token/` | `POST /oauth/token` — one route module, per-grant submodules (`authorization_code`, `refresh`, `jwt_bearer`, `claim_polling`); grants incl. the RFC 7523 jwt-bearer exchange and the `urn:workos:agent-auth:grant-type:claim` poll — each submodule's doc carries its grant's rules |
-| `oauth_revoke.rs` | `POST /oauth/revoke` — RFC 7009; refresh tokens only, DPoP proof-of-possession, uniform 200-empty non-disclosure |
 | `atproto_did.rs` | `GET /.well-known/atproto-did` |
 | `did_json.rs` | `GET /.well-known/did.json` — the serving half of Custos-managed did:web hosting; module doc covers the opt-in gate and the config-synthesized server-DID exception |
 | `did_web_hosting.rs` | `POST /v1/did-web/hosting` + `POST /v1/did-web/document` — owner-authed did:web hosting opt-in and non-PLC document edit — see module doc |
-| `oauth_protected_resource.rs` | `GET /.well-known/oauth-protected-resource` |
-| `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |
-| `oauth_jwks.rs` | `GET /oauth/jwks` |
-| `agent_identity.rs` | `POST /agent/identity` — auth.md registration (Step 3), dispatching on `type` (`identity_assertion`/`service_auth`/`anonymous`); every flow operator-opt-in, scopes clamped to current config — see module doc |
-| `agent_claim.rs` | `POST /agent/identity/claim` + `/claim/confirm` — the auth.md claim ceremony (Step 4): public agent initiate, owner-authed confirm flips `active → claimed`; polling collection lives at the token endpoint. Confirm has two arms — bind the agent to the confirming account, or (with a `child` block, ownerless anonymous registrations only) mint it an account of its own via `agent_child_core.rs` and convert the registration in place — see module doc |
-| `agent_child.rs` | `POST /agent/child` (mint), `GET /agent/child` (list), `POST /agent/child/{assertion,revoke,delete}` — parent-owned sovereign child agents; the mint body lives in `agent_child_core.rs` so the claim ceremony can share it. Owner-guarded throughout: agent-derived callers are refused, a foreign child DID is a uniform 404, and its lifecycle verbs are the custody ladder (renew the capability / revoke it / schedule the hosting for deletion) — see module doc |
-| `agent_event.rs` | `POST /agent/event/notify` — auth.md `events_endpoint`: a trusted-issuer SET (RFC 8417/8935) revokes the matching registration; idempotent 202 — see module doc |
-| `agents.rs` | `GET /v1/agents`, `POST /v1/agents/claim-preview`, `POST /v1/agents/{registration_id}/revoke`, `GET /v1/agents/{registration_id}/audit` — owner-guarded "My agents" management; agent-derived callers refused, a parent operates its sovereign children — see module doc |
 | `notifications.rs` | `POST/DELETE /v1/notifications/register[/{deviceUuid}]`, `GET /v1/notifications/sender-keys` — the account push surface, keyed on `(did, device_uuid)`; the relay round trip stays out of the request path — see module doc |
 | `admin_notifications.rs` | `POST /v1/admin/notifications/register`, `GET /v1/admin/notifications/sender-keys` — the operator analog; registration is device-signed only (master token → 400) — see module doc |
 | `notification_views.rs` | shared handler-free support for both notification surfaces (routes may not import one another): enabled-check, registration validators, `sender-keys` shape |
-| `oauth_templates.rs` | pure HTML rendering helpers (Functional Core, no handler) |
-| `oauth_errors.rs` | shared `OAuthTokenError` — the RFC 6749 §5.2 responder used by `oauth_token/` and `oauth_revoke.rs` (Functional Core, no handler) |
-| `oauth_dpop.rs` | shared handler-free support for `oauth_token/`'s grant handlers and `oauth_revoke.rs` (routes may not import one another): `token_endpoint_dpop` — the RFC 9449 multiple-header check, proof extraction, and `validate_dpop_for_token_endpoint` dispatch against the caller's own URL |
 | `static_assets.rs` | `GET /static/*path` — embedded brand fonts and future web-UI assets |
 | `landing.rs` | `GET /` — the instance landing page (embedded `assets/landing.html`): config facts, a `_health` status chip, joiner/developer pointers |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` — password auth with app-password fallback — see module doc |
@@ -219,8 +154,6 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `admin_list_accounts.rs` | `GET /v1/admin/accounts` — operator listing/search, flagged accounts first behind a two-part cursor; filters, per-row storage + `didWebHosting` + flags — see module doc |
 | `admin_recovery_releases.rs` | `GET /v1/admin/recovery-releases` — operator view of in-flight escrow releases; the share ciphertext is never returned — see module doc |
 | `admin_health.rs` | `GET /v1/admin/health` — literal server-health readout (the JSON counterpart of `/metrics`), no ok/warn verdicts; admin-authed — see module doc |
-| `admin_relay_status.rs` | `GET /v1/admin/relay-status` — is the relay actually crawling us? Exact-head vs relay-cursor comparison, raw truth only; admin-authed — see module doc |
-| `admin_request_crawl.rs` | `POST /v1/admin/request-crawl` — un-throttled "Request crawl" action paired with relay-status; per-relay outcomes reported; admin-authed — see module doc |
 | `admin_revoke_credentials.rs` | `POST /v1/admin/accounts/{id}/revoke-credentials` — operator kill-switch: one-transaction credential sweep with per-family counts; admin-authed — see module doc |
 | `admin_account_repair.rs` | `POST /v1/admin/accounts/{id}/email` + `.../reset-token` — operator account-repair pair; reset tokens refused for passwordless accounts — see module doc |
 | `admin_audit.rs` | `GET /v1/admin/audit` — the server-wide admin audit log, newest first, attributed per credential; admin-authed; filters, writer inventory, and logging rules in the module doc |
@@ -238,18 +171,14 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `transfer_complete.rs` | `POST /v1/transfer/complete` — finalize an accepted swap (source session or accepted target token); revokes superseded credentials, records the audit event |
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` — lexicon fields plus the off-lexicon `custos` capability extension — see module doc |
-| `upload_blob.rs` | `POST /xrpc/com.atproto.repo.uploadBlob` — blob store + metadata insert, dual auth (access token or method-scoped service-auth JWT, the video-service path) — see module doc |
-| `get_blob.rs` | `GET /xrpc/com.atproto.sync.getBlob` — ownership-scoped, re-hash-verified blob serving with immutable caching — see module doc |
 | `sync_get_blocks.rs` | `GET /xrpc/com.atproto.sync.getBlocks` — requested repo blocks as a rootless CAR; a foreign account's CID reads as `BlockNotFound` |
 | `sync_get_latest_commit.rs` | `GET /xrpc/com.atproto.sync.getLatestCommit` — current commit CID and rev |
 | `sync_get_record.rs` | `GET /xrpc/com.atproto.sync.getRecord` — a record with its MST proof as a CAR (200 inclusion or exclusion proof; only an unknown DID 404s) |
 | `get_repo.rs` | `GET /xrpc/com.atproto.sync.getRepo` — repository CAR export; optional `since` makes it incremental |
 | `sync_get_repo_status.rs` | `GET /xrpc/com.atproto.sync.getRepoStatus` — hosting status of a single repo |
-| `list_blobs.rs` | `GET /xrpc/com.atproto.sync.listBlobs` — paginated blob CIDs for a DID |
 | `list_repos.rs` | `GET /xrpc/com.atproto.sync.listRepos` — all hosted repositories, paginated |
 | `apply_writes.rs` | `POST /xrpc/com.atproto.repo.applyWrites` — a batch of record writes in one atomic commit |
 | `import_repo.rs` | `POST /xrpc/com.atproto.repo.importRepo` — migration CAR ingest, idempotent + CAS-guarded for return migration — see module doc |
-| `list_missing_blobs.rs` | `GET /xrpc/com.atproto.repo.listMissingBlobs` — MST-referenced blobs diffed against uploads, paginated |
 | `create_record.rs` | `POST /xrpc/com.atproto.repo.createRecord` |
 | `get_record.rs` | `GET /xrpc/com.atproto.repo.getRecord` |
 | `list_records.rs` | `GET /xrpc/com.atproto.repo.listRecords` |
@@ -266,7 +195,6 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `request_plc_operation_signature.rs` | `POST …identity.requestPlcOperationSignature` — mint the `signPlcOperation` email token (interop path); the shared `ensure_did_plc` guard is documented here |
 | `sign_plc_operation.rs` | `POST …identity.signPlcOperation` — two-factor PDS-signed repoint op, returned unsubmitted (interop, ADR-0002) — see module doc |
 | `submit_plc_operation.rs` | `POST …identity.submitPlcOperation` — verify (current rotation key + `prev` chain) then submit to plc.directory and refresh the cached doc — see module doc |
-| `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` — WebSocket firehose (framing, replay, and the interop commit-proof gate in the module doc) |
 | `claim_codes.rs` | `POST/GET /v1/accounts/claim-codes` + `POST …/revoke` — claim-code mint, inventory, and revoke; admin-authed; status derivation in the module doc |
 | `standard_signup.rs` | the standard-signup interop NSIDs (`createInviteCode(s)`, `getAccountInviteCodes`, `temp.checkHandleAvailability`, `temp.checkSignupQueue`) mapped onto claim-code primitives; each NSID's quirks in the module doc |
 | `get_pds_signing_key.rs` | `GET /v1/pds/keys` (deprecated alias: `GET /v1/relay/keys`) |
@@ -278,7 +206,6 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `request_account_delete.rs` | `POST /xrpc/com.atproto.server.requestAccountDelete` — mint + email the single-use 1-hour deletion token; full access required |
 | `delete_account.rs` | `POST /xrpc/com.atproto.server.deleteAccount` — body-credential deletion (password OR the `custos.proof` envelope) + email token; factor rules and no-oracle posture in the module doc |
 | `check_account_status.rs` | `GET /xrpc/com.atproto.server.checkAccountStatus` — activation/repo/blob completeness report for migration tooling |
-| `oauth_client_metadata.rs` | `GET /oauth/client-metadata.json` — the wallet's OAuth client metadata; fixed canonical client_id except under a loopback `public_url` — see module doc |
 | `provisioning_session.rs` | provisioning session creation (email + password → session token) |
 | `test_utils.rs` | test helpers (excluded from production builds): re-exports `custos_core::test_support`, shadows its state constructors with `AppState` versions, and adds the fixtures that need a `pds` type (failing email sender, `post_json_with_bearer` over `app()`) |
 
@@ -287,7 +214,7 @@ tests, so check it when changing an OAuth response shape — see its README.
 **Routes must not import from other routes.**
 If two routes share logic, that logic belongs in `auth/` (pure), `db/` (queries), `identity/`,
 a top-level module such as `account_genesis.rs`, or one of the handler-free support modules under
-`routes/` (`oauth_errors.rs`, `oauth_dpop.rs`, `preference_scope.rs`, `test_utils.rs`). A route importing from another route creates hidden
+`routes/` (`notification_views.rs`, `preference_scope.rs`, `test_utils.rs`). A route importing from another route creates hidden
 coupling and makes it impossible to reason about a handler in isolation. The rule bars route→route
 imports only — it is not a reason to copy a `db/`, `auth/`, or `test_utils` helper into a route.
 
@@ -320,9 +247,8 @@ Look here before writing a helper. Each row is the one home; copies elsewhere ar
 | the OAuth issuer / public URL without a trailing slash | `Config::issuer()` |
 | cache a freshly authored or resolved DID document | `db::dids::upsert_did_document` (UPDATE-only heal: `rewrite_did_document`) |
 | authenticate the account owner and map to XRPC errors | `auth::guards::authenticate_owner` |
-| the token-endpoint DPoP preamble | `routes::oauth_dpop::token_endpoint_dpop` |
 | insert a generated value, retrying on a UNIQUE collision | `db::insert_with_retry_on_collision` |
-| open an auth.md claim ceremony | `auth::agent_assertion::start_claim_attempt` |
+| open an auth.md claim ceremony | `custos_core::auth::agent_assertion::start_claim_attempt` |
 | the account row + genesis repo + announce shared by account promotion | `account_genesis` |
 | a periodic background pass | `custos_core::sweep::Sweep` run by `custos_core::sweep::Scheduler` (tests call `custos_core::sweep::run_once`) |
 | a nonce store's retention-above-replay rule | `common::{replay_span_secs, retention_covers_replay}` |

@@ -78,7 +78,7 @@ pub fn supported_scopes() -> Vec<&'static str> {
 }
 
 /// Human-readable group heading for a scope token's resource-type prefix, for the OAuth
-/// consent screen (`routes::oauth_templates::render_permission_groups`). Kept alongside
+/// consent screen (`custos-oauth`'s `oauth_templates::render_permission_groups`). Kept alongside
 /// `SCOPE_PREFIX_SUMMARY` — the two lists name the same resource types — so a future resource
 /// type is at least a one-file change instead of two independently-maintained matches.
 pub fn resource_group_label(token: &str) -> &'static str {
