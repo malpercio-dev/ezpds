@@ -735,7 +735,7 @@ mod tests {
         .unwrap();
         custos_spaces::space_record_write::apply_space_writes(
             &state.spaces,
-            &crate::space_uri::parse_space_ref(space).unwrap(),
+            &custos_core::space_uri::parse_space_ref(space).unwrap(),
             did,
             &[custos_spaces::space_record_write::SpaceWriteOp {
                 action: custos_spaces::space_record_write::SpaceWriteAction::Put,
@@ -1035,11 +1035,11 @@ mod tests {
                     .chain(custos_spaces::PURGE_ACCOUNT_SQL)
                     .chain([&DELETE_BLOCKS])
                     .any(|sql| {
-                    (sql.contains(&format!("FROM {table} "))
-                        || sql.contains(&format!("UPDATE {table} ")))
-                        && (sql.contains(&format!("{column} = ?"))
-                            || sql.contains(&format!("{column} IN (")))
-                });
+                        (sql.contains(&format!("FROM {table} "))
+                            || sql.contains(&format!("UPDATE {table} ")))
+                            && (sql.contains(&format!("{column} = ?"))
+                                || sql.contains(&format!("{column} IN (")))
+                    });
                 assert!(
                     covered,
                     "{table}.{column} FK-references accounts(did) but no purge statement \

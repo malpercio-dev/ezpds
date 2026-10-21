@@ -7,11 +7,11 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::authenticate_space_owner;
 use crate::db::spaces::{delete_members, delete_notify_registrations, mark_space_deleted};
 use crate::lexicon::LexiconInput;
+use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 
 /// Most syncers one deletion notifies. The same bound the write fan-out carries; past it a

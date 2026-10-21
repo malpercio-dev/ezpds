@@ -132,4 +132,3 @@ mod didweb_migration_test;
 
 #[cfg(test)]
 mod agent_auth_test;
-

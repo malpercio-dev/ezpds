@@ -31,8 +31,8 @@
 //! Authentication and `space:` scope enforcement happen above this layer (the
 //! space auth seam); callers pass an already-authorized `(space, did)`.
 
-use crate::SpacesState;
 use crate::space_uri::SpaceRef;
+use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 use crypto::{format_set_hash_element, LtHash};
 

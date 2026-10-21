@@ -25,9 +25,9 @@ use serde::Deserialize;
 
 use common::{ApiError, ApiResultExt, ErrorCode};
 
-use crate::SpacesState;
 use crate::db::oauth::ClientMetadata;
 use crate::db::space_jti::{insert_jti_if_absent, SpaceJtiScope};
+use crate::SpacesState;
 
 use super::jwt::peek_jwt_typ;
 

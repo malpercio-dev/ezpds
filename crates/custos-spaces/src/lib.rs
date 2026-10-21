@@ -17,7 +17,9 @@ use sqlx::SqliteConnection;
 
 // Modules custos-core owns, aliased at the crate root so `crate::identity::…` and its siblings
 // resolve as they did in `pds`.
-use custos_core::{blob_store, identity, lexicon, metrics, rate_limit, space_uri, sweep, sweep_status, time};
+use custos_core::{
+    blob_store, identity, lexicon, metrics, rate_limit, space_uri, sweep, sweep_status, time,
+};
 
 mod auth;
 mod capability;

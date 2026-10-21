@@ -885,7 +885,7 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-        let space = crate::space_uri::parse_space_ref(
+        let space = custos_core::space_uri::parse_space_ref(
             "at://did:plc:gcspaceref/space/org.example.bucket/self",
         )
         .unwrap();

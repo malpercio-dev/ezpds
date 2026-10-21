@@ -15,24 +15,45 @@ const frontmatter = (title, description) => `---\ntitle: ${title}\ndescription: 
 const stamp = `> Generated from source for ezpds **v${version}**. Do not edit this page by hand.\n\n`;
 const esc = (value) => value.replaceAll('|', '\\|').replaceAll('\n', ' ');
 
+// Every file that registers routes: `pds`'s app.rs plus each feature crate's router.rs. Kept in
+// step with ROUTER_FILES in scripts/bruno-parity.sh.
+const ROUTER_FILES = ['crates/pds/src/app.rs', 'crates/custos-spaces/src/router.rs'];
+
 function apiReference() {
-  const source = read('crates/pds/src/app.rs');
-  const routes = [...source.matchAll(/\.route\(\s*"([^"]+)"/gs)].map((match) => match[1]);
+  const routes = ROUTER_FILES.flatMap((file) => {
+    const found = [...read(file).matchAll(/\.route\(\s*"([^"]+)"/gs)].map((match) => match[1]);
+    if (found.length === 0) throw new Error(`no routes found in ${file}`);
+    return found;
+  });
   const unique = [...new Set(routes)].sort();
-  if (unique.length === 0) throw new Error('no routes found in crates/pds/src/app.rs');
   return frontmatter('HTTP & XRPC API', 'Generated route reference for the Custos server.') + stamp
     + 'Every path registered by the server is listed here. For `/xrpc/` endpoints, use the namespace after `/xrpc/` to find the request, response, and authentication schema in the [AT Protocol Lexicon reference](https://docs.bsky.app/docs/api/at-protocol-xrpc-api). Custos-specific endpoints are explained in the operator workflows elsewhere in this documentation; this generated inventory is the complete route-coverage index.\n\n'
     + '| Registered path | Family |\n| --- | --- |\n'
     + unique.map((route) => `| \`${esc(route)}\` | ${route.startsWith('/xrpc/') ? 'AT Protocol XRPC' : 'Custos HTTP'} |`).join('\n') + '\n';
 }
 
-function capabilityReference() {
+const CAPABILITY_ENTRY = /name:\s*"([^"]+)",\s*\n\s*control:\s*(?:CONTROL_ALWAYS|"([^"]*)"),\s*\n\s*summary:\s*"((?:[^"\\]|\\.)*)",/;
+
+/** The `CAPABILITIES` table in advertisement order: an inline entry is parsed in place, and a
+ *  feature crate's `custos_x::CAPABILITY` slot from `crates/custos-x/src/capability.rs`. */
+function parseCapabilityTable() {
   const source = read('crates/pds/src/capabilities.rs');
   const table = source.match(/pub const CAPABILITIES: &\[Capability\] = &\[([\s\S]*?)\n\];/);
   if (!table) throw new Error('could not find the CAPABILITIES table in crates/pds/src/capabilities.rs');
-  const entries = [...table[1].matchAll(/name:\s*"([^"]+)",\s*\n\s*control:\s*(?:CONTROL_ALWAYS|"([^"]*)"),\s*\n\s*summary:\s*"((?:[^"\\]|\\.)*)",/g)]
-    .map(([, name, control, summary]) => ({ name, control: control ?? 'always', summary }));
+  const slot = new RegExp(`${CAPABILITY_ENTRY.source}|\\b(custos_[a-z_]+)::CAPABILITY\\b`, 'g');
+  const entries = [...table[1].matchAll(slot)].map(([, name, control, summary, crate]) => {
+    if (crate === undefined) return { name, control: control ?? 'always', summary };
+    const path = `crates/${crate.replaceAll('_', '-')}/src/capability.rs`;
+    const entry = read(path).match(CAPABILITY_ENTRY);
+    if (!entry) throw new Error(`no capability entry found in ${path}`);
+    return { name: entry[1], control: entry[2] ?? 'always', summary: entry[3] };
+  });
   if (entries.length === 0) throw new Error('no capabilities found in crates/pds/src/capabilities.rs');
+  return entries;
+}
+
+function capabilityReference() {
+  const entries = parseCapabilityTable();
   const renderControl = (control) => control === 'always'
     ? 'Always offered'
     : control.split(/\s+/).map((field) => `\`${field}\``).join(', ');

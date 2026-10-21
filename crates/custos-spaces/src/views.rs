@@ -10,11 +10,11 @@
 //! space route enters through; `write_membership` is called only after the route has already
 //! authenticated the space owner.
 
-use crate::SpacesState;
 use crate::db::spaces::SpaceRow;
 use crate::lexicon::RecordValidation;
 use crate::space_record_write::SpaceCommitOutcome;
 use crate::space_uri::SpaceRef;
+use crate::SpacesState;
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 /// Parse the `space` a request named.

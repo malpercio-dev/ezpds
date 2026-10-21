@@ -29,4 +29,3 @@ pub struct Capability {
 
 /// Sentinel `control` value for a capability with no operator switch.
 pub const CONTROL_ALWAYS: &str = "always";
-

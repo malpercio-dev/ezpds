@@ -59,7 +59,6 @@ use axum::http::{HeaderMap, Method, Uri};
 use common::{ApiError, ApiResultExt, ErrorCode};
 use serde_json::Value;
 
-use crate::SpacesState;
 use crate::db::accounts::{active_local_account_exists, AccountLifecycle};
 use crate::db::space_jti::{insert_jti_if_absent, SpaceJtiScope};
 use crate::db::spaces::{self, SpaceRow};
@@ -69,6 +68,7 @@ use crate::identity::resolution::{
     space_verification_key,
 };
 use crate::space_uri::SpaceRef;
+use crate::SpacesState;
 
 use super::bearer::{extract_access_token, extract_space_credential};
 use super::extractors::AuthenticatedUser;
@@ -1066,14 +1066,14 @@ pub(crate) use crate::time::unix_now;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SpacesState;
     use crate::db::dids::seed_did_document;
     use crate::db::spaces::{insert_space, NewSpace};
+    use crate::space_uri::parse_space_ref;
     use crate::test_support::{
         access_jwt, app_pass_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
         SpaceSigKey,
     };
-    use crate::space_uri::parse_space_ref;
+    use crate::SpacesState;
     use axum::http::{header::AUTHORIZATION, HeaderValue};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 

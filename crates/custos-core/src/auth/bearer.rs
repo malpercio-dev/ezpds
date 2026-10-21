@@ -61,7 +61,7 @@ pub fn extract_access_token(
 
 /// The space credential in `Authorization: Atproto-Space <credential>`, or `None` when the
 /// header is absent or carries another scheme. The Atproto Spaces scheme is its own: a
-/// credential is bound by an RFC 9421 signature (`auth/http_signature.rs`), never by DPoP.
+/// credential is bound by an RFC 9421 signature (`custos_spaces` `auth/http_signature.rs`), never by DPoP.
 pub fn extract_space_credential(headers: &axum::http::HeaderMap) -> Option<&str> {
     strip_scheme(authorization_header_value(headers).ok()?, "Atproto-Space ")
 }

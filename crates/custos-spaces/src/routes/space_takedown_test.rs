@@ -15,11 +15,11 @@ use axum::http::{self, Request, StatusCode};
 use tower::ServiceExt;
 
 use crate::test_support::test_app as app;
-use crate::SpacesState;
-use crate::test_support::{path_get as get, path_post as post, send};
 use crate::test_support::{
     access_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
 };
+use crate::test_support::{path_get as get, path_post as post, send};
+use crate::SpacesState;
 
 const ADMIN: &str = "test-admin-token";
 const DID: &str = "did:plc:spacetakedownaaaaaaaaaaa";
@@ -59,7 +59,11 @@ fn create_record(token: &str, rkey: &str) -> Request<Body> {
 }
 
 /// Apply or clear the takedown through the real admin route, as an operator would.
-async fn takedown(state: &SpacesState, uri: &str, applied: bool) -> (StatusCode, serde_json::Value) {
+async fn takedown(
+    state: &SpacesState,
+    uri: &str,
+    applied: bool,
+) -> (StatusCode, serde_json::Value) {
     send(
         state,
         post(

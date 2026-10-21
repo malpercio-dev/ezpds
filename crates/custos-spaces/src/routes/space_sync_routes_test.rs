@@ -11,14 +11,12 @@
 use axum::http::StatusCode;
 use tower::ServiceExt;
 
-use crate::SpacesState;
-use crate::test_support::xrpc_get as get;
-use crate::test_support::{
-    access_jwt, body_json, seed_account_with_repo, state_with_master_key,
-};
 use crate::space_record_write::{
     apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
 };
+use crate::test_support::xrpc_get as get;
+use crate::test_support::{access_jwt, body_json, seed_account_with_repo, state_with_master_key};
+use crate::SpacesState;
 
 const DID: &str = "did:plc:spacesyncaaaaaaaaaaaaaaa";
 const SPACE: &str = "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main";
@@ -35,7 +33,12 @@ fn space_ref() -> crate::space_uri::SpaceRef {
 }
 
 /// One committed write of a single op; returns the commit's rev.
-async fn write_one(state: &SpacesState, action: SpaceWriteAction, rkey: &str, text: &str) -> String {
+async fn write_one(
+    state: &SpacesState,
+    action: SpaceWriteAction,
+    rkey: &str,
+    text: &str,
+) -> String {
     let value = (action != SpaceWriteAction::Delete).then(|| serde_json::json!({ "text": text }));
     apply_space_writes(
         state,

@@ -24,10 +24,9 @@ use crate::SpacesState;
 /// `/xrpc/{method}` catch-all's `MethodNotImplemented`.
 pub fn test_app(state: SpacesState) -> Router {
     let config = &state.config.spaces;
-    let public = crate::router::<SpacesState>(config)
-        .layer(axum::middleware::from_fn(
-            custos_core::lexicon::validate_xrpc_output,
-        ));
+    let public = crate::router::<SpacesState>(config).layer(axum::middleware::from_fn(
+        custos_core::lexicon::validate_xrpc_output,
+    ));
     let public = custos_core::apply_shared_layers(public, &state)
         .layer(axum::middleware::from_fn(
             custos_core::xrpc_error_shape::flatten_xrpc_errors,
@@ -151,10 +150,7 @@ pub fn xrpc_post(method: &str, token: &str, body: serde_json::Value) -> Request<
 }
 
 /// Run a request through the real router and decode the JSON response body.
-pub async fn send(
-    state: &SpacesState,
-    request: Request<Body>,
-) -> (StatusCode, serde_json::Value) {
+pub async fn send(state: &SpacesState, request: Request<Body>) -> (StatusCode, serde_json::Value) {
     let response = test_app(state.clone()).oneshot(request).await.unwrap();
     let status = response.status();
     (status, body_json(response).await)

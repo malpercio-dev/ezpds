@@ -7,9 +7,9 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::response::Json;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::auth::space::authenticate_space_access;
 use crate::lexicon::LexiconParams;
+use crate::SpacesState;
 use common::ApiError;
 
 #[derive(Deserialize)]

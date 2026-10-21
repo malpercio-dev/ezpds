@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
-use crate::SpacesState;
 use crate::auth::client_attestation::verify_client_attestation;
 use crate::auth::extract_bearer_token;
 use crate::auth::http_signature::verify_delegation_signature;
@@ -24,6 +23,7 @@ use crate::auth::space::{
     verify_delegation_token,
 };
 use crate::lexicon::LexiconInput;
+use crate::SpacesState;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,17 +134,17 @@ pub async fn get_space_credential(
 
 #[cfg(test)]
 mod tests {
-    use crate::test_support::test_app as app;
-use crate::SpacesState;
     use crate::auth::space::{
         authenticate_space_read, mint_delegation_token, unix_now, SpaceReader, SPACE_CREDENTIAL_TYP,
     };
     use crate::db::dids::seed_did_document;
     use crate::db::spaces::{insert_space, NewSpace};
+    use crate::space_uri::parse_space_ref;
+    use crate::test_support::test_app as app;
     use crate::test_support::{
         body_json, seed_account_with_repo, state_with_master_key, SpaceSigKey,
     };
-    use crate::space_uri::parse_space_ref;
+    use crate::SpacesState;
     use axum::{
         body::Body,
         http::{header::AUTHORIZATION, HeaderValue, Method, Request, StatusCode},

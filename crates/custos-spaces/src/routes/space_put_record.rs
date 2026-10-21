@@ -7,10 +7,10 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::lexicon::LexiconInput;
 use crate::space_record_write::{SpaceWriteAction, SpaceWriteOp};
+use crate::SpacesState;
 use common::ApiError;
 
 #[derive(Deserialize)]
@@ -79,12 +79,8 @@ pub async fn space_put_record(
     )
     .await?;
 
-    let validation_status = crate::views::validate_record(
-        &body.collection,
-        &body.rkey,
-        &body.record,
-        body.validate,
-    )?;
+    let validation_status =
+        crate::views::validate_record(&body.collection, &body.rkey, &body.record, body.validate)?;
 
     let outcome = crate::space_record_write::apply_space_writes(
         &state,

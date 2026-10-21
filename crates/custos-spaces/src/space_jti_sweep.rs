@@ -10,11 +10,11 @@
 
 use std::time::Duration;
 
-use axum::extract::FromRef;
-use custos_core::CoreState;
 use crate::db::space_jti::sweep_expired_jtis;
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
+use axum::extract::FromRef;
+use custos_core::CoreState;
 
 /// Sweep every ten minutes: delegation and attestation rows carry horizons of
 /// at most five minutes, so an hourly cadence would let the table's working

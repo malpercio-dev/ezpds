@@ -7,8 +7,8 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::lexicon::LexiconParams;
+use crate::SpacesState;
 use common::ApiError;
 
 #[derive(Deserialize)]
@@ -41,8 +41,7 @@ pub async fn space_get_latest_commit(
     .await?;
 
     let repo = crate::views::load_repo(&state, &space.uri, &params.repo).await?;
-    let commit =
-        crate::views::sign_current_commit(&state, &space, &params.repo, &repo).await?;
+    let commit = crate::views::sign_current_commit(&state, &space, &params.repo, &repo).await?;
 
     Ok((
         StatusCode::OK,

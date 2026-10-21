@@ -8,12 +8,12 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::auth::extract_bearer_token;
 use crate::auth::jwt::peek_jwt_iss;
 use crate::auth::service_auth::verify_service_auth_resolving_key;
 use crate::auth::space::unix_now;
 use crate::lexicon::LexiconInput;
+use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 
 const LXM: &str = "com.atproto.space.notifyWrite";

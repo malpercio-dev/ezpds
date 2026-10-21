@@ -17,17 +17,17 @@ use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
 use tower::ServiceExt;
 
-use crate::SpacesState;
 use crate::auth::space::{mint_space_credential, unix_now};
 use crate::db::dids::seed_did_document;
-use crate::test_support::{
-    send_status as send, space_record_body, xrpc_get as get, xrpc_post as post,
-};
+use crate::space_uri::parse_space_ref;
 use crate::test_support::{
     access_jwt, body_json, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
     SpaceSigKey,
 };
-use crate::space_uri::parse_space_ref;
+use crate::test_support::{
+    send_status as send, space_record_body, xrpc_get as get, xrpc_post as post,
+};
+use crate::SpacesState;
 
 const DID: &str = "did:plc:spacelifecycleaaaaaaaaa";
 const SPACE: &str = "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main";

@@ -7,9 +7,9 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::db::space_notify::WHOLE_SPACE;
 use crate::lexicon::LexiconInput;
+use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]

@@ -20,7 +20,7 @@
 //! `CoreState::hardened_http_client`, serves every SSRF-guarded call site without a fresh client
 //! (and TLS handshake) per request — `routes::service_proxy`'s header-target proxying,
 //! `identity::resolution`'s did:web and handle well-known fetches, the Lexicon-authority fetch
-//! behind `auth::permission_sets`/`auth::space_consent`, `labeler_watch`, the OAuth-client JWKS
+//! behind `auth::permission_sets`/`custos_spaces::consent`, `labeler_watch`, the OAuth-client JWKS
 //! cache, `auth::client_attestation`'s client-metadata resolution, and `auth::space`'s outbound
 //! managing-app check. The compiler holds the invariant that a fetch whose target a caller can
 //! influence uses this client and no other: such a target is a [`CallerUrl`], and only

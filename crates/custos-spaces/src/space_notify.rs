@@ -35,10 +35,10 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
-use crate::SpacesState;
 use crate::auth::space::unix_now;
 use crate::identity::resolution::{resolve_did_document, service_endpoint, space_host_endpoint};
 use crate::space_uri::SpaceRef;
+use crate::SpacesState;
 
 /// How long a write-notification registration lives before it must be renewed. Long enough that
 /// a syncer polling on any human cadence stays subscribed across a weekend outage; short enough
@@ -338,8 +338,8 @@ mod tests {
     use crate::db::dids::seed_did_document;
     use crate::db::space_notify::{upsert_registration, WHOLE_SPACE};
     use crate::db::spaces::{insert_space, NewSpace};
-    use crate::test_support::{seed_account_with_repo, state_with_master_key};
     use crate::space_uri::parse_space_ref;
+    use crate::test_support::{seed_account_with_repo, state_with_master_key};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};

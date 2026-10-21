@@ -498,7 +498,7 @@ fn serialize_bare(bare: &Bare) -> String {
 /// Sign a request the way a space client does: the `Signature-Input` and `Signature` header
 /// values for `authorization` (and, for credential use, `audience`), signed by `sign` (a
 /// 64-byte `r‖s` P-256 signer) under `key_id`.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn sign_space_request(
     sign: impl FnOnce(&[u8]) -> Vec<u8>,
     key_id: &str,

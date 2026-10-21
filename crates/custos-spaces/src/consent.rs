@@ -19,8 +19,8 @@ use std::sync::Arc;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use custos_core::CoreState;
 use crate::identity::resolution;
+use custos_core::CoreState;
 
 use crate::auth::oauth_scopes::{parse_space_token, space_grant_writes_records, SpaceGrant};
 use crate::auth::permission_sets::{
@@ -304,10 +304,10 @@ pub fn preferred_languages(accept_language: Option<&str>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_state;
     use crate::auth::permission_sets::tests_support::{pds_doc, AUTHORITY_DID};
     use crate::db::dids::seed_did_document;
     use crate::test_support::state_with_txt_records as state_with_dns;
+    use crate::test_support::test_state;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

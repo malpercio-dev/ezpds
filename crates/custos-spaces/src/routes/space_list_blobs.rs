@@ -13,8 +13,8 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::lexicon::LexiconParams;
+use crate::SpacesState;
 use common::ApiError;
 
 const DEFAULT_LIMIT: usize = 500;
@@ -57,13 +57,9 @@ pub async fn space_list_blobs(
 
     // Derived per request by decoding the repo's records (blob linkage is deliberately not a
     // table); `space_blob_cids` carries the scale ceiling note.
-    let cids = crate::views::space_blob_cids(
-        &state,
-        &space.uri,
-        &params.repo,
-        params.since.as_deref(),
-    )
-    .await?;
+    let cids =
+        crate::views::space_blob_cids(&state, &space.uri, &params.repo, params.since.as_deref())
+            .await?;
 
     let page: Vec<String> = cids
         .into_iter()

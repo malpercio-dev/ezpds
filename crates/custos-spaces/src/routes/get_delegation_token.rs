@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
-use crate::SpacesState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes::{require_space, SpaceOp, SpaceRequest};
 use crate::auth::space::{mint_delegation_token, unix_now};
+use crate::SpacesState;
 
 #[derive(Deserialize)]
 pub struct GetDelegationTokenQuery {
@@ -88,8 +88,8 @@ pub async fn get_delegation_token(
 
 #[cfg(test)]
 mod tests {
-    use crate::test_support::test_app as app;
     use crate::auth::space::DELEGATION_TOKEN_TYP;
+    use crate::test_support::test_app as app;
     use crate::test_support::{
         access_jwt, app_pass_jwt, body_json, scoped_access_jwt, seed_account_with_repo,
         state_with_master_key,

@@ -47,7 +47,7 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     this server only ever *sends*, are vendored but, like `checkUserAccess`, not registered as
     validation roots), plus the `defs`
     document the `getLatestCommit`/`listRepoOps` outputs reach,
-    and the two token-flow documents behind `auth/space.rs` (`getDelegationToken`,
+    and the two token-flow documents behind `custos-spaces`' `auth/space.rs` (`getDelegationToken`,
     `getSpaceCredential`; both use the `space-ref` string format `space_uri.rs` validates), and
     the PDS-required management surface `com.atproto.simplespace.*` (`createSpace`,
     `updateSpace`, `deleteSpace`, `getSpace`, `putMember`, `removeMember`, `listMembers` + the

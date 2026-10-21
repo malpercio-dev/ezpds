@@ -7,11 +7,11 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::response::Json;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::{authenticate_space_caller, require_space_grant};
 use crate::db::spaces::{create_space, NewSpace};
 use crate::lexicon::LexiconInput;
+use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -50,8 +50,7 @@ pub async fn simplespace_create_space(
     require_space_grant(&state, &user, &space, SpaceOp::Manage(RepoAction::Create)).await?;
 
     let (policy, managing_app) = crate::views::policy_from_lex(&input.read_policy)?;
-    let (write_policy, write_managing_app) =
-        crate::views::policy_from_lex(&input.write_policy)?;
+    let (write_policy, write_managing_app) = crate::views::policy_from_lex(&input.write_policy)?;
     let (app_access, app_allowed) = crate::views::app_access_from_lex(&input.app_access)?;
 
     let created = create_space(

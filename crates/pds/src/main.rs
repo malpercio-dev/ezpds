@@ -53,7 +53,7 @@ use common::code_gen;
 // Modules that moved to custos-core, aliased at the crate root so `crate::identity::…` and its
 // siblings keep resolving.
 use custos_core::{
-    blob_store, identity, lexicon, metrics, no_input, rate_limit, request_host, space_uri, sweep,
+    blob_store, identity, lexicon, metrics, no_input, rate_limit, request_host, sweep,
     sweep_status, time, xrpc_error_shape,
 };
 
@@ -598,9 +598,7 @@ async fn run() -> anyhow::Result<()> {
         dpop_nonces: Arc::new(auth::DpopNonceRotator::from_jwt_secret(&jwt_secret)),
         permission_set_cache: auth::new_permission_set_cache(),
         did_document_cache: identity::resolution::new_did_document_cache(),
-        failed_login_attempts: Arc::new(
-            std::sync::Mutex::new(std::collections::HashMap::new()),
-        ),
+        failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         rate_limiter,
         allow_loopback_proxy_targets: false,
         metrics,

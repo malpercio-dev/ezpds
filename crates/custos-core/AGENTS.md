@@ -15,8 +15,9 @@ src/
   lib.rs           — module list; re-exports `CoreState`, `FailedLoginStore`, `apply_shared_layers`
   state.rs         — `CoreState`: every field a core module reads or more than one feature reads. A feature's own fields live in its state, which embeds this one (`pds`'s `AppState`) and implements `FromRef<_> for CoreState`
   layers.rs        — `apply_shared_layers(router, &CoreState)`: Trace → HTTP metrics → rate limiting, generic over the router's state; each route group applies it before its own CORS layer
-  auth/            — the verification core (table below); `pds` keeps the OAuth server's response mode, the auth.md agent machinery, and the Spaces seam in its own `auth/`
+  auth/            — the verification core (table below); `pds` keeps the OAuth server's response mode and the auth.md agent machinery in its own `auth/`; the Spaces seam is `custos-spaces`'
   test_support.rs  — `test-support` feature only: the test state constructor and shared fixtures (see "Tests from other crates")
+  capability.rs    — the `Capability` type (`Clone, Copy`): wire name, operator controls, summary, `enabled` predicate. `pds` owns the `CAPABILITIES` table and its order; a feature crate exports its entry as `CAPABILITY`
   blob_store.rs    — blob storage backend: durable filesystem I/O, CID computation, MIME detection; blobs at `{data_dir}/blobs/{cid[0:2]}/{cid}` — see module doc
   identity/        — everything "who is this handle/DID" (see section below)
   lexicon/         — vendored lexicon documents (`crates/custos-core/lexicons/`, pinned upstream — see its README) compiled into a registry, plus the reference-parity XRPC validation layers: input bodies (`LexiconInput<T>`), query params (`LexiconParams<T>`), repo-write records (`validate_record`), and served outputs (test-build drift detection). Strict schema parsing and byte-identical reference error messages, so Custos can't drift laxer than the reference. Start at `mod.rs`'s module doc — it maps the entry points and files
@@ -75,7 +76,7 @@ process-level limiters and the Axum middleware. Six families — global per-IP, 
 per-IP (guess-target endpoint pairs share one limiter instance so alternating endpoints can't
 double a guess budget), per-account write points charged in `pds`'s `record_write::commit_repo_write`
 on the **authenticated** DID, per-space-credential requests charged at the credential seam
-in `pds`'s `auth/space.rs` on the **verified** `cnf.kid`, a per-DID cool-down on the
+in `custos-spaces`' `auth/space.rs` on the **verified** `cnf.kid`, a per-DID cool-down on the
 signature-mismatch DID-document force-refresh (the one limiter guarding an *outbound* resource,
 charged in `identity::resolution::refresh_did_document_after_signature_mismatch`), and a
 per-`(IP, DID)` cooldown on repeat full `getRepo` exports of an unchanged root, checked in
@@ -97,7 +98,7 @@ The family rosters, exemptions, and `RateLimit-*` header behavior: the module do
 | `jwt.rs` | Functional Core | JWT parsing, scope validation, access/refresh token verification, HS256 token issuance |
 | `oauth_client_resolution.rs` | Mixed (unavoidable) | the ATProto OAuth client resolver: client_id URL policy before any I/O, metadata fetch, bounded negative cache; also `validate_private_use_redirect` — see module doc |
 | `oauth_scopes.rs` | Functional Core | the granular ATProto OAuth scope grammar (proposal 0011, plus `space:` from the Spaces proposal 0016): parse, normalize, and canonicalize `resource[:positional][?param=value]` across the six resource types, and enforce it via the `require_*`/`allows_*` checks scoped routes call; `supported_scopes()` backs the discovery metadata. Ported for round-trip parity with `@atproto/oauth-scopes` — see module doc |
-| `permission_sets.rs` | Mixed (unavoidable) | resolves `include:<nsid>` scope references to Lexicon-published permission-set records and expands them into the grammar `oauth_scopes.rs` validates; owns the TTL'd `PermissionSetCache` and the shared `resolve_cached` helper `space_consent.rs` reuses. Does live DNS/HTTP, so not a pure core despite living in `auth/` — see module doc |
+| `permission_sets.rs` | Mixed (unavoidable) | resolves `include:<nsid>` scope references to Lexicon-published permission-set records and expands them into the grammar `oauth_scopes.rs` validates; owns the TTL'd `PermissionSetCache` and the shared `resolve_cached` helper `custos_spaces::consent` reuses. Does live DNS/HTTP, so not a pure core despite living in `auth/` — see module doc |
 | `password.rs` | Functional Core | `hash_password`, `verify_password` (argon2id) |
 | `rate_limit.rs` | Functional Core | sliding-window login-failure limiter + the generic `MultiWindowLimiter` used by the top-level `rate_limit.rs` middleware |
 | `service_auth.rs` | Imperative Shell | `require_service_auth(lxm)` — the inbound atproto service-auth guard, one lexicon method per call — plus the shared resolve-and-verify key machinery migration-`createAccount` reuses — see module doc |

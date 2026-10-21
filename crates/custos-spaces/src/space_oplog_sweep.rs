@@ -11,11 +11,11 @@
 
 use std::time::Duration;
 
-use axum::extract::FromRef;
-use custos_core::CoreState;
 use crate::db::space_repos::sweep_old_repo_ops;
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
+use axum::extract::FromRef;
+use custos_core::CoreState;
 
 /// Hourly cadence: ops accrue at write rate, far below the jti table's request rate.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);

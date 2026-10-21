@@ -13,8 +13,8 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::lexicon::LexiconParams;
+use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 
 const DEFAULT_LIMIT: i64 = 100;
@@ -112,8 +112,7 @@ pub async fn space_list_repo_ops(
 
     let mut body = serde_json::json!({ "ops": ops });
     if at_head {
-        let commit =
-            crate::views::sign_current_commit(&state, &space, &params.repo, &repo).await?;
+        let commit = crate::views::sign_current_commit(&state, &space, &params.repo, &repo).await?;
         body["commit"] = crate::views::commit_json(&commit);
     }
     if let Some(cursor) = next {

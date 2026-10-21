@@ -15,8 +15,8 @@ use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::lexicon::LexiconParams;
+use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -47,8 +47,7 @@ pub async fn space_get_blob(
     crate::views::load_repo(&state, &space.uri, &params.repo).await?;
 
     // Referenced-in-this-space gate, before any lookup that could leak existence.
-    let referenced =
-        crate::views::space_blob_cids(&state, &space.uri, &params.repo, None).await?;
+    let referenced = crate::views::space_blob_cids(&state, &space.uri, &params.repo, None).await?;
     if !referenced.contains(&params.cid) {
         return Err(blob_not_found());
     }

@@ -18,8 +18,8 @@ use axum::response::{IntoResponse, Response};
 use serde::ser::SerializeMap;
 use serde::Deserialize;
 
-use crate::SpacesState;
 use crate::lexicon::LexiconParams;
+use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 use repo_engine::Cid;
 
@@ -87,8 +87,7 @@ pub async fn space_get_repo(
         ));
     }
 
-    let commit =
-        crate::views::sign_current_commit(&state, &space, &params.repo, &repo).await?;
+    let commit = crate::views::sign_current_commit(&state, &space, &params.repo, &repo).await?;
     let commit_bytes = encode_commit_block(&commit);
     let index_bytes = encode_index_block(&entries);
     let (commit_cid, index_cid) = match (

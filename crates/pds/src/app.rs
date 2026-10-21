@@ -154,7 +154,6 @@ use crate::xrpc_dispatch::xrpc_handler;
 /// provisioning** surface (`/v1/*`, including `/v1/admin/*`) gets no CORS layer at all, since it is
 /// only ever called same-origin by first-party native/mobile clients and operators. Both groups
 /// share the trace/metrics/rate-limit stack.
-
 pub fn app(state: AppState) -> Router {
     let public = Router::new()
         .route("/", get(landing))
