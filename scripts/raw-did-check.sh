@@ -44,6 +44,7 @@ list_files() {
   git ls-files 'crates/pds/src/auth/*.rs' 'crates/custos-core/src/auth/*.rs' \
     'crates/pds/src/routes/*.rs' 'crates/pds/src/routes/**/*.rs' \
     'crates/custos-agents/src/routes/*.rs' 'crates/custos-blobs/src/routes/*.rs' \
+    'crates/custos-firehose/src/routes/*.rs' \
     'crates/custos-oauth/src/auth/*.rs' 'crates/custos-oauth/src/routes/*.rs' \
     'crates/custos-oauth/src/routes/**/*.rs' 'crates/custos-oauth/src/oauth_*.rs' \
     'crates/custos-spaces/src/auth/*.rs' 'crates/custos-spaces/src/routes/*.rs' \

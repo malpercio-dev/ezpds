@@ -16,7 +16,7 @@ common · crypto · repo-engine
             ▼
         custos-core      this crate
             ▼
-  feature crates         custos-agents, custos-blobs, custos-oauth, custos-spaces (more to come)
+  feature crates         custos-agents, custos-blobs, custos-firehose, custos-oauth, custos-spaces
             ▼
           pds            the binary: composes every feature, owns what is not yet extracted
 ```
@@ -40,7 +40,7 @@ src/
   crawler.rs       — outbound `requestCrawl` notifier (`CoreState.crawlers`) — see section below
   capability.rs    — the `Capability` type (`Clone, Copy`): wire name, operator controls, summary, `enabled` predicate. `pds` owns the `CAPABILITIES` table and its order; a feature crate exports its entry as `CAPABILITY`
   blob_store.rs    — blob storage backend: durable filesystem I/O, CID computation, MIME detection; blobs at `{data_dir}/blobs/{cid[0:2]}/{cid}` — see module doc
-  firehose/        — the sequencer every writer emits through (`CoreState.firehose`); the `subscribeRepos` serving side stays with its route — see section below
+  firehose/        — the sequencer every writer emits through (`CoreState.firehose`); the `subscribeRepos` serving side is `custos-firehose`'s — see section below
   identity/        — everything "who is this handle/DID" (see section below)
   lexicon/         — vendored lexicon documents (`crates/custos-core/lexicons/`, pinned upstream — see its README) compiled into a registry, plus the reference-parity XRPC validation layers: input bodies (`LexiconInput<T>`), query params (`LexiconParams<T>`), repo-write records (`validate_record`), and served outputs (test-build drift detection). Strict schema parsing and byte-identical reference error messages, so Custos can't drift laxer than the reference. Start at `mod.rs`'s module doc — it maps the entry points and files
   metrics.rs       — OTel meter + Prometheus registry behind `GET /metrics`; `metrics::names` is the instrument source of truth (each constant documents what it measures and who records it) — see module doc

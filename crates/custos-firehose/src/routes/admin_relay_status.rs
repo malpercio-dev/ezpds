@@ -30,9 +30,9 @@ use serde::Serialize;
 
 use common::ApiError;
 
-use crate::app::AppState;
 use crate::auth::guards::require_admin;
 use crate::relay_status::{HostStatus, RelayReport};
+use custos_core::CoreState;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,7 +75,7 @@ pub struct RelayStatusResponse {
 /// Admin-authed: the master token **or** an active companion-app device's signed request
 /// ([`require_admin`]).
 pub async fn relay_status(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -167,8 +167,8 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::app::app;
-    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
+    use crate::test_support::test_app;
+    use crate::test_support::{body_json, test_state_with_admin_token};
 
     async fn get_relay_status(
         router: axum::Router,
@@ -194,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn relay_status_requires_admin_auth() {
         let state = test_state_with_admin_token().await;
-        let router = app(state);
+        let router = test_app(state);
 
         let (status, _) = get_relay_status(router.clone(), None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -208,7 +208,7 @@ mod tests {
         // The test state configures no crawlers, so the readout reports the "federation disabled"
         // shape rather than attempting a network call.
         let state = test_state_with_admin_token().await;
-        let router = app(state);
+        let router = test_app(state);
 
         let (status, json) = get_relay_status(router, Some("test-admin-token")).await;
         assert_eq!(status, StatusCode::OK);
@@ -232,7 +232,7 @@ mod tests {
             .emit_identity("did:plc:relay-status-test".to_string(), None)
             .await
             .unwrap();
-        let router = app(state);
+        let router = test_app(state);
 
         let (status, json) = get_relay_status(router, Some("test-admin-token")).await;
         assert_eq!(status, StatusCode::OK);

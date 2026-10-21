@@ -27,8 +27,6 @@ src/
   state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (built from `AppState.core`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
   rate_limit_test.rs — the rate-limit middleware tests that need the full `app()` router (CORS on a 429, the `getRepo` exemption, per-endpoint caps); the limiter's unit tests are in `custos_core::rate_limit`
   xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (`xrpc_handler` at `/xrpc/{method}`): upstream resolution for the three proxied namespaces + the read-after-write branch — see module doc
-  firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier); the sequencer itself is `custos_core::firehose`
-  relay_status.rs  — inbound `com.atproto.sync.getHostStatus` client (total, never fatal) backing `GET /v1/admin/relay-status` — see section below
   email.rs         — pluggable outbound email (`Arc<dyn EmailSender>`: log default, SMTP, Mailtrap HTTPS) behind the token-delivery flows; `[email]` / `EZPDS_EMAIL_*` — see module doc
   iroh_tunnel.rs   — opt-in (`[iroh] enabled`) NAT-traversing QUIC endpoint devices dial by node id; v0.1 echo ALPN, IPv6 gate for v4-only hosts — see module doc
   notify_relay_client.rs — outbound iroh leg to the notification relay (`ezpds/notify/0`) + the fire-and-forget send worker; lazy cached connection, self-healing enrollment — see module doc
@@ -54,15 +52,6 @@ src/
   db/              — feature-local SQL query functions (no business logic); the pool, migrations, and cross-feature queries are `crates/custos-db`
   routes/          — HTTP handlers, one file per endpoint
 ```
-
-### `relay_status.rs`
-
-The inbound half of federation health: a `com.atproto.sync.getHostStatus` client asking the
-upstream relay what it knows about this PDS, backing `GET /v1/admin/relay-status` (which compares
-the relay's cursor against our exact sequencer head — see that route's row below, and
-`admin_request_crawl.rs` for the companion action). Total, never fatal: every failure becomes a
-`RelayReport` variant, so the readout always renders the outcome — what the relay said, or that
-it could not be asked. Details: the module doc in `src/relay_status.rs`.
 
 ### `read_after_write/`
 
@@ -165,8 +154,6 @@ the rest. The OAuth endpoints live in [`custos-oauth`](../custos-oauth/AGENTS.md
 | `admin_list_accounts.rs` | `GET /v1/admin/accounts` — operator listing/search, flagged accounts first behind a two-part cursor; filters, per-row storage + `didWebHosting` + flags — see module doc |
 | `admin_recovery_releases.rs` | `GET /v1/admin/recovery-releases` — operator view of in-flight escrow releases; the share ciphertext is never returned — see module doc |
 | `admin_health.rs` | `GET /v1/admin/health` — literal server-health readout (the JSON counterpart of `/metrics`), no ok/warn verdicts; admin-authed — see module doc |
-| `admin_relay_status.rs` | `GET /v1/admin/relay-status` — is the relay actually crawling us? Exact-head vs relay-cursor comparison, raw truth only; admin-authed — see module doc |
-| `admin_request_crawl.rs` | `POST /v1/admin/request-crawl` — un-throttled "Request crawl" action paired with relay-status; per-relay outcomes reported; admin-authed — see module doc |
 | `admin_revoke_credentials.rs` | `POST /v1/admin/accounts/{id}/revoke-credentials` — operator kill-switch: one-transaction credential sweep with per-family counts; admin-authed — see module doc |
 | `admin_account_repair.rs` | `POST /v1/admin/accounts/{id}/email` + `.../reset-token` — operator account-repair pair; reset tokens refused for passwordless accounts — see module doc |
 | `admin_audit.rs` | `GET /v1/admin/audit` — the server-wide admin audit log, newest first, attributed per credential; admin-authed; filters, writer inventory, and logging rules in the module doc |
@@ -208,7 +195,6 @@ the rest. The OAuth endpoints live in [`custos-oauth`](../custos-oauth/AGENTS.md
 | `request_plc_operation_signature.rs` | `POST …identity.requestPlcOperationSignature` — mint the `signPlcOperation` email token (interop path); the shared `ensure_did_plc` guard is documented here |
 | `sign_plc_operation.rs` | `POST …identity.signPlcOperation` — two-factor PDS-signed repoint op, returned unsubmitted (interop, ADR-0002) — see module doc |
 | `submit_plc_operation.rs` | `POST …identity.submitPlcOperation` — verify (current rotation key + `prev` chain) then submit to plc.directory and refresh the cached doc — see module doc |
-| `sync_subscribe_repos.rs` | `GET /xrpc/com.atproto.sync.subscribeRepos` — WebSocket firehose (framing, replay, and the interop commit-proof gate in the module doc) |
 | `claim_codes.rs` | `POST/GET /v1/accounts/claim-codes` + `POST …/revoke` — claim-code mint, inventory, and revoke; admin-authed; status derivation in the module doc |
 | `standard_signup.rs` | the standard-signup interop NSIDs (`createInviteCode(s)`, `getAccountInviteCodes`, `temp.checkHandleAvailability`, `temp.checkSignupQueue`) mapped onto claim-code primitives; each NSID's quirks in the module doc |
 | `get_pds_signing_key.rs` | `GET /v1/pds/keys` (deprecated alias: `GET /v1/relay/keys`) |

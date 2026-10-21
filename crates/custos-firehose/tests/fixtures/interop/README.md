@@ -1,4 +1,4 @@
-# Vendored ATProto interop fixtures (PDS)
+# Vendored ATProto interop fixtures (firehose)
 
 These implementation-neutral vectors are vendored verbatim from
 [`bluesky-social/atproto-interop-tests`](https://github.com/bluesky-social/atproto-interop-tests)

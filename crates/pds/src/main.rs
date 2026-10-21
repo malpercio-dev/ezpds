@@ -14,7 +14,6 @@ mod auth;
 mod capabilities;
 mod db;
 mod email;
-mod firehose_gc;
 mod iroh_tunnel;
 mod label_state;
 mod labeler_watch;
@@ -32,7 +31,6 @@ mod rate_limit_test;
 mod read_after_write;
 mod record_write;
 mod recovery_share;
-mod relay_status;
 mod repo_rev;
 mod rewrap;
 mod routes;
@@ -630,20 +628,7 @@ async fn run() -> anyhow::Result<()> {
 
     custos_blobs::spawn_sweeps(&mut sweeps, &state.config, blob_mirror);
 
-    // Spawn the periodic `repo_seq` firehose event-log retention sweep. It prunes rows below the
-    // configured age/count watermark so the durable log backing
-    // `subscribeRepos` cursor replay does not grow without bound; it is best-effort and runs for
-    // the life of the process, and the scheduler stops it at shutdown.
-    let fh_gc_interval = std::time::Duration::from_secs(state.config.firehose.gc_interval_secs);
-    sweeps.spawn(firehose_gc::FirehoseGc {
-        interval: fh_gc_interval,
-    });
-    tracing::info!(
-        interval_secs = state.config.firehose.gc_interval_secs,
-        retention_secs = state.config.firehose.log_retention_secs,
-        retention_count = state.config.firehose.log_retention_count,
-        "firehose repo_seq retention sweep started"
-    );
+    custos_firehose::spawn_sweeps(&mut sweeps, &state.config.firehose);
 
     // Spawn the scheduled-deletion reaper. Each pass permanently deletes accounts whose
     // `deleteAfter` (set by deactivateAccount) has elapsed; like the GC tasks it is best-effort and

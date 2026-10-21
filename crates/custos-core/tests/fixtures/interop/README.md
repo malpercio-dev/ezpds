@@ -11,4 +11,4 @@ at commit `056e5741bb330757205d6b16db5266fffcae937b` under CC0-1.0.
 
 Refresh each valid/invalid pair together from the upstream `syntax/` directory. The loaders preserve
 case whitespace because leading and trailing spaces are part of the invalid vectors. The firehose
-commit-proof vectors from the same commit stay in `crates/pds/tests/fixtures/interop/`.
+commit-proof vectors from the same commit live in `crates/custos-firehose/tests/fixtures/interop/`.
