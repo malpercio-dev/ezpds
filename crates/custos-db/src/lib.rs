@@ -3,10 +3,10 @@
 //! Feature-local query modules stay with their feature (`pds`'s `db/` today). See `AGENTS.md`.
 
 pub mod accounts;
-pub mod agent_audit;
-pub mod agent_auth;
 pub mod admin_audit;
 pub mod admin_devices;
+pub mod agent_audit;
+pub mod agent_auth;
 pub mod blobs;
 pub mod blocks;
 pub mod dids;

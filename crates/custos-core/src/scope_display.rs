@@ -305,9 +305,9 @@ pub fn preferred_languages(accept_language: Option<&str>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::auth::permission_sets::tests_support::{pds_doc, AUTHORITY_DID};
-    use custos_db::dids::seed_did_document;
     use crate::test_support::state_with_txt_records as state_with_dns;
     use crate::test_support::test_state;
+    use custos_db::dids::seed_did_document;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

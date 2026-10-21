@@ -702,10 +702,7 @@ pub async fn latest_agent_claim_attempt_for_identity(
 }
 
 /// Atomically complete a pending, unexpired claim attempt.
-pub async fn complete_agent_claim_attempt<'e, E>(
-    executor: E,
-    id: &str,
-) -> Result<bool, ApiError>
+pub async fn complete_agent_claim_attempt<'e, E>(executor: E, id: &str) -> Result<bool, ApiError>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {

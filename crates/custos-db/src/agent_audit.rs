@@ -144,9 +144,9 @@ pub async fn list_agent_audit_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_pool;
     use crate::accounts::insert_bare_account as seed_account;
     use crate::agent_auth::{self, NewAgentIdentity, RegistrationType};
+    use crate::test_pool;
 
     async fn seed_identity(db: &sqlx::SqlitePool, id: &str) {
         agent_auth::insert_agent_identity(

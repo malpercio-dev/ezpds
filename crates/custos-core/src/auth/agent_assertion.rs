@@ -206,11 +206,7 @@ pub fn verification_uri(agent_auth: &AgentAuthConfig, public_url: &str) -> Strin
 }
 
 /// The `claim` block an agent shows the user to route them through a confirmation ceremony.
-pub fn claim_block(
-    user_code: &str,
-    verification_uri: &str,
-    expires: &DateTime<Utc>,
-) -> Value {
+pub fn claim_block(user_code: &str, verification_uri: &str, expires: &DateTime<Utc>) -> Value {
     json!({
         "user_code": user_code,
         "verification_uri": verification_uri,

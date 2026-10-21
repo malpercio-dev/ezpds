@@ -52,10 +52,10 @@ use crate::db::pending_oauth_authorizations::{
     insert_pending_authorization, set_push_dispatched, NewPendingOAuthAuthorization,
     OAuthConsentAuditEventType,
 };
-use custos_core::notify::NotificationPayload;
 use crate::routes::oauth_templates::{
     build_code_redirect, error_page, error_redirect, render_consent_page, WalletConsentPath,
 };
+use custos_core::notify::NotificationPayload;
 
 /// Time-to-live of a pending wallet-consent request (~5 minutes, per the design).
 const PENDING_REQUEST_TTL_SECS: i64 = 300;

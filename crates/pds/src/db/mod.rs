@@ -24,7 +24,7 @@ pub mod waitlist;
 #[cfg(test)]
 pub(crate) use custos_db::test_pool;
 pub use custos_db::{
-    accounts, admin_audit, admin_devices, agent_audit, agent_auth, blobs, blocks, dids, handles, insert_with_retry_if,
-    insert_with_retry_on_collision, is_unique_violation, kek, oauth, open_pool, refresh_tokens,
-    repo_keys, run_migrations, server_stats, sessions, transfers,
+    accounts, admin_audit, admin_devices, agent_audit, agent_auth, blobs, blocks, dids, handles,
+    insert_with_retry_if, insert_with_retry_on_collision, is_unique_violation, kek, oauth,
+    open_pool, refresh_tokens, repo_keys, run_migrations, server_stats, sessions, transfers,
 };

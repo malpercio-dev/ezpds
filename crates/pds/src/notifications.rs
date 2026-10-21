@@ -80,12 +80,16 @@ impl AccountNotifier for RelayNotifier {
                     return 0;
                 }
             };
-            fan_out(&self.core, &self.sender, registrations, payload, |device_id| {
-                RegistrationOwner::Account {
+            fan_out(
+                &self.core,
+                &self.sender,
+                registrations,
+                payload,
+                |device_id| RegistrationOwner::Account {
                     did: did.to_string(),
                     device_uuid: device_id,
-                }
-            })
+                },
+            )
             .await
         })
     }
@@ -339,7 +343,9 @@ pub(crate) async fn generate_sender_key(
 /// as well as on send matters for onboarding order: an app that fetches the set before the
 /// instance has ever sent anything would otherwise pin an empty set and be unable to verify
 /// the first notification it receives.
-pub async fn published_sender_keys(state: &CoreState) -> Result<Vec<(i64, String)>, SenderKeyError> {
+pub async fn published_sender_keys(
+    state: &CoreState,
+) -> Result<Vec<(i64, String)>, SenderKeyError> {
     // No master key means no key can be minted *or* unwrapped, so the honest answer is an
     // error, not an empty set. Answering `200 {"keys": []}` would let a client conclude it has
     // successfully pinned nothing — and then fail to verify every notification it receives,
@@ -542,11 +548,12 @@ mod tests {
         assert!(state.notify_sender.is_none());
 
         // No relay, no panic, no rows touched — the whole feature is absent.
-        state.notify_account(
-            "did:plc:nobody",
-            NotificationPayload::new("agent_claim_pending", "t", "b"),
-        )
-        .await;
+        state
+            .notify_account(
+                "did:plc:nobody",
+                NotificationPayload::new("agent_claim_pending", "t", "b"),
+            )
+            .await;
         notify_admin_devices(&state, NotificationPayload::new("ops_alert", "t", "b")).await;
 
         let keys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_sender_keys")
