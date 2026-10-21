@@ -215,7 +215,10 @@ impl JwksCache {
     /// resolve from the cached set or fail fast rather than dogpiling the issuer).
     fn consult(&self, url: &str, kid: Option<&str>) -> Consult {
         let now = Instant::now();
-        let mut entries = self.entries.lock().expect("jwks cache mutex poisoned");
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(slot) = entries.get_mut(url) else {
             entries.insert(
                 url.to_string(),
@@ -251,7 +254,10 @@ impl JwksCache {
 
     fn store(&self, url: &str, set: JwkSet) {
         let now = Instant::now();
-        let mut entries = self.entries.lock().expect("jwks cache mutex poisoned");
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.insert(
             url.to_string(),
             CacheSlot {

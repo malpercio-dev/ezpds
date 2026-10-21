@@ -13,6 +13,9 @@ path = "src/lib.rs"
 # rlib       → normal `cargo build` + integration tests
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[lints]
+workspace = true
+
 [dependencies]
 # Tauri + shared mobile deps live in [workspace.dependencies] (two apps consume them now).
 tauri = { workspace = true, features = [] }

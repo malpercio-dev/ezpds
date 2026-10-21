@@ -1014,6 +1014,10 @@ fn stage_epilogue(did: &str, old_recovery_key_id: &str) -> Result<(), ShareRecov
     save_epilogue(&record)
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
+)]
 fn save_epilogue(record: &EpilogueRecord) -> Result<(), ShareRecoveryError> {
     let json = Zeroizing::new(
         serde_json::to_string(record).expect("epilogue record serialization cannot fail"),

@@ -12,6 +12,9 @@ license.workspace = true
 # pds enables this; pure-logic crates (crypto, repo-engine) do not.
 axum = ["dep:axum", "dep:tracing"]
 
+[lints]
+workspace = true
+
 [dependencies]
 axum = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }

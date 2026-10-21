@@ -318,12 +318,12 @@ pub async fn create_did_handler(
     // DID that *was* registered simply yields the same DID — and stamp the confirmation so a
     // later retry (e.g. one whose promotion transaction failed) can skip it. did:web has no
     // plc.directory log (`signed_op_str` is None), so it neither posts nor stamps.
-    if !plc_registered && signed_op_str.is_some() {
+    if let Some(signed_op) = signed_op_str.as_deref().filter(|_| !plc_registered) {
         crate::identity::genesis::post_to_plc_directory(
             &state.http_client,
             &state.config.plc_directory_url,
             &did,
-            signed_op_str.as_deref().expect("checked above"),
+            signed_op,
         )
         .await?;
         mark_plc_registered(&state.db, &session.account_id).await?;

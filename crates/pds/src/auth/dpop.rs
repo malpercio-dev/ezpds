@@ -74,6 +74,10 @@ impl DpopNonceRotator {
     /// a MAC forgery oracle against anything else keyed on `jwt_secret`. Inherits that
     /// secret's persistence posture: stable across restarts and instances when
     /// `signing_key_master_key` is configured, per-boot otherwise.
+    #[allow(
+        clippy::expect_used,
+        reason = "HMAC-SHA256 accepts a key of any length"
+    )]
     pub fn from_jwt_secret(jwt_secret: &[u8; 32]) -> Self {
         let mut mac =
             Hmac::<Sha256>::new_from_slice(jwt_secret).expect("HMAC-SHA256 accepts any key length");
@@ -85,6 +89,10 @@ impl DpopNonceRotator {
     }
 
     /// The nonce value for one rotation window.
+    #[allow(
+        clippy::expect_used,
+        reason = "HMAC-SHA256 accepts a key of any length"
+    )]
     fn compute(&self, counter: u64) -> String {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.secret)
             .expect("HMAC-SHA256 accepts any key length");

@@ -205,6 +205,10 @@ pub fn load_pairings() -> Result<PairingDoc, KeychainError> {
 /// half-updated pairing list. Validates before writing: the document's private fields
 /// make an invalid value unconstructible through its API, but the check keeps a future
 /// mutation bug from persisting a document every subsequent load would reject.
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
+)]
 pub fn save_pairings(doc: &PairingDoc) -> Result<(), KeychainError> {
     doc.validate().map_err(KeychainError::CorruptPairingDoc)?;
     let bytes = serde_json::to_vec(doc).expect("PairingDoc serializes");

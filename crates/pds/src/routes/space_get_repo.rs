@@ -131,6 +131,10 @@ fn canonical_key_order(a: &str, b: &str) -> std::cmp::Ordering {
 /// serde_ipld_dagcbor writes struct fields in declaration order, so this struct declares them
 /// in canonical map key order — length first, then bytewise: ikm, mac, rev, sig, ver, hash. A
 /// unit test pins the byte-level ordering against a decoder.
+#[allow(
+    clippy::expect_used,
+    reason = "DAG-CBOR encoding of a fixed-shape map cannot fail"
+)]
 fn encode_commit_block(commit: &crypto::SignedSpaceCommit) -> Vec<u8> {
     #[derive(serde::Serialize)]
     struct CommitBlock<'a> {
@@ -159,6 +163,10 @@ fn encode_commit_block(commit: &crypto::SignedSpaceCommit) -> Vec<u8> {
 
 /// The DRISL index root block: `{collection}/{rkey}` → record CID link, entries already in
 /// canonical order (the caller sorted them; serde_ipld_dagcbor writes map entries as fed).
+#[allow(
+    clippy::expect_used,
+    reason = "DAG-CBOR encoding of a fixed-shape value cannot fail"
+)]
 fn encode_index_block(entries: &[(String, Cid)]) -> Vec<u8> {
     struct IndexBlock<'a>(&'a [(String, Cid)]);
     impl serde::Serialize for IndexBlock<'_> {
@@ -213,6 +221,10 @@ fn stream_car(
         }
         let (path, cid) = st.entries[st.next].clone();
         st.next += 1;
+        #[allow(
+            clippy::expect_used,
+            reason = "index paths are written as collection/rkey"
+        )]
         let (collection, rkey) = path.split_once('/').expect("index path shape");
         match crate::db::space_repos::get_record(
             &st.state.db,

@@ -373,6 +373,10 @@ fn set_biometric_enabled(enabled: bool) -> Result<(), relay_client::RelayClientE
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[allow(
+    clippy::expect_used,
+    reason = "Tauri's run only fails when the app cannot start, which is fatal"
+)]
 pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_log::Builder::new().build());
 

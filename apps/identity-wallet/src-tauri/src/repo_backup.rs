@@ -564,7 +564,9 @@ fn store_enabled(did: &str, enabled: bool) -> Result<(), RepoBackupError> {
 fn repo_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
     let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = registry.lock().expect("repo lock registry poisoned");
+    let mut map = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     map.entry(did.to_string()).or_default().clone()
 }
 

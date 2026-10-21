@@ -44,6 +44,13 @@ license = "AGPL-3.0-only"
 
 # Declare shared dependency versions here.
 # Individual crates opt in with `{ workspace = true }`.
+[workspace.lints.clippy]
+# A panic in the imperative shell is a 500 with no UserFacingError; in the wallet it is a crash.
+# An `expect` survives only under a local `#[allow]` with a comment naming the invariant that
+# makes it unreachable. Tests are exempt via clippy.toml.
+unwrap_used = "deny"
+expect_used = "deny"
+
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "signal", "io-util"] }
