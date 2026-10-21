@@ -4,16 +4,21 @@
 
 pub mod accounts;
 pub mod admin_audit;
+pub mod admin_devices;
 pub mod blobs;
 pub mod blocks;
 pub mod dids;
 pub mod handles;
+pub mod iroh_identity;
+pub mod jwt_secret;
 pub mod kek;
 mod migrations;
 pub mod oauth;
 pub mod refresh_tokens;
+pub mod repo_keys;
 pub mod server_stats;
 pub mod sessions;
+pub mod transfers;
 
 use migrations::{Migration, MIGRATIONS};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};

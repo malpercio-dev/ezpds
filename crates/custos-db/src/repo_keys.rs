@@ -284,8 +284,8 @@ pub async fn promote_staged_signing_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::accounts::insert_bare_account as insert_account;
-    use crate::db::test_pool;
+    use crate::accounts::insert_bare_account as insert_account;
+    use crate::test_pool;
 
     async fn insert_pending_account(pool: &SqlitePool, account_id: &str) {
         sqlx::query(
