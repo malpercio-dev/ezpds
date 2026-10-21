@@ -65,7 +65,7 @@ The iroh ALPN, enrollment messages, and opaque push-handle contract between a Cu
 
 One SQLite database, one linear log of V-numbered migrations applied by the custom runner. Migrations are append-only; none is edited or reordered once released.
 
-- **Oracle:** the migration runner tests in `crates/pds`, and `http_suite.rs` booting against the full log.
+- **Oracle:** the migration runner tests in `crates/custos-db`, and `http_suite.rs` booting against the full log.
 
 ### Blob layout
 

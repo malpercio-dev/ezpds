@@ -28,7 +28,7 @@ variable.
 ## What the KEK wraps
 
 The authoritative inventory is `SecretFamily::ALL` in
-[`crates/pds/src/db/kek.rs`](../../crates/pds/src/db/kek.rs) — the single list the
+[`crates/custos-db/src/kek.rs`](../../crates/custos-db/src/kek.rs) — the single list the
 re-wrap tool iterates. There are **eight** KEK-wrapped storage families:
 
 | Secret | Table(s) / column | Migration | Recovery class |
@@ -205,6 +205,6 @@ new account promotion writes only ciphertext. Two consequences:
 - [ADR-0004](../architecture/decisions/0004-pds-signed-repo-commits.md) — PDS-signed repo commits
 - [ADR-0025](../architecture/decisions/0025-wallet-driven-repo-key-rotation.md) — wallet-driven per-account repo-key rotation
 - KEK rotation / re-wrap tool: [deploy.md → Rotating the Master Key](../deploy.md#rotating-the-master-key)
-- KEK-wrapped inventory: [`crates/pds/src/db/kek.rs`](../../crates/pds/src/db/kek.rs) (`SecretFamily`)
+- KEK-wrapped inventory: [`crates/custos-db/src/kek.rs`](../../crates/custos-db/src/kek.rs) (`SecretFamily`)
 - Loaders: [`crates/pds/src/auth/signing_key.rs`](../../crates/pds/src/auth/signing_key.rs) (`load_or_create_*`, `load_repo_signer`)
 - Crypto: [`crates/crypto/src/keys.rs`](../../crates/crypto/src/keys.rs) (`encrypt_private_key` / `decrypt_private_key`)

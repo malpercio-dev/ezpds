@@ -5,7 +5,7 @@
 //!
 //! Rows store only the KEK-wrapped share envelope ciphertext (wrapping and
 //! unwrapping live in the caller — this module moves opaque ciphertext, like
-//! `db/kek.rs`). The deposit/replace/delete steps are generic over the
+//! `custos_db::kek`). The deposit/replace/delete steps are generic over the
 //! executor so the owner endpoints can compose them with their audit-event
 //! insert in one transaction.
 //!

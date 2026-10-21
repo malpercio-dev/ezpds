@@ -122,8 +122,8 @@ mod tests {
     use super::*;
 
     async fn pool() -> SqlitePool {
-        let db = crate::db::open_pool("sqlite::memory:").await.unwrap();
-        crate::db::run_migrations(&db).await.unwrap();
+        let db = crate::open_pool("sqlite::memory:").await.unwrap();
+        crate::run_migrations(&db).await.unwrap();
         db
     }
 

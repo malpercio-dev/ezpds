@@ -18,7 +18,7 @@ pub mod signed_proof;
 pub mod signing_key;
 pub mod space;
 pub mod space_consent;
-pub mod token;
+pub use common::token;
 pub mod validation;
 
 mod bearer;

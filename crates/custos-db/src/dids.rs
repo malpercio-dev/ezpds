@@ -291,11 +291,11 @@ pub async fn update_also_known_as(
 /// Insert a DID document row directly into `did_documents`, bypassing any resolution.
 ///
 /// `did_documents` has no FK to `accounts`, so this can be used without a corresponding
-/// account row. Lives here (not `routes::test_utils`) so `auth::permission_sets`'s tests can
-/// depend on it without `auth/` importing from `routes/`; re-exported from
-/// `routes::test_utils` for existing route test call sites.
-#[cfg(test)]
-pub(crate) async fn seed_did_document(db: &SqlitePool, did: &str, document: serde_json::Value) {
+/// account row. Lives here (not `pds`'s `routes::test_utils`) so non-route tests can seed a
+/// document without importing from `routes/`; reached through the `test-support` feature.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // fixture: a failed seed panics the test
+pub async fn seed_did_document(db: &SqlitePool, did: &str, document: serde_json::Value) {
     sqlx::query(
         "INSERT INTO did_documents (did, document, created_at, updated_at) \
          VALUES (?, ?, datetime('now'), datetime('now'))",

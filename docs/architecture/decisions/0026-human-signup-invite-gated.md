@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-17
 - **Deciders:** Malpercio
-- **Related:** [MM-284](https://linear.app/malpercio/issue/MM-284), [MM-280](https://linear.app/malpercio/issue/MM-280) (labeler-flag monitoring), [ADR-0017](0017-multi-relay-admin-pairings.md) (admin pairings), [ADR-0018](0018-admin-signed-request-envelope.md) (admin signed-request envelope), `crates/pds/src/routes/create_mobile_account.rs`, `crates/pds/src/routes/create_account_xrpc.rs`, `crates/pds/src/routes/standard_signup.rs`, `crates/pds/src/routes/claim_codes.rs`, `crates/pds/src/db/claim_codes.rs`, `crates/pds/src/db/migrations/V004__claim_codes_invite.sql`, `crates/common/src/config.rs` (`invite_code_required`), `apps/admin-companion/src/routes/codes/`
+- **Related:** [MM-284](https://linear.app/malpercio/issue/MM-284), [MM-280](https://linear.app/malpercio/issue/MM-280) (labeler-flag monitoring), [ADR-0017](0017-multi-relay-admin-pairings.md) (admin pairings), [ADR-0018](0018-admin-signed-request-envelope.md) (admin signed-request envelope), `crates/pds/src/routes/create_mobile_account.rs`, `crates/pds/src/routes/create_account_xrpc.rs`, `crates/pds/src/routes/standard_signup.rs`, `crates/pds/src/routes/claim_codes.rs`, `crates/pds/src/db/claim_codes.rs`, `crates/custos-db/src/migrations/V004__claim_codes_invite.sql`, `crates/common/src/config.rs` (`invite_code_required`), `apps/admin-companion/src/routes/codes/`
 
 ## Context
 

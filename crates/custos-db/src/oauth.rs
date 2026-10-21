@@ -47,14 +47,14 @@ pub struct ClientMetadata {
 /// `client_id` is an HTTPS URL (the client's metadata document URL per AT Protocol OAuth spec).
 /// `client_metadata` is a JSON string conforming to RFC 7591 client metadata.
 ///
-/// Returns `sqlx::Error` on failure. Callers should use `crate::db::is_unique_violation`
+/// Returns `sqlx::Error` on failure. Callers should use `crate::is_unique_violation`
 /// to detect duplicate `client_id` conflicts.
 ///
 /// No handler registers clients dynamically (RFC 7591) — production rows come from
 /// `upsert_oauth_client` on a URL-`client_id` cache miss. This direct insert seeds fixture
-/// clients for route tests across the crate.
-#[cfg(test)]
-pub(crate) async fn register_oauth_client(
+/// clients for `pds`'s route tests, through the `test-support` feature.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn register_oauth_client(
     pool: &SqlitePool,
     client_id: &str,
     client_metadata: &str,
@@ -227,7 +227,7 @@ pub struct AuthCodeRow {
 /// Callers must treat `None` as `invalid_grant`.
 ///
 /// The code column stores the SHA-256 hex hash of the raw code bytes. Callers must
-/// hash the presented code before calling this function (use `auth::token::sha256_hex`).
+/// hash the presented code before calling this function (use `common::token::sha256_hex`).
 ///
 /// Use this to retrieve the code for validation, then call `delete_authorization_code`
 /// after all checks pass. The SELECT+DELETE are serialized due to `max_connections(1)`
@@ -601,7 +601,7 @@ pub async fn cleanup_expired_refresh_tokens(pool: &SqlitePool) -> Result<(), sql
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{is_unique_violation, test_pool};
+    use crate::{is_unique_violation, test_pool};
 
     #[tokio::test]
     async fn consume_par_request_returns_row_and_deletes_it() {
@@ -858,7 +858,7 @@ mod tests {
 
     /// Insert an account row needed to satisfy oauth_tokens FK.
     async fn insert_test_account(pool: &SqlitePool) {
-        crate::db::accounts::insert_bare_account(pool, "did:plc:testaccount000000000000").await;
+        crate::accounts::insert_bare_account(pool, "did:plc:testaccount000000000000").await;
     }
 
     #[tokio::test]

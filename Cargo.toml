@@ -7,6 +7,7 @@ members = [
     "crates/common",
     "crates/ios-device-key",
     "crates/custos-client",
+    "crates/custos-db",
     "apps/identity-wallet/src-tauri",
     "apps/admin-companion/src-tauri",
 ]
@@ -274,6 +275,8 @@ notify-relay = { path = "crates/notify-relay" }
 ios-device-key = { path = "crates/ios-device-key" }
 # The DPoP/OAuth/XRPC HTTP client shared by identity-wallet and (in future PRs) admin-companion.
 custos-client = { path = "crates/custos-client" }
+# The SQLite pool, migration log + runner, and cross-feature query modules the PDS crates share.
+custos-db = { path = "crates/custos-db" }
 
 # ── Local patches ─────────────────────────────────────────────────────────────
 #
