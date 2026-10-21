@@ -649,6 +649,13 @@ pub struct RateLimitConfig {
     /// disables.
     #[serde(default = "default_space_credential_per_5min")]
     pub space_credential_per_5min: u64,
+    /// Cooldown, in seconds, on a full `com.atproto.sync.getRepo` export (no `since`) of an
+    /// unchanged repo to the same client IP. A repeat inside the window answers `429` with
+    /// `Retry-After`; a new commit or a `since=` delta is always served. Default 3600: no
+    /// consumer needs the same rev twice, and a client stuck re-downloading one costs egress.
+    /// `0` disables.
+    #[serde(default = "default_get_repo_full_cooldown_secs")]
+    pub get_repo_full_cooldown_secs: u64,
     /// Repo-write points per account per hour (reference: 5000). `0` disables the hourly budget.
     #[serde(default = "default_write_points_hourly")]
     pub write_points_hourly: u64,
@@ -673,6 +680,7 @@ impl Default for RateLimitConfig {
             oauth_consent_action_per_5min: default_oauth_consent_action_per_5min(),
             waitlist_per_5min: default_waitlist_per_5min(),
             space_credential_per_5min: default_space_credential_per_5min(),
+            get_repo_full_cooldown_secs: default_get_repo_full_cooldown_secs(),
             write_points_hourly: default_write_points_hourly(),
             write_points_daily: default_write_points_daily(),
         }
@@ -729,6 +737,10 @@ fn default_oauth_consent_action_per_5min() -> u64 {
 
 fn default_space_credential_per_5min() -> u64 {
     3000
+}
+
+fn default_get_repo_full_cooldown_secs() -> u64 {
+    3600
 }
 
 fn default_write_points_hourly() -> u64 {
@@ -1777,6 +1789,10 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_SPACE_CREDENTIAL_PER_5MIN") {
         raw.rate_limit.space_credential_per_5min =
             parse_u64("EZPDS_RATE_LIMIT_SPACE_CREDENTIAL_PER_5MIN", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_GET_REPO_FULL_COOLDOWN_SECS") {
+        raw.rate_limit.get_repo_full_cooldown_secs =
+            parse_u64("EZPDS_RATE_LIMIT_GET_REPO_FULL_COOLDOWN_SECS", v)?;
     }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY") {
         raw.rate_limit.write_points_hourly = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY", v)?;
@@ -3185,6 +3201,19 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
         assert!(config.waitlist.enabled);
         assert_eq!(config.rate_limit.waitlist_per_5min, 10);
+    }
+
+    #[test]
+    fn get_repo_full_cooldown_defaults_to_an_hour_and_env_overrides() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.rate_limit.get_repo_full_cooldown_secs, 3600);
+        let env = HashMap::from([(
+            "EZPDS_RATE_LIMIT_GET_REPO_FULL_COOLDOWN_SECS".to_string(),
+            "0".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.rate_limit.get_repo_full_cooldown_secs, 0);
     }
 
     #[test]

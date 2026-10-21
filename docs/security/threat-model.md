@@ -204,6 +204,10 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
   all ([ADR-0018](../architecture/decisions/0018-admin-signed-request-envelope.md)).
 - **Single-node SQLite.** No multi-writer story; Litestream gives durability,
   not horizontal scale ([ADR-0011](../architecture/decisions/0011-sqlite-via-sqlx.md)).
+- **Per-IP limits trust `X-Forwarded-For`.** The global cap and the full-`getRepo`
+  cooldown (`crates/pds/src/rate_limit.rs`) key on the leftmost forwarded address, which a
+  client can spoof. Both are cost and abuse controls, not authentication boundaries; the
+  cooldown in particular only stops one IP re-downloading an unchanged repo.
 - **The notify-relay is trusted for availability only, never confidentiality**
   by construction — it never holds a key that would let it do otherwise
   (`crates/notify-relay/AGENTS.md`).

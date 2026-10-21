@@ -1,6 +1,6 @@
 # Rev-aware cooldown on full `getRepo` exports
 
-**Date:** 2026-10-20 · **Status:** Design agreed, not started · **Linear:** MM-597 (Wave 7: Hardening)
+**Date:** 2026-10-20 · **Status:** Implementation in review · **Linear:** MM-597 (Wave 7: Hardening)
 **Sources:**
 - Railway usage CLI (`railway usage`, `railway usage projects --project ezpds`), per-service `NETWORK_TX_GB` series and HTTP/flow logs for `custos-obsign`, billing period 2026-09-29 → 2026-10-29
 - Production PDS `/metrics` (counters since the 2026-09-04 deploy)
@@ -155,7 +155,8 @@ is a correctness hazard today regardless of this change.
 1. **Migration transfer** (`apps/identity-wallet/src-tauri/src/migration_orchestrator.rs`,
    `transfer_repo`). Today *any* source `getRepo` failure falls back to the iCloud repo
    snapshot. On `PdsClientError::RateLimited { retry_after, .. }` it must instead return
-   `MigrationError::RepoTransferFailed` carrying the retry-after, with no fallback: a
+   `MigrationError::RateLimited { retry_after }` (the existing code, which the progress
+   screen renders as "try again in about N minutes"), with no fallback: a
    `429` means the source can serve the repo and already did; the snapshot may be older
    than the live repo. Test: mock source answers `429` with `Retry-After` and a valid
    snapshot is present → the transfer fails with that message and the snapshot is not
@@ -201,14 +202,23 @@ changelog fragment and the host-target test run (`cargo test -p identity-wallet`
     shows the hydrant IPs receiving `429`s and at most one `200` per IP per hour.
   - `curl -s https://pds.obsign.org/metrics | grep 'rate_limit_rejections_total{limiter="get_repo_cooldown"'`
     is climbing.
+  - **Spoof check (the cooldown's key is only as good as this):** from one machine, fetch the
+    same unchanged repo twice in full, each time with a different made-up
+    `X-Forwarded-For: 198.51.100.N`. The second must answer `429`. A `200` means Railway's edge
+    passes the caller's `X-Forwarded-For` through, so the key is caller-chosen: an attacker could
+    claim a relay's IP and hold its full export off. In that case, switch the cooldown (and the
+    other per-IP limiters) to Railway's `X-Real-IP`, or set the window to `0` until fixed.
 - Next billing period's `railway usage` egress line item is a few dollars, not fifteen.
 
 ## 10. Risks and open points
 
 - **Shared NAT.** Two independent consumers behind one IP fetching the same repo within
   an hour: the second gets a `429` with a `Retry-After` it can honour. Accepted.
-- **XFF spoofing.** Same limitation as the existing per-IP limiters; the cooldown is a
-  cost control, not a security boundary.
+- **XFF spoofing.** Same limitation as the existing per-IP limiters, but sharper: a spoofed
+  key here buys a 1 h refusal for the victim IP, not a share of a 3000-per-5-min budget. Safe
+  only if Railway's edge replaces the caller's `X-Forwarded-For` (most reports say it does, none
+  official); the §9 spoof check confirms it after deploy. The cooldown is a cost control, not
+  a security boundary.
 - **hydrant's per-host throttle.** A `429` makes each hydrant instance pause *all*
   fetches from this host for `Retry-After`. Fine for a twelve-repo PDS.
 - **Upstream.** The evidence in §2 is enough for a hydrant bug report; deferred by
