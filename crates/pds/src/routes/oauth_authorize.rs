@@ -24,7 +24,7 @@
 //!
 //! **Push dispatch (Phase C).** The GET's wallet path owns `dispatch_login_approval_push`: a
 //! `login_hint` naming a hosted account gets a sealed `login-approval` push via
-//! `notifications::notify_device`. The hint is resolved with local lookups only — never outbound
+//! `CoreState::notify_account`. The hint is resolved with local lookups only — never outbound
 //! resolution, because it is attacker-suppliable on an unauthenticated surface — and the
 //! two-digit match code (the V060 `match_code` column) is latched and shown on the page only
 //! when a device was actually enqueued.
@@ -52,7 +52,7 @@ use crate::db::pending_oauth_authorizations::{
     insert_pending_authorization, set_push_dispatched, NewPendingOAuthAuthorization,
     OAuthConsentAuditEventType,
 };
-use crate::notifications::{notify_device, NotificationPayload};
+use custos_core::notify::NotificationPayload;
 use crate::routes::oauth_templates::{
     build_code_redirect, error_page, error_redirect, render_consent_page, WalletConsentPath,
 };
@@ -691,7 +691,7 @@ async fn dispatch_login_approval_push(
     login_hint: Option<&str>,
 ) -> Option<String> {
     // Cheap outs before any lookup: no relay configured, or no hint to name a recipient.
-    state.notify_sender.as_ref()?;
+    state.account_notifier.as_ref()?;
     let did = resolve_login_hint_to_local_did(state, login_hint?).await?;
 
     // The number is deliberately absent from the payload: it is the proof the approver can see
@@ -716,12 +716,12 @@ async fn dispatch_login_approval_push(
             "origin": origin,
         }),
     );
-    let enqueued = notify_device(state, &did, payload).await;
+    let enqueued = state.notify_account(&did, payload).await;
     if enqueued == 0 {
         // Worth one line: the hint named a real local account, notifications are configured,
         // and yet nothing could be sent — the account has no registration with a live relay
         // handle. Every earlier exit on this path is either deliberate silence (no relay, no
-        // hint) or already logged by `notify_device`; this is the one outcome that otherwise
+        // hint) or already logged by the notifier; this is the one outcome that otherwise
         // leaves no trace anywhere while the user waits for a push that cannot arrive.
         tracing::info!(
             account_did = %did,

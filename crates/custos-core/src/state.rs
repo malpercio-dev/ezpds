@@ -103,4 +103,8 @@ pub struct CoreState {
     /// exceeded). Read by the OAuth token endpoint and the agents surface; ephemeral (resets on
     /// restart).
     pub poll_tracker: crate::auth::ClaimPollTracker,
+    /// Pushes to an account's registered devices. `None` when `[notifications] relay` is unset,
+    /// which turns every account push into a no-op. `pds` installs it (`AppState::
+    /// set_notify_sender`); features push through it without seeing the relay client.
+    pub account_notifier: Option<Arc<dyn crate::notify::AccountNotifier>>,
 }

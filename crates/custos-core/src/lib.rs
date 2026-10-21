@@ -11,6 +11,7 @@ mod layers;
 pub mod lexicon;
 pub mod metrics;
 pub mod no_input;
+pub mod notify;
 pub mod rate_limit;
 pub mod request_host;
 pub mod space_uri;

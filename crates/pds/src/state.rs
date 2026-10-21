@@ -39,6 +39,17 @@ pub struct AppState {
     pub repo_write_locks: Arc<crate::record_write::RepoWriteLocks>,
 }
 
+impl AppState {
+    /// Turn notifications on: the relay queue `pds`'s own triggers send through, and the
+    /// [`custos_core::notify::AccountNotifier`] features push through. One switch, so the two
+    /// never disagree about whether notifications are configured.
+    pub fn set_notify_sender(&mut self, sender: crate::notify_relay_client::NotifySender) {
+        let notifier = crate::notifications::RelayNotifier::new(self.core.clone(), sender.clone());
+        self.core.account_notifier = Some(Arc::new(notifier));
+        self.notify_sender = Some(sender);
+    }
+}
+
 // Field access only, not a smart pointer: lets `state.db` and `helper(&state)` keep compiling
 // where a helper takes `&CoreState`. Writes go through `state.core`.
 impl Deref for AppState {

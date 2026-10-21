@@ -191,11 +191,10 @@ async fn initiate(
                 // agent that holds a valid claim token spam the owner's lock screen.
                 //
                 // An `anonymous` registration has no DID yet (the claim is what binds one), so
-                // there is nobody to notify; `notify_device` is a no-op on an unknown DID
+                // there is nobody to notify; `notify_account` is a no-op on an unknown DID
                 // anyway, but the intent is worth naming.
                 if let Some(did) = identity.did.as_deref() {
-                    crate::notifications::notify_device(
-                        state,
+                    state.notify_account(
                         did,
                         crate::notifications::NotificationPayload::new(
                             "agent_claim_pending",

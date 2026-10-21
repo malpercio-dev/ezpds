@@ -184,7 +184,7 @@ pub async fn upsert_registration(
     Ok(())
 }
 
-/// Every registration for an account — the fan-out set for `notify_device`.
+/// Every registration for an account — the fan-out set for `RelayNotifier`.
 pub async fn list_registrations(
     pool: &SqlitePool,
     did: &str,
