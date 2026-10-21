@@ -52,9 +52,12 @@ keep passing `&state` and auto-deref.
 3. `custos-spaces` exists; `pds` composes it. `cargo test -p custos-spaces` does
    not compile `crates/pds`, so neither the OAuth server routes nor the agents
    surface build for a Spaces test run.
-4. `bruno-check`, `capability-docs-check`, `auth-seam-check`,
-   `space-auth-seam-check`, `ssrf-client-check` all run against the new layout
-   and pass.
+4. `bruno-check` and `capability-docs-check` run against the new layout and
+   pass, and the three seams the retired grep gates once held still hold by
+   visibility and type across the crate boundaries: `verify_access_token`
+   `pub(super)` (PR #672), `verify_space_credential` private and
+   `verify_space_signature` `pub(super)` (PR #673), and `CallerUrl` +
+   `HardenedClient` (PR #674).
 5. Each new crate has an `AGENTS.md` map; `crates/pds/AGENTS.md`'s module map and
    shared-helpers index point at the new homes.
 6. MM-567 can follow the feature-crate contract in §Architecture for OAuth,
@@ -81,7 +84,7 @@ keep passing `&state` and auto-deref.
 - **feature-crates.AC3.4 Success:** `cargo test -p custos-spaces` output contains no `Compiling pds` line and every moved `*_test.rs` passes.
 - **feature-crates.AC3.5 Success:** `purge_account` still deletes every space-owned row (the schema-walking FK test in `account_delete.rs` passes) and `blob_gc` still unions space-record blob references in.
 - **feature-crates.AC3.6 Failure:** a route in `custos-spaces` importing another route does not compile (the module is private to the crate and `routes/mod.rs` exports only handler functions).
-- **feature-crates.AC3.7 Success:** `space-auth-seam-check` passes against `crates/custos-spaces/src/auth/space.rs`; `verify_space_credential` stays private.
+- **feature-crates.AC3.7 Success:** `auth/space.rs` and `auth/http_signature.rs` both land in `custos-spaces`, so `verify_space_credential` stays private to `auth::space` and `verify_space_signature` / `SignedFor` stay `pub(super)` to `auth` (the visibility rule that replaced `space-auth-seam-check`, PR #673); neither is `pub` from any crate.
 
 ### feature-crates.AC4: Documentation and gates
 - **feature-crates.AC4.1 Success:** `crates/custos-db/AGENTS.md`, `crates/custos-core/AGENTS.md`, `crates/custos-spaces/AGENTS.md` exist and follow the map-not-territory rule; `crates/pds/AGENTS.md`'s module map lists only what remains.
@@ -139,11 +142,11 @@ allows.
 | `uniqueness.rs`, `code_gen.rs`, `auth/token.rs` | `common` | the three upward imports `db/` makes (`normalize_email`, `generate_code`, and `generate_token` in tests); pure, alongside `Did`/`Handle` |
 | `time.rs` | `custos-core` | every moved module's clock |
 | `space_uri.rs` | `common` | `lexicon/formats.rs` and `auth/validation.rs` (both core) call it; a pure string validator like `Did` |
-| `state.rs` (as `CoreState`), `auth/{extractors,bearer,jwt,dpop,signing_key,guards,oauth_scopes,permission_sets,service_auth,http_signature,issuer_trust,jwks,oauth_client_resolution,signed_proof,validation,password,rate_limit}` | `custos-core` | the verification seam and everything it needs; `oauth_client_resolution` because client attestation resolves client metadata through it. The OAuth *server* (`routes/oauth_*`, `auth/oauth_response_mode`) stays in `pds` for MM-567 |
+| `state.rs` (as `CoreState`), `auth/{extractors,bearer,jwt,dpop,signing_key,guards,oauth_scopes,permission_sets,service_auth,issuer_trust,jwks,oauth_client_resolution,signed_proof,validation,password,rate_limit}` | `custos-core` | the verification seam and everything it needs; `jwt` and `dpop` move with `extractors` so `verify_access_token` / `validate_dpop` keep their `pub(super)` (PR #672); `oauth_client_resolution` because client attestation resolves client metadata through it. The OAuth *server* (`routes/oauth_*`, `auth/oauth_response_mode`) stays in `pds` for MM-567 |
 | `identity/`, `lexicon/` + `lexicons/`, `rate_limit.rs`, `metrics.rs`, `sweep.rs`, `sweep_status.rs`, `blob_store.rs`, `request_host.rs`, `no_input.rs`, `xrpc_error_shape.rs`, `apply_shared_layers` | `custos-core` | `lexicons/` moves with the registry (`include_str!` is path-relative); `tools/lexgen` and the lexicons README repoint |
 | `record_write::record_validation_error` | `custos-core::lexicon` | `space_views.rs` imports it; the repo write path itself stays in `pds` |
 | `routes/test_utils.rs` | `custos-core::test_support` | behind the `test-support` feature |
-| `space_record_write.rs`, `space_notify.rs`, `space_jti_sweep.rs`, `space_oplog_sweep.rs`, `auth/space.rs`, `auth/space_consent.rs`, `auth/client_attestation.rs`, `db/{spaces,space_repos,space_notify,space_jti}.rs`, `routes/*space*.rs`, `routes/simplespace_*.rs`, `routes/get_delegation_token.rs`, `routes/admin_spaces.rs`, `routes/space_views.rs`, `routes/space_test_support.rs` | `custos-spaces` | `client_attestation` is reached only from `auth::space` and spends `space_jti` rows; `get_delegation_token` and `admin_spaces` are registered inside the gate today |
+| `space_record_write.rs`, `space_notify.rs`, `space_jti_sweep.rs`, `space_oplog_sweep.rs`, `auth/space.rs`, `auth/http_signature.rs`, `auth/space_consent.rs`, `auth/client_attestation.rs`, `db/{spaces,space_repos,space_notify,space_jti}.rs`, `routes/*space*.rs`, `routes/simplespace_*.rs`, `routes/get_delegation_token.rs`, `routes/admin_spaces.rs`, `routes/space_views.rs`, `routes/space_test_support.rs` | `custos-spaces` | `http_signature` has no caller outside Spaces (`auth::space`, `routes/get_space_credential.rs`, and the space-request signer in `routes/test_utils.rs`, which goes to `custos_spaces::test_support`), and `auth::space` calls its `pub(super)` `verify_space_signature`, so the two must share a crate; `client_attestation` is reached only from `auth::space` and spends `space_jti` rows; `get_delegation_token` and `admin_spaces` are registered inside the gate today |
 | `capabilities.rs` `spaces` entry | `custos_spaces::CAPABILITY` | the `Capability` type moves to `custos-core` |
 | everything else | `pds` | until MM-567 |
 
@@ -349,13 +352,21 @@ that hits the `/xrpc/{method}` catch-all, stay in `pds`.
 | `scripts/bruno-parity.sh` | extracts `.route("…")` literals from `crates/pds/src/app.rs` | takes a `ROUTER_FILES` list (`app.rs` plus every `crates/custos-*/src/router.rs`), fails if any is missing, gains `--list` for the before/after diff |
 | `scripts/capability-docs-check.mjs`, `scripts/generate-docs-reference.mjs` | parse the `CAPABILITIES` literal in `crates/pds/src/capabilities.rs` | also parse every `crates/custos-*/src/capability.rs`; order comes from the `pds` table, entries from wherever the literal lives |
 | `scripts/changelog-test.sh` | symlinks `crates/pds/src/capabilities.rs` into its fixture repo | symlinks the feature crates' `capability.rs` files too, so the fixture sees the whole table |
-| `scripts/auth-seam-check.sh` | allowlists `crates/pds/src/auth/{jwt,extractors}.rs` | repoints to `crates/custos-core/src/auth/…`; scans every `crates/*/src` for callers |
-| `scripts/space-auth-seam-check.sh` | `crates/pds/src/auth/space.rs` | `crates/custos-spaces/src/auth/space.rs`; `validate_dpop` allowlist adds `crates/custos-core/src/auth/{dpop,extractors}.rs` |
-| `scripts/ssrf-client-check.sh` | scans `crates/pds/src`, finds the resolver wiring in `main.rs` | scans `crates/*/src`; the wiring stays in `main.rs` |
 | `tools/lexgen/generate.mjs`, `justfile` `lexgen` | `crates/pds/lexicons` | `crates/custos-core/lexicons` |
 
 `ticket-ref-check`, `adr-ref-check`, and `workspace-dep-check` already glob
 `crates/*` and need nothing.
+
+The three seam grep gates (`auth-seam-check`, `space-auth-seam-check`,
+`ssrf-client-check`) are gone; PRs #672–#674 replaced each with a rule the
+compiler holds, and a crate boundary only tightens a visibility rule. What each
+phase must keep true instead:
+
+| Seam | Held by | Holds across the split when |
+|---|---|---|
+| access-token verification only through `authenticate_access` | `verify_access_token` `pub(super)` in `auth::jwt`; `validate_dpop` `pub(super)` in `auth::dpop` (PR #672) | `jwt`, `dpop`, and `extractors` move to `custos-core` together and neither function is widened to `pub` |
+| space-credential verification only inside `auth::space` | `verify_space_credential` private; `verify_space_signature` / `SignedFor` `pub(super)` in `auth::http_signature`; the mint route's only check is `verify_delegation_signature` (PR #673) | `auth/space.rs` and `auth/http_signature.rs` move to `custos-spaces` together |
+| caller-influenced URLs only on the SSRF-hardened client | `CallerUrl` (private field) and `HardenedClient`, whose request methods take only a `CallerUrl` (PR #674) | the types move to `custos-core` with `identity/` unchanged; `HardenedClient::into_inner` stays the one escape hatch |
 
 ## Existing Patterns
 
@@ -372,9 +383,9 @@ that hits the `/xrpc/{method}` catch-all, stay in `pds`.
   plumbing from `test_utils.rs`; it becomes the crate's `test_support` module
   nearly as is.
 - **`auth::extractors::authenticate_access` / `auth::space::authenticate_space_read`**
-  are the two seam gates (`auth-seam-check`, `space-auth-seam-check`). Crate
-  boundaries make the first one a type rule: a feature crate can only reach
-  verification through the `pub` seam.
+  are the two authentication seams, held by visibility since PRs #672 and #673.
+  Crate boundaries keep that rule: a feature crate can only reach verification
+  through the `pub` seam.
 
 ## Implementation Phases
 
@@ -408,7 +419,9 @@ move `lexicons/` and repoint `tools/lexgen`. Every helper signature `&AppState` 
 any field a core module turns out to read that the first cut left in `pds` moves
 to `CoreState` then, not by widening `CoreState` up front.
 
-Repoint `auth-seam-check` and `ssrf-client-check`.
+Keep the access-token and SSRF seams in the gate-scripts section's seam table
+holding: `jwt`, `dpop`, and `extractors` land together, and no `pub(super)` is
+widened to make the move compile.
 
 Gate: AC2. The `pds` route tests all still build the full `app(state)`; nothing
 about them changes in this phase.
@@ -421,8 +434,9 @@ Create `crates/custos-spaces`; move the Spaces files; define `SpacesState`,
 `router`; swap the `pds` consumers (`purge_account`, `blob_gc`, the consent page,
 the capability table) to the crate's public surface; replace the `app(state)`
 calls in the moved tests with `test_app`; add the capability-order golden test. Repoint
-`bruno-parity.sh` (with `--list`), the three capability parsers, and
-`space-auth-seam-check`.
+`bruno-parity.sh` (with `--list`) and the three capability parsers, and move
+`auth/http_signature.rs` with `auth/space.rs` so the space-credential seam keeps
+its visibility (AC3.7).
 
 Route-to-route imports surface here as compile errors. Known today:
 `space_notify.rs` (a top-level module) imports `routes::space_views::lex_bytes`,
