@@ -503,4 +503,54 @@ mod tests {
             "the pass did complete — staleness is not the signal here"
         );
     }
+
+    /// The whole `sweeps` object against a fixed document: the field set is the operator-facing
+    /// contract, so a sweep gaining or losing a slot (or the sovereign-session nonce sweep, which
+    /// has none, appearing) fails here rather than in a client.
+    #[tokio::test]
+    async fn health_sweeps_document_is_stable() {
+        let state = test_state_with_admin_token().await;
+        let slots = [
+            ("blob_gc", 1),
+            ("blob_mirror", 2),
+            ("blob_scrub", 3),
+            ("firehose_gc", 4),
+            ("account_reaper", 5),
+            ("agent_claim_sweep", 6),
+            ("admin_nonce_sweep", 7),
+            ("sovereign_session_nonce_sweep", 8),
+            ("space_jti_sweep", 9),
+            ("space_oplog_sweep", 10),
+            ("labeler_watch", 11),
+        ];
+        for (name, swept) in slots {
+            state.sweeps.record(
+                name,
+                crate::sweep_status::SweepRun {
+                    completed_at: 1_700_000_000 + swept as i64,
+                    swept,
+                    errors: 0,
+                },
+            );
+        }
+
+        let (status, json) = get_health(app(state), Some("test-admin-token")).await;
+        assert_eq!(status, StatusCode::OK);
+        let entry = |at: i64, swept: u64| serde_json::json!({ "completedAt": 1_700_000_000 + at, "swept": swept, "errors": 0 });
+        assert_eq!(
+            json["sweeps"],
+            serde_json::json!({
+                "blobGc": entry(1, 1),
+                "blobMirror": entry(2, 2),
+                "blobScrub": entry(3, 3),
+                "firehoseGc": entry(4, 4),
+                "accountReaper": entry(5, 5),
+                "agentClaimSweep": entry(6, 6),
+                "adminNonceSweep": entry(7, 7),
+                "spaceJtiSweep": entry(9, 9),
+                "spaceOplogSweep": entry(10, 10),
+                "labelerWatch": entry(11, 11),
+            })
+        );
+    }
 }

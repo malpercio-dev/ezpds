@@ -472,6 +472,21 @@ pub struct SpacesConfig {
 /// stays tied to the exact window it derives its safety margin from.
 pub const ADMIN_TIMESTAMP_WINDOW_SECS: i64 = 60;
 
+/// How long a captured signed request can stay replayable after its nonce is first stored,
+/// given a symmetric timestamp window of `window_secs`: first use at the earliest edge, last
+/// verifiable moment at the latest edge.
+pub const fn replay_span_secs(window_secs: i64) -> i64 {
+    2 * window_secs
+}
+
+/// The one rule every nonce store's sweep must satisfy: retention strictly longer than the
+/// replay span, or sweeping could delete a nonce a still-valid request would re-insert. The
+/// admin config validation, the admin sweep, and the sovereign-session store all check it
+/// through here.
+pub const fn retention_covers_replay(max_age_secs: i64, window_secs: i64) -> bool {
+    max_age_secs > replay_span_secs(window_secs)
+}
+
 /// Symmetric freshness window for sovereign-session signed requests.
 ///
 /// Replay storage must retain a consumed nonce for strictly more than twice this interval: a
@@ -2378,8 +2393,10 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     // after its nonce is first inserted (worst case: first use at the earliest edge of the
     // ±window). Sweeping sooner could delete the nonce while the request could still verify,
     // letting a replay through via a fresh insert.
-    let admin_nonce_replay_span_secs = 2 * ADMIN_TIMESTAMP_WINDOW_SECS as u64;
-    if raw.admin_devices.nonce_max_age_secs <= admin_nonce_replay_span_secs {
+    let admin_nonce_replay_span_secs = replay_span_secs(ADMIN_TIMESTAMP_WINDOW_SECS);
+    if i64::try_from(raw.admin_devices.nonce_max_age_secs)
+        .is_ok_and(|max_age| !retention_covers_replay(max_age, ADMIN_TIMESTAMP_WINDOW_SECS))
+    {
         return Err(ConfigError::Invalid(format!(
             "admin_devices.nonce_max_age_secs must exceed {admin_nonce_replay_span_secs} seconds \
              (twice the ±{ADMIN_TIMESTAMP_WINDOW_SECS}s admin signed-request timestamp window) — \

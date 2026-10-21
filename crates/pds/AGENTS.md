@@ -51,7 +51,7 @@ src/
   label_state.rs   — Functional Core for the watcher: reduce raw label events to the in-force set and diff against persisted rows
   admin_nonce_sweep.rs— periodic stale `admin_nonces` sweep (pure storage reclamation; retention stays above the replay-acceptance window) — see module doc
   sovereign_session_nonce_sweep.rs— hourly `sovereign_session_nonces` sweep; a compile-time assertion keeps retention above the replay window
-  sweep.rs         — the `Sweep` trait (name, cadence, one `run` pass → `Pass`) and the one scheduler (`spawn`/`run_once`) that owns the interval loop, the skipped boot tick, and publishing each completed pass to `AppState.sweeps`; a pass returning `Err` records nothing. Every periodic sweep is a `Sweep`: account_reaper, agent_claim_sweep, admin_nonce_sweep, sovereign_session_nonce_sweep, space_jti_sweep, space_oplog_sweep, firehose_gc, blob_gc, blob_scrub, blob_mirror, labeler_watch (the one that opts into `first_pass_at_boot`)
+  sweep.rs         — the `Sweep` trait (name, cadence, one `run` pass → `Pass`) and the one `Scheduler` (`spawn`/`shutdown`/`run_once`) that owns the interval loop, the skipped boot tick, per-pass jitter, graceful shutdown, and publishing each completed pass to `AppState.sweeps`; a pass returning `Err` records nothing. Every periodic sweep is a `Sweep`: account_reaper, agent_claim_sweep, admin_nonce_sweep, sovereign_session_nonce_sweep, space_jti_sweep, space_oplog_sweep, firehose_gc, blob_gc, blob_scrub, blob_mirror, labeler_watch (the one that opts into `first_pass_at_boot`)
   sweep_status.rs  — readable last-run state per periodic sweep (`AppState.sweeps`) for `GET /v1/admin/health`; a failed pass records nothing — staleness is the alarm — see module doc
   transfer.rs      — planned device-transfer accept/complete/cancel workflows; `db/transfers.rs` owns the SQL, this module owns the cross-table ordering — see module doc
   identity/        — everything "who is this handle/DID" (see section below)
@@ -412,7 +412,7 @@ Before writing a struct, query, fixture, or loop that resembles one that already
 against it and extend or parametrise it. The concrete homes (see the index below): a SQL statement
 needed by two routes goes in `db/`; an auth check shared by two surfaces goes in `auth/guards.rs`;
 a fixture needed by two test modules goes in `routes/test_utils.rs` (add the missing knob rather
-than forking the helper); a periodic task is a `sweep::Sweep` impl run by `sweep::spawn`.
+than forking the helper); a periodic task is a `sweep::Sweep` impl run by `sweep::Scheduler`.
 
 **Tests: one whole-document assertion per constant response, one table per contract.**
 A route that serves a constant document (metadata, JWKS, capabilities) gets one `assert_eq!`
@@ -439,7 +439,8 @@ Look here before writing a helper. Each row is the one home; copies elsewhere ar
 | insert a generated value, retrying on a UNIQUE collision | `db::insert_with_retry_on_collision` |
 | open an auth.md claim ceremony | `auth::agent_assertion::start_claim_attempt` |
 | the account row + genesis repo + announce shared by account promotion | `account_genesis` |
-| a periodic background pass | `sweep::Sweep` + `sweep::spawn` (tests call `sweep::run_once`) |
+| a periodic background pass | `sweep::Sweep` run by `sweep::Scheduler` (tests call `sweep::run_once`) |
+| a nonce store's retention-above-replay rule | `common::{replay_span_secs, retention_covers_replay}` |
 | lower-case hex of a SHA-256 digest | `auth::token::sha256_hex` (inside `crates/crypto` itself: its crate-private `hex::to_hex`) |
 | percent-encoding | `urlencoding::encode` |
 | a validated DID or handle (parse once at the boundary; `name()`/`domain()` instead of re-finding the dot) | `common::{Did, Handle}` — `Deref<Target = str>`, serde and sqlx (SQLite TEXT) both run the validator |

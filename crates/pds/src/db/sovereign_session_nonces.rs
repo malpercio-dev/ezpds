@@ -9,12 +9,12 @@
 //! ([`REPLAY_ACCEPTANCE_SPAN_SECS`] = `2 * SOVEREIGN_TIMESTAMP_WINDOW_SECS`) so sweeping
 //! can never reopen a replay while its signed timestamp is still acceptable.
 
-use common::SOVEREIGN_TIMESTAMP_WINDOW_SECS;
+use common::{replay_span_secs, retention_covers_replay, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use sqlx::{Sqlite, SqlitePool};
 
 /// The full interval during which one captured request can remain timestamp-valid when first
 /// accepted at the early edge of the server's symmetric freshness window.
-pub const REPLAY_ACCEPTANCE_SPAN_SECS: i64 = 2 * SOVEREIGN_TIMESTAMP_WINDOW_SECS;
+pub const REPLAY_ACCEPTANCE_SPAN_SECS: i64 = replay_span_secs(SOVEREIGN_TIMESTAMP_WINDOW_SECS);
 
 /// Atomically record `(did, nonce)`. Returns `true` only for the first insertion.
 pub async fn insert_nonce_if_absent<'e, E>(
@@ -45,7 +45,7 @@ pub async fn sweep_stale_nonces(
     pool: &SqlitePool,
     max_age_seconds: i64,
 ) -> Result<u64, sqlx::Error> {
-    if max_age_seconds <= REPLAY_ACCEPTANCE_SPAN_SECS {
+    if !retention_covers_replay(max_age_seconds, SOVEREIGN_TIMESTAMP_WINDOW_SECS) {
         return Err(sqlx::Error::Protocol(format!(
             "max_age_seconds must exceed the {REPLAY_ACCEPTANCE_SPAN_SECS}-second sovereign request replay-acceptance span"
         )));

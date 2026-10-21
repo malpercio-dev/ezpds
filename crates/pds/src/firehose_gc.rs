@@ -45,8 +45,8 @@
 //!   density check still holds within it. A cursor below the pruned window degrades to
 //!   best-effort replay (the subscriber receives the retained suffix) rather than failing closed.
 //!
-//! Like the blob GC it is best-effort, runs for the life of the process, and is dropped on
-//! shutdown rather than joined.
+//! Like the blob GC it is best-effort and runs for the life of the process, stopped at shutdown
+//! by the scheduler.
 
 use std::time::Duration;
 

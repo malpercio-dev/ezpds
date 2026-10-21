@@ -33,6 +33,11 @@ impl Sweep for AdminNonceSweep {
     }
 
     async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        anyhow::ensure!(
+            common::retention_covers_replay(self.max_age_secs, common::ADMIN_TIMESTAMP_WINDOW_SECS),
+            "admin nonce retention {}s does not exceed the replay-acceptance span",
+            self.max_age_secs
+        );
         let swept = sweep_stale_nonces(&state.db, self.max_age_secs).await?;
 
         if swept > 0 {
