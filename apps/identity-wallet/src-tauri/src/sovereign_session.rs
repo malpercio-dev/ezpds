@@ -249,7 +249,7 @@ mod tests {
     }
 
     fn reset_identity(did: &str) -> DevicePublicKey {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         IdentityStore.add_identity(did).unwrap();
         IdentityStore.get_or_create_device_key(did).unwrap()
     }

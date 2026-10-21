@@ -403,7 +403,7 @@ async fn require_no_escrow_capability(
 /// Record that this identity now carries a self-held kit. Best-effort — nothing must fail a
 /// completed kit over a marker write.
 fn mark_installed(did: &str) {
-    if let Err(e) = crate::keychain::store_item(&self_held_kit_account(did), b"true") {
+    if let Err(e) = obsign_core::keystore::store_item(&self_held_kit_account(did), b"true") {
         tracing::warn!(error = %e, "failed to record the self-held kit marker");
     }
 }
@@ -412,7 +412,7 @@ fn mark_installed(did: &str) {
 /// escrow-upsell seam) was retired, so this now just proves the marker round-trips.
 #[cfg(test)]
 fn is_installed(did: &str) -> bool {
-    matches!(crate::keychain::get_item(&self_held_kit_account(did)), Ok(v) if v == b"true")
+    matches!(obsign_core::keystore::get_item(&self_held_kit_account(did)), Ok(v) if v == b"true")
 }
 
 // ── Imperative shell: build / submit / confirm ───────────────────────────────
@@ -620,7 +620,7 @@ pub fn confirm_self_held_kit(did: &str) -> Result<(), SelfHeldKitError> {
     match crate::rekey::load_share1(did) {
         Ok(bytes) if !bytes.is_empty() => {}
         Ok(_) => return Err(SelfHeldKitError::ShareNotStored),
-        Err(ref e) if crate::keychain::is_not_found(e) => {
+        Err(ref e) if obsign_core::keystore::is_not_found(e) => {
             return Err(SelfHeldKitError::ShareNotStored)
         }
         Err(e) => {
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn installed_marker_round_trips_and_defaults_to_absent() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:kittest0123456789abcdef";
         assert!(!is_installed(did), "a fresh identity carries no kit");
         mark_installed(did);

@@ -3909,7 +3909,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_sovereign_session_persisted_skips_when_valid_record_exists() {
         let did = "did:plc:idempotentskip";
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
         store.get_or_create_device_key(did).unwrap();
@@ -3959,7 +3959,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_stores_bearer_pair() {
         let did = "did:web:rehearsal.example";
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 
@@ -4066,7 +4066,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_serves_a_did_plc_on_a_foreign_host() {
         let did = "did:plc:foreignhost";
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 
@@ -4105,7 +4105,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_skips_when_valid_record_exists() {
         let did = "did:web:rehearsal.example";
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 
@@ -4147,7 +4147,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_rejects_sub_mismatch() {
         let did = "did:web:rehearsal.example";
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 
@@ -4178,7 +4178,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_rejects_aud_mismatch() {
         let did = "did:web:rehearsal.example";
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 

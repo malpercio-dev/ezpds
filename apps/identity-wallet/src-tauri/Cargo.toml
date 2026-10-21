@@ -44,6 +44,8 @@ ios-device-key = { workspace = true }
 # The DPoP/OAuth/XRPC HTTP client shared with admin-companion (in future PRs). Tauri-free;
 # this app supplies the Keychain, diagnostics, and token-persistence adapters. See crates/custos-client.
 custos-client = { workspace = true }
+# The platform-free core (ADR-0039). `keychain.rs` is its iOS `KeyStore`, installed by `run()`.
+obsign-core = { workspace = true }
 thiserror = { workspace = true }
 crypto = { workspace = true }
 p256 = { workspace = true }
@@ -116,6 +118,8 @@ block2 = { workspace = true }
 system-configuration = { workspace = true }
 
 [dev-dependencies]
+# Falls back to an in-memory, thread-local `KeyStore` when `run()` never installed one.
+obsign-core = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true }
 httpmock = { workspace = true }
 tempfile = { workspace = true }

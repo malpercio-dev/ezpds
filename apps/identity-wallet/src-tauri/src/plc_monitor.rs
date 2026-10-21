@@ -459,7 +459,7 @@ fn coalesces_into(newest: Option<&SweepRecord>, next: &SweepRecord, at: DateTime
 /// protects the user. This one holds counts and timestamps. Erroring on it would cost the
 /// user the sweep that is running right now to preserve a readout of sweeps already past.
 fn load_history() -> MonitorHistory {
-    match crate::keychain::get_item(HISTORY_ACCOUNT) {
+    match obsign_core::keystore::get_item(HISTORY_ACCOUNT) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "monitor history unreadable, starting a fresh log");
             MonitorHistory::default()
@@ -495,7 +495,7 @@ fn record_sweep(statuses: &[IdentityStatus], trigger: SweepTrigger) {
     let next = fold_sweep(load_history(), statuses, trigger, Utc::now());
     match serde_json::to_vec(&next) {
         Ok(bytes) => {
-            if let Err(e) = crate::keychain::store_item(HISTORY_ACCOUNT, &bytes) {
+            if let Err(e) = obsign_core::keystore::store_item(HISTORY_ACCOUNT, &bytes) {
                 tracing::warn!(error = %e, "failed to store monitor history");
             }
         }
@@ -926,12 +926,12 @@ mod tests {
             "plc-log",
             "oauth-tokens",
         ] {
-            let _ = crate::keychain::delete_item(&format!("{did}:{suffix}"));
+            let _ = obsign_core::keystore::delete_item(&format!("{did}:{suffix}"));
         }
         let device_pub = store
             .get_or_create_device_key(did)
             .expect("device key generation failed");
-        let priv_bytes_vec = crate::keychain::get_item(&format!("{did}:device-key"))
+        let priv_bytes_vec = obsign_core::keystore::get_item(&format!("{did}:device-key"))
             .expect("device key not in keychain");
         let priv_bytes: [u8; 32] = priv_bytes_vec
             .try_into()

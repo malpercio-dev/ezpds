@@ -10,6 +10,7 @@ members = [
     "crates/custos-db",
     "crates/custos-core",
     "crates/custos-spaces",
+    "crates/obsign-core",
     "apps/identity-wallet/src-tauri",
     "apps/admin-companion/src-tauri",
 ]
@@ -283,6 +284,8 @@ custos-db = { path = "crates/custos-db" }
 custos-core = { path = "crates/custos-core" }
 # The Atproto Spaces feature crate: routes, space auth, queries, sweeps, capability entry.
 custos-spaces = { path = "crates/custos-spaces" }
+# The wallet's platform-free core (ADR-0039): the five platform traits and the logic behind them.
+obsign-core = { path = "crates/obsign-core" }
 
 # ── Local patches ─────────────────────────────────────────────────────────────
 #

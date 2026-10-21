@@ -57,7 +57,6 @@ use zeroize::Zeroizing;
 
 use crate::handle_change::CurrentHandleState;
 use crate::identity_store::{IdentityStore, IdentityStoreError, PerDidSignError};
-use crate::keychain;
 use crate::oauth::AppState;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::sovereign_session;
@@ -91,7 +90,7 @@ pub(crate) fn decode_share1_envelope(bytes: &[u8]) -> Option<crypto::ShareEnvelo
 /// slot is absent, unreadable, or holds anything else.
 fn load_share1_envelope(account: &str) -> Option<crypto::ShareEnvelope> {
     // Sensitive key material — wipe the in-memory copy when this scope ends.
-    let bytes = zeroize::Zeroizing::new(keychain::get_item(account).ok()?);
+    let bytes = zeroize::Zeroizing::new(obsign_core::keystore::get_item(account).ok()?);
     decode_share1_envelope(&bytes)
 }
 
@@ -99,7 +98,7 @@ fn load_share1_envelope(account: &str) -> Option<crypto::ShareEnvelope> {
 /// that can arrive on a device that never ran the ceremony.
 fn load_share1_envelope_synced(account: &str) -> Option<crypto::ShareEnvelope> {
     // Sensitive key material — wipe the in-memory copy when this scope ends.
-    let bytes = zeroize::Zeroizing::new(keychain::get_item_synced(account).ok()?);
+    let bytes = zeroize::Zeroizing::new(obsign_core::keystore::get_item_synced(account).ok()?);
     decode_share1_envelope(&bytes)
 }
 
@@ -225,7 +224,7 @@ fn map_decode_error(e: crypto::CryptoError) -> ShareRecoveryError {
     }
 }
 
-fn map_keychain_error(e: keychain::KeychainError) -> ShareRecoveryError {
+fn map_keychain_error(e: obsign_core::keystore::KeyStoreError) -> ShareRecoveryError {
     ShareRecoveryError::KeychainError {
         message: e.to_string(),
     }
@@ -1022,16 +1021,16 @@ fn save_epilogue(record: &EpilogueRecord) -> Result<(), ShareRecoveryError> {
     let json = Zeroizing::new(
         serde_json::to_string(record).expect("epilogue record serialization cannot fail"),
     );
-    keychain::store_item(EPILOGUE_ACCOUNT, json.as_bytes()).map_err(map_keychain_error)
+    obsign_core::keystore::store_item(EPILOGUE_ACCOUNT, json.as_bytes()).map_err(map_keychain_error)
 }
 
 /// Read the epilogue record. Fail-closed contract: only a genuinely absent slot is
 /// `Ok(None)`; a present-but-unreadable record errors and is preserved — it may hold
 /// the only copy of a share set the swap op already bound to the DID.
 fn load_epilogue() -> Result<Option<EpilogueRecord>, ShareRecoveryError> {
-    let bytes = match keychain::get_item(EPILOGUE_ACCOUNT) {
+    let bytes = match obsign_core::keystore::get_item(EPILOGUE_ACCOUNT) {
         Ok(bytes) => Zeroizing::new(bytes),
-        Err(e) if keychain::is_not_found(&e) => return Ok(None),
+        Err(e) if obsign_core::keystore::is_not_found(&e) => return Ok(None),
         Err(e) => {
             return Err(ShareRecoveryError::EpilogueCorrupt {
                 message: format!("keychain read failed: {e}"),
@@ -1299,14 +1298,14 @@ pub(crate) async fn confirm_backup_core(slot: &StateSlot) -> Result<(), crate::S
         // A missing slot means the durable write never landed; an operational Keychain
         // failure (e.g. a locked device) is not evidence the share is absent — surface it
         // as retryable rather than the misleading "not saved yet" (mirrors confirm_share_backup).
-        Err(ref e) if keychain::is_not_found(e) => {
+        Err(ref e) if obsign_core::keystore::is_not_found(e) => {
             return Err(crate::ShareBackupError::ShareNotStored)
         }
         Err(_) => return Err(crate::ShareBackupError::KeychainError),
     }
-    match keychain::delete_item(EPILOGUE_ACCOUNT) {
+    match obsign_core::keystore::delete_item(EPILOGUE_ACCOUNT) {
         Ok(()) => {}
-        Err(e) if keychain::is_not_found(&e) => {}
+        Err(e) if obsign_core::keystore::is_not_found(&e) => {}
         Err(_) => return Err(crate::ShareBackupError::KeychainError),
     }
     *slot.lock().await = None;
@@ -1371,13 +1370,14 @@ mod tests {
     /// so it must win over a device-local slot of the same name whenever both exist.
     #[test]
     fn auto_load_prefers_the_synchronizable_slot() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let (synced, _) = make_split(0xAAAA_AAAA);
         let (local, _) = make_split(0xBBBB_BBBB);
         let account = crate::rekey::recovery_share1_account(DID);
 
-        keychain::store_item(&account, local[0].encode_share().as_bytes()).unwrap();
-        keychain::store_item_synced(&account, synced[0].encode_share().as_bytes()).unwrap();
+        obsign_core::keystore::store_item(&account, local[0].encode_share().as_bytes()).unwrap();
+        obsign_core::keystore::store_item_synced(&account, synced[0].encode_share().as_bytes())
+            .unwrap();
 
         assert_eq!(auto_load_share1(DID).unwrap().set_id(), synced[0].set_id());
     }
@@ -1387,19 +1387,23 @@ mod tests {
     /// identity. A damaged higher tier must not shadow a good lower one.
     #[test]
     fn auto_load_falls_through_to_local_then_global() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let (local, _) = make_split(0xCCCC_CCCC);
         let (global, _) = make_split(0xDDDD_DDDD);
         let account = crate::rekey::recovery_share1_account(DID);
 
-        keychain::store_item(RECOVERY_SHARE1_ACCOUNT, global[0].encode_share().as_bytes()).unwrap();
+        obsign_core::keystore::store_item(
+            RECOVERY_SHARE1_ACCOUNT,
+            global[0].encode_share().as_bytes(),
+        )
+        .unwrap();
         assert_eq!(auto_load_share1(DID).unwrap().set_id(), global[0].set_id());
 
-        keychain::store_item(&account, local[0].encode_share().as_bytes()).unwrap();
+        obsign_core::keystore::store_item(&account, local[0].encode_share().as_bytes()).unwrap();
         assert_eq!(auto_load_share1(DID).unwrap().set_id(), local[0].set_id());
 
         // A synchronizable slot holding unusable bytes falls through rather than blocking.
-        keychain::store_item_synced(&account, b"NOTANENVELOPE").unwrap();
+        obsign_core::keystore::store_item_synced(&account, b"NOTANENVELOPE").unwrap();
         assert_eq!(auto_load_share1(DID).unwrap().set_id(), local[0].set_id());
     }
 
@@ -1407,11 +1411,11 @@ mod tests {
     /// ceremony falls back to manual entry rather than seeding a wrong share.
     #[test]
     fn auto_load_reports_nothing_when_no_slot_holds_a_share1_envelope() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         assert!(auto_load_share1(DID).is_none());
 
         let (set, _) = make_split(0xEEEE_EEEE);
-        keychain::store_item_synced(
+        obsign_core::keystore::store_item_synced(
             &crate::rekey::recovery_share1_account(DID),
             set[1].encode_share().as_bytes(),
         )
@@ -1511,7 +1515,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_persists_the_delegation_seed_derived_from_the_recovered_seed() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let (set_a, recovery_key) = make_split(0x7777_0001);
 
         let plc = MockServer::start();
@@ -1556,7 +1560,7 @@ mod tests {
     /// children were minted from — and must still hand the user their identity back.
     #[tokio::test]
     async fn verify_keeps_the_stored_delegation_seed_when_shares_are_from_a_newer_set() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let (set_a, recovery_key) = make_split(0x7777_0002);
 
         let plc = MockServer::start();
@@ -1695,7 +1699,7 @@ mod tests {
 
     #[tokio::test]
     async fn recover_identity_is_zero_custos_and_stages_the_epilogue() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let (set_a, recovery_key) = make_split(0x8888_8888);
 
         // A PDS mock with a catch-all: the sovereign path must never touch it
@@ -1757,7 +1761,7 @@ mod tests {
 
     #[tokio::test]
     async fn recover_identity_retry_after_landed_op_is_idempotent() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let (set_a, recovery_key) = make_split(0x9999_9999);
 
         // Register the identity first so the device key exists and can be read back
@@ -1890,7 +1894,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupted_epilogue_resumes_without_resubmitting_or_regenerating() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let (_, old_recovery_key) = make_split(0xaaaa_aaaa);
         let (plc, _) = stage_for_epilogue(&old_recovery_key);
         let post_op = plc.mock(|when, then| {
@@ -1934,8 +1938,8 @@ mod tests {
             share1_before.as_bytes()
         );
         assert!(
-            keychain::get_item(&crate::rekey::recovery_share1_account(DID))
-                .is_err_and(|e| keychain::is_not_found(&e)),
+            obsign_core::keystore::get_item(&crate::rekey::recovery_share1_account(DID))
+                .is_err_and(|e| obsign_core::keystore::is_not_found(&e)),
             "the epilogue writes the synchronizable slot, not the device-local one"
         );
         let slot = fresh_slot(DID, None);
@@ -1947,7 +1951,7 @@ mod tests {
 
     #[tokio::test]
     async fn epilogue_deposits_new_share2_over_the_stored_session() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let (_, old_recovery_key) = make_split(0xbbbb_bbbb);
         let (plc, _) = stage_for_epilogue(&old_recovery_key);
         plc.mock(|when, then| {
@@ -1994,7 +1998,7 @@ mod tests {
     /// Share 1 write.
     #[tokio::test]
     async fn epilogue_skips_reescrow_on_a_host_without_the_escrow_capability() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let host = MockServer::start();
         let describe = host.mock(|when, then| {
             when.method(httpmock::Method::GET)

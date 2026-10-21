@@ -175,7 +175,7 @@ mod tests {
     /// Happy path: a 200 `createSession` yields a full-session Bearer client bound to the PDS URL.
     #[tokio::test]
     async fn test_authenticate_source_password_success() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let server = MockServer::start();
@@ -211,7 +211,7 @@ mod tests {
     /// A 200 whose `did` differs from the expected DID must be refused (wrong-account guard).
     #[tokio::test]
     async fn test_authenticate_source_password_did_mismatch() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let server = MockServer::start();
@@ -249,7 +249,7 @@ mod tests {
     /// network call, so no mock server is needed.
     #[tokio::test]
     async fn test_authenticate_source_password_rejects_insecure_url() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let pds_client = crate::pds_client::PdsClient::new();
         let result = authenticate_source_password(
             &pds_client,
@@ -270,7 +270,7 @@ mod tests {
     /// A 401 `createSession` (wrong password) surfaces as SourceAuthFailed, never NetworkError.
     #[tokio::test]
     async fn test_authenticate_source_password_wrong_password() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let server = MockServer::start();
@@ -304,7 +304,7 @@ mod tests {
     /// surface as `TwoFactorRequired` (prompt for a code), NOT `SourceAuthFailed` (wrong password).
     #[tokio::test]
     async fn test_authenticate_source_password_two_factor_required() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let server = MockServer::start();

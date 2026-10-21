@@ -476,7 +476,7 @@ pub(crate) fn backup_enabled_account(did: &str) -> String {
 }
 
 fn load_enabled(did: &str) -> bool {
-    crate::keychain::get_item(&backup_enabled_account(did))
+    obsign_core::keystore::get_item(&backup_enabled_account(did))
         .map(|v| v == b"true")
         .unwrap_or(false)
 }
@@ -492,7 +492,7 @@ pub(crate) fn is_backup_enabled(did: &str) -> bool {
 
 fn store_enabled(did: &str, enabled: bool) -> Result<(), BlobBackupError> {
     let value: &[u8] = if enabled { b"true" } else { b"false" };
-    crate::keychain::store_item(&backup_enabled_account(did), value).map_err(|e| {
+    obsign_core::keystore::store_item(&backup_enabled_account(did), value).map_err(|e| {
         BlobBackupError::KeychainError {
             message: e.to_string(),
         }
@@ -1780,7 +1780,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_reports_manifest_totals_and_flag() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let dir = tempfile::tempdir().unwrap();
         let did = "did:plc:statustest";
 
@@ -1833,7 +1833,7 @@ mod tests {
 
     #[test]
     fn enabled_flag_roundtrip() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:flagtest";
         assert!(!load_enabled(did));
         store_enabled(did, true).unwrap();

@@ -446,7 +446,7 @@ mod tests {
     const TIMESTAMP: i64 = 1_720_000_000;
 
     fn reset_identity(did: &str) -> DevicePublicKey {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         IdentityStore.add_identity(did).unwrap();
         IdentityStore.get_or_create_device_key(did).unwrap()
     }

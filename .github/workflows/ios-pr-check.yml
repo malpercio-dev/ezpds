@@ -28,6 +28,7 @@ on:
       - "apps/admin-companion/**"
       - "crates/crypto/**"
       - "crates/custos-client/**"
+      - "crates/obsign-core/**"
       - "crates/ios-device-key/**"
       - "Cargo.toml"
       - "Cargo.lock"

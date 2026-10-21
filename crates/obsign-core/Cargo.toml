@@ -1,0 +1,21 @@
+[package]
+name = "obsign-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No Apple crate and no `cfg(target_os)` here, ever (ADR-0039): platform code belongs to the
+# shell or a platform crate that implements this crate's traits.
+[dependencies]
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# The thread-local in-memory `KeyStore` and the fallback that selects it when no store is
+# installed. Enabled only from a dependent's `[dev-dependencies]`; refused in release builds
+# (see `keystore`'s module doc).
+test-support = []
