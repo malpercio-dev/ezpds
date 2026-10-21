@@ -317,7 +317,7 @@ pub async fn complete_repo_key_rotation(
 
     // Announce the identity change so relays re-resolve the document. `None` handle =
     // "the identity changed, re-resolve" — the honest signal for a key rotation.
-    if let Err(e) = state.firehose.emit_identity(did.clone(), None).await {
+    if let Err(e) = state.firehose.emit_identity(did.to_string(), None).await {
         tracing::warn!(
             error = %e,
             did = %did,

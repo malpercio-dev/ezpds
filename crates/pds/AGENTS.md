@@ -130,8 +130,8 @@ example `authority.rs` reads through `plc.rs` and `resolution.rs`, and `well_kno
 | `mod.rs` | `pub mod` declarations only — no shared code |
 | `resolution.rs` | shared handle/DID resolution chain, the cache-first DID-document reads (two tiers: the `did_documents` table holds this server's own/migrated accounts with no TTL, force-refreshed by `resolve_did_document_force_refresh`; `AppState::did_document_cache` holds every remote document on 1h-stale / 24h-hard TTLs with stale-while-revalidate), the cool-down-bounded `refresh_did_document_after_signature_mismatch` seam every token-signature-mismatch retry takes (`auth/space.rs` and `auth/service_auth.rs` both), and the pure DID-document accessors including the Atproto Spaces fallbacks (`space_verification_key`, `space_host_endpoint`) — see module doc |
 | `proxy.rs` | the `atproto-proxy` header target guard and the shared SSRF-hardened client (`AppState::hardened_http_client`). Security-critical — the module doc carries the full design (`SsrfResolver` connect-time DNS allowlist, TOCTOU closure, all four consumers); a caller-influenced URL is a `CallerUrl`, which only `HardenedClient` accepts |
-| `did.rs` | general `did:` syntax validation (Functional Core): the canonical `is_valid_did`, re-exported by `auth/validation.rs` and called by `lexicon/formats.rs` for the `did` string format — see module doc |
-| `handle.rs` | handle validation: structural + domain policy + reserved infrastructure names — see module doc |
+| `did.rs` | re-exports `common::is_valid_did` (the validator behind `common::Did`) and holds its interop-fixture test; re-exported again by `auth/validation.rs` and called by `lexicon/formats.rs` for the `did` string format |
+| `handle.rs` | handle domain policy + reserved infrastructure names over `common::Handle` (the structural validator lives in `common`) — see module doc |
 | `dns.rs` | `DnsProvider` (handle DNS records; v0.1 ships no provider) + `TxtResolver` (DNS TXT fallback for resolveHandle) — see module doc |
 | `well_known.rs` | `WellKnownResolver`: HTTP `.well-known/atproto-did`, resolveHandle's third fallback — see module doc |
 | `plc.rs` | shared did:plc rotation/update-op machinery for the `identity.*PlcOperation` interop routes — see module doc |
@@ -441,6 +441,7 @@ Look here before writing a helper. Each row is the one home; copies elsewhere ar
 | a periodic background pass | `sweep::spawn_sweep` |
 | lower-case hex of a SHA-256 digest | `auth::token::sha256_hex` (inside `crates/crypto` itself: its crate-private `hex::to_hex`) |
 | percent-encoding | `urlencoding::encode` |
+| a validated DID or handle (parse once at the boundary; `name()`/`domain()` instead of re-finding the dot) | `common::{Did, Handle}` — `Deref<Target = str>`, serde and sqlx (SQLite TEXT) both run the validator |
 | test state, accounts, tokens, DPoP proofs, request builders, body decoding | `routes::test_utils` |
 | the space route tests' request builders and record bodies | `routes::space_test_support` |
 | a generic HTTP contract asserted over every route it binds (missing auth → 401, spurious body → 400, invalid DID → 400, closed pool → 500) | `routes::contract_tests` |

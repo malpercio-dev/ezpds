@@ -66,7 +66,7 @@ pub async fn create_handle_handler(
         ));
     }
 
-    let name = crate::identity::handle::validate_handle(
+    let handle = crate::identity::handle::validate_handle(
         &payload.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,
@@ -104,15 +104,18 @@ pub async fn create_handle_handler(
         .unwrap_or(public_url.as_str());
 
     let dns_status = if let Some(provider) = &state.dns_provider {
-        provider.create_record(name, hostname).await.map_err(|e| {
-            tracing::error!(
-                error = %e,
-                handle = %payload.handle,
-                did = %session.did,
-                "DNS record creation failed"
-            );
-            ApiError::new(ErrorCode::DnsError, "failed to create DNS record")
-        })?;
+        provider
+            .create_record(handle.name(), hostname)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    handle = %payload.handle,
+                    did = %session.did,
+                    "DNS record creation failed"
+                );
+                ApiError::new(ErrorCode::DnsError, "failed to create DNS record")
+            })?;
         "propagating"
     } else {
         "not_configured"
@@ -125,7 +128,7 @@ pub async fn create_handle_handler(
     // logged and dropped (a subscriber that misses the event backfills via the DID document).
     if let Err(e) = state
         .firehose
-        .emit_identity(session.did.clone(), Some(payload.handle.clone()))
+        .emit_identity(session.did.to_string(), Some(payload.handle.clone()))
         .await
     {
         tracing::warn!(
@@ -139,7 +142,7 @@ pub async fn create_handle_handler(
     Ok(Json(CreateHandleResponse {
         handle: payload.handle,
         dns_status,
-        did: session.did,
+        did: session.did.into(),
     }))
 }
 

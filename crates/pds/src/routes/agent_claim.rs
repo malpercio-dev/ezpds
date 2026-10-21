@@ -491,7 +491,7 @@ async fn confirm(
         Json(ClaimConfirmResponse {
             registration_id: identity.id,
             status: "claimed",
-            did: caller_did,
+            did: caller_did.into(),
             child: None,
         }),
     )

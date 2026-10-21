@@ -539,7 +539,7 @@ where
 #[derive(Debug)]
 pub struct VerifiedDelegation {
     /// The delegating user (`iss`).
-    pub user_did: String,
+    pub user_did: common::Did,
 }
 
 /// Verify an inbound delegation token for `space`, as the space authority, and spend its `jti`.
@@ -566,7 +566,7 @@ pub async fn verify_delegation_token(
         ));
     }
     let iss = peek_jwt_iss(token)
-        .filter(|i| i.starts_with("did:"))
+        .and_then(|i| common::Did::parse(i).ok())
         .ok_or_else(|| invalid("delegation token issuer is missing or not a DID"))?;
 
     let jwt = verify_did_jwt_resolving_key(state, token, &iss, &atproto_verification_key)
@@ -693,7 +693,7 @@ async fn verify_space_credential(
         ));
     }
     let iss = peek_jwt_iss(token)
-        .filter(|i| i.starts_with("did:"))
+        .and_then(|i| common::Did::parse(i).ok())
         .ok_or_else(|| invalid("space credential issuer is missing or not a DID"))?;
 
     // The header `kid` names which published key signed the credential; it is plain data until

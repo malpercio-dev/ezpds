@@ -47,7 +47,7 @@ use crate::identity::resolution::{
 pub struct ServiceAuthUser {
     /// The issuing account DID (`iss`), verified to be hosted and active on this server. Anything
     /// this request writes lands under this DID exactly as a session-authed request would.
-    pub did: String,
+    pub did: common::Did,
 }
 
 /// Whether the request's `Authorization` header carries an atproto service-auth JWT (its `iss` is a
@@ -94,7 +94,7 @@ pub async fn require_service_auth(
     // whose `#atproto` key the signature must verify against; the signature check below is what
     // makes it trustworthy.
     let iss = peek_jwt_iss(token)
-        .filter(|i| i.starts_with("did:"))
+        .and_then(|i| common::Did::parse(i).ok())
         .ok_or_else(|| {
             ApiError::new(
                 ErrorCode::InvalidToken,

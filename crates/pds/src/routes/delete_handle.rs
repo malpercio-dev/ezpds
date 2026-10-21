@@ -109,7 +109,7 @@ pub async fn delete_handle_handler(
     // sequencer write failure is logged and dropped.
     if let Err(e) = state
         .firehose
-        .emit_identity(session.did.clone(), None)
+        .emit_identity(session.did.to_string(), None)
         .await
     {
         tracing::warn!(

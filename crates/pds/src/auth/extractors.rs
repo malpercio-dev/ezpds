@@ -49,7 +49,7 @@ use super::jwt::{parse_scope, verify_access_token, AuthScope};
 /// ```
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser {
-    pub did: String,
+    pub did: common::Did,
     pub scope: AuthScope,
     /// Raw `scope` claim. OAuth tokens carry the granular grant here; legacy
     /// session/app-password tokens carry their `com.atproto.*` scope string.
@@ -205,8 +205,11 @@ pub fn authenticate_access(
         )?;
     }
 
+    let did = common::Did::parse(claims.sub)
+        .map_err(|_| ApiError::new(ErrorCode::InvalidToken, "access token subject is not a DID"))?;
+
     Ok(AuthenticatedUser {
-        did: claims.sub,
+        did,
         scope,
         scope_claim: claims.scope,
         registration_id: claims.registration_id,
@@ -248,7 +251,7 @@ mod tests {
 
     fn user(registration_id: Option<&str>) -> AuthenticatedUser {
         AuthenticatedUser {
-            did: "did:plc:test000000000000000".to_string(),
+            did: common::Did::parse("did:plc:test000000000000000").unwrap(),
             scope: AuthScope::Access,
             scope_claim: "atproto repo:*?action=create&action=update".to_string(),
             registration_id: registration_id.map(str::to_string),

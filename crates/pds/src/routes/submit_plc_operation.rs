@@ -114,7 +114,7 @@ pub async fn submit_plc_operation(
     // and routing to the old PDS. The handle is passed as `None` ("identity changed, re-resolve")
     // — the same signal `repo_key_rotation` emits. Best-effort: the operation is already durable at
     // the PLC directory, so an emit failure must not fail the request.
-    if let Err(e) = state.firehose.emit_identity(did.clone(), None).await {
+    if let Err(e) = state.firehose.emit_identity(did.to_string(), None).await {
         tracing::warn!(error = %e, did = %did, "failed to emit #identity after submitPlcOperation (non-fatal)");
     }
 

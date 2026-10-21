@@ -87,7 +87,7 @@ pub async fn activate_account_handler(
         // while the account was deactivated re-anchors to its current commit.
         AccountStateChange::Changed => {
             let account = emit_guard
-                .stage_account(&mut tx, user.did.clone(), true, None)
+                .stage_account(&mut tx, user.did.to_string(), true, None)
                 .await
                 .map_err(|e| {
                     {
@@ -137,7 +137,11 @@ pub async fn activate_account_handler(
             {
                 tracing::warn!(did = %user.did, error = %e, "failed to force-refresh DID document after activation (non-fatal)");
             }
-            if let Err(e) = state.firehose.emit_identity(user.did.clone(), None).await {
+            if let Err(e) = state
+                .firehose
+                .emit_identity(user.did.to_string(), None)
+                .await
+            {
                 tracing::warn!(did = %user.did, error = %e, "failed to emit #identity after activation (non-fatal)");
             }
         }
