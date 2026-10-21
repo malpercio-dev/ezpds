@@ -1,6 +1,6 @@
 # Feature Crates Design: `custos-db`, `custos-core`, and the Spaces extraction
 
-Wave 11 track S3, step 1 of 3 ([v2 in place](2026-09-06-v2-in-place.md) §S3).
+Wave 11 track S3, step 1 of 3 ([v2 in place](../../design-plans/2026-09-06-v2-in-place.md) §S3).
 Linear: MM-566 (this plan, `custos-db`, `custos-spaces`); MM-567 inherits the
 remaining features.
 

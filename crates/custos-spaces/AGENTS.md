@@ -7,7 +7,11 @@ route, `/v1/space/import-repo`, the operator's `/v1/admin/spaces` pair, the spac
 seam, the space query modules, both space sweeps, and the `spaces` capability entry. It depends on
 [`custos-core`](../custos-core/AGENTS.md) and [`custos-db`](../custos-db/AGENTS.md), never on `pds`
 or a sibling feature, so `cargo test -p custos-spaces` builds neither the OAuth server nor agents.
-The design: [docs/design-plans/2026-10-21-feature-crates.md](../../docs/design-plans/2026-10-21-feature-crates.md).
+The rationale is archived at
+[docs/archive/design-plans/2026-10-21-feature-crates.md](../../docs/archive/design-plans/2026-10-21-feature-crates.md);
+where its sketch differs from this map (`internal_router` keeps the operator pair when disabled,
+`spawn_sweeps` registers on the shared scheduler, the route-import rule is a review rule rather
+than a compile error), this map is current.
 
 This file is a map; mechanism and invariants live in each module's `//!` doc.
 

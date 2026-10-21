@@ -5,8 +5,28 @@ Last verified: 2026-10-21
 The runtime every Custos feature crate shares: `CoreState`, the access-token and DPoP
 verification seam, identity resolution, the lexicon registry, rate limiting, metrics, the sweep
 scheduler, and the shared middleware stack. `pds` and the feature crates depend on it; it depends
-on `custos-db`, `common`, `crypto`, and `repo-engine`, never on a feature crate or `pds`. The
-design and the crate graph: [docs/design-plans/2026-10-21-feature-crates.md](../../docs/design-plans/2026-10-21-feature-crates.md).
+on `custos-db`, `common`, `crypto`, and `repo-engine`, never on a feature crate or `pds`.
+
+## Crate graph
+
+```
+common · crypto · repo-engine
+            ▼
+        custos-db        pool, migration log + runner, cross-feature queries
+            ▼
+        custos-core      this crate
+            ▼
+  feature crates         custos-spaces (more to come)
+            ▼
+          pds            the binary: composes every feature, owns what is not yet extracted
+```
+
+A feature crate depends on `custos-core` and `custos-db`, never on `pds` or a sibling feature;
+this crate never depends on a feature. Code two features need moves down here (or to
+`custos-db` for a table). The feature-crate contract `pds` consumes is in
+[`custos-spaces`' map](../custos-spaces/AGENTS.md#what-pds-consumes). The rationale behind the
+split is archived:
+[docs/archive/design-plans/2026-10-21-feature-crates.md](../../docs/archive/design-plans/2026-10-21-feature-crates.md).
 
 ## Module Map
 
