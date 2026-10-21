@@ -11,14 +11,14 @@
 //! `DecodingKey`.
 //!
 //! `JwksCache` is generic over trust source: agent-auth's dynamic-trust issuers are one consumer,
-//! `routes::oauth_token::client_auth` is a second — a confidential OAuth client's `jwks_uri`. The
-//! two get **separate `JwksCache` instances** (each in `CoreState`, distinct `[agent_auth]` vs.
-//! `[oauth]` TTL/cooldown config) rather than sharing one: an agent-auth issuer URL is operator-
-//! typed into config, while a client's `jwks_uri` is supplied by whoever registers the client, so
-//! the two sides of the URL-keyed cache have different trust models and should not share tuning or
-//! blast radius. The OAuth-client instance also wires `HttpJwksFetcher` to the SSRF-hardened client
-//! rather than the plain one, matching the transport policy client_id resolution already applies to
-//! that URL.
+//! `custos-oauth`'s `oauth_token::client_auth` is a second — a confidential OAuth client's
+//! `jwks_uri`. The two get **separate `JwksCache` instances** (each in `CoreState`, distinct
+//! `[agent_auth]` vs. `[oauth]` TTL/cooldown config) rather than sharing one: an agent-auth issuer
+//! URL is operator-typed into config, while a client's `jwks_uri` is supplied by whoever registers
+//! the client, so the two sides of the URL-keyed cache have different trust models and should not
+//! share tuning or blast radius. The OAuth-client instance also wires `HttpJwksFetcher` to the
+//! SSRF-hardened client rather than the plain one, matching the transport policy client_id
+//! resolution already applies to that URL.
 //!
 //! The OAuth-client instance is read through [`client_verification_key`], the one place a
 //! client's self-signed JWT is matched to the keys its metadata publishes — shared by the token

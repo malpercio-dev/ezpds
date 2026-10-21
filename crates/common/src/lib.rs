@@ -3,6 +3,7 @@ mod config;
 mod config_loader;
 mod email;
 mod error;
+pub mod html;
 mod ident;
 pub mod token;
 

@@ -1,0 +1,1646 @@
+// pattern: Imperative Shell
+
+//! com.atproto.sync.subscribeRepos — the ATProto firehose WebSocket endpoint.
+//!
+//! BGSes and relays open a long-lived WebSocket here to index every repo commit this PDS
+//! produces. Each event is a single binary message containing two concatenated DAG-CBOR
+//! objects per the ATProto event-stream framing: a header (`{op, t}`) followed by the body.
+//!
+//! * `op = 1` is a message; `t` names the type (`#commit`).
+//! * `op = -1` is an error; the body carries `{error, message}` and the stream then closes.
+//!
+//! A `cursor` query parameter requests replay: the firehose pages every event whose `seq` is
+//! greater than the cursor from its durable log (so replay survives a restart), and the handler
+//! sends those before streaming live events with no gap. A cursor ahead of the current sequence is
+//! rejected with a `FutureCursor` error frame. A
+//! subscriber that cannot keep up overflows the broadcast buffer, receives a
+//! `ConsumerTooSlow` error frame, and is disconnected (it can reconnect with its last cursor).
+//!
+//! A periodic WebSocket Ping keeps the connection alive through idle proxies and surfaces dead
+//! peers. The heartbeat runs from the moment the socket attaches — including throughout any
+//! replay backlog — and a peer that stops answering (no Pong within the read deadline) is
+//! dropped promptly, rather than only when the next Ping send happens to fail.
+//!
+//! The `#commit` frame's `blocks` CAR payload is pinned against the vendored ATProto interop
+//! MST commit-proof fixture (`tests/fixtures/interop/commit-proof-fixtures.json` — see that
+//! directory's README for provenance and documented scope) by the test module's
+//! `firehose_interop_gate` submodule.
+
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+use axum::body::Bytes;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Query, State};
+use axum::response::Response;
+use futures_util::future::{BoxFuture, FutureExt};
+use futures_util::stream::SplitSink;
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast::error::RecvError;
+
+use crate::firehose::{
+    AccountEvent, CommitEvent, FirehoseEvent, IdentityEvent, SubscribeOutcome, Subscription,
+    SyncEvent,
+};
+use custos_core::CoreState;
+use repo_engine::Cid;
+
+/// How often to send a keepalive Ping. Kept well under the reverse-proxy idle window (Railway's,
+/// in production) so an otherwise-silent firehose connection is never reaped as idle.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// If the peer sends nothing — not even a Pong replying to our keepalive Ping — within this
+/// window, the socket is treated as half-open and dropped. Spans several heartbeats so a single
+/// dropped Pong doesn't sever a healthy connection.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Deserialize)]
+pub struct SubscribeReposParams {
+    /// The last `seq` the consumer has already processed; replay resumes after it.
+    cursor: Option<u64>,
+}
+
+/// GET /xrpc/com.atproto.sync.subscribeRepos?cursor=<seq> (WebSocket upgrade)
+///
+/// Unauthenticated, like the other sync endpoints. The HTTP response is a 101 Switching
+/// Protocols; all subsequent traffic is the binary firehose framing described in the module
+/// docs.
+pub async fn subscribe_repos(
+    State(state): State<CoreState>,
+    Query(params): Query<SubscribeReposParams>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_socket(socket, state, params.cursor))
+}
+
+/// Drive a single subscriber connection: optional replay, then live streaming with a
+/// heartbeat, until the peer closes or falls too far behind.
+#[allow(
+    clippy::expect_used,
+    reason = "the replay reader and its read future exist until replay is done, and each is checked before use"
+)]
+async fn handle_socket(socket: WebSocket, state: CoreState, cursor: Option<u64>) {
+    let (mut sender, mut receiver) = socket.split();
+
+    // Attach to the firehose under one lock: `subscribe_from` snapshots the live receiver and the
+    // sequence frontier together (so a concurrent commit can't produce a spurious FutureCursor or
+    // slip an event past the boundary), then returns a reader for the durable replay backlog for
+    // `(cursor, upper]` from `repo_seq` — paged and density-checked in the firehose layer. The
+    // live stream (`rx`) then carries everything with `seq > upper`, so replay and live are exactly
+    // disjoint: no gap, no duplicate across the boundary.
+    let Subscription { replay, mut rx } = match state.firehose.subscribe_from(cursor).await {
+        Ok(SubscribeOutcome::Subscribed(sub)) => sub,
+        Ok(SubscribeOutcome::FutureCursor { .. }) => {
+            // A cursor ahead of everything we've emitted is a client error: refuse and close.
+            send_error_and_close(&mut sender, "FutureCursor", "cursor is in the future").await;
+            return;
+        }
+        Err(e) => {
+            // The durable replay backlog couldn't be assembled (a DB error, a corrupt stored row,
+            // or a sequence gap). Fail closed rather than stream live past a hole; the client
+            // reconnects from its last good cursor.
+            tracing::error!(error = %e, "failed to assemble firehose replay backlog; closing");
+            send_error_and_close(
+                &mut sender,
+                "InternalError",
+                "failed to read replay backlog",
+            )
+            .await;
+            return;
+        }
+    };
+
+    // Gauge the connection for its whole remaining lifetime: the guard's Drop decrements on
+    // every exit path below. Failed subscriptions (the early returns above) never counted.
+    let _subscriber_gauge = crate::metrics::SubscriberGuard::connect(state.metrics.clone());
+
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    // The first tick fires immediately; consume it so the first real Ping waits a full interval.
+    heartbeat.tick().await;
+    // Don't let a stalled send (or a long replay) bunch up catch-up ticks into a Ping burst.
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Last time we heard anything from the peer; refreshed by every inbound frame (notably the
+    // Pong answering our keepalive Ping) and checked against READ_TIMEOUT on each heartbeat.
+    let mut last_seen = Instant::now();
+
+    // Replay the missed backlog oldest-first before any live event, then stream live. Both
+    // phases share one `select!` so the heartbeat and the read-deadline / close detection stay
+    // live throughout — including while replay pages are read from SQLite. The small in-memory
+    // queue holds at most one replay page, so an old cursor cannot materialise the whole backlog.
+    let mut replay = replay;
+    let mut replay_read: Option<BoxFuture<'_, _>> = None;
+    let mut replay_queue = VecDeque::new();
+    let mut replay_done = replay.is_none();
+
+    loop {
+        if !replay_done && replay_queue.is_empty() && replay_read.is_none() {
+            let reader = replay
+                .take()
+                .expect("replay reader exists until replay is done");
+            replay_read = Some(reader.into_next_batch().boxed());
+        }
+
+        tokio::select! {
+            // While the backlog drains, the live branch below stays disabled so a newer commit
+            // can't overtake a replayed one. Pull one decoded event from the current page at a
+            // time, giving the heartbeat/read branches a chance between sends.
+            maybe_event = async { replay_queue.pop_front() }, if !replay_done && !replay_queue.is_empty() => if let Some(event) = maybe_event {
+                if !send_event(&mut sender, &event).await {
+                    break;
+                }
+            },
+            batch = async {
+                replay_read
+                    .as_mut()
+                    .expect("replay read future exists while replay is not done")
+                    .await
+            }, if replay_read.is_some() => {
+                replay_read = None;
+                let (reader, result) = batch;
+                match result {
+                    Ok(events) if events.is_empty() => {
+                        // The replay backlog is fully drained; `reader` falls out of scope here
+                        // (it only borrows the firehose — no lock to release), so switch to live.
+                        replay_done = true;
+                        replay = None;
+                    }
+                    Ok(events) => {
+                        replay = Some(reader);
+                        replay_queue.extend(events);
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to read firehose replay page; closing");
+                        send_error_and_close(
+                            &mut sender,
+                            "InternalError",
+                            "failed to read replay backlog",
+                        )
+                        .await;
+                        break;
+                    }
+                }
+            },
+            event = rx.recv(), if replay_done => match event {
+                Ok(event) => {
+                    if !send_event(&mut sender, &event).await {
+                        break;
+                    }
+                }
+                Err(RecvError::Lagged(_)) => {
+                    send_error_and_close(
+                        &mut sender,
+                        "ConsumerTooSlow",
+                        "consumer fell too far behind the firehose; reconnect with your last cursor",
+                    )
+                    .await;
+                    break;
+                }
+                Err(RecvError::Closed) => break,
+            },
+            _ = heartbeat.tick() => {
+                // A conformant peer answers every keepalive Ping with a Pong, refreshing
+                // `last_seen` below. If we've heard nothing within READ_TIMEOUT the socket is
+                // half-open; drop it now instead of waiting for a later send to fail.
+                if last_seen.elapsed() >= READ_TIMEOUT {
+                    break;
+                }
+                if !send_message(&mut sender, Message::Ping(Bytes::new())).await {
+                    break;
+                }
+            }
+            incoming = receiver.next() => match incoming {
+                // Peer closed, the stream ended, or a transport error — we're done.
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                // Any other frame — notably the Pong answering our keepalive Ping — proves the
+                // peer is alive and refreshes the read deadline. The firehose is server→client,
+                // so the frame is otherwise ignored.
+                Some(Ok(_)) => last_seen = Instant::now(),
+            },
+        }
+    }
+}
+
+/// Encode and send one firehose event. Returns `false` (the caller stops and closes) if the frame
+/// cannot be encoded or the socket send fails. Failing closed on an encode error matters for the
+/// no-gap contract: silently skipping an unencodable `#commit` and continuing would deliver later
+/// `seq`s past the missing one. A self-written commit that won't encode signals corruption an
+/// operator should see; the client reconnects from its last good cursor. `#account` frames are
+/// fixed-shape (no CIDs or CAR blocks), so their encoding cannot fail.
+async fn send_event(sender: &mut SplitSink<WebSocket, Message>, event: &FirehoseEvent) -> bool {
+    let frame = match event {
+        FirehoseEvent::Commit(commit) => match encode_commit_frame(commit) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    seq = commit.seq,
+                    "failed to encode firehose #commit frame; closing"
+                );
+                return false;
+            }
+        },
+        FirehoseEvent::Account(account) => encode_account_frame(account),
+        FirehoseEvent::Identity(identity) => encode_identity_frame(identity),
+        FirehoseEvent::Sync(sync) => encode_sync_frame(sync),
+    };
+    send_message(sender, Message::Binary(Bytes::from(frame))).await
+}
+
+/// Send one WebSocket message, bounding the write on [`READ_TIMEOUT`]. A peer that has stopped
+/// reading (a full TCP receive window / half-open socket) leaves `sender.send(...)` pending
+/// indefinitely; awaited bare inside the `select!`, that single write would park the whole
+/// connection and starve the heartbeat tick that enforces the read deadline. The timeout caps
+/// any such stall so liveness is preserved during both replay and live streaming. Returns
+/// `false` on send failure or timeout (the caller should stop).
+async fn send_message(sender: &mut SplitSink<WebSocket, Message>, message: Message) -> bool {
+    matches!(
+        tokio::time::timeout(READ_TIMEOUT, sender.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Send an error frame, then close the socket (bounded by [`READ_TIMEOUT`] like every other
+/// send). Every path that fails the connection closed — a future cursor, a broken replay
+/// backlog, a lagged consumer — follows this same two-step sequence before the caller returns
+/// or breaks out of the connection loop.
+async fn send_error_and_close(
+    sender: &mut SplitSink<WebSocket, Message>,
+    error: &str,
+    message: &str,
+) {
+    let frame = encode_error_frame(error, message);
+    let _ = send_message(sender, Message::Binary(Bytes::from(frame))).await;
+    let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
+}
+
+/// DAG-CBOR frame header: `{op, t}` for a message (`op = 1`), or `{op}` alone for an error
+/// (`op = -1`, `t` omitted rather than null — the two shapes every firehose frame uses).
+#[derive(Serialize)]
+struct FrameHeader {
+    op: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t: Option<&'static str>,
+}
+
+/// Concatenate an encoded frame header with an encoded body — the header-then-body tail every
+/// `encode_*_frame` function shares. Every header and current body type is a fixed shape of
+/// scalars, links, and byte strings with no floats, so a DAG-CBOR encode failure here is a
+/// programming bug, not a runtime condition callers need to handle.
+#[allow(
+    clippy::expect_used,
+    reason = "frame header and body are plain serde structs that DAG-CBOR encodes infallibly"
+)]
+fn frame<B: Serialize>(op: i64, t: Option<&'static str>, body: &B) -> Vec<u8> {
+    let mut bytes =
+        serde_ipld_dagcbor::to_vec(&FrameHeader { op, t }).expect("frame header must encode");
+    let body_bytes = serde_ipld_dagcbor::to_vec(body).expect("frame body must encode");
+    bytes.extend_from_slice(&body_bytes);
+    bytes
+}
+
+/// The `#commit` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
+///
+/// `commit`, `prevData`, and each op `cid` are [`Cid`]s, which serialize as DAG-CBOR tag-42 links;
+/// `blocks` is the CARv1 byte string of the blocks introduced by this commit. `prevData` is Sync
+/// v1.1's inductive-validation anchor (the previous commit's MST root), carried as a nullable link
+/// — present-and-null for the genesis commit. `blobs` is the DEPRECATED new-blob list, always
+/// emitted empty per the current lexicon. `rebase`/`tooBig` are retained for wire compatibility and
+/// always `false` (this PDS never emits oversized or rebase commits).
+#[derive(Serialize)]
+struct CommitBody<'a> {
+    seq: u64,
+    rebase: bool,
+    #[serde(rename = "tooBig")]
+    too_big: bool,
+    repo: &'a str,
+    commit: Cid,
+    rev: &'a str,
+    since: Option<&'a str>,
+    #[serde(rename = "prevData")]
+    prev_data: Option<Cid>,
+    #[serde(with = "serde_bytes")]
+    blocks: &'a [u8],
+    ops: Vec<RepoOpWire<'a>>,
+    blobs: Vec<Cid>,
+    time: &'a str,
+}
+
+/// A single `#repoOp` on the wire: `action`, MST `path` (`collection/rkey`), the new record
+/// `cid` (a tag-42 link, or null for a delete), and `prev` (the previous record CID for an
+/// update/delete, a tag-42 link; null for a create). Sync v1.1 relays pair per-op `prev` with the
+/// commit's `prevData` to invert the MST diff and inductively validate each op.
+#[derive(Serialize)]
+struct RepoOpWire<'a> {
+    action: &'a str,
+    path: String,
+    cid: Option<Cid>,
+    prev: Option<Cid>,
+}
+
+/// Encode a [`CommitEvent`] into a complete firehose frame: the `#commit` header concatenated
+/// with the DAG-CBOR body.
+fn encode_commit_frame(commit: &CommitEvent) -> Result<Vec<u8>, String> {
+    let commit_cid = Cid::try_from(commit.commit.as_str())
+        .map_err(|e| format!("invalid commit CID {:?}: {e}", commit.commit))?;
+
+    let prev_data = commit
+        .prev_data
+        .as_deref()
+        .map(|s| Cid::try_from(s).map_err(|e| format!("invalid prevData CID {s:?}: {e}")))
+        .transpose()?;
+
+    let mut ops = Vec::with_capacity(commit.ops.len());
+    for op in &commit.ops {
+        let cid = op
+            .cid
+            .as_deref()
+            .map(|s| Cid::try_from(s).map_err(|e| format!("invalid op CID {s:?}: {e}")))
+            .transpose()?;
+        let prev = op
+            .prev
+            .as_deref()
+            .map(|s| Cid::try_from(s).map_err(|e| format!("invalid op prev CID {s:?}: {e}")))
+            .transpose()?;
+        ops.push(RepoOpWire {
+            action: op.action.as_str(),
+            path: op.path(),
+            cid,
+            prev,
+        });
+    }
+
+    let body = CommitBody {
+        seq: commit.seq,
+        rebase: false,
+        too_big: false,
+        repo: &commit.repo,
+        commit: commit_cid,
+        rev: &commit.rev,
+        since: commit.since.as_deref(),
+        prev_data,
+        blocks: &commit.blocks,
+        ops,
+        blobs: Vec::new(),
+        time: &commit.time,
+    };
+
+    Ok(frame(1, Some("#commit"), &body))
+}
+
+/// The `#account` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
+///
+/// Carries no CIDs or CAR blocks — just the account's new hosting status. `status` is omitted
+/// from the wire when the account is active (the field is optional in the lexicon).
+#[derive(Serialize)]
+struct AccountBody<'a> {
+    seq: u64,
+    did: &'a str,
+    time: &'a str,
+    active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'a str>,
+}
+
+/// Encode an [`AccountEvent`] into a complete firehose frame: the `#account` header
+/// concatenated with the DAG-CBOR body. Unlike `#commit`, every field is a plain scalar, so
+/// encoding is infallible (matching how [`encode_error_frame`] treats its fixed-shape structs).
+fn encode_account_frame(account: &AccountEvent) -> Vec<u8> {
+    let body = AccountBody {
+        seq: account.seq,
+        did: &account.did,
+        time: &account.time,
+        active: account.active,
+        status: account.status.as_deref(),
+    };
+    frame(1, Some("#account"), &body)
+}
+
+/// The `#identity` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
+///
+/// Carries no CIDs or blocks — just the DID, the emission `time`, and the (optional) new handle.
+/// `handle` is omitted from the wire when `None` (the lexicon field is optional), matching how
+/// `#account` omits `status` for an active account.
+#[derive(Serialize)]
+struct IdentityBody<'a> {
+    seq: u64,
+    did: &'a str,
+    time: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handle: Option<&'a str>,
+}
+
+/// Encode an [`IdentityEvent`] into a complete firehose frame: the `#identity` header
+/// concatenated with the DAG-CBOR body. Like `#account`, every field is a plain scalar, so
+/// encoding is infallible.
+fn encode_identity_frame(identity: &IdentityEvent) -> Vec<u8> {
+    let body = IdentityBody {
+        seq: identity.seq,
+        did: &identity.did,
+        time: &identity.time,
+        handle: identity.handle.as_deref(),
+    };
+    frame(1, Some("#identity"), &body)
+}
+
+/// The `#sync` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
+///
+/// `blocks` is a CARv1 byte string carrying the signed commit block (its declared root is the
+/// current commit), not a CID link — so, like `#account`, every field is a plain scalar or byte
+/// string and encoding is infallible.
+#[derive(Serialize)]
+struct SyncBody<'a> {
+    seq: u64,
+    did: &'a str,
+    #[serde(with = "serde_bytes")]
+    blocks: &'a [u8],
+    rev: &'a str,
+    time: &'a str,
+}
+
+/// Encode a [`SyncEvent`] into a complete firehose frame: the `#sync` header concatenated with the
+/// DAG-CBOR body. Infallible for the same reason as [`encode_account_frame`] — no CID parsing.
+fn encode_sync_frame(sync: &SyncEvent) -> Vec<u8> {
+    let body = SyncBody {
+        seq: sync.seq,
+        did: &sync.did,
+        blocks: &sync.blocks,
+        rev: &sync.rev,
+        time: &sync.time,
+    };
+    frame(1, Some("#sync"), &body)
+}
+
+/// Encode an error frame: the `{op: -1}` header concatenated with `{error, message}`.
+fn encode_error_frame(error: &str, message: &str) -> Vec<u8> {
+    #[derive(Serialize)]
+    struct ErrorBody<'a> {
+        error: &'a str,
+        message: &'a str,
+    }
+
+    frame(-1, None, &ErrorBody { error, message })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::firehose::{OpAction, RepoOp};
+    use ipld_core::ipld::Ipld;
+
+    fn sample_commit() -> CommitEvent {
+        CommitEvent {
+            seq: 7,
+            time: "2026-06-26T00:00:00.000Z".to_string(),
+            repo: "did:plc:alice".to_string(),
+            // A valid CIDv1 dag-cbor sha2-256 link.
+            commit: "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm".to_string(),
+            rev: "3krev".to_string(),
+            since: Some("3kprev".to_string()),
+            prev_data: Some(
+                "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm".to_string(),
+            ),
+            ops: vec![RepoOp {
+                action: OpAction::Create,
+                collection: "app.bsky.feed.post".to_string(),
+                rkey: "abc".to_string(),
+                cid: Some(
+                    "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm".to_string(),
+                ),
+                prev: None,
+                value: Some(serde_json::json!({ "text": "hi" })),
+            }],
+            blocks: vec![0xCA, 0xFE],
+        }
+    }
+
+    /// Decode the two concatenated DAG-CBOR objects in a frame into (header, body) Ipld.
+    /// `from_reader_once` reads exactly one item and leaves the cursor positioned after it,
+    /// so a second call reads the body — unlike `from_reader`, which rejects trailing data.
+    fn decode_frame(frame: &[u8]) -> (Ipld, Ipld) {
+        let mut cursor = std::io::Cursor::new(frame);
+        let header: Ipld =
+            serde_ipld_dagcbor::de::from_reader_once(&mut cursor).expect("decode header");
+        let body: Ipld =
+            serde_ipld_dagcbor::de::from_reader_once(&mut cursor).expect("decode body");
+        (header, body)
+    }
+
+    fn map_get<'a>(ipld: &'a Ipld, key: &str) -> &'a Ipld {
+        match ipld {
+            Ipld::Map(m) => m.get(key).unwrap_or_else(|| panic!("missing key {key}")),
+            other => panic!("expected map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commit_frame_header_is_op1_commit() {
+        let frame = encode_commit_frame(&sample_commit()).unwrap();
+        let (header, _) = decode_frame(&frame);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#commit".to_string()));
+    }
+
+    #[test]
+    fn commit_frame_body_carries_expected_fields() {
+        let event = sample_commit();
+        let frame = encode_commit_frame(&event).unwrap();
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(7));
+        assert_eq!(
+            map_get(&body, "repo"),
+            &Ipld::String("did:plc:alice".into())
+        );
+        assert_eq!(map_get(&body, "rev"), &Ipld::String("3krev".into()));
+        assert_eq!(map_get(&body, "since"), &Ipld::String("3kprev".into()));
+        assert_eq!(map_get(&body, "rebase"), &Ipld::Bool(false));
+        assert_eq!(map_get(&body, "tooBig"), &Ipld::Bool(false));
+
+        // `commit` is a CID link (DAG-CBOR tag 42 → Ipld::Link), not a string.
+        match map_get(&body, "commit") {
+            Ipld::Link(cid) => assert_eq!(cid.to_string(), event.commit),
+            other => panic!("commit must be a CID link, got {other:?}"),
+        }
+
+        // `blocks` is a byte string, not an array of integers.
+        assert_eq!(map_get(&body, "blocks"), &Ipld::Bytes(vec![0xCA, 0xFE]));
+    }
+
+    #[test]
+    fn commit_frame_op_has_link_cid_and_path() {
+        let event = sample_commit();
+        let frame = encode_commit_frame(&event).unwrap();
+        let (_, body) = decode_frame(&frame);
+
+        let ops = match map_get(&body, "ops") {
+            Ipld::List(l) => l,
+            other => panic!("ops must be a list, got {other:?}"),
+        };
+        assert_eq!(ops.len(), 1);
+        assert_eq!(map_get(&ops[0], "action"), &Ipld::String("create".into()));
+        assert_eq!(
+            map_get(&ops[0], "path"),
+            &Ipld::String("app.bsky.feed.post/abc".into())
+        );
+        match map_get(&ops[0], "cid") {
+            Ipld::Link(_) => {}
+            other => panic!("op cid must be a CID link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commit_frame_carries_prev_data_link_and_empty_blobs() {
+        // Sync v1.1: prevData is a tag-42 CID link, and the deprecated `blobs` list is empty.
+        let event = sample_commit();
+        let frame = encode_commit_frame(&event).unwrap();
+        let (_, body) = decode_frame(&frame);
+
+        match map_get(&body, "prevData") {
+            Ipld::Link(cid) => {
+                assert_eq!(cid.to_string(), event.prev_data.unwrap())
+            }
+            other => panic!("prevData must be a CID link, got {other:?}"),
+        }
+        assert_eq!(
+            map_get(&body, "blobs"),
+            &Ipld::List(Vec::new()),
+            "deprecated blobs list must be emitted empty"
+        );
+    }
+
+    #[test]
+    fn genesis_commit_frame_encodes_null_prev_data() {
+        // A first commit has no predecessor: prevData is present-and-null, not omitted.
+        let mut event = sample_commit();
+        event.prev_data = None;
+        let frame = encode_commit_frame(&event).unwrap();
+        let (_, body) = decode_frame(&frame);
+        assert_eq!(map_get(&body, "prevData"), &Ipld::Null);
+    }
+
+    #[test]
+    fn invalid_prev_data_cid_is_an_error_not_a_panic() {
+        let mut event = sample_commit();
+        event.prev_data = Some("not-a-cid".to_string());
+        assert!(encode_commit_frame(&event).is_err());
+    }
+
+    #[test]
+    fn delete_op_encodes_null_cid() {
+        let mut event = sample_commit();
+        event.ops = vec![RepoOp {
+            action: OpAction::Delete,
+            collection: "app.bsky.feed.post".to_string(),
+            rkey: "gone".to_string(),
+            cid: None,
+            prev: Some(TEST_CID.to_string()),
+            value: None,
+        }];
+        let frame = encode_commit_frame(&event).unwrap();
+        let (_, body) = decode_frame(&frame);
+        let ops = match map_get(&body, "ops") {
+            Ipld::List(l) => l.clone(),
+            other => panic!("ops must be a list, got {other:?}"),
+        };
+        assert_eq!(map_get(&ops[0], "action"), &Ipld::String("delete".into()));
+        assert_eq!(map_get(&ops[0], "cid"), &Ipld::Null);
+        // A delete carries the removed record's CID as a tag-42 `prev` link.
+        match map_get(&ops[0], "prev") {
+            Ipld::Link(cid) => assert_eq!(cid.to_string(), TEST_CID),
+            other => panic!("delete op prev must be a CID link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_op_encodes_null_prev() {
+        // The sample commit's op is a create, whose `prev` is present-and-null on the wire.
+        let frame = encode_commit_frame(&sample_commit()).unwrap();
+        let (_, body) = decode_frame(&frame);
+        let ops = match map_get(&body, "ops") {
+            Ipld::List(l) => l.clone(),
+            other => panic!("ops must be a list, got {other:?}"),
+        };
+        assert_eq!(map_get(&ops[0], "action"), &Ipld::String("create".into()));
+        assert_eq!(map_get(&ops[0], "prev"), &Ipld::Null);
+    }
+
+    #[test]
+    fn update_op_encodes_prev_link() {
+        let mut event = sample_commit();
+        event.ops = vec![RepoOp {
+            action: OpAction::Update,
+            collection: "app.bsky.feed.post".to_string(),
+            rkey: "abc".to_string(),
+            cid: Some(TEST_CID.to_string()),
+            prev: Some(TEST_CID.to_string()),
+            value: None,
+        }];
+        let frame = encode_commit_frame(&event).unwrap();
+        let (_, body) = decode_frame(&frame);
+        let ops = match map_get(&body, "ops") {
+            Ipld::List(l) => l.clone(),
+            other => panic!("ops must be a list, got {other:?}"),
+        };
+        match map_get(&ops[0], "prev") {
+            Ipld::Link(cid) => assert_eq!(cid.to_string(), TEST_CID),
+            other => panic!("update op prev must be a CID link, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_op_prev_cid_is_an_error_not_a_panic() {
+        let mut event = sample_commit();
+        event.ops[0].prev = Some("not-a-cid".to_string());
+        assert!(encode_commit_frame(&event).is_err());
+    }
+
+    #[test]
+    fn error_frame_is_op_minus_one_with_error_and_message() {
+        let frame = encode_error_frame("FutureCursor", "cursor is in the future");
+        let (header, body) = decode_frame(&frame);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(-1));
+        assert_eq!(
+            map_get(&body, "error"),
+            &Ipld::String("FutureCursor".into())
+        );
+        assert_eq!(
+            map_get(&body, "message"),
+            &Ipld::String("cursor is in the future".into())
+        );
+    }
+
+    #[test]
+    fn invalid_commit_cid_is_an_error_not_a_panic() {
+        let mut event = sample_commit();
+        event.commit = "not-a-cid".to_string();
+        assert!(encode_commit_frame(&event).is_err());
+    }
+
+    // ── End-to-end WebSocket tests ─────────────────────────────────────────────
+    //
+    // These drive the real Axum handler over a loopback TCP socket with a tungstenite
+    // client, exercising the full upgrade → replay → live-stream path.
+
+    use crate::firehose::{CommitInput, Firehose};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    const TEST_CID: &str = "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm";
+
+    /// Bind an ephemeral port, serve the real router, and return the subscribeRepos URL plus a
+    /// handle to the shared firehose so the test can emit commits into it.
+    async fn spawn_server() -> (String, Arc<Firehose>) {
+        let state = crate::test_support::test_state().await;
+        let firehose = state.firehose.clone();
+        let router = crate::test_support::test_app(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (
+            format!("ws://{addr}/xrpc/com.atproto.sync.subscribeRepos"),
+            firehose,
+        )
+    }
+
+    async fn emit(firehose: &Firehose) -> u64 {
+        firehose
+            .emit_commit(CommitInput {
+                repo: "did:plc:alice".to_string(),
+                commit: TEST_CID.to_string(),
+                rev: "3krev".to_string(),
+                since: None,
+                prev_data: None,
+                ops: Vec::new(),
+                blocks: vec![1, 2, 3],
+            })
+            .await
+            .expect("emit commit")
+    }
+
+    /// Wait (briefly) until at least `n` subscribers have attached. This makes "emit after
+    /// connect" deterministic: the handler's `subscribe_from` bumps the broadcast receiver
+    /// count, so once it reaches `n` a subsequent emit is guaranteed to be delivered live.
+    async fn await_subscribers(firehose: &Firehose, n: usize) {
+        for _ in 0..200 {
+            if firehose.subscriber_count() >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("subscribers did not attach in time");
+    }
+
+    /// Read the next binary frame, skipping any ping/pong control frames.
+    async fn next_binary<S>(ws: &mut S) -> Vec<u8>
+    where
+        S: futures_util::Stream<Item = Result<WsMessage, WsError>> + Unpin,
+    {
+        loop {
+            match ws.next().await {
+                Some(Ok(WsMessage::Binary(bytes))) => return bytes,
+                Some(Ok(_)) => continue,
+                other => panic!("expected a binary frame, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_live_commit_events() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+
+        await_subscribers(&firehose, 1).await;
+        let seq = emit(&firehose).await;
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#commit".into()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "repo"),
+            &Ipld::String("did:plc:alice".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_cursor_replays_missed_events() {
+        let (url, firehose) = spawn_server().await;
+
+        // Emit three events *before* anyone subscribes.
+        emit(&firehose).await; // seq 1
+        let seq2 = emit(&firehose).await; // seq 2
+        let seq3 = emit(&firehose).await; // seq 3
+
+        // Subscribe from cursor 1: must replay exactly seq 2 then seq 3.
+        let (mut ws, _resp) = connect_async(format!("{url}?cursor=1"))
+            .await
+            .expect("ws connect");
+
+        let (_, body2) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&body2, "seq"), &Ipld::Integer(seq2 as i128));
+        let (_, body3) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&body3, "seq"), &Ipld::Integer(seq3 as i128));
+    }
+
+    #[tokio::test]
+    async fn websocket_multiple_subscribers_each_receive_events() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws1, _) = connect_async(&url).await.expect("ws1 connect");
+        let (mut ws2, _) = connect_async(&url).await.expect("ws2 connect");
+
+        await_subscribers(&firehose, 2).await;
+        let seq = emit(&firehose).await;
+
+        for ws in [&mut ws1, &mut ws2] {
+            let (_, body) = decode_frame(&next_binary(ws).await);
+            assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_future_cursor_yields_error_frame() {
+        let (url, firehose) = spawn_server().await;
+        emit(&firehose).await; // current seq = 1
+
+        // Cursor far ahead of what we've emitted is a client error.
+        let (mut ws, _resp) = connect_async(format!("{url}?cursor=9999"))
+            .await
+            .expect("ws connect");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(-1));
+        assert_eq!(
+            map_get(&body, "error"),
+            &Ipld::String("FutureCursor".into())
+        );
+    }
+
+    // ── encode_account_frame tests ─────────────────────────────────────────────
+
+    fn sample_deactivation_event() -> AccountEvent {
+        AccountEvent {
+            seq: 5,
+            time: "2026-06-27T00:00:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            active: false,
+            status: Some("deactivated".to_string()),
+        }
+    }
+
+    fn sample_activation_event() -> AccountEvent {
+        AccountEvent {
+            seq: 6,
+            time: "2026-06-27T01:00:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            active: true,
+            status: None,
+        }
+    }
+
+    #[test]
+    fn account_frame_header_is_op1_account() {
+        let frame = encode_account_frame(&sample_deactivation_event());
+        let (header, _) = decode_frame(&frame);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
+    }
+
+    #[test]
+    fn deactivation_frame_body_carries_all_fields() {
+        let event = sample_deactivation_event();
+        let frame = encode_account_frame(&event);
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(5));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:alice".to_string())
+        );
+        assert_eq!(
+            map_get(&body, "time"),
+            &Ipld::String("2026-06-27T00:00:00.000Z".to_string())
+        );
+        assert_eq!(map_get(&body, "active"), &Ipld::Bool(false));
+        assert_eq!(
+            map_get(&body, "status"),
+            &Ipld::String("deactivated".to_string())
+        );
+    }
+
+    #[test]
+    fn activation_frame_body_omits_status_field() {
+        let event = sample_activation_event();
+        let frame = encode_account_frame(&event);
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(6));
+        assert_eq!(map_get(&body, "active"), &Ipld::Bool(true));
+
+        // `status` must be absent from the map when the account is active.
+        let Ipld::Map(ref map) = body else {
+            panic!("body must be a map");
+        };
+        assert!(
+            !map.contains_key("status"),
+            "status must be absent when active=true (skip_serializing_if)"
+        );
+    }
+
+    // ── encode_identity_frame tests ──────────────────────────────────────────────
+
+    fn sample_identity_with_handle() -> IdentityEvent {
+        IdentityEvent {
+            seq: 9,
+            time: "2026-06-30T00:00:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            handle: Some("alice.example.com".to_string()),
+        }
+    }
+
+    fn sample_identity_without_handle() -> IdentityEvent {
+        IdentityEvent {
+            seq: 10,
+            time: "2026-06-30T00:01:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            handle: None,
+        }
+    }
+
+    #[test]
+    fn identity_frame_header_is_op1_identity() {
+        let frame = encode_identity_frame(&sample_identity_with_handle());
+        let (header, _) = decode_frame(&frame);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(
+            map_get(&header, "t"),
+            &Ipld::String("#identity".to_string())
+        );
+    }
+
+    #[test]
+    fn identity_frame_with_handle_carries_all_fields() {
+        let frame = encode_identity_frame(&sample_identity_with_handle());
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(9));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:alice".to_string())
+        );
+        assert_eq!(
+            map_get(&body, "time"),
+            &Ipld::String("2026-06-30T00:00:00.000Z".to_string())
+        );
+        assert_eq!(
+            map_get(&body, "handle"),
+            &Ipld::String("alice.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn identity_frame_without_handle_omits_field() {
+        let frame = encode_identity_frame(&sample_identity_without_handle());
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(10));
+        let Ipld::Map(ref map) = body else {
+            panic!("body must be a map");
+        };
+        assert!(
+            !map.contains_key("handle"),
+            "handle must be absent when None (skip_serializing_if)"
+        );
+    }
+
+    #[test]
+    fn identity_frame_did_and_time_are_strings_not_links() {
+        let frame = encode_identity_frame(&sample_identity_with_handle());
+        let (_, body) = decode_frame(&frame);
+
+        match map_get(&body, "did") {
+            Ipld::String(_) => {}
+            other => panic!("did must be a plain string, got {other:?}"),
+        }
+        match map_get(&body, "time") {
+            Ipld::String(_) => {}
+            other => panic!("time must be a plain string, got {other:?}"),
+        }
+        match map_get(&body, "handle") {
+            Ipld::String(_) => {}
+            other => panic!("handle must be a plain string, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_identity_event_with_correct_wire_format() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose
+            .emit_identity(
+                "did:plc:eve".to_string(),
+                Some("eve.example.com".to_string()),
+            )
+            .await
+            .expect("emit identity");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(
+            map_get(&header, "t"),
+            &Ipld::String("#identity".to_string())
+        );
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:eve".to_string())
+        );
+        assert_eq!(
+            map_get(&body, "handle"),
+            &Ipld::String("eve.example.com".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_identity_event_without_handle() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose
+            .emit_identity("did:plc:frank".to_string(), None)
+            .await
+            .expect("emit identity");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(
+            map_get(&header, "t"),
+            &Ipld::String("#identity".to_string())
+        );
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        let Ipld::Map(ref map) = body else {
+            panic!("body must be a map");
+        };
+        assert!(
+            !map.contains_key("handle"),
+            "handle must be absent over the wire when None"
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_identity_event_is_replayed_by_cursor() {
+        let (url, firehose) = spawn_server().await;
+
+        // Emit an identity event before subscribing.
+        let seq = firehose
+            .emit_identity(
+                "did:plc:grace".to_string(),
+                Some("grace.example.com".to_string()),
+            )
+            .await
+            .expect("emit identity");
+
+        // Subscribe from cursor 0 (before seq 1): the identity event must be replayed.
+        let (mut ws, _resp) = connect_async(format!("{url}?cursor=0"))
+            .await
+            .expect("ws connect");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(
+            map_get(&header, "t"),
+            &Ipld::String("#identity".to_string())
+        );
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:grace".to_string())
+        );
+    }
+
+    // ── encode_sync_frame tests ──────────────────────────────────────────────────
+
+    fn sample_sync() -> SyncEvent {
+        SyncEvent {
+            seq: 12,
+            time: "2026-07-01T00:00:00.000Z".to_string(),
+            did: "did:plc:alice".to_string(),
+            rev: "3ksync".to_string(),
+            blocks: vec![0xCA, 0xFE, 0xBA, 0xBE],
+        }
+    }
+
+    #[test]
+    fn sync_frame_header_is_op1_sync() {
+        let frame = encode_sync_frame(&sample_sync());
+        let (header, _) = decode_frame(&frame);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#sync".to_string()));
+    }
+
+    #[test]
+    fn sync_frame_body_carries_expected_fields() {
+        let event = sample_sync();
+        let frame = encode_sync_frame(&event);
+        let (_, body) = decode_frame(&frame);
+
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(12));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:alice".to_string())
+        );
+        assert_eq!(map_get(&body, "rev"), &Ipld::String("3ksync".to_string()));
+        assert_eq!(
+            map_get(&body, "time"),
+            &Ipld::String("2026-07-01T00:00:00.000Z".to_string())
+        );
+        // `blocks` is a byte string (the commit-block CAR), not an array of integers.
+        assert_eq!(
+            map_get(&body, "blocks"),
+            &Ipld::Bytes(vec![0xCA, 0xFE, 0xBA, 0xBE])
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_sync_event_with_correct_wire_format() {
+        use crate::firehose::SyncInput;
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose
+            .emit_sync(SyncInput {
+                did: "did:plc:zoe".to_string(),
+                rev: "3kzoe".to_string(),
+                blocks: vec![1, 2, 3, 4],
+            })
+            .await
+            .expect("emit sync");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#sync".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:zoe".to_string())
+        );
+        assert_eq!(map_get(&body, "rev"), &Ipld::String("3kzoe".to_string()));
+        assert_eq!(map_get(&body, "blocks"), &Ipld::Bytes(vec![1, 2, 3, 4]));
+    }
+
+    #[tokio::test]
+    async fn websocket_sync_event_is_replayed_by_cursor() {
+        use crate::firehose::SyncInput;
+        let (url, firehose) = spawn_server().await;
+
+        // Emit a #sync event before subscribing.
+        let seq = firehose
+            .emit_sync(SyncInput {
+                did: "did:plc:yan".to_string(),
+                rev: "3kyan".to_string(),
+                blocks: vec![9, 9, 9],
+            })
+            .await
+            .expect("emit sync");
+
+        // Subscribe from cursor 0 (before seq 1): the #sync event must be replayed from the log.
+        let (mut ws, _resp) = connect_async(format!("{url}?cursor=0"))
+            .await
+            .expect("ws connect");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#sync".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(map_get(&body, "blocks"), &Ipld::Bytes(vec![9, 9, 9]));
+    }
+
+    #[test]
+    fn account_frame_did_and_time_are_strings_not_links() {
+        // Regression: ensure `did` and `time` are plain strings, not CID links.
+        let frame = encode_account_frame(&sample_deactivation_event());
+        let (_, body) = decode_frame(&frame);
+
+        match map_get(&body, "did") {
+            Ipld::String(_) => {}
+            other => panic!("did must be a plain string, got {other:?}"),
+        }
+        match map_get(&body, "time") {
+            Ipld::String(_) => {}
+            other => panic!("time must be a plain string, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_account_event_with_correct_wire_format() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose
+            .emit_account(
+                "did:plc:bob".to_string(),
+                false,
+                Some("deactivated".to_string()),
+            )
+            .await
+            .expect("emit account");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:bob".to_string())
+        );
+        assert_eq!(map_get(&body, "active"), &Ipld::Bool(false));
+        assert_eq!(
+            map_get(&body, "status"),
+            &Ipld::String("deactivated".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_activation_event_without_status() {
+        let (url, firehose) = spawn_server().await;
+        let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
+        await_subscribers(&firehose, 1).await;
+
+        let seq = firehose
+            .emit_account("did:plc:carol".to_string(), true, None)
+            .await
+            .expect("emit account");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(map_get(&body, "active"), &Ipld::Bool(true));
+
+        let Ipld::Map(ref map) = body else {
+            panic!("body must be a map");
+        };
+        assert!(
+            !map.contains_key("status"),
+            "status must be absent for an active account over the wire"
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_account_event_is_replayed_by_cursor() {
+        let (url, firehose) = spawn_server().await;
+
+        // Emit an account event before subscribing.
+        let seq = firehose
+            .emit_account(
+                "did:plc:dave".to_string(),
+                false,
+                Some("deactivated".to_string()),
+            )
+            .await
+            .expect("emit account");
+
+        // Subscribe from cursor 0 (before seq 1): the account event must be replayed.
+        let (mut ws, _resp) = connect_async(format!("{url}?cursor=0"))
+            .await
+            .expect("ws connect");
+
+        let (header, body) = decode_frame(&next_binary(&mut ws).await);
+        assert_eq!(map_get(&header, "t"), &Ipld::String("#account".to_string()));
+        assert_eq!(map_get(&body, "seq"), &Ipld::Integer(seq as i128));
+        assert_eq!(
+            map_get(&body, "did"),
+            &Ipld::String("did:plc:dave".to_string())
+        );
+    }
+
+    // ── Firehose interop gate ────────────────────────────────────────────────
+    //
+    // Pins the `#commit` frame's `blocks` CAR payload to the upstream ATProto interop MST
+    // commit-proof vectors (`tests/fixtures/interop/commit-proof-fixtures.json`, vendored from
+    // bluesky-social/atproto-interop-tests, CC0). See that directory's README for provenance and
+    // the documented scope/divergence of this gate — there is no upstream vector for a literal
+    // `#commit`/`#account`/`#identity`/`#sync` wire *frame byte* sequence, only this MST
+    // commit-proof fixture.
+    mod firehose_interop_gate {
+        use super::*;
+        use atrium_repo::blockstore::{
+            AsyncBlockStoreRead, AsyncBlockStoreWrite, CarStore, MemoryBlockStore, SHA2_256,
+        };
+        use atrium_repo::mst::Tree;
+
+        /// One entry of `firehose/commit-proof-fixtures.json` (atproto-interop-tests, CC0).
+        #[derive(serde::Deserialize)]
+        struct CommitProofFixture {
+            comment: String,
+            #[serde(rename = "leafValue")]
+            leaf_value: String,
+            keys: Vec<String>,
+            adds: Vec<String>,
+            dels: Vec<String>,
+            #[serde(rename = "rootBeforeCommit")]
+            root_before: String,
+            #[serde(rename = "rootAfterCommit")]
+            root_after: String,
+            #[serde(rename = "blocksInProof")]
+            blocks_in_proof: Vec<String>,
+        }
+
+        fn load_fixtures() -> Vec<CommitProofFixture> {
+            let raw = include_str!("../../tests/fixtures/interop/commit-proof-fixtures.json");
+            let fixtures: Vec<CommitProofFixture> =
+                serde_json::from_str(raw).expect("parse commit-proof-fixtures.json");
+            assert!(
+                !fixtures.is_empty(),
+                "commit-proof fixtures must not be empty"
+            );
+            fixtures
+        }
+
+        fn parse_cid(s: &str) -> Cid {
+            s.parse().unwrap_or_else(|_| panic!("invalid CID: {s}"))
+        }
+
+        /// Rebuild a fixture's before/after MST (same technique as
+        /// `repo-engine/tests/interop_gate.rs`) and return the blockstore plus both root CIDs,
+        /// after asserting each matches the fixture's declared root.
+        async fn build_before_after(f: &CommitProofFixture) -> (MemoryBlockStore, Cid, Cid) {
+            let mut bs = MemoryBlockStore::new();
+            let leaf_cid = parse_cid(&f.leaf_value);
+
+            let root_before = {
+                let mut tree = Tree::create(&mut bs).await.expect("create tree");
+                for key in &f.keys {
+                    tree.add(key, leaf_cid)
+                        .await
+                        .unwrap_or_else(|_| panic!("add key {key:?}"));
+                }
+                tree.root()
+            };
+            assert_eq!(
+                root_before,
+                parse_cid(&f.root_before),
+                "[{}] rootBeforeCommit must match the interop fixture",
+                f.comment,
+            );
+
+            let root_after = {
+                let mut tree = Tree::open(&mut bs, root_before);
+                for key in &f.adds {
+                    tree.add(key, leaf_cid)
+                        .await
+                        .unwrap_or_else(|_| panic!("add key {key:?}"));
+                }
+                for key in &f.dels {
+                    tree.delete(key)
+                        .await
+                        .unwrap_or_else(|_| panic!("delete key {key:?}"));
+                }
+                tree.root()
+            };
+            assert_eq!(
+                root_after,
+                parse_cid(&f.root_after),
+                "[{}] rootAfterCommit must match the interop fixture",
+                f.comment,
+            );
+
+            (bs, root_before, root_after)
+        }
+
+        /// Copy exactly `cids` out of `source` into a fresh blockstore, verifying each block's
+        /// bytes actually hash to its declared CID. Simulates "the party that received exactly
+        /// this proof CAR and nothing else" — the same posture the reference implementation's own
+        /// test (`packages/repo/tests/commit-proofs.test.ts`) takes with `new MemoryBlockstore(proof)`.
+        async fn copy_blocks(source: &mut MemoryBlockStore, cids: &[Cid]) -> MemoryBlockStore {
+            let mut dest = MemoryBlockStore::new();
+            for &cid in cids {
+                let mut bytes = Vec::new();
+                source
+                    .read_block_into(cid, &mut bytes)
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("proof CID {cid} must be readable from the source store")
+                    });
+                let written = dest
+                    .write_block(cid.codec(), SHA2_256, &bytes)
+                    .await
+                    .expect("write proof block");
+                assert_eq!(
+                    written, cid,
+                    "block bytes must hash to the declared CID {cid}"
+                );
+            }
+            dest
+        }
+
+        /// One step of undoing a commit's operations: re-delete an add, or re-add a del (with the
+        /// fixture's shared leaf value).
+        #[derive(Clone, Copy)]
+        enum InvertStep<'a> {
+            UndoAdd(&'a str),
+            UndoDel(&'a str),
+        }
+
+        /// Every ordering of `items` — mirrors `commit-proofs.test.ts`'s `permutations` helper, so
+        /// this gate proves the same order-independence property over the vendored fixtures.
+        fn permutations<T: Copy>(items: &[T]) -> Vec<Vec<T>> {
+            if items.len() <= 1 {
+                return vec![items.to_vec()];
+            }
+            let mut result = Vec::new();
+            for i in 0..items.len() {
+                let mut rest = items.to_vec();
+                let item = rest.remove(i);
+                for mut perm in permutations(&rest) {
+                    perm.insert(0, item);
+                    result.push(perm);
+                }
+            }
+            result
+        }
+
+        /// Apply one ordering of inverse steps to the tree at `root`, backed by `store`, and
+        /// return the resulting root.
+        async fn invert(
+            store: &mut MemoryBlockStore,
+            root: Cid,
+            leaf_cid: Cid,
+            steps: &[InvertStep<'_>],
+        ) -> Cid {
+            let mut tree = Tree::open(store, root);
+            for step in steps {
+                match step {
+                    InvertStep::UndoAdd(key) => tree
+                        .delete(key)
+                        .await
+                        .unwrap_or_else(|_| panic!("invert-delete {key:?}")),
+                    InvertStep::UndoDel(key) => tree
+                        .add(key, leaf_cid)
+                        .await
+                        .unwrap_or_else(|_| panic!("invert-add {key:?}")),
+                }
+            }
+            tree.root()
+        }
+
+        /// Assert that inverting every ordering of `f`'s operations, using ONLY the blocks named
+        /// by `proof_cids` (rooted at `root_after`), recovers exactly `expected_before` — the
+        /// load-bearing guarantee `blocksInProof` provides (per `commit-proofs.test.ts`): the
+        /// declared proof set is sufficient, on its own, to invert the operation and recover the
+        /// pre-commit root. Each ordering gets its own fresh copy of exactly `proof_cids` (out of
+        /// `proof_store`, which already carries only those blocks) so a later ordering can never
+        /// pass by reading a node an earlier ordering's `invert` happened to write — every attempt
+        /// starts from the proof set alone, nothing more.
+        async fn assert_inverts_to(
+            proof_store: &mut MemoryBlockStore,
+            proof_cids: &[Cid],
+            root_after: Cid,
+            leaf_cid: Cid,
+            f: &CommitProofFixture,
+            expected_before: Cid,
+        ) {
+            let steps: Vec<InvertStep> = f
+                .adds
+                .iter()
+                .map(|k| InvertStep::UndoAdd(k))
+                .chain(f.dels.iter().map(|k| InvertStep::UndoDel(k)))
+                .collect();
+            for order in permutations(&steps) {
+                let mut order_store = copy_blocks(proof_store, proof_cids).await;
+                let inverted = invert(&mut order_store, root_after, leaf_cid, &order).await;
+                assert_eq!(
+                    inverted, expected_before,
+                    "[{}] inverting the proof-only store must recover rootBeforeCommit",
+                    f.comment,
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn commit_blocks_invert_to_interop_proof_fixtures() {
+            for f in &load_fixtures() {
+                let (mut bs, root_before, root_after) = build_before_after(f).await;
+                let leaf_cid = parse_cid(&f.leaf_value);
+                let proof_cids: Vec<Cid> = f.blocks_in_proof.iter().map(|s| parse_cid(s)).collect();
+
+                // The reference implementation's own declared minimal proof set, on its own, must
+                // be sufficient for OUR MST algorithm to invert the operation and recover
+                // rootBeforeCommit — the direct interop pin (no firehose plumbing involved yet).
+                let mut proof_only = copy_blocks(&mut bs, &proof_cids).await;
+                assert_inverts_to(
+                    &mut proof_only,
+                    &proof_cids,
+                    root_after,
+                    leaf_cid,
+                    f,
+                    root_before,
+                )
+                .await;
+
+                // Round-trip a CAR of that same block set through the real firehose pipeline:
+                // persist via `Firehose::emit_commit`, reconstruct via `decode_stored_event` (as
+                // cursor replay does), then re-encode the wire `#commit` frame and confirm the
+                // `blocks` field is byte-identical — and, decoded back out of the wire bytes alone,
+                // still inverts to rootBeforeCommit exactly like the source proof did.
+                let mut car_cids = proof_cids.clone();
+                if !car_cids.contains(&root_after) {
+                    car_cids.push(root_after);
+                }
+                let car_bytes = repo_engine::build_car_from_cids(&mut bs, root_after, car_cids)
+                    .await
+                    .expect("build proof CAR");
+
+                let db = crate::db::open_pool("sqlite::memory:").await.unwrap();
+                crate::db::run_migrations(&db).await.unwrap();
+                let fh = Firehose::new(db.clone()).await.unwrap();
+                let seq = fh
+                    .emit_commit(CommitInput {
+                        repo: "did:plc:firehoseinterop".to_string(),
+                        commit: root_after.to_string(),
+                        rev: "3kinterop".to_string(),
+                        since: None,
+                        prev_data: Some(root_before.to_string()),
+                        ops: Vec::new(),
+                        blocks: car_bytes.clone(),
+                    })
+                    .await
+                    .expect("emit commit");
+
+                let rows = crate::db::firehose_seq::events_in_range(&db, 0, seq, 1)
+                    .await
+                    .unwrap();
+                let event =
+                    crate::firehose::decode_stored_event(seq, &rows[0].event_type, &rows[0].event)
+                        .expect("decode stored #commit event");
+                let crate::firehose::FirehoseEvent::Commit(commit_event) = event else {
+                    panic!("expected a #commit event");
+                };
+                assert_eq!(
+                    commit_event.blocks, car_bytes,
+                    "blocks must round-trip through persist + replay unchanged"
+                );
+
+                let frame = encode_commit_frame(&commit_event).expect("encode #commit frame");
+                let (header, body) = decode_frame(&frame);
+                assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+                assert_eq!(map_get(&header, "t"), &Ipld::String("#commit".to_string()));
+
+                let wire_blocks = match map_get(&body, "blocks") {
+                    Ipld::Bytes(b) => b.clone(),
+                    other => panic!("blocks must be a byte string, got {other:?}"),
+                };
+                assert_eq!(
+                    wire_blocks, car_bytes,
+                    "[{}] wire #commit.blocks must be byte-identical to the persisted proof CAR",
+                    f.comment,
+                );
+
+                let mut car_store = CarStore::open(std::io::Cursor::new(&wire_blocks))
+                    .await
+                    .expect("wire blocks must parse as a CARv1");
+                let mut wire_only = MemoryBlockStore::new();
+                for &cid in &proof_cids {
+                    let mut wire_bytes = Vec::new();
+                    car_store
+                        .read_block_into(cid, &mut wire_bytes)
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "[{}] blocksInProof CID {cid} must resolve from the wire #commit.blocks CAR",
+                                f.comment
+                            )
+                        });
+                    let written = wire_only
+                        .write_block(cid.codec(), SHA2_256, &wire_bytes)
+                        .await
+                        .expect("write wire-decoded proof block");
+                    assert_eq!(
+                        written, cid,
+                        "wire block bytes must hash to the declared CID {cid}"
+                    );
+                }
+                assert_inverts_to(
+                    &mut wire_only,
+                    &proof_cids,
+                    root_after,
+                    leaf_cid,
+                    f,
+                    root_before,
+                )
+                .await;
+            }
+        }
+
+        /// Deliberately assert an inversion recovers the WRONG root (the after-root, which never
+        /// equals the before-root once an add/del actually changed the tree) — the gate must
+        /// catch this rather than passing vacuously.
+        #[tokio::test]
+        #[should_panic(expected = "must recover rootBeforeCommit")]
+        async fn corrupted_expected_root_fixture_is_detected() {
+            let fixtures = load_fixtures();
+            let f = &fixtures[0];
+            let (mut bs, _root_before, root_after) = build_before_after(f).await;
+            let leaf_cid = parse_cid(&f.leaf_value);
+            let proof_cids: Vec<Cid> = f.blocks_in_proof.iter().map(|s| parse_cid(s)).collect();
+            let mut proof_only = copy_blocks(&mut bs, &proof_cids).await;
+
+            // Wrong on purpose: the inverted root must equal `root_before`, never `root_after`.
+            assert_inverts_to(
+                &mut proof_only,
+                &proof_cids,
+                root_after,
+                leaf_cid,
+                f,
+                root_after,
+            )
+            .await;
+        }
+    }
+}

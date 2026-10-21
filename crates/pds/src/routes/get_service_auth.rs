@@ -715,4 +715,102 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+
+    /// The wallet's outbound-migration source flow, end to end: an authorization code granted
+    /// "atproto transition:generic" is exchanged for a DPoP-bound access token, which then mints
+    /// service auth for a foreign destination (aud = the destination server DID, lxm =
+    /// createAccount). transition:generic is app-password-equivalent and must permit this
+    /// (allows_rpc), exactly as the reference PDS permits it — this is the first authenticated
+    /// call the migration orchestrator makes against its source PDS.
+    #[tokio::test]
+    async fn transition_generic_dpop_token_mints_service_auth_for_migration() {
+        use crate::routes::test_utils::{token_proof, DpopProofKey};
+        use custos_db::oauth::{register_oauth_client, store_authorization_code};
+        use sha2::{Digest, Sha256};
+
+        let state = state_with_master_key().await;
+        let key = DpopProofKey::generate();
+        let did = "did:plc:migratesource00000000000";
+        seed_account_with_repo(&state.db, did).await;
+
+        register_oauth_client(
+            &state.db,
+            "https://app.example.com/client-metadata.json",
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+
+        let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
+        let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+        let raw_code = "dGVzdGF1dGhvcml6YXRpb25jb2RlMTIzNDU2Nzg5MDEyMw";
+        let code_hash = common::token::sha256_hex(&URL_SAFE_NO_PAD.decode(raw_code).unwrap());
+        store_authorization_code(
+            &state.db,
+            &code_hash,
+            "https://app.example.com/client-metadata.json",
+            did,
+            &code_challenge,
+            "S256",
+            "https://app.example.com/callback",
+            "atproto transition:generic",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let body = format!(
+            "grant_type=authorization_code\
+             &code={raw_code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &code_verifier={code_verifier}"
+        );
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/token")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .header("DPoP", token_proof(&state, &key))
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "token exchange must succeed");
+        let json = body_json(resp).await;
+        assert_eq!(
+            json["scope"], "atproto transition:generic",
+            "the granted scope must survive the exchange intact"
+        );
+        let access_token = json["access_token"].as_str().unwrap().to_string();
+
+        // The orchestrator's first authenticated source call: mint service auth for the
+        // destination's createAccount. RFC 9449 request shape (DPoP scheme + proof).
+        let sa_path = "/xrpc/com.atproto.server.getServiceAuth";
+        let htu = format!("{}{sa_path}", state.config.public_url);
+        let proof = key.proof("GET", &htu, &access_token);
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "{sa_path}?aud=did%3Aweb%3Adest.example.com&lxm=com.atproto.server.createAccount"
+                    ))
+                    .header("Authorization", format!("DPoP {access_token}"))
+                    .header("DPoP", proof)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "transition:generic must permit service auth for the migration flow"
+        );
+        let json = body_json(resp).await;
+        assert!(json["token"].is_string(), "must return a service-auth JWT");
+    }
 }
