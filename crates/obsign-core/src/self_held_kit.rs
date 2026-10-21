@@ -83,7 +83,7 @@ const ATPROTO_PDS_SERVICE_ID: &str = "atproto_pds";
 /// `escrow` can be offered — once, as an option — to deposit a share there. Without the marker
 /// the offer could not tell a self-held kit from an identity that never had a recovery key at
 /// all, and would be a nag rather than an upgrade.
-pub(crate) use obsign_core::identity_store::self_held_kit_account;
+pub use crate::identity_store::self_held_kit_account;
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -279,7 +279,7 @@ pub fn guard_self_held_kit_op(inputs: &SelfHeldKitInputs) -> Result<(), SelfHeld
 
 /// Compute the review-screen diff: the recovery key enters, NOTHING leaves, services never
 /// change. Pure.
-pub(crate) fn build_kit_diff(recovery_key_id: &str, prev_cid: &str) -> OpDiff {
+pub fn build_kit_diff(recovery_key_id: &str, prev_cid: &str) -> OpDiff {
     OpDiff {
         added_keys: vec![recovery_key_id.to_string()],
         removed_keys: Vec::new(),
@@ -401,7 +401,7 @@ async fn require_no_escrow_capability(
 /// Record that this identity now carries a self-held kit. Best-effort — nothing must fail a
 /// completed kit over a marker write.
 fn mark_installed(did: &str) {
-    if let Err(e) = obsign_core::keystore::store_item(&self_held_kit_account(did), b"true") {
+    if let Err(e) = crate::keystore::store_item(&self_held_kit_account(did), b"true") {
         tracing::warn!(error = %e, "failed to record the self-held kit marker");
     }
 }
@@ -410,7 +410,7 @@ fn mark_installed(did: &str) {
 /// escrow-upsell seam) was retired, so this now just proves the marker round-trips.
 #[cfg(test)]
 fn is_installed(did: &str) -> bool {
-    matches!(obsign_core::keystore::get_item(&self_held_kit_account(did)), Ok(v) if v == b"true")
+    matches!(crate::keystore::get_item(&self_held_kit_account(did)), Ok(v) if v == b"true")
 }
 
 // ── Imperative shell: build / submit / confirm ───────────────────────────────
@@ -618,7 +618,7 @@ pub fn confirm_self_held_kit(did: &str) -> Result<(), SelfHeldKitError> {
     match crate::rekey::load_share1(did) {
         Ok(bytes) if !bytes.is_empty() => {}
         Ok(_) => return Err(SelfHeldKitError::ShareNotStored),
-        Err(ref e) if obsign_core::keystore::is_not_found(e) => {
+        Err(ref e) if crate::keystore::is_not_found(e) => {
             return Err(SelfHeldKitError::ShareNotStored)
         }
         Err(e) => {
@@ -960,7 +960,7 @@ mod tests {
 
     #[test]
     fn installed_marker_round_trips_and_defaults_to_absent() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let did = "did:plc:kittest0123456789abcdef";
         assert!(!is_installed(did), "a fresh identity carries no kit");
         mark_installed(did);

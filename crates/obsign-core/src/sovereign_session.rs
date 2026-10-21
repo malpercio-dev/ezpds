@@ -35,7 +35,7 @@ use crate::identity_store::{
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::PdsClient;
 
-pub(crate) use custos_client::sovereign_session::{
+pub use custos_client::sovereign_session::{
     audience_matches_server, bearer_jwt_claims, fresh_nonce, unix_timestamp,
 };
 
@@ -128,7 +128,7 @@ pub async fn sovereign_login(
     sovereign_login_impl(state.pds_client(), &IdentityStore, &did, timestamp, &nonce).await
 }
 
-pub(crate) async fn sovereign_login_impl(
+pub async fn sovereign_login_impl(
     pds_client: &PdsClient,
     store: &IdentityStore,
     did: &str,
@@ -247,7 +247,7 @@ mod tests {
     }
 
     fn reset_identity(did: &str) -> DevicePublicKey {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         IdentityStore.add_identity(did).unwrap();
         IdentityStore.get_or_create_device_key(did).unwrap()
     }

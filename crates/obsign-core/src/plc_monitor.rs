@@ -51,9 +51,6 @@ use crate::pds_client::PdsClient;
 use chrono::{DateTime, SecondsFormat, Utc};
 use crypto::{diff_audit_logs, parse_audit_log, verify_plc_operation, AuditEntry, DidKeyUri};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use tauri::{Emitter, Manager};
-use tokio::time::{interval, MissedTickBehavior};
 
 /// An unauthorized PLC operation detected by the monitor.
 #[derive(Debug, Clone, Serialize)]
@@ -294,7 +291,7 @@ fn identify_signing_key(
     None
 }
 
-const MONITOR_INTERVAL_SECS: u64 = 15 * 60; // 15 minutes
+pub const MONITOR_INTERVAL_SECS: u64 = 15 * 60; // 15 minutes
 
 // ── Sweep history ───────────────────────────────────────────────────────────
 //
@@ -362,7 +359,7 @@ pub struct MonitorHistory {
 }
 
 /// Keychain account holding the serialized [`MonitorHistory`].
-pub(crate) const HISTORY_ACCOUNT: &str = "monitor-history";
+pub const HISTORY_ACCOUNT: &str = "monitor-history";
 
 /// Roughly five hours of unattended sweeps — enough to show a cadence without turning the
 /// Protection surface into a scroll.
@@ -459,7 +456,7 @@ fn coalesces_into(newest: Option<&SweepRecord>, next: &SweepRecord, at: DateTime
 /// protects the user. This one holds counts and timestamps. Erroring on it would cost the
 /// user the sweep that is running right now to preserve a readout of sweeps already past.
 fn load_history() -> MonitorHistory {
-    match obsign_core::keystore::get_item(HISTORY_ACCOUNT) {
+    match crate::keystore::get_item(HISTORY_ACCOUNT) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "monitor history unreadable, starting a fresh log");
             MonitorHistory::default()
@@ -495,7 +492,7 @@ fn record_sweep(statuses: &[IdentityStatus], trigger: SweepTrigger) {
     let next = fold_sweep(load_history(), statuses, trigger, Utc::now());
     match serde_json::to_vec(&next) {
         Ok(bytes) => {
-            if let Err(e) = obsign_core::keystore::store_item(HISTORY_ACCOUNT, &bytes) {
+            if let Err(e) = crate::keystore::store_item(HISTORY_ACCOUNT, &bytes) {
                 tracing::warn!(error = %e, "failed to store monitor history");
             }
         }
@@ -532,41 +529,19 @@ pub async fn run_monitoring_cycle(monitor: &PlcMonitor<'_>) -> Vec<IdentityStatu
     }
 }
 
-/// Run the PLC monitoring loop. Spawned once during app setup.
-/// Checks all managed identities every MONITOR_INTERVAL_SECS and emits
-/// "plc_alert" events to the frontend when unauthorized changes are detected.
-pub async fn run_monitoring_loop(app_handle: tauri::AppHandle) {
-    let mut interval = interval(Duration::from_secs(MONITOR_INTERVAL_SECS));
-    // Don't burst-fire missed ticks after iOS suspension
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    // Skip the first immediate tick — let the app finish initializing
-    interval.tick().await;
-
-    loop {
-        interval.tick().await;
-
-        let state = app_handle.state::<crate::oauth::Core>();
-        let monitor = PlcMonitor::new(state.pds_client());
-        let statuses = run_monitoring_cycle(&monitor).await;
-
-        emit_if_alerts(&app_handle, &statuses);
-    }
-    // If the loop ever exits (shouldn't happen), log it so we know monitoring died.
-    // The `loop` above has no `break`, so control never falls through here — the
-    // allow keeps this defensive epilogue compiling as intentional dead code.
-    #[allow(unreachable_code)]
-    {
-        tracing::error!("PLC monitoring loop exited unexpectedly");
-    }
+/// One unattended sweep: check every managed identity, record it, and send `plc_alert` to the
+/// UI if anything changed without authorization. The shell decides when to run it (every
+/// [`MONITOR_INTERVAL_SECS`] today).
+pub async fn run_monitoring_cycle_and_alert(state: &crate::oauth::Core) {
+    let monitor = PlcMonitor::new(state.pds_client());
+    let statuses = run_monitoring_cycle(&monitor).await;
+    emit_if_alerts(&statuses);
 }
 
 /// Emit "plc_alert" event to the frontend if any identity has unauthorized changes.
-fn emit_if_alerts(app_handle: &tauri::AppHandle, statuses: &[IdentityStatus]) {
-    let has_alerts = statuses.iter().any(|s| !s.unauthorized_changes.is_empty());
-    if has_alerts {
-        if let Err(e) = app_handle.emit("plc_alert", statuses) {
-            tracing::warn!(error = %e, "failed to emit plc_alert event");
-        }
+fn emit_if_alerts(statuses: &[IdentityStatus]) {
+    if statuses.iter().any(|s| !s.unauthorized_changes.is_empty()) {
+        crate::events::emit("plc_alert", statuses);
     }
 }
 
@@ -574,12 +549,11 @@ fn emit_if_alerts(app_handle: &tauri::AppHandle, statuses: &[IdentityStatus]) {
 /// Also emits "plc_alert" event so IdentityListHome's event listener receives updates.
 pub async fn check_identity_status(
     state: &crate::oauth::Core,
-    app: tauri::AppHandle,
 ) -> Result<Vec<IdentityStatus>, MonitorError> {
     let monitor = PlcMonitor::new(state.pds_client());
     let statuses = monitor.check_all().await?;
     record_sweep(&statuses, SweepTrigger::Foreground);
-    emit_if_alerts(&app, &statuses);
+    emit_if_alerts(&statuses);
     Ok(statuses)
 }
 
@@ -924,12 +898,12 @@ mod tests {
             "plc-log",
             "oauth-tokens",
         ] {
-            let _ = obsign_core::keystore::delete_item(&format!("{did}:{suffix}"));
+            let _ = crate::keystore::delete_item(&format!("{did}:{suffix}"));
         }
         let device_pub = store
             .get_or_create_device_key(did)
             .expect("device key generation failed");
-        let priv_bytes_vec = obsign_core::keystore::get_item(&format!("{did}:device-key"))
+        let priv_bytes_vec = crate::keystore::get_item(&format!("{did}:device-key"))
             .expect("device key not in keychain");
         let priv_bytes: [u8; 32] = priv_bytes_vec
             .try_into()

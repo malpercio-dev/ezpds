@@ -296,7 +296,7 @@ pub enum MigrationError {
 /// Pure prerequisite gate: state present, DID matches, and phase is at least `required`.
 /// No network, no side effects — this is what makes the gate side-effect-free and
 /// unit-testable.
-pub(crate) fn ensure_phase_did<'a>(
+pub fn ensure_phase_did<'a>(
     state: &'a Option<OutboundMigrationState>,
     did: &str,
     required: MigrationPhase,
@@ -498,7 +498,7 @@ pub async fn authenticate_migration_source(
 /// `expected_did` is the DID being migrated: the session the PDS returns MUST be for that account,
 /// or the caller signed in to the wrong one and we refuse to bind those credentials to this
 /// migration.
-pub(crate) async fn authenticate_migration_source_impl(
+pub async fn authenticate_migration_source_impl(
     pds_client: &crate::pds_client::PdsClient,
     source_pds_url: &str,
     expected_did: &str,
@@ -605,7 +605,7 @@ async fn create_destination_account_impl(
 /// (source-minted or offline-minted) in a one-shot Bearer client, run the migration
 /// `createAccount`, and return the destination Bearer session. Shared by
 /// `create_destination_account_impl` and `disaster_recovery.rs`.
-pub(crate) async fn create_destination_account_with_token(
+pub async fn create_destination_account_with_token(
     service_auth_token: &str,
     dest_pds_url: &str,
     did: &str,
@@ -853,11 +853,7 @@ async fn transfer_repo_impl(
 /// CID/commit-valid snapshot for the DID (`repo_backup::mirror_repo_car`), turning a dead source
 /// repo into a non-event for backed-up users; when no valid snapshot exists the original source
 /// failure is surfaced unchanged.
-pub async fn transfer_repo(
-    state: &crate::oauth::Core,
-    app: tauri::AppHandle,
-    did: String,
-) -> Result<(), MigrationError> {
+pub async fn transfer_repo(state: &crate::oauth::Core, did: String) -> Result<(), MigrationError> {
     tracing::info!(did = %did, "transfer_repo: fetching and importing repository");
 
     // Gate + extract dependencies
@@ -884,7 +880,7 @@ pub async fn transfer_repo(
     // Resolve the local repo mirror, if this device has one. When present the transfer falls back to
     // it for a source PDS that can't serve getRepo (the repo twin of the blob drain's fallback);
     // when absent the transfer behaves as before.
-    let mirror_root = crate::blob_backup::resolve_backup_root(&app).map(|(root, _location)| root);
+    let mirror_root = crate::blob_backup::resolve_backup_root().map(|(root, _location)| root);
 
     // Fetch source CAR + import into destination (pure core, unit-tested).
     transfer_repo_impl(
@@ -1180,7 +1176,6 @@ async fn drain_missing_blobs(
 ///   `verify_import` later subtracts them so the migration still reconciles.
 pub async fn transfer_blobs(
     state: &crate::oauth::Core,
-    app: tauri::AppHandle,
     did: String,
     accept_loss: bool,
 ) -> Result<(), MigrationError> {
@@ -1217,7 +1212,7 @@ pub async fn transfer_blobs(
     // Resolve the local blob mirror, if this device has one. When present the drain falls back to it
     // for any blob the source PDS can't serve (the observed real-migration fault), turning a dead
     // source blob into a non-event for backed-up users; when absent the drain behaves as before.
-    let mirror_root = crate::blob_backup::resolve_backup_root(&app).map(|(root, _location)| root);
+    let mirror_root = crate::blob_backup::resolve_backup_root().map(|(root, _location)| root);
 
     // Drain the missing-blob set. A hard enumerate failure propagates as BlobTransferFailed.
     let losses = drain_missing_blobs(
@@ -1389,7 +1384,7 @@ pub async fn transfer_preferences(
 /// require valid_did (the DID doc still points at the old PDS pre-identity-op). `accepted_loss` is
 /// the count of blobs the user explicitly chose to skip via the drain's manifest; on a clean
 /// migration it is 0 and this reduces to the exact `imported == expected` check.
-pub(crate) fn import_reconciles_with_loss(
+pub fn import_reconciles_with_loss(
     status: &crate::pds_client::AccountStatus,
     accepted_loss: u64,
 ) -> bool {
@@ -1966,7 +1961,7 @@ where
 
 // ── Helper: extract handle from also_known_as ───────────────────────────────
 
-pub(crate) fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String> {
+pub fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String> {
     for entry in also_known_as {
         if let Some(handle) = entry.strip_prefix("at://") {
             if !handle.starts_with("did:") {
@@ -1977,7 +1972,7 @@ pub(crate) fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Opt
     None
 }
 
-pub(crate) fn preferred_login_identifier(also_known_as: &[String], did: &str) -> String {
+pub fn preferred_login_identifier(also_known_as: &[String], did: &str) -> String {
     extract_handle_from_also_known_as(also_known_as).unwrap_or_else(|| did.to_string())
 }
 
@@ -3900,7 +3895,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_sovereign_session_persisted_skips_when_valid_record_exists() {
         let did = "did:plc:idempotentskip";
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
         store.get_or_create_device_key(did).unwrap();
@@ -3950,7 +3945,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_stores_bearer_pair() {
         let did = "did:web:rehearsal.example";
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 
@@ -4057,7 +4052,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_serves_a_did_plc_on_a_foreign_host() {
         let did = "did:plc:foreignhost";
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 
@@ -4096,7 +4091,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_skips_when_valid_record_exists() {
         let did = "did:web:rehearsal.example";
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 
@@ -4138,7 +4133,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_rejects_sub_mismatch() {
         let did = "did:web:rehearsal.example";
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 
@@ -4169,7 +4164,7 @@ mod tests {
     #[tokio::test]
     async fn test_ensure_bearer_session_persisted_rejects_aud_mismatch() {
         let did = "did:web:rehearsal.example";
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = crate::identity_store::IdentityStore;
         store.add_identity(did).unwrap();
 

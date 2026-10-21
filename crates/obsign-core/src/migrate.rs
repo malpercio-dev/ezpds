@@ -492,7 +492,7 @@ pub fn guard_migration_op(inputs: &MigrationInputs) -> Result<(), MigrateError> 
 /// The slice of current DID state the migration build needs, derived from the latest
 /// non-nullified audit-log operation.
 #[derive(Debug, Clone)]
-pub(crate) struct CurrentState {
+pub struct CurrentState {
     /// CID of the latest op — becomes the new op's `prev`.
     pub prev_cid: String,
     /// Current rotation keys (for authorization + diff).
@@ -509,7 +509,7 @@ pub(crate) struct CurrentState {
 /// entry's `operation` object is the current state. We read fields defensively; an
 /// empty log or a missing `prev`-able CID is an error (a genesis-only DID that the
 /// wallet controls still has a CID to chain against).
-pub(crate) fn latest_op_state(audit_log: &[AuditEntry]) -> Result<CurrentState, MigrateError> {
+pub fn latest_op_state(audit_log: &[AuditEntry]) -> Result<CurrentState, MigrateError> {
     let latest = audit_log
         .iter()
         .rev()
@@ -576,9 +576,7 @@ fn string_array_field(op: &serde_json::Value, field: &str) -> Result<Vec<String>
 /// Unlike `pds_client::rotation_keys_from_audit_log`, this helper is strict: malformed
 /// logs are an error so path detection can fail closed as `CannotDetermine` instead
 /// of silently picking the interop path from an accidental empty key set.
-pub(crate) fn current_rotation_keys_from_audit_log(
-    raw_json: &str,
-) -> Result<Vec<String>, MigrateError> {
+pub fn current_rotation_keys_from_audit_log(raw_json: &str) -> Result<Vec<String>, MigrateError> {
     let audit_log =
         crypto::parse_audit_log(raw_json).map_err(|e| MigrateError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
@@ -606,7 +604,7 @@ pub(crate) fn current_rotation_keys_from_audit_log(
 /// self-signed path; otherwise it must fall back to the PDS-signed interop path.
 /// A key at index 1+ is still authorized, but the index is surfaced so the UI can
 /// explain that the wallet is not the primary rotation key.
-pub(crate) fn decide_migration_path(
+pub fn decide_migration_path(
     rotation_keys: &[String],
     device_key_id: Option<&str>,
 ) -> MigrationPathDecision {
@@ -727,7 +725,7 @@ pub async fn detect_migration_path(pds_client: &PdsClient, did: &str) -> Migrati
 /// Convert the destination PDS's recommended `verificationMethods` (untyped JSON of
 /// `{ id: "did:key:z..." }`) into the `BTreeMap<String, String>` that
 /// `build_did_plc_rotation_op` expects. Requires at least the `atproto` method.
-pub(crate) fn recommended_verification_methods(
+pub fn recommended_verification_methods(
     recommended: &RecommendedCredentials,
 ) -> Result<BTreeMap<String, String>, MigrateError> {
     let value = recommended.verification_methods.as_ref().ok_or_else(|| {
@@ -774,7 +772,7 @@ pub(crate) fn recommended_verification_methods(
 /// Convert the destination PDS's recommended `services` (untyped JSON of
 /// `{ id: { type, endpoint } }`) into the `BTreeMap<String, PlcService>` that
 /// `build_did_plc_rotation_op` expects. Requires the `atproto_pds` service.
-pub(crate) fn recommended_services(
+pub fn recommended_services(
     recommended: &RecommendedCredentials,
 ) -> Result<BTreeMap<String, PlcService>, MigrateError> {
     let value = recommended.services.as_ref().ok_or_else(|| {
@@ -824,7 +822,7 @@ pub(crate) fn recommended_services(
 
 /// Build the review diff for a migration op: the atproto_pds endpoint change plus the
 /// rotation-key additions/removals implied by the swap.
-pub(crate) fn build_migration_diff(
+pub fn build_migration_diff(
     current: &CurrentState,
     proposed_rotation_keys: &[String],
     proposed_pds_endpoint: &str,

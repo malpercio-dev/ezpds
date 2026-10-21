@@ -392,7 +392,7 @@ mod tests {
     }
 
     fn register(did: &str) {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         crate::pds_capabilities::clear_for_test();
         IdentityStore.add_identity(did).unwrap();
     }
@@ -458,7 +458,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unmanaged_did_is_refused_before_any_prompt() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         crate::pds_capabilities::clear_for_test();
 
         let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());

@@ -104,7 +104,7 @@ use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 /// resumable — on launch the UI reconciles any listed DID straight to the
 /// tombstone-only retry rather than the full request flow (which would fail against
 /// the already-deleted account).
-pub(crate) const PENDING_REMOVALS_ACCOUNT: &str = "pending-removals";
+pub const PENDING_REMOVALS_ACCOUNT: &str = "pending-removals";
 
 /// Load the set of DIDs with a pending post-delete removal, propagating a genuine
 /// Keychain read failure.
@@ -115,13 +115,13 @@ pub(crate) const PENDING_REMOVALS_ACCOUNT: &str = "pending-removals";
 /// (`mark_removal_pending` / `clear_removal_pending`) do a read-modify-write, so
 /// silently treating a transient read failure as "empty" would let the subsequent
 /// save overwrite the Keychain and drop any *other* DIDs' pending markers.
-fn load_pending_removals_strict() -> Result<Vec<String>, obsign_core::keystore::KeyStoreError> {
-    match obsign_core::keystore::get_item(PENDING_REMOVALS_ACCOUNT) {
+fn load_pending_removals_strict() -> Result<Vec<String>, crate::keystore::KeyStoreError> {
+    match crate::keystore::get_item(PENDING_REMOVALS_ACCOUNT) {
         Ok(bytes) => Ok(serde_json::from_slice::<Vec<String>>(&bytes).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "pending-removals Keychain entry is not valid JSON; treating as empty");
             Vec::new()
         })),
-        Err(e) if obsign_core::keystore::is_not_found(&e) => Ok(Vec::new()),
+        Err(e) if crate::keystore::is_not_found(&e) => Ok(Vec::new()),
         Err(e) => Err(e),
     }
 }
@@ -145,24 +145,24 @@ fn load_pending_removals() -> Vec<String> {
     clippy::expect_used,
     reason = "a Vec<String> always serializes to JSON"
 )]
-fn save_pending_removals(dids: &[String]) -> Result<(), obsign_core::keystore::KeyStoreError> {
+fn save_pending_removals(dids: &[String]) -> Result<(), crate::keystore::KeyStoreError> {
     if dids.is_empty() {
-        return match obsign_core::keystore::delete_item(PENDING_REMOVALS_ACCOUNT) {
+        return match crate::keystore::delete_item(PENDING_REMOVALS_ACCOUNT) {
             Ok(()) => Ok(()),
-            Err(e) if obsign_core::keystore::is_not_found(&e) => Ok(()),
+            Err(e) if crate::keystore::is_not_found(&e) => Ok(()),
             Err(e) => Err(e),
         };
     }
     // Vec<String> → JSON is infallible; unwrap keeps the signature Keychain-only.
     let json = serde_json::to_vec(dids).expect("Vec<String> always serializes to JSON");
-    obsign_core::keystore::store_item(PENDING_REMOVALS_ACCOUNT, &json)
+    crate::keystore::store_item(PENDING_REMOVALS_ACCOUNT, &json)
 }
 
 /// Mark `did` as having a pending post-delete removal (idempotent).
 ///
 /// Called the instant `deleteAccount` succeeds, before the tombstone network round
 /// trip — the step iOS is most likely to interrupt by backgrounding the app.
-fn mark_removal_pending(did: &str) -> Result<(), obsign_core::keystore::KeyStoreError> {
+fn mark_removal_pending(did: &str) -> Result<(), crate::keystore::KeyStoreError> {
     let mut dids = load_pending_removals_strict()?;
     if !dids.iter().any(|d| d == did) {
         dids.push(did.to_string());
@@ -172,7 +172,7 @@ fn mark_removal_pending(did: &str) -> Result<(), obsign_core::keystore::KeyStore
 }
 
 /// Clear `did`'s pending-removal marker once the tombstone + wipe have completed.
-fn clear_removal_pending(did: &str) -> Result<(), obsign_core::keystore::KeyStoreError> {
+fn clear_removal_pending(did: &str) -> Result<(), crate::keystore::KeyStoreError> {
     let mut dids = load_pending_removals_strict()?;
     let before = dids.len();
     dids.retain(|d| d != did);
@@ -987,7 +987,7 @@ mod tests {
     /// unreachable server here stands for.
     #[tokio::test]
     async fn a_host_without_the_capability_refuses_a_passwordless_removal() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         IdentityStore.add_identity("did:plc:nocapability").unwrap();
         let server = httpmock::MockServer::start();
         let describe = server.mock(|when, then| {
@@ -1016,7 +1016,7 @@ mod tests {
     /// identity's device key, with a fresh 32-byte nonce.
     #[tokio::test]
     async fn an_advertising_host_yields_a_device_key_signed_proof() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let did = "did:plc:withcapability";
         IdentityStore.add_identity(did).unwrap();
         let device_key = IdentityStore.get_or_create_device_key(did).unwrap();
@@ -1070,7 +1070,7 @@ mod tests {
     /// one is removed exactly as before, against any host.
     #[tokio::test]
     async fn a_typed_password_is_used_without_probing_the_host() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let server = httpmock::MockServer::start();
         let catch_all = server.mock(|when, then| {
             when.any_request();
@@ -1098,7 +1098,7 @@ mod tests {
 
     #[test]
     fn pending_removal_marker_round_trip() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         assert!(load_pending_removals().is_empty());
 
         mark_removal_pending("did:plc:alice").unwrap();
@@ -1124,7 +1124,7 @@ mod tests {
 
     #[test]
     fn clearing_absent_marker_is_a_noop() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         // Never marked — clearing must not error and must leave the set empty.
         clear_removal_pending("did:plc:ghost").unwrap();
         assert!(load_pending_removals().is_empty());
@@ -1134,10 +1134,10 @@ mod tests {
 
     #[test]
     fn corrupt_marker_entry_reads_as_empty() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         // A non-JSON blob must never surface as an error — the marker is a best-effort
         // safety net, and `list_pending_removals` is called unconditionally on launch.
-        obsign_core::keystore::store_item(PENDING_REMOVALS_ACCOUNT, b"not json").unwrap();
+        crate::keystore::store_item(PENDING_REMOVALS_ACCOUNT, b"not json").unwrap();
         assert!(load_pending_removals().is_empty());
     }
 
@@ -1149,7 +1149,7 @@ mod tests {
 
     #[test]
     fn forget_identity_locally_wipes_and_clears_marker() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = IdentityStore;
         store.add_identity("did:plc:gone").unwrap();
         assert_eq!(
@@ -1177,7 +1177,7 @@ mod tests {
 
     #[test]
     fn forget_identity_locally_is_idempotent_for_unknown_did() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         // Never registered — a wipe of a not-found identity is success, not an error, so a
         // second "forget" (or one against a DID some other path already removed) never wedges.
         let was_last = forget_identity_locally("did:plc:never".to_string()).unwrap();
@@ -1203,7 +1203,7 @@ mod tests {
     /// mock server is registered to answer *anything*, so a stray request would be a hit.
     #[tokio::test]
     async fn did_web_retire_never_contacts_plc_directory() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = IdentityStore;
         store.add_identity("did:web:example.com").unwrap();
 
@@ -1231,7 +1231,7 @@ mod tests {
     /// re-offered forever.
     #[tokio::test]
     async fn did_web_resume_clears_the_pending_marker() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = IdentityStore;
         store.add_identity("did:web:example.com").unwrap();
         // What `confirm_identity_removal` leaves behind when the app dies post-delete.
@@ -1262,7 +1262,7 @@ mod tests {
     /// some earlier partial run already removed must not fail the resume.
     #[tokio::test]
     async fn did_web_retire_is_idempotent_for_an_already_wiped_did() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let server = httpmock::MockServer::start();
         let pds_client = crate::pds_client::new_for_test(server.base_url());
 
@@ -1274,7 +1274,7 @@ mod tests {
 
     #[test]
     fn forget_identity_locally_reports_not_last_when_others_remain() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let store = IdentityStore;
         store.add_identity("did:plc:gone").unwrap();
         store.add_identity("did:plc:keep").unwrap();

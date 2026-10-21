@@ -466,7 +466,7 @@ pub async fn authenticate_source_pds(
 ///
 /// `expected_did` is the DID being claimed: the session the PDS returns MUST be for that account,
 /// or the caller signed in to the wrong one and we refuse to bind those credentials to this claim.
-pub(crate) async fn authenticate_source_pds_impl(
+pub async fn authenticate_source_pds_impl(
     pds_client: &crate::pds_client::PdsClient,
     pds_url: &str,
     expected_did: &str,
@@ -540,9 +540,7 @@ pub async fn request_claim_verification(
 /// Testable core logic for `request_claim_verification`.
 ///
 /// Extracted to a separate function to allow testing without Tauri's State.
-pub(crate) async fn request_claim_verification_impl(
-    claim_state: &ClaimState,
-) -> Result<(), ClaimError> {
+pub async fn request_claim_verification_impl(claim_state: &ClaimState) -> Result<(), ClaimError> {
     let Some(ref oauth_client) = claim_state.pds_oauth_client else {
         tracing::error!("request_claim_verification: no pds_oauth_client in ClaimState");
         return Err(ClaimError::Unauthorized);
@@ -729,7 +727,7 @@ pub async fn sign_and_verify_claim(
 ///
 /// This helper can be called with resolved dependencies without needing Tauri's State.
 /// The returned tuple contains (VerifiedClaimOp, signed_op_json_value).
-pub(crate) async fn sign_and_verify_claim_impl(
+pub async fn sign_and_verify_claim_impl(
     pds_client: &crate::pds_client::PdsClient,
     pds_oauth_client: &std::sync::Arc<OAuthClient>,
     did: &str,
@@ -976,7 +974,7 @@ pub(crate) async fn sign_and_verify_claim_impl(
 ///    - Fetches the PLC audit log and stores it
 /// 4. Returns `ClaimResult` with the updated DID document
 ///    (Caller is responsible for clearing `ClaimState` on success)
-pub(crate) async fn submit_claim_impl(
+pub async fn submit_claim_impl(
     pds_client: &crate::pds_client::PdsClient,
     claim_state: &ClaimState,
 ) -> Result<ClaimResult, ClaimError> {
@@ -1721,7 +1719,7 @@ mod tests {
     /// request_claim_verification calls requestPlcOperationSignature on the old PDS
     #[tokio::test]
     async fn test_request_claim_verification_success() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::sync::{Arc, Mutex};
 
@@ -1801,7 +1799,7 @@ mod tests {
     /// request_claim_verification returns NetworkError on PDS failure
     #[tokio::test]
     async fn test_request_claim_verification_pds_returns_500() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::sync::{Arc, Mutex};
 
@@ -1908,7 +1906,7 @@ mod tests {
     /// mapped to NETWORK_ERROR, killing every first-time claim before any network call.
     #[test]
     fn ensure_claim_device_key_registers_fresh_did() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let did = "did:plc:freshclaimdevicekey";
 
         let key = ensure_claim_device_key(did).expect("fresh DID must get a device key");
@@ -1928,7 +1926,7 @@ mod tests {
     /// Test 1: Success path with device key at rotationKeys[0]
     #[tokio::test]
     async fn test_sign_and_verify_claim_success() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2043,7 +2041,7 @@ mod tests {
     /// Test 2: Wrong key at rotationKeys[0]
     #[tokio::test]
     async fn test_sign_and_verify_claim_wrong_key_at_rotation_keys_0() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2146,7 +2144,7 @@ mod tests {
     /// Test 3: prev chain mismatch
     #[tokio::test]
     async fn test_sign_and_verify_claim_prev_mismatch() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2248,7 +2246,7 @@ mod tests {
     /// Test 4: unexpected key removal
     #[tokio::test]
     async fn test_sign_and_verify_claim_unexpected_key_removal() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2349,7 +2347,7 @@ mod tests {
     /// Test 5: unexpected service change
     #[tokio::test]
     async fn test_sign_and_verify_claim_unexpected_service_change() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2457,7 +2455,7 @@ mod tests {
     /// Test 6: warnings for benign additions
     #[tokio::test]
     async fn test_sign_and_verify_claim_warnings_for_added_service() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2581,7 +2579,7 @@ mod tests {
     /// Test 7: Invalid token error from PDS
     #[tokio::test]
     async fn test_sign_and_verify_claim_invalid_token() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::HashMap;
         use std::sync::Arc;
@@ -2653,7 +2651,7 @@ mod tests {
     /// Test Success: submit_claim POSTs signed operation and persists identity
     #[tokio::test]
     async fn test_submit_claim_success() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let mock_server = MockServer::start();

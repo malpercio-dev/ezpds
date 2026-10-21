@@ -128,7 +128,7 @@ fn map_plc_error(context: &str, error: PdsClientError) -> EndpointRepairError {
 /// carries: scheme + host (+ non-default port), no trailing slash, no path/query.
 /// Rejects non-https schemes (loopback http excepted, for local development) and any
 /// URL carrying a path, query, fragment, or userinfo — an endpoint is an origin.
-pub(crate) fn normalize_endpoint(url: &str) -> Result<String, EndpointRepairError> {
+pub fn normalize_endpoint(url: &str) -> Result<String, EndpointRepairError> {
     let parsed = url::Url::parse(url.trim()).map_err(|e| EndpointRepairError::InvalidEndpoint {
         message: format!("not a valid URL: {e}"),
     })?;

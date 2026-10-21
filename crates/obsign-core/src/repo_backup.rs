@@ -526,10 +526,10 @@ async fn write_car(root: &Path, did: &str, bytes: &[u8]) -> Result<(), RepoBacku
 
 /// Per-DID Keychain account holding the opt-in flag (`"true"` / `"false"`).
 /// Referenced by `IdentityStore::remove_identity` for cleanup.
-pub(crate) use obsign_core::identity_store::repo_backup_enabled_account as backup_enabled_account;
+pub use crate::identity_store::repo_backup_enabled_account as backup_enabled_account;
 
 fn load_enabled(did: &str) -> bool {
-    obsign_core::keystore::get_item(&backup_enabled_account(did))
+    crate::keystore::get_item(&backup_enabled_account(did))
         .map(|v| v == b"true")
         .unwrap_or(false)
 }
@@ -539,14 +539,13 @@ fn load_enabled(did: &str) -> bool {
 /// read is `false` (never back up without an explicit opt-in). Read independently of the
 /// blob opt-in, so a user can enable one mirror and not the other. Only the iOS background
 /// sweep calls this; the foreground surface reads `load_enabled` via `status_core`.
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
-pub(crate) fn is_backup_enabled(did: &str) -> bool {
+pub fn is_backup_enabled(did: &str) -> bool {
     load_enabled(did)
 }
 
 fn store_enabled(did: &str, enabled: bool) -> Result<(), RepoBackupError> {
     let value: &[u8] = if enabled { b"true" } else { b"false" };
-    obsign_core::keystore::store_item(&backup_enabled_account(did), value).map_err(|e| {
+    crate::keystore::store_item(&backup_enabled_account(did), value).map_err(|e| {
         RepoBackupError::KeychainError {
             message: e.to_string(),
         }
@@ -604,7 +603,7 @@ async fn status_core(
 /// CAR file is still present, the (multi-MB) CAR rewrite is skipped and only the manifest timestamp
 /// advances (`updated: false`). A CAR that fails validation is rejected as `CAR_INVALID` before any
 /// write, leaving the prior good snapshot intact.
-pub(crate) async fn run_backup_core(
+pub async fn run_backup_core(
     pds_client: &PdsClient,
     root: &Path,
     did: &str,
@@ -688,7 +687,7 @@ pub(crate) async fn run_backup_core(
 /// migration's source PDS can't serve `getRepo`; and the sovereign disaster-recovery flow
 /// (`disaster_recovery::recovery_transfer_repo`), where the source PDS is presumed gone and the
 /// mirror is the only source.
-pub(crate) async fn mirror_repo_car(root: &Path, did: &str) -> Option<Vec<u8>> {
+pub async fn mirror_repo_car(root: &Path, did: &str) -> Option<Vec<u8>> {
     let lock = repo_lock(did);
     let _guard = lock.lock().await;
 
@@ -716,7 +715,7 @@ pub(crate) async fn mirror_repo_car(root: &Path, did: &str) -> Option<Vec<u8>> {
 /// migration-orchestrator tests (a different module) can stand up a mirror to exercise the
 /// `transfer_repo` iCloud fallback. Twin of `blob_backup::seed_mirror_blob_for_test`.
 #[cfg(test)]
-pub(crate) async fn seed_mirror_repo_for_test(root: &Path, did: &str) -> Vec<u8> {
+pub async fn seed_mirror_repo_for_test(root: &Path, did: &str) -> Vec<u8> {
     let (car, _root_cid, _rev) = tests::valid_empty_repo(did, "3lqqqqqqq2az");
     write_car(root, did, &car).await.unwrap();
     car
@@ -734,16 +733,14 @@ async fn hosting_pds_url(pds_client: &PdsClient, did: &str) -> Result<String, Re
 }
 
 /// One backup pass for `did`, resolving the mirror root, hosting PDS, and shared `PdsClient` from
-/// the app handle. Shared body of the `run_repo_backup` command and the `bg_backup` background
+/// the app's `Core`. Shared body of the `run_repo_backup` command and the `bg_backup` background
 /// sweep: resolve root → discover PDS → fetch + validate + write. Reads only the public
 /// `getRepo`, so it needs no session.
-pub(crate) async fn run_backup_for_did(
-    app: &tauri::AppHandle,
+pub async fn run_backup_for_did(
+    state: &crate::oauth::Core,
     did: &str,
 ) -> Result<RepoBackupRunReport, RepoBackupError> {
-    use tauri::Manager;
-    let (root, _location) = resolve_backup_root(app).ok_or(RepoBackupError::BackupUnavailable)?;
-    let state = app.state::<crate::oauth::Core>();
+    let (root, _location) = resolve_backup_root().ok_or(RepoBackupError::BackupUnavailable)?;
     let pds_client = state.pds_client();
     let pds_url = hosting_pds_url(pds_client, did).await?;
     run_backup_core(pds_client, &root, did, &pds_url).await
@@ -751,11 +748,8 @@ pub(crate) async fn run_backup_for_did(
 
 /// Tauri command: the backup surface's status readout — mirror location (or its absence), the
 /// opt-in flag, and the snapshot's size + rev (shown before and after opting in).
-pub async fn get_repo_backup_status(
-    app: tauri::AppHandle,
-    did: String,
-) -> Result<RepoBackupStatus, RepoBackupError> {
-    match resolve_backup_root(&app) {
+pub async fn get_repo_backup_status(did: String) -> Result<RepoBackupStatus, RepoBackupError> {
+    match resolve_backup_root() {
         Some((root, location)) => status_core(Some(&root), Some(location), &did).await,
         None => status_core(None, None, &did).await,
     }
@@ -763,22 +757,21 @@ pub async fn get_repo_backup_status(
 
 /// Tauri command: flip the explicit opt-in flag. Returns the refreshed status.
 pub async fn set_repo_backup_enabled(
-    app: tauri::AppHandle,
     did: String,
     enabled: bool,
 ) -> Result<RepoBackupStatus, RepoBackupError> {
     store_enabled(&did, enabled)?;
-    get_repo_backup_status(app, did).await
+    get_repo_backup_status(did).await
 }
 
 /// Tauri command: run one backup pass for the identity. Reads only the public `getRepo`, so it
 /// needs no session. Also invoked opportunistically (fire-and-forget) on app open for opted-in
 /// identities.
 pub async fn run_repo_backup(
-    app: tauri::AppHandle,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<RepoBackupRunReport, RepoBackupError> {
-    run_backup_for_did(&app, &did).await
+    run_backup_for_did(state, &did).await
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

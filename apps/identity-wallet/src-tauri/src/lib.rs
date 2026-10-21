@@ -29,47 +29,48 @@
 //! additive Share 1 launch hops — see its doc), the PLC monitoring loop spawn, and the
 //! iOS-only APNs + background-backup bridges.
 
-pub mod agents;
+pub use obsign_core::agents;
 /// The iOS APNs device-token bridge. iOS-only because it is nothing *but* platform plumbing:
 /// every part with logic worth testing lives in [`notifications`].
 #[cfg(target_os = "ios")]
 pub mod apns;
-pub mod app_passwords;
+pub use obsign_core::app_passwords;
 pub mod bg_backup;
-pub mod blob_backup;
-pub mod claim;
+pub use obsign_core::blob_backup;
+pub use obsign_core::claim;
 mod commands;
 pub use obsign_core::device_key;
 pub mod diagnostics;
-pub mod disaster_recovery;
+pub use obsign_core::disaster_recovery;
 pub mod enclave_signer;
-pub mod endpoint_repair;
-pub mod handle_change;
+pub use obsign_core::endpoint_repair;
+pub use obsign_core::handle_change;
 pub use obsign_core::http;
-pub mod identity_removal;
+pub mod icloud;
+pub use obsign_core::identity_removal;
 pub use obsign_core::identity_store;
 pub mod keychain;
-pub mod migrate;
-pub mod migration_orchestrator;
-pub mod notification_routes;
-pub mod notifications;
-pub mod oauth;
+pub use obsign_core::migrate;
+pub use obsign_core::migration_orchestrator;
+pub use obsign_core::notification_routes;
+pub use obsign_core::notifications;
+pub use obsign_core::oauth;
 pub use obsign_core::oauth_client;
-pub mod oauth_consent;
-pub mod password_unlock;
+pub use obsign_core::oauth_consent;
+pub use obsign_core::password_unlock;
 pub use obsign_core::pds_capabilities;
 pub use obsign_core::pds_client;
-pub mod plc_monitor;
-pub mod recovery;
-pub mod rekey;
-pub mod repo_backup;
-pub mod rotate_repo_key;
-pub mod self_held_kit;
-pub mod session_provider;
+pub use obsign_core::plc_monitor;
+pub use obsign_core::recovery;
+pub use obsign_core::rekey;
+pub use obsign_core::repo_backup;
+pub use obsign_core::rotate_repo_key;
+pub use obsign_core::self_held_kit;
+pub use obsign_core::session_provider;
 pub use obsign_core::share_ceremony;
-pub mod share_recovery;
+pub use obsign_core::share_recovery;
 pub use obsign_core::source_login;
-pub mod sovereign_session;
+pub use obsign_core::sovereign_session;
 
 use crypto::{
     build_did_plc_genesis_op_multi_rotation_with_external_signer, CryptoError, DidKeyUri,
@@ -728,17 +729,7 @@ pub async fn perform_did_ceremony(
     })
 }
 
-/// Error returned by `confirm_share_backup`.
-#[derive(Debug, Serialize, thiserror::Error)]
-#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ShareBackupError {
-    /// Share 1 is not present in its durable Keychain slot — the staging material must
-    /// not be destroyed while it is the only home of the seed.
-    #[error("recovery share 1 is not durably stored")]
-    ShareNotStored,
-    #[error("keychain operation failed")]
-    KeychainError,
-}
+pub use obsign_core::share_recovery::ShareBackupError;
 
 /// Confirm the user has saved Share 3 and tear down the ceremony staging slot.
 ///
@@ -1734,6 +1725,30 @@ fn share1_backfill_dids() -> Vec<String> {
     dids
 }
 
+/// The UI end of `obsign_core::events`: each event goes to the webview as a Tauri event.
+struct TauriEvents(tauri::AppHandle);
+
+impl obsign_core::events::EventSink for TauriEvents {
+    fn emit(&self, event: &str, payload: serde_json::Value) {
+        if let Err(e) = self.0.emit(event, payload) {
+            tracing::warn!(event, error = %e, "failed to emit event");
+        }
+    }
+}
+
+/// The PLC monitor's foreground timer: one sweep every `MONITOR_INTERVAL_SECS`, after letting
+/// the app finish initializing. Missed ticks are delayed, not burst-fired, after iOS suspension.
+async fn run_monitoring_loop(app: tauri::AppHandle) {
+    use tokio::time::{interval, Duration, MissedTickBehavior};
+    let mut interval = interval(Duration::from_secs(plc_monitor::MONITOR_INTERVAL_SECS));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        plc_monitor::run_monitoring_cycle_and_alert(&app.state::<oauth::Core>()).await;
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(
     clippy::expect_used,
@@ -1774,6 +1789,15 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            // The platform seams that need the app handle: events to the UI, the backup
+            // location, and the bundle identifier push registration uses as its topic.
+            let _ = obsign_core::events::install(Box::new(TauriEvents(app.handle().clone())));
+            let _ = obsign_core::backup_store::install(Box::new(icloud::AppBackupStore {
+                app: app.handle().clone(),
+            }));
+            app.state::<oauth::Core>()
+                .set_app_identifier(app.config().identifier.clone());
+
             // Restore PDS URL from Keychain if previously configured.
             if let Some(url) = configured_pds_url() {
                 app.state::<oauth::Core>().set_custos_client(url);
@@ -1818,7 +1842,7 @@ pub fn run() {
 
             // Start PLC monitoring timer (15-minute interval)
             let monitor_handle = app.handle().clone();
-            tauri::async_runtime::spawn(plc_monitor::run_monitoring_loop(monitor_handle));
+            tauri::async_runtime::spawn(run_monitoring_loop(monitor_handle));
 
             // iOS only: register the background media-backup task and submit the first
             // request, so an opted-in identity's iCloud mirror stays topped up without the

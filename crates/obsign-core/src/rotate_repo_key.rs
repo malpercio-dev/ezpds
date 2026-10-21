@@ -285,7 +285,7 @@ pub fn guard_rotation_op(inputs: &RotationInputs) -> Result<(), RotationError> {
 /// Compute the review-screen diff for a rotation: the staged key enters, every current
 /// rotation key / atproto method not carried forward leaves, services never change.
 /// Pure.
-pub(crate) fn build_rotation_diff(
+pub fn build_rotation_diff(
     current_rotation_keys: &[String],
     current_atproto_key: Option<&str>,
     proposed_rotation_keys: &[String],

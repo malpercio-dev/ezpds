@@ -198,7 +198,7 @@ impl KeyStore for AppleKeychain {
 /// (DPoP mode) has no production caller today (see `oauth.rs`'s module doc), so this account is
 /// currently reachable only from `oauth::test_dpop_keypair`.
 #[cfg(test)]
-pub(crate) const DPOP_KEY_PRIV_ACCOUNT: &str = "oauth-dpop-key-priv";
+pub(crate) use obsign_core::oauth::DPOP_KEY_PRIV_ACCOUNT;
 const OAUTH_ACCESS_TOKEN_ACCOUNT: &str = "oauth-access-token";
 const OAUTH_REFRESH_TOKEN_ACCOUNT: &str = "oauth-refresh-token";
 const PDS_URL_ACCOUNT: &str = "relay-base-url";
@@ -622,6 +622,150 @@ mod tests {
                 delete_item_synced(account),
                 Err(KeyStoreError::SyncNotPermitted { .. })
             ));
+        }
+    }
+}
+
+/// The wallet's own `custos_client` adapters, end to end: the DPoP key through the installed
+/// store, breadcrumbs into the diagnostics log, and refreshed tokens into the legacy global
+/// OAuth-client accounts above.
+#[cfg(test)]
+mod dpop_adapter {
+    use super::*;
+    use obsign_core::oauth::{OAuthError, OAuthSession};
+
+    // ── custos_client adapters ───────────────────────────────────────────────────
+    //
+    // `OAuthClient` is Tauri-free; it takes its diagnostics and token-persistence seams as
+    // trait objects rather than calling `crate::diagnostics`/`crate::keychain` directly.
+
+    /// Persists a DPoP-mode refreshed token pair to the wallet's legacy global OAuth-client
+    /// Keychain item (see `keychain.rs`'s module doc). Test-only: only `OAuthClient::new`
+    /// (DPoP mode) would call this, and that constructor has no production caller today.
+    pub struct WalletTokenPersister;
+
+    impl custos_client::TokenPersister for WalletTokenPersister {
+        fn store_tokens(&self, access_token: &str, refresh_token: &str) -> Result<(), String> {
+            store_oauth_tokens(access_token, refresh_token).map_err(|e| e.to_string())
+        }
+    }
+
+    mod tests {
+        use super::*;
+        use crate::diagnostics::WalletTransportObserver;
+        use custos_client::OAuthClient;
+        use httpmock::prelude::*;
+        use obsign_core::oauth::test_dpop_keypair;
+        use std::sync::{Arc, Mutex};
+
+        /// End-to-end check of the wallet's own adapters (not `custos_client`'s internals, which
+        /// the crate's own test suite covers): a DPoP-mode `OAuthClient` built with
+        /// `device_key::WalletKeychain`, `WalletTransportObserver`, and `WalletTokenPersister`
+        /// refreshes a token and the new pair lands in the wallet's real (test-mode in-memory)
+        /// Keychain via `keychain::load_oauth_tokens`.
+        #[tokio::test]
+        async fn refresh_persists_tokens_through_wallet_keychain_adapter() {
+            obsign_core::keystore::clear_for_test();
+
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.method(POST).path("/oauth/token");
+                then.status(200).json_body(serde_json::json!({
+                    "access_token": "wallet-new-access",
+                    "token_type": "DPoP",
+                    "expires_in": 300,
+                    "refresh_token": "wallet-new-refresh",
+                    "scope": "atproto"
+                }));
+            });
+
+            let keypair = test_dpop_keypair().expect("keypair must exist");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let session = Arc::new(Mutex::new(OAuthSession {
+                access_token: "wallet-old-access".to_string(),
+                refresh_token: "wallet-old-refresh".to_string(),
+                expires_at: now, // already due for refresh
+                dpop_nonce: None,
+            }));
+            let client = OAuthClient::new(
+                keypair,
+                "test-client-id".to_string(),
+                session,
+                server.base_url(),
+                Arc::new(WalletTransportObserver),
+                Arc::new(WalletTokenPersister),
+            );
+
+            client.refresh_token().await.expect("refresh must succeed");
+
+            let (access, refresh) = load_oauth_tokens().expect("tokens must be persisted");
+            assert_eq!(access, "wallet-new-access");
+            assert_eq!(refresh, "wallet-new-refresh");
+        }
+
+        /// End-to-end check of the redaction pipeline through the wallet's real
+        /// `WalletTransportObserver` and `crate::diagnostics::export_diagnostics()`: a lazy-refresh
+        /// transport failure must record a breadcrumb, and the exported report must never contain
+        /// the access/refresh tokens. The three secret assertions are the point of this test and use
+        /// uniquely-named markers (safe under the process-global sink shared with tests running in
+        /// parallel); the `"oauthRefresh"` recorded-check is the shared, hardcoded op name every
+        /// DPoP-mode refresh failure uses, so under parallel execution it could in principle be
+        /// satisfied by a sibling test's own breadcrumb rather than this call's — a weaker signal
+        /// than the secret checks, kept for readability rather than as the test's real assertion.
+        /// The `"private-identity-oauthrs-test"` marker (embedded in the `/resource?did=...` path)
+        /// can never actually leak here: the lazy refresh fails before that request is built, so
+        /// this assertion cannot fail either. Covering a leak from the *resource* request itself
+        /// would need a scenario where the refresh succeeds and the follow-up request fails —
+        /// not this one.
+        #[tokio::test]
+        async fn lazy_refresh_transport_failure_records_a_redacted_breadcrumb() {
+            // A bound-then-dropped listener: a real, briefly-valid port that is guaranteed closed
+            // by the time the client connects, so the transport failure is deterministic across
+            // platforms (unlike a fixed low port number, which may be filtered rather than refused).
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            drop(listener);
+
+            let keypair = test_dpop_keypair().expect("keypair must exist");
+            let session = Arc::new(Mutex::new(OAuthSession {
+                access_token: "private-access-token-oauthrs-test".to_string(),
+                refresh_token: "private-refresh-token-oauthrs-test".to_string(),
+                expires_at: 0, // already due for refresh
+                dpop_nonce: None,
+            }));
+            let client = OAuthClient::new(
+                keypair,
+                "test-client-id".to_string(),
+                session,
+                base_url,
+                Arc::new(WalletTransportObserver),
+                Arc::new(WalletTokenPersister),
+            );
+
+            let error = client
+                .get("/resource?did=did:plc:private-identity-oauthrs-test")
+                .await
+                .unwrap_err();
+            assert!(matches!(error, OAuthError::TokenRefreshFailed));
+
+            let report = crate::diagnostics::export_diagnostics();
+            assert!(
+                report.contains("oauthRefresh"),
+                "the transport failure must be recorded"
+            );
+            for secret in [
+                "private-access-token-oauthrs-test",
+                "private-refresh-token-oauthrs-test",
+                "private-identity-oauthrs-test",
+            ] {
+                assert!(
+                    !report.contains(secret),
+                    "secret leaked into diagnostics report: {secret}"
+                );
+            }
         }
     }
 }
