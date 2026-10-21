@@ -9,105 +9,72 @@
 //! the owning registration, in one transaction, so the wallet's per-agent history shows exactly
 //! how each ceremony ended (confirmed or expired — never silence).
 //!
-//! Template: `account_reaper.rs` / `firehose_gc.rs` — the first interval tick is skipped, an
-//! error skips the pass (retried next tick), and the task runs for the life of the process.
 
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
+use anyhow::Context;
 use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
 use crate::db::agent_auth::{expire_pending_agent_claim_attempts, expired_pending_claim_attempts};
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 
-/// Tally of what one sweep pass did, for logging and tests.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct SweepStats {
-    /// Claim attempts flipped `pending → expired` this pass.
-    pub expired: u64,
-}
-
-/// Spawn the periodic claim-attempt expiry sweep. The first tick is consumed without sweeping so
-/// the server does not run it mid-boot; the first pass runs one `interval` after startup.
-pub fn spawn_agent_claim_sweep(state: AppState, interval: Duration) -> JoinHandle<()> {
-    crate::sweep::spawn_sweep(interval, false, state, |state| async move {
-        run_agent_claim_sweep(&state).await;
-    })
-}
-
-/// Run a single sweep pass: expire every lapsed pending attempt and audit each expiry.
+/// Expire every lapsed pending attempt and audit each expiry once per `interval`.
 ///
 /// The listing, the bulk status flip, and the audit rows share one transaction, so the flipped
 /// set and the audited set cannot disagree; any error rolls the whole pass back and the next
 /// tick retries.
-pub async fn run_agent_claim_sweep(state: &AppState) -> SweepStats {
-    let mut stats = SweepStats::default();
+pub struct AgentClaimSweep {
+    pub interval: Duration,
+}
 
-    let mut tx = match state.db.begin().await {
-        Ok(tx) => tx,
-        Err(e) => {
-            tracing::error!(error = %e, "agent claim sweep: failed to open transaction; skipping pass");
-            return stats;
-        }
-    };
+impl Sweep for AgentClaimSweep {
+    const NAME: &'static str = names::AGENT_CLAIM_SWEEP;
 
-    let due = match expired_pending_claim_attempts(&mut *tx).await {
-        Ok(due) => due,
-        Err(e) => {
-            tracing::error!(error = %e, "agent claim sweep: failed to list lapsed attempts; skipping pass");
-            return stats;
-        }
-    };
-
-    if !due.is_empty() {
-        if let Err(e) = expire_pending_agent_claim_attempts(&mut *tx).await {
-            tracing::error!(error = %e, "agent claim sweep: failed to expire attempts; skipping pass");
-            return stats;
-        }
-        for attempt in &due {
-            let detail = serde_json::json!({ "claim_attempt_id": attempt.attempt_id }).to_string();
-            if let Err(e) = insert_agent_audit_event(
-                &mut *tx,
-                &Uuid::new_v4().to_string(),
-                &attempt.identity_id,
-                attempt.did.as_deref(),
-                AgentAuditEventType::ClaimExpired,
-                Some(&detail),
-            )
-            .await
-            {
-                tracing::error!(
-                    error = %e,
-                    registration_id = %attempt.identity_id,
-                    "agent claim sweep: failed to record expiry audit event; skipping pass"
-                );
-                return stats;
-            }
-        }
-        if let Err(e) = tx.commit().await {
-            tracing::error!(error = %e, "agent claim sweep: failed to commit; skipping pass");
-            return stats;
-        }
-        stats.expired = due.len() as u64;
-        tracing::info!(expired = stats.expired, "agent claim sweep pass complete");
+    fn interval(&self) -> Duration {
+        self.interval
     }
 
-    // The error early-returns above skip this on purpose: a stale
-    // `agent_claim_sweep_last_run_timestamp` signals that passes are not completing.
-    state
-        .metrics
-        .agent_claim_sweep_swept
-        .add(stats.expired, &[]);
-    state
-        .metrics
-        .agent_claim_sweep_last_run_timestamp
-        .record(crate::metrics::unix_now(), &[]);
-    state
-        .sweeps
-        .record_agent_claim_sweep(crate::sweep_status::SweepRun::now(stats.expired));
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        let mut tx = state.db.begin().await.context("open transaction")?;
+        let due = expired_pending_claim_attempts(&mut *tx)
+            .await
+            .context("list lapsed attempts")?;
 
-    stats
+        if !due.is_empty() {
+            expire_pending_agent_claim_attempts(&mut *tx)
+                .await
+                .context("expire attempts")?;
+            for attempt in &due {
+                let detail =
+                    serde_json::json!({ "claim_attempt_id": attempt.attempt_id }).to_string();
+                insert_agent_audit_event(
+                    &mut *tx,
+                    &Uuid::new_v4().to_string(),
+                    &attempt.identity_id,
+                    attempt.did.as_deref(),
+                    AgentAuditEventType::ClaimExpired,
+                    Some(&detail),
+                )
+                .await
+                .with_context(|| {
+                    format!("record expiry audit event for {}", attempt.identity_id)
+                })?;
+            }
+            tx.commit().await.context("commit")?;
+            tracing::info!(expired = due.len(), "agent claim sweep pass complete");
+        }
+
+        let expired = due.len() as u64;
+        state.metrics.agent_claim_sweep_swept.add(expired, &[]);
+        state
+            .metrics
+            .agent_claim_sweep_last_run_timestamp
+            .record(crate::metrics::unix_now(), &[]);
+        Ok(Pass::swept(expired))
+    }
 }
 
 #[cfg(test)]
@@ -115,6 +82,13 @@ mod tests {
     use super::*;
     use crate::app::test_state;
     use crate::db::accounts::insert_bare_account as seed_account;
+    use crate::sweep::run_once;
+
+    fn sweep() -> AgentClaimSweep {
+        AgentClaimSweep {
+            interval: Duration::from_secs(1),
+        }
+    }
 
     async fn seed_identity(db: &sqlx::SqlitePool, id: &str, did: Option<&str>) {
         sqlx::query(
@@ -163,8 +137,8 @@ mod tests {
         seed_attempt(&state.db, "cla_anon", "reg_anon", "2020-01-01 00:00:00").await;
         seed_attempt(&state.db, "cla_live", "reg_lapsed", "2099-01-01 00:00:00").await;
 
-        let stats = run_agent_claim_sweep(&state).await;
-        assert_eq!(stats.expired, 2);
+        let pass = run_once(&sweep(), &state).await.unwrap();
+        assert_eq!(pass.swept, 2);
         assert_eq!(attempt_status(&state.db, "cla_lapsed").await, "expired");
         assert_eq!(attempt_status(&state.db, "cla_anon").await, "expired");
         assert_eq!(
@@ -193,15 +167,19 @@ mod tests {
     #[tokio::test]
     async fn nothing_due_is_a_noop_that_still_timestamps() {
         let state = test_state().await;
-        let stats = run_agent_claim_sweep(&state).await;
-        assert_eq!(stats, SweepStats::default());
+        let pass = run_once(&sweep(), &state).await.unwrap();
+        assert_eq!(pass, Pass::default());
         let rendered = state.metrics.render().unwrap().unwrap();
         assert!(
             rendered.contains("agent_claim_sweep_last_run_timestamp"),
             "missing agent_claim_sweep_last_run_timestamp in:\n{rendered}"
         );
         // The readable snapshot records the same completed pass (swept nothing ≠ never ran).
-        let run = state.sweeps.snapshot().agent_claim_sweep.unwrap();
+        let run = state
+            .sweeps
+            .snapshot()
+            .get(names::AGENT_CLAIM_SWEEP)
+            .unwrap();
         assert_eq!(run.swept, 0);
     }
 
@@ -212,7 +190,7 @@ mod tests {
         let state = test_state().await;
         seed_identity(&state.db, "reg_gone", None).await;
         seed_attempt(&state.db, "cla_gone", "reg_gone", "2020-01-01 00:00:00").await;
-        run_agent_claim_sweep(&state).await;
+        run_once(&sweep(), &state).await;
 
         let completed = crate::db::agent_auth::complete_agent_claim_attempt(&state.db, "cla_gone")
             .await

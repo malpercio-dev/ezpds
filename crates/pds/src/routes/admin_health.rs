@@ -34,7 +34,7 @@ use common::{ApiError, ApiResultExt};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
-use crate::sweep_status::SweepRun;
+use crate::sweep_status::{names, SweepRun};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,16 +248,16 @@ pub async fn admin_health(
             backfill_window_seconds,
         },
         sweeps: SweepStates {
-            blob_gc: sweeps.blob_gc.map(SweepState::from),
-            blob_mirror: sweeps.blob_mirror.map(SweepState::from),
-            blob_scrub: sweeps.blob_scrub.map(SweepState::from),
-            firehose_gc: sweeps.firehose_gc.map(SweepState::from),
-            account_reaper: sweeps.account_reaper.map(SweepState::from),
-            agent_claim_sweep: sweeps.agent_claim_sweep.map(SweepState::from),
-            admin_nonce_sweep: sweeps.admin_nonce_sweep.map(SweepState::from),
-            space_jti_sweep: sweeps.space_jti_sweep.map(SweepState::from),
-            space_oplog_sweep: sweeps.space_oplog_sweep.map(SweepState::from),
-            labeler_watch: sweeps.labeler_watch.map(SweepState::from),
+            blob_gc: sweeps.get(names::BLOB_GC).map(SweepState::from),
+            blob_mirror: sweeps.get(names::BLOB_MIRROR).map(SweepState::from),
+            blob_scrub: sweeps.get(names::BLOB_SCRUB).map(SweepState::from),
+            firehose_gc: sweeps.get(names::FIREHOSE_GC).map(SweepState::from),
+            account_reaper: sweeps.get(names::ACCOUNT_REAPER).map(SweepState::from),
+            agent_claim_sweep: sweeps.get(names::AGENT_CLAIM_SWEEP).map(SweepState::from),
+            admin_nonce_sweep: sweeps.get(names::ADMIN_NONCE_SWEEP).map(SweepState::from),
+            space_jti_sweep: sweeps.get(names::SPACE_JTI_SWEEP).map(SweepState::from),
+            space_oplog_sweep: sweeps.get(names::SPACE_OPLOG_SWEEP).map(SweepState::from),
+            labeler_watch: sweeps.get(names::LABELER_WATCH).map(SweepState::from),
         },
         notify_queue_depth: state.notify_sender.as_ref().map(|s| s.depth()),
     }))
@@ -409,13 +409,14 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-        state
-            .sweeps
-            .record_labeler_watch(crate::sweep_status::SweepRun {
+        state.sweeps.record(
+            crate::sweep_status::names::LABELER_WATCH,
+            crate::sweep_status::SweepRun {
                 completed_at: 1_760_000_000,
                 swept: 2,
                 errors: 0,
-            });
+            },
+        );
 
         let router = app(state);
         let (status, json) = get_health(router, Some("test-admin-token")).await;
@@ -435,25 +436,30 @@ mod tests {
             .await
             .unwrap();
         // A completed blob-GC pass shows up with its literal facts.
-        state.sweeps.record_blob_gc(crate::sweep_status::SweepRun {
-            completed_at: 1_750_000_000,
-            swept: 7,
-            errors: 0,
-        });
-        state
-            .sweeps
-            .record_blob_mirror(crate::sweep_status::SweepRun {
+        state.sweeps.record(
+            crate::sweep_status::names::BLOB_GC,
+            crate::sweep_status::SweepRun {
+                completed_at: 1_750_000_000,
+                swept: 7,
+                errors: 0,
+            },
+        );
+        state.sweeps.record(
+            crate::sweep_status::names::BLOB_MIRROR,
+            crate::sweep_status::SweepRun {
                 completed_at: 1_750_000_100,
                 swept: 3,
                 errors: 0,
-            });
-        state
-            .sweeps
-            .record_blob_scrub(crate::sweep_status::SweepRun {
+            },
+        );
+        state.sweeps.record(
+            crate::sweep_status::names::BLOB_SCRUB,
+            crate::sweep_status::SweepRun {
                 completed_at: 1_750_000_200,
                 swept: 1,
                 errors: 0,
-            });
+            },
+        );
 
         let router = app(state);
         let (status, json) = get_health(router, Some("test-admin-token")).await;
@@ -479,9 +485,10 @@ mod tests {
     #[tokio::test]
     async fn health_reports_a_completed_sweep_that_skipped_work() {
         let state = test_state_with_admin_token().await;
-        state
-            .sweeps
-            .record_blob_gc(crate::sweep_status::SweepRun::now_with_errors(4, 2));
+        state.sweeps.record(
+            crate::sweep_status::names::BLOB_GC,
+            crate::sweep_status::SweepRun::now_with_errors(4, 2),
+        );
 
         let router = app(state);
         let (status, json) = get_health(router, Some("test-admin-token")).await;

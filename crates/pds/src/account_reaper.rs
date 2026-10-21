@@ -16,89 +16,71 @@
 
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use crate::account_delete::{purge_account, PurgeOutcome};
 use crate::app::AppState;
 use crate::db::accounts::accounts_due_for_deletion;
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 
-/// Tally of what one reaper pass did, for logging and tests.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct ReaperStats {
-    /// Accounts permanently deleted this pass.
-    pub deleted: u64,
-    /// Accounts that were due but skipped due to an error (logged, not fatal).
-    pub errors: u64,
+/// Permanently delete every account whose `deleteAfter` has elapsed once per `interval`.
+///
+/// A no-op when nothing is due. An error listing the due accounts fails the pass (the next
+/// pass retries); an error deleting a single account is logged but lets the pass continue with
+/// the rest, and is not reported in the health readout's `errors`.
+pub struct AccountReaper {
+    pub interval: Duration,
 }
 
-/// Spawn the periodic scheduled-deletion reaper.
-///
-/// The first interval tick is consumed without running the reaper, so the server does not delete
-/// accounts during startup; the first pass runs one `interval` after boot. The task loops for the
-/// life of the process and is dropped on shutdown.
-pub fn spawn_account_reaper(state: AppState, interval: Duration) -> JoinHandle<()> {
-    crate::sweep::spawn_sweep(interval, false, state, |state| async move {
-        run_account_reaper(&state).await;
-    })
-}
+impl Sweep for AccountReaper {
+    const NAME: &'static str = names::ACCOUNT_REAPER;
 
-/// Run a single reaper pass: permanently delete every account whose `deleteAfter` has elapsed.
-///
-/// A no-op when nothing is due. An error listing the due accounts skips the whole pass (the next
-/// pass retries); an error deleting a single account is logged and counted but lets the pass
-/// continue with the rest.
-pub async fn run_account_reaper(state: &AppState) -> ReaperStats {
-    let mut stats = ReaperStats::default();
-
-    let due = match accounts_due_for_deletion(&state.db).await {
-        Ok(dids) => dids,
-        Err(e) => {
-            tracing::error!(error = %e, "account reaper: failed to list due accounts; skipping pass");
-            return stats;
-        }
-    };
-
-    for did in due {
-        match purge_account(state, &did).await {
-            Ok(PurgeOutcome::Deleted) => {
-                stats.deleted += 1;
-                tracing::info!(did = %did, "account reaper: permanently deleted scheduled account");
-            }
-            // Already gone (raced with an interactive deleteAccount): not an error.
-            Ok(PurgeOutcome::NotFound) => {}
-            Err(e) => {
-                stats.errors += 1;
-                tracing::warn!(did = %did, error = %e, "account reaper: failed to delete account; will retry next pass");
-            }
-        }
+    fn interval(&self) -> Duration {
+        self.interval
     }
 
-    if stats.deleted > 0 || stats.errors > 0 {
-        tracing::info!(
-            deleted = stats.deleted,
-            errors = stats.errors,
-            "account reaper pass complete"
-        );
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        let due = accounts_due_for_deletion(&state.db).await?;
+
+        let (mut deleted, mut errors) = (0u64, 0u64);
+        for did in due {
+            match purge_account(state, &did).await {
+                Ok(PurgeOutcome::Deleted) => {
+                    deleted += 1;
+                    tracing::info!(did = %did, "account reaper: permanently deleted scheduled account");
+                }
+                // Already gone (raced with an interactive deleteAccount): not an error.
+                Ok(PurgeOutcome::NotFound) => {}
+                Err(e) => {
+                    errors += 1;
+                    tracing::warn!(did = %did, error = %e, "account reaper: failed to delete account; will retry next pass");
+                }
+            }
+        }
+
+        if deleted > 0 || errors > 0 {
+            tracing::info!(deleted, errors, "account reaper pass complete");
+        }
+
+        state.metrics.account_reaper_swept.add(deleted, &[]);
+        state
+            .metrics
+            .account_reaper_last_run_timestamp
+            .record(crate::metrics::unix_now(), &[]);
+        Ok(Pass::swept(deleted))
     }
-
-    // The failed-to-start early return above skips this on purpose: a stale
-    // `account_reaper_last_run_timestamp` signals that passes are not completing.
-    state.metrics.account_reaper_swept.add(stats.deleted, &[]);
-    state
-        .metrics
-        .account_reaper_last_run_timestamp
-        .record(crate::metrics::unix_now(), &[]);
-    state
-        .sweeps
-        .record_account_reaper(crate::sweep_status::SweepRun::now(stats.deleted));
-
-    stats
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::test_state;
+    use crate::sweep::run_once;
+
+    fn sweep() -> AccountReaper {
+        AccountReaper {
+            interval: Duration::from_secs(1),
+        }
+    }
 
     /// Insert a deactivated account with an explicit `delete_after`.
     async fn insert_deactivated(db: &sqlx::SqlitePool, did: &str, delete_after: &str) {
@@ -128,8 +110,8 @@ mod tests {
         let state = test_state().await;
         insert_deactivated(&state.db, "did:plc:reapdue", "2020-01-01T00:00:00Z").await;
 
-        let stats = run_account_reaper(&state).await;
-        assert_eq!(stats.deleted, 1);
+        let stats = run_once(&sweep(), &state).await.unwrap();
+        assert_eq!(stats.swept, 1);
 
         // The pass's instruments fire: the deletion is counted and the pass is timestamped.
         let rendered = state.metrics.render().unwrap().unwrap();
@@ -142,8 +124,15 @@ mod tests {
             "missing account_reaper_last_run_timestamp in:\n{rendered}"
         );
         // The readable snapshot records the same completed pass with its literal count.
-        assert_eq!(state.sweeps.snapshot().account_reaper.unwrap().swept, 1);
-        assert_eq!(stats.errors, 0);
+        assert_eq!(
+            state
+                .sweeps
+                .snapshot()
+                .get(names::ACCOUNT_REAPER)
+                .unwrap()
+                .swept,
+            1
+        );
         assert!(!account_exists(&state.db, "did:plc:reapdue").await);
     }
 
@@ -158,8 +147,8 @@ mod tests {
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         insert_deactivated(&state.db, "did:plc:reaptoday", &one_minute_ago).await;
 
-        let stats = run_account_reaper(&state).await;
-        assert_eq!(stats.deleted, 1, "an instant earlier today is due");
+        let stats = run_once(&sweep(), &state).await.unwrap();
+        assert_eq!(stats.swept, 1, "an instant earlier today is due");
         assert!(!account_exists(&state.db, "did:plc:reaptoday").await);
     }
 
@@ -168,8 +157,8 @@ mod tests {
         let state = test_state().await;
         insert_deactivated(&state.db, "did:plc:reapfuture", "2999-01-01T00:00:00Z").await;
 
-        let stats = run_account_reaper(&state).await;
-        assert_eq!(stats.deleted, 0);
+        let stats = run_once(&sweep(), &state).await.unwrap();
+        assert_eq!(stats.swept, 0);
         assert!(account_exists(&state.db, "did:plc:reapfuture").await);
     }
 
@@ -185,15 +174,15 @@ mod tests {
         .await
         .unwrap();
 
-        let stats = run_account_reaper(&state).await;
-        assert_eq!(stats.deleted, 0);
+        let stats = run_once(&sweep(), &state).await.unwrap();
+        assert_eq!(stats.swept, 0);
         assert!(account_exists(&state.db, "did:plc:reapnodelete").await);
     }
 
     #[tokio::test]
     async fn no_due_accounts_is_a_noop() {
         let state = test_state().await;
-        let stats = run_account_reaper(&state).await;
-        assert_eq!(stats, ReaperStats::default());
+        let stats = run_once(&sweep(), &state).await.unwrap();
+        assert_eq!(stats, Pass::default());
     }
 }

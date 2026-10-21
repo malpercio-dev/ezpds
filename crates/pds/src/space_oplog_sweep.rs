@@ -11,10 +11,10 @@
 
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use crate::app::AppState;
 use crate::db::space_repos::sweep_old_repo_ops;
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 
 /// Hourly cadence: ops accrue at write rate, far below the jti table's request rate.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -23,42 +23,28 @@ pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// trade: a syncer further behind than this re-syncs in full rather than replaying.
 pub const OPLOG_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 
-/// Tally of what one sweep pass did, for logging and tests.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct SweepStats {
-    pub swept: u64,
-}
+pub struct SpaceOplogSweep;
 
-/// Spawn the periodic sweep. The first pass runs one full interval after startup.
-///
-/// A late pass must not be followed by a burst of catch-up passes, hence `skip_missed_ticks`.
-pub fn spawn_space_oplog_sweep(state: AppState) -> JoinHandle<()> {
-    crate::sweep::spawn_sweep(SWEEP_INTERVAL, true, state, |state| async move {
-        run_space_oplog_sweep(&state).await;
-    })
-}
+impl Sweep for SpaceOplogSweep {
+    const NAME: &'static str = names::SPACE_OPLOG_SWEEP;
 
-/// Run one best-effort sweep pass.
-pub async fn run_space_oplog_sweep(state: &AppState) -> SweepStats {
-    let swept = match sweep_old_repo_ops(&state.db, OPLOG_RETENTION_SECS).await {
-        Ok(swept) => swept,
-        Err(error) => {
-            tracing::debug!(%error, "space oplog sweep failed; skipping pass");
-            return SweepStats::default();
-        }
-    };
-
-    if swept > 0 {
-        tracing::debug!(swept, "space oplog sweep pass complete");
-    } else {
-        tracing::trace!("space oplog sweep pass complete (nothing to sweep)");
+    fn interval(&self) -> Duration {
+        SWEEP_INTERVAL
     }
 
-    state
-        .sweeps
-        .record_space_oplog_sweep(crate::sweep_status::SweepRun::now(swept));
+    fn skip_missed_ticks(&self) -> bool {
+        true
+    }
 
-    SweepStats { swept }
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        let swept = sweep_old_repo_ops(&state.db, OPLOG_RETENTION_SECS).await?;
+        if swept > 0 {
+            tracing::debug!(swept, "space oplog sweep pass complete");
+        } else {
+            tracing::trace!("space oplog sweep pass complete (nothing to sweep)");
+        }
+        Ok(Pass::swept(swept))
+    }
 }
 
 #[cfg(test)]
@@ -116,8 +102,10 @@ mod tests {
         .await
         .unwrap();
 
-        let stats = run_space_oplog_sweep(&state).await;
-        assert_eq!(stats.swept, 1);
+        let pass = crate::sweep::run_once(&SpaceOplogSweep, &state)
+            .await
+            .unwrap();
+        assert_eq!(pass.swept, 1);
 
         let remaining: Vec<String> =
             sqlx::query_scalar("SELECT rkey FROM space_repo_ops ORDER BY rowid")
@@ -127,6 +115,12 @@ mod tests {
         assert_eq!(remaining, vec!["new".to_string()]);
 
         // A second pass is a no-op — the sweep is storage reclamation, not a ratchet.
-        assert_eq!(run_space_oplog_sweep(&state).await.swept, 0);
+        assert_eq!(
+            crate::sweep::run_once(&SpaceOplogSweep, &state)
+                .await
+                .unwrap()
+                .swept,
+            0
+        );
     }
 }

@@ -38,19 +38,20 @@ src/
   space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append → writer-set row, all one transaction; blob refs are GC-derived, and the notification fan-out is spawned from here post-commit so no write path can skip it. `SpaceWriteAdmission` is the one knob on its account-lifecycle guard: `Import` admits the deactivated state migration runs in (and skips write-point charging), `Active` is everything else — see module doc
   space_uri.rs     — space-ref syntax (`at://{authority}/space/{type}/{skey}`) and the wider space AT-URI family; deliberately separate from `repo_engine::AtUri`, whose callers resolve MST paths a space URI must never reach
   space_notify.rs  — outbound Atproto Spaces write notifications: the repo-host → space-host report (with the authority auto-registration that creates the subscription) and the space-host → registered-syncer fan-out; detached, retrying, bounded — see module doc
-  space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon (template: sovereign_session_nonce_sweep.rs)
+  space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon
   space_oplog_sweep.rs — hourly `space_repo_ops` compaction sweep (7-day retention): the oplog is droppable by spec, and a syncer whose `since` predates the window heals via `getRepo` — see module doc
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   time.rs          — shared epoch/RFC-3339 time helpers; the variants differ on return type + pre-epoch handling — pick by call-site contract (module doc)
   account_delete.rs— shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, `#account` deleted frame), used by deleteAccount and the reaper — see module doc
   account_genesis.rs— the steps the two account-genesis transactions (`create_did.rs`, `create_account_xrpc.rs`) share: the `accounts` row, the genesis blocks + staged `#commit`/`#sync`, and the post-commit announce. Deliberately not one merged promotion — the module doc says what differs around it
-  account_reaper.rs— periodic sweep permanently deleting deactivated accounts past `deleteAfter` (template: firehose_gc.rs)
-  agent_claim_sweep.rs— periodic sweep flipping lapsed agent claim attempts to `expired` (template: account_reaper.rs) — see module doc
+  account_reaper.rs— periodic sweep permanently deleting deactivated accounts past `deleteAfter`
+  agent_claim_sweep.rs— periodic sweep flipping lapsed agent claim attempts to `expired` — see module doc
   agent_child_core.rs— the verify → provision → publish → finalize core behind sovereign child accounts, shared by every route that provisions one; resumable rather than atomic, because the plc.directory publish can't join a SQLite transaction — see module doc
   labeler_watch.rs — periodic labeler watcher reconciling `account_labels` (V051) to the labels currently in force; first pass runs at boot; genuinely new flags fire ONE batched operator push per pass, seeding-suppressed via `labels_seeded` (V072) — see module doc
   label_state.rs   — Functional Core for the watcher: reduce raw label events to the in-force set and diff against persisted rows
   admin_nonce_sweep.rs— periodic stale `admin_nonces` sweep (pure storage reclamation; retention stays above the replay-acceptance window) — see module doc
   sovereign_session_nonce_sweep.rs— hourly `sovereign_session_nonces` sweep; a compile-time assertion keeps retention above the replay window
+  sweep.rs         — the `Sweep` trait (name, cadence, one `run` pass → `Pass`) and the one scheduler (`spawn`/`run_once`) that owns the interval loop, the skipped boot tick, and publishing each completed pass to `AppState.sweeps`; a pass returning `Err` records nothing. Converted so far: the six sweeps below that ran on the old `spawn_sweep` runner (account_reaper, agent_claim_sweep, admin_nonce_sweep, sovereign_session_nonce_sweep, space_jti_sweep, space_oplog_sweep); blob_gc, blob_mirror, blob_scrub, firehose_gc and labeler_watch still hand-roll their loops
   sweep_status.rs  — readable last-run state per periodic sweep (`AppState.sweeps`) for `GET /v1/admin/health`; a failed pass records nothing — staleness is the alarm — see module doc
   transfer.rs      — planned device-transfer accept/complete/cancel workflows; `db/transfers.rs` owns the SQL, this module owns the cross-table ordering — see module doc
   identity/        — everything "who is this handle/DID" (see section below)
@@ -411,7 +412,7 @@ Before writing a struct, query, fixture, or loop that resembles one that already
 against it and extend or parametrise it. The concrete homes (see the index below): a SQL statement
 needed by two routes goes in `db/`; an auth check shared by two surfaces goes in `auth/guards.rs`;
 a fixture needed by two test modules goes in `routes/test_utils.rs` (add the missing knob rather
-than forking the helper); a periodic task goes through `sweep::spawn_sweep`.
+than forking the helper); a periodic task is a `sweep::Sweep` impl run by `sweep::spawn`.
 
 **Tests: one whole-document assertion per constant response, one table per contract.**
 A route that serves a constant document (metadata, JWKS, capabilities) gets one `assert_eq!`
@@ -438,7 +439,7 @@ Look here before writing a helper. Each row is the one home; copies elsewhere ar
 | insert a generated value, retrying on a UNIQUE collision | `db::insert_with_retry_on_collision` |
 | open an auth.md claim ceremony | `auth::agent_assertion::start_claim_attempt` |
 | the account row + genesis repo + announce shared by account promotion | `account_genesis` |
-| a periodic background pass | `sweep::spawn_sweep` |
+| a periodic background pass | `sweep::Sweep` + `sweep::spawn` (tests call `sweep::run_once`) |
 | lower-case hex of a SHA-256 digest | `auth::token::sha256_hex` (inside `crates/crypto` itself: its crate-private `hex::to_hex`) |
 | percent-encoding | `urlencoding::encode` |
 | test state, accounts, tokens, DPoP proofs, request builders, body decoding | `routes::test_utils` |

@@ -12,67 +12,56 @@
 //! (`common::ADMIN_TIMESTAMP_WINDOW_SECS`) rejects a `nonce_max_age_secs` at or below that
 //! span.
 //!
-//! Template: `account_reaper.rs` / `firehose_gc.rs` — the first interval tick is skipped, an
-//! error skips the pass (retried next tick), and the task runs for the life of the process.
-
 use std::time::Duration;
-
-use tokio::task::JoinHandle;
 
 use crate::app::AppState;
 use crate::db::admin_devices::sweep_stale_nonces;
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 
-/// Tally of what one sweep pass did, for logging and tests.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct SweepStats {
-    /// Nonce rows deleted this pass.
-    pub swept: u64,
+/// Delete every `admin_nonces` row older than `max_age_secs` once per `interval`.
+pub struct AdminNonceSweep {
+    pub interval: Duration,
+    pub max_age_secs: i64,
 }
 
-/// Spawn the periodic stale-nonce sweep. The first tick is consumed without sweeping so the
-/// server does not run it mid-boot; the first pass runs one `interval` after startup.
-pub fn spawn_admin_nonce_sweep(
-    state: AppState,
-    interval: Duration,
-    max_age_secs: i64,
-) -> JoinHandle<()> {
-    crate::sweep::spawn_sweep(interval, false, state, move |state| async move {
-        run_admin_nonce_sweep(&state, max_age_secs).await;
-    })
-}
+impl Sweep for AdminNonceSweep {
+    const NAME: &'static str = names::ADMIN_NONCE_SWEEP;
 
-/// Run a single sweep pass: delete every `admin_nonces` row older than `max_age_secs`.
-pub async fn run_admin_nonce_sweep(state: &AppState, max_age_secs: i64) -> SweepStats {
-    let swept = match sweep_stale_nonces(&state.db, max_age_secs).await {
-        Ok(swept) => swept,
-        Err(e) => {
-            tracing::debug!(error = %e, "admin nonce sweep: failed to sweep; skipping pass");
-            return SweepStats::default();
-        }
-    };
-
-    if swept > 0 {
-        tracing::debug!(swept, "admin nonce sweep pass complete");
-    } else {
-        tracing::trace!("admin nonce sweep pass complete (nothing to sweep)");
+    fn interval(&self) -> Duration {
+        self.interval
     }
 
-    state.metrics.admin_nonce_sweep_swept.add(swept, &[]);
-    state
-        .metrics
-        .admin_nonce_sweep_last_run_timestamp
-        .record(crate::metrics::unix_now(), &[]);
-    state
-        .sweeps
-        .record_admin_nonce_sweep(crate::sweep_status::SweepRun::now(swept));
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        let swept = sweep_stale_nonces(&state.db, self.max_age_secs).await?;
 
-    SweepStats { swept }
+        if swept > 0 {
+            tracing::debug!(swept, "admin nonce sweep pass complete");
+        } else {
+            tracing::trace!("admin nonce sweep pass complete (nothing to sweep)");
+        }
+
+        state.metrics.admin_nonce_sweep_swept.add(swept, &[]);
+        state
+            .metrics
+            .admin_nonce_sweep_last_run_timestamp
+            .record(crate::metrics::unix_now(), &[]);
+        Ok(Pass::swept(swept))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::test_state;
+    use crate::sweep::run_once;
+
+    fn sweep() -> AdminNonceSweep {
+        AdminNonceSweep {
+            interval: Duration::from_secs(1),
+            max_age_secs: 3600,
+        }
+    }
 
     async fn insert_stale_nonce(db: &sqlx::SqlitePool, device_id: &str, nonce: &str) {
         sqlx::query(
@@ -109,8 +98,8 @@ mod tests {
             .await
             .unwrap();
 
-        let stats = run_admin_nonce_sweep(&state, 3600).await;
-        assert_eq!(stats.swept, 1);
+        let pass = run_once(&sweep(), &state).await.unwrap();
+        assert_eq!(pass.swept, 1);
 
         let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM admin_nonces")
             .fetch_one(&state.db)
@@ -127,21 +116,33 @@ mod tests {
             rendered.contains("admin_nonce_sweep_last_run_timestamp"),
             "missing admin_nonce_sweep_last_run_timestamp in:\n{rendered}"
         );
-        assert_eq!(state.sweeps.snapshot().admin_nonce_sweep.unwrap().swept, 1);
+        assert_eq!(
+            state
+                .sweeps
+                .snapshot()
+                .get(names::ADMIN_NONCE_SWEEP)
+                .unwrap()
+                .swept,
+            1
+        );
     }
 
     #[tokio::test]
     async fn nothing_stale_is_a_noop_that_still_timestamps() {
         let state = test_state().await;
-        let stats = run_admin_nonce_sweep(&state, 3600).await;
-        assert_eq!(stats, SweepStats::default());
+        let pass = run_once(&sweep(), &state).await.unwrap();
+        assert_eq!(pass, Pass::default());
 
         let rendered = state.metrics.render().unwrap().unwrap();
         assert!(
             rendered.contains("admin_nonce_sweep_last_run_timestamp"),
             "missing admin_nonce_sweep_last_run_timestamp in:\n{rendered}"
         );
-        let run = state.sweeps.snapshot().admin_nonce_sweep.unwrap();
+        let run = state
+            .sweeps
+            .snapshot()
+            .get(names::ADMIN_NONCE_SWEEP)
+            .unwrap();
         assert_eq!(run.swept, 0);
     }
 }

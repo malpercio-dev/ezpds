@@ -10,50 +10,36 @@
 
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use crate::app::AppState;
 use crate::db::space_jti::sweep_expired_jtis;
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 
 /// Sweep every ten minutes: delegation and attestation rows carry horizons of
 /// at most five minutes, so an hourly cadence would let the table's working
 /// set grow well past its live window.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
-/// Tally of what one sweep pass did, for logging and tests.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct SweepStats {
-    pub swept: u64,
-}
+pub struct SpaceJtiSweep;
 
-/// Spawn the periodic sweep. The first pass runs one full interval after startup.
-///
-/// A late pass must not be followed by a burst of catch-up passes, hence `skip_missed_ticks`.
-pub fn spawn_space_jti_sweep(state: AppState) -> JoinHandle<()> {
-    crate::sweep::spawn_sweep(SWEEP_INTERVAL, true, state, |state| async move {
-        run_space_jti_sweep(&state).await;
-    })
-}
+impl Sweep for SpaceJtiSweep {
+    const NAME: &'static str = names::SPACE_JTI_SWEEP;
 
-/// Run one best-effort sweep pass.
-pub async fn run_space_jti_sweep(state: &AppState) -> SweepStats {
-    let swept = match sweep_expired_jtis(&state.db).await {
-        Ok(swept) => swept,
-        Err(error) => {
-            tracing::debug!(%error, "space jti sweep failed; skipping pass");
-            return SweepStats::default();
-        }
-    };
-
-    if swept > 0 {
-        tracing::debug!(swept, "space jti sweep pass complete");
-    } else {
-        tracing::trace!("space jti sweep pass complete (nothing to sweep)");
+    fn interval(&self) -> Duration {
+        SWEEP_INTERVAL
     }
 
-    state
-        .sweeps
-        .record_space_jti_sweep(crate::sweep_status::SweepRun::now(swept));
+    fn skip_missed_ticks(&self) -> bool {
+        true
+    }
 
-    SweepStats { swept }
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        let swept = sweep_expired_jtis(&state.db).await?;
+        if swept > 0 {
+            tracing::debug!(swept, "space jti sweep pass complete");
+        } else {
+            tracing::trace!("space jti sweep pass complete (nothing to sweep)");
+        }
+        Ok(Pass::swept(swept))
+    }
 }

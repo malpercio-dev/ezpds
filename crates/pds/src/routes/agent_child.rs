@@ -1106,8 +1106,11 @@ mod tests {
 
         // The reaper permanently purges the child (account/repo/handle gone) and emits #account
         // deleted — the FK-ordered purge also drops the provisioning row without a constraint error.
-        let stats = crate::account_reaper::run_account_reaper(&state).await;
-        assert_eq!(stats.deleted, 1);
+        let reaper = crate::account_reaper::AccountReaper {
+            interval: std::time::Duration::from_secs(1),
+        };
+        let stats = crate::sweep::run_once(&reaper, &state).await.unwrap();
+        assert_eq!(stats.swept, 1);
         assert!(!crate::db::accounts::account_exists(&state.db, &child)
             .await
             .unwrap());

@@ -710,7 +710,12 @@ async fn run() -> anyhow::Result<()> {
     // runs for the life of the process, so the handle is dropped on shutdown rather than joined.
     let reaper_interval =
         std::time::Duration::from_secs(state.config.accounts.deletion_reaper_interval_secs);
-    let _account_reaper = account_reaper::spawn_account_reaper(state.clone(), reaper_interval);
+    let _account_reaper = sweep::spawn(
+        account_reaper::AccountReaper {
+            interval: reaper_interval,
+        },
+        state.clone(),
+    );
     tracing::info!(
         interval_secs = state.config.accounts.deletion_reaper_interval_secs,
         "scheduled account-deletion reaper started"
@@ -722,8 +727,12 @@ async fn run() -> anyhow::Result<()> {
     // of the process, so the handle is dropped on shutdown rather than joined.
     let claim_sweep_interval =
         std::time::Duration::from_secs(state.config.agent_auth.claim_sweep_interval_secs);
-    let _agent_claim_sweep =
-        agent_claim_sweep::spawn_agent_claim_sweep(state.clone(), claim_sweep_interval);
+    let _agent_claim_sweep = sweep::spawn(
+        agent_claim_sweep::AgentClaimSweep {
+            interval: claim_sweep_interval,
+        },
+        state.clone(),
+    );
     tracing::info!(
         interval_secs = state.config.agent_auth.claim_sweep_interval_secs,
         "agent claim-attempt expiry sweep started"
@@ -739,10 +748,12 @@ async fn run() -> anyhow::Result<()> {
         std::time::Duration::from_secs(state.config.admin_devices.nonce_sweep_interval_secs);
     let nonce_max_age_secs = i64::try_from(state.config.admin_devices.nonce_max_age_secs)
         .expect("admin_devices.nonce_max_age_secs is validated to fit in i64 at config load");
-    let _admin_nonce_sweep = admin_nonce_sweep::spawn_admin_nonce_sweep(
+    let _admin_nonce_sweep = sweep::spawn(
+        admin_nonce_sweep::AdminNonceSweep {
+            interval: nonce_sweep_interval,
+            max_age_secs: nonce_max_age_secs,
+        },
         state.clone(),
-        nonce_sweep_interval,
-        nonce_max_age_secs,
     );
     tracing::info!(
         interval_secs = state.config.admin_devices.nonce_sweep_interval_secs,
@@ -779,8 +790,10 @@ async fn run() -> anyhow::Result<()> {
     // Spawn the sovereign-session nonce retention sweep. The DID-scoped primary key enforces
     // anti-replay while the fixed retention window remains strictly longer than the signed
     // request's full replay-acceptance span; the sweep only bounds storage growth.
-    let _sovereign_session_nonce_sweep =
-        sovereign_session_nonce_sweep::spawn_sovereign_session_nonce_sweep(state.clone());
+    let _sovereign_session_nonce_sweep = sweep::spawn(
+        sovereign_session_nonce_sweep::SovereignSessionNonceSweep,
+        state.clone(),
+    );
     tracing::info!(
         interval_secs = sovereign_session_nonce_sweep::SWEEP_INTERVAL.as_secs(),
         max_age_secs = sovereign_session_nonce_sweep::MAX_AGE_SECS,
@@ -795,7 +808,7 @@ async fn run() -> anyhow::Result<()> {
         // The jti retention sweep: the (scope, jti) primary key enforces anti-replay; each
         // row's expires_at carries its own token's acceptance horizon, so the sweep only
         // bounds storage growth.
-        let jti = space_jti_sweep::spawn_space_jti_sweep(state.clone());
+        let jti = sweep::spawn(space_jti_sweep::SpaceJtiSweep, state.clone());
         tracing::info!(
             interval_secs = space_jti_sweep::SWEEP_INTERVAL.as_secs(),
             "space jti retention sweep started"
@@ -803,7 +816,7 @@ async fn run() -> anyhow::Result<()> {
 
         // The permissioned-repo oplog compaction sweep. The oplog is droppable by spec;
         // this bounds it to a backfill window, and a syncer further behind heals via getRepo.
-        let oplog = space_oplog_sweep::spawn_space_oplog_sweep(state.clone());
+        let oplog = sweep::spawn(space_oplog_sweep::SpaceOplogSweep, state.clone());
         tracing::info!(
             interval_secs = space_oplog_sweep::SWEEP_INTERVAL.as_secs(),
             retention_secs = space_oplog_sweep::OPLOG_RETENTION_SECS,
