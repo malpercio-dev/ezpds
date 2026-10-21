@@ -656,7 +656,12 @@ async fn run() -> anyhow::Result<()> {
     // it is best-effort and runs for the life of the process, so the handle is dropped on
     // shutdown rather than joined.
     let gc_interval = std::time::Duration::from_secs(state.config.blobs.gc_interval_secs);
-    let _blob_gc = blob_gc::spawn_blob_gc(state.clone(), gc_interval);
+    let _blob_gc = sweep::spawn(
+        blob_gc::BlobGc {
+            interval: gc_interval,
+        },
+        state.clone(),
+    );
     tracing::info!(
         interval_secs = state.config.blobs.gc_interval_secs,
         "blob garbage collector started"
@@ -697,7 +702,12 @@ async fn run() -> anyhow::Result<()> {
     // `subscribeRepos` cursor replay does not grow without bound; it is best-effort and runs for
     // the life of the process, so the handle is dropped on shutdown rather than joined.
     let fh_gc_interval = std::time::Duration::from_secs(state.config.firehose.gc_interval_secs);
-    let _firehose_gc = firehose_gc::spawn_firehose_gc(state.clone(), fh_gc_interval);
+    let _firehose_gc = sweep::spawn(
+        firehose_gc::FirehoseGc {
+            interval: fh_gc_interval,
+        },
+        state.clone(),
+    );
     tracing::info!(
         interval_secs = state.config.firehose.gc_interval_secs,
         retention_secs = state.config.firehose.log_retention_secs,

@@ -30,13 +30,13 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use crate::app::AppState;
 use crate::blob_store;
 use crate::db::accounts;
 use crate::db::blobs;
 use crate::db::blocks::SqliteBlockStore;
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 use repo_engine::{Cid, Repository};
 
 /// Records read per page when walking a collection to collect blob references.
@@ -69,23 +69,39 @@ pub struct GcStats {
     pub deleted: u64,
     /// Accounts or blobs skipped due to an error.
     pub errors: u64,
+    /// The pass could not list what to collect, so it did not complete (and records nothing).
+    pub failed: bool,
 }
 
-/// Spawn the periodic blob garbage collector.
-///
-/// The first interval tick is consumed without running GC, so the server does not perform a
-/// full repo scan during startup; the first pass runs one `interval` after boot. The task
-/// loops for the life of the process and is dropped on shutdown.
-pub fn spawn_blob_gc(state: AppState, interval: Duration) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        // `interval`'s first tick fires immediately — skip it so GC doesn't run mid-boot.
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_blob_gc(&state).await;
+impl GcStats {
+    /// The scheduler's view: a pass with per-item `errors` still completed; only `failed` did not.
+    fn pass(self) -> anyhow::Result<Pass> {
+        if self.failed {
+            anyhow::bail!("blob GC could not list its candidates");
         }
-    })
+        Ok(Pass {
+            swept: self.deleted,
+            errors: self.errors,
+        })
+    }
+}
+
+/// Reclaim unreferenced and expired blobs once per `interval`. The first pass runs one
+/// `interval` after boot, so the server does not scan every repo during startup.
+pub struct BlobGc {
+    pub interval: Duration,
+}
+
+impl Sweep for BlobGc {
+    const NAME: &'static str = names::BLOB_GC;
+
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        run_blob_gc(state).await.pass()
+    }
 }
 
 /// Run a single garbage-collection pass over every account that owns blobs or has a repo.
@@ -102,6 +118,7 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
         Ok(dids) => dids,
         Err(e) => {
             tracing::error!(error = %e, "blob GC: failed to list candidate accounts; skipping pass");
+            stats.failed = true;
             return stats;
         }
     };
@@ -166,6 +183,7 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
             // without recording, leaving the last-run timestamp stale (the operator's
             // signal), matching firehose_gc's failed-pass posture.
             tracing::error!(error = %e, "blob GC: failed to list expired blob references");
+            stats.failed = true;
             return stats;
         }
     }
@@ -213,10 +231,6 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
         .metrics
         .blob_gc_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
-    state.sweeps.record(
-        crate::sweep_status::names::BLOB_GC,
-        crate::sweep_status::SweepRun::now_with_errors(stats.deleted, stats.errors),
-    );
 
     stats
 }
@@ -612,16 +626,8 @@ mod tests {
             rendered.contains("blob_gc_last_run_timestamp"),
             "missing blob_gc_last_run_timestamp in:\n{rendered}"
         );
-        // The readable snapshot records the same completed pass with its literal count.
-        assert_eq!(
-            state
-                .sweeps
-                .snapshot()
-                .get(crate::sweep_status::names::BLOB_GC)
-                .unwrap()
-                .swept,
-            1
-        );
+        // The scheduler publishes the same completed pass with its literal count.
+        assert_eq!(stats.pass().unwrap(), Pass::swept(1));
 
         // Referenced blob: pinned permanent, file intact.
         assert!(blobs::get_blob_by_cid(&state.db, &referenced)

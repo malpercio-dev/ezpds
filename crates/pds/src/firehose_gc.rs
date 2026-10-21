@@ -50,10 +50,10 @@
 
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use crate::app::AppState;
 use crate::db::firehose_seq;
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 
 /// Tally of what one retention pass did, for logging and tests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +79,14 @@ impl GcStats {
         }
     }
 
+    /// The scheduler's view: an operational failure is a failed pass, anything else completed.
+    fn pass(self) -> anyhow::Result<Pass> {
+        if self.failed {
+            anyhow::bail!("repo_seq retention pass failed");
+        }
+        Ok(Pass::swept(self.pruned))
+    }
+
     /// A pass aborted by an operational error; instruments are left untouched.
     fn failed_pass() -> Self {
         Self {
@@ -89,21 +97,21 @@ impl GcStats {
     }
 }
 
-/// Spawn the periodic `repo_seq` retention sweep.
-///
-/// The first interval tick is consumed without running the sweep, so the server does not prune
-/// during startup; the first pass runs one `interval` after boot. The task loops for the life of
-/// the process and is dropped on shutdown.
-pub fn spawn_firehose_gc(state: AppState, interval: Duration) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        // `interval`'s first tick fires immediately — skip it so the sweep doesn't run mid-boot.
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_firehose_gc(&state).await;
-        }
-    })
+/// Prune `repo_seq` below the retention watermark once per `interval`.
+pub struct FirehoseGc {
+    pub interval: Duration,
+}
+
+impl Sweep for FirehoseGc {
+    const NAME: &'static str = names::FIREHOSE_GC;
+
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        run_firehose_gc(state).await.pass()
+    }
 }
 
 /// Run a single `repo_seq` retention pass, then record the sweep's instruments
@@ -124,10 +132,6 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
         .metrics
         .firehose_gc_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
-    state.sweeps.record(
-        crate::sweep_status::names::FIREHOSE_GC,
-        crate::sweep_status::SweepRun::now(stats.pruned),
-    );
     // The backfill window is how far back a reconnecting subscriber's cursor still replays
     // exactly. Refreshed here (post-prune) rather than on every emit: the sweep is the only
     // thing that shrinks the window, and emits only ever extend it by seconds.
@@ -372,16 +376,8 @@ mod tests {
             rendered.contains("firehose_gc_last_run_timestamp"),
             "benign no-op must timestamp the pass in:\n{rendered}"
         );
-        // The readable snapshot records the same benign no-op pass.
-        assert_eq!(
-            state
-                .sweeps
-                .snapshot()
-                .get(crate::sweep_status::names::FIREHOSE_GC)
-                .unwrap()
-                .swept,
-            0
-        );
+        // The scheduler publishes the same benign no-op as a completed pass.
+        assert_eq!(stats.pass().unwrap(), Pass::swept(0));
     }
 
     #[tokio::test]
@@ -407,12 +403,8 @@ mod tests {
         // operator's signal that sweeps are not completing.
         let rendered = state.metrics.render().unwrap().unwrap();
         assert!(
-            state
-                .sweeps
-                .snapshot()
-                .get(crate::sweep_status::names::FIREHOSE_GC)
-                .is_none(),
-            "failed pass must not record a readable sweep run"
+            stats.pass().is_err(),
+            "a failed pass must reach the scheduler as an Err, which records nothing"
         );
         assert!(
             !rendered.contains("firehose_gc_last_run_timestamp"),
