@@ -9,6 +9,7 @@ crates/custos-core/src/auth/jwt.rs 2
 crates/custos-core/src/auth/oauth_scopes.rs 1
 crates/custos-core/src/auth/signing_key.rs 3
 crates/custos-core/src/scope_display.rs 1
+crates/custos-firehose/src/routes/sync_subscribe_repos.rs 3
 crates/custos-oauth/src/routes/oauth_consent.rs 3
 crates/custos-oauth/src/routes/oauth_token/mod.rs 1
 crates/custos-spaces/src/auth/space.rs 7
@@ -51,6 +52,5 @@ crates/pds/src/routes/sync_get_blocks.rs 1
 crates/pds/src/routes/sync_get_latest_commit.rs 1
 crates/pds/src/routes/sync_get_record.rs 1
 crates/pds/src/routes/sync_get_repo_status.rs 2
-crates/pds/src/routes/sync_subscribe_repos.rs 3
 crates/pds/src/routes/update_handle.rs 1
 crates/pds/src/routes/update_subject_status.rs 1

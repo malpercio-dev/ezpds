@@ -15,13 +15,14 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-axum = { workspace = true, features = ["ws"] }
+axum = { workspace = true }
 http-body-util = { workspace = true }
 common = { workspace = true, features = ["axum", "sqlx"] }
 custos-db = { workspace = true }
 custos-core = { workspace = true }
 custos-agents = { workspace = true }
 custos-blobs = { workspace = true }
+custos-firehose = { workspace = true }
 custos-oauth = { workspace = true }
 custos-spaces = { workspace = true }
 clap = { workspace = true }
@@ -84,6 +85,7 @@ custos-db = { workspace = true, features = ["test-support"] }
 custos-core = { workspace = true, features = ["test-support"] }
 custos-agents = { workspace = true, features = ["test-support"] }
 custos-blobs = { workspace = true, features = ["test-support"] }
+custos-firehose = { workspace = true, features = ["test-support"] }
 custos-oauth = { workspace = true, features = ["test-support"] }
 custos-spaces = { workspace = true, features = ["test-support"] }
 tower = { workspace = true }

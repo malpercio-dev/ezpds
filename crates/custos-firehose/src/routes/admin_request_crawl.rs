@@ -30,10 +30,10 @@ use serde::Serialize;
 
 use common::{ApiError, ErrorCode};
 
-use crate::app::AppState;
 use crate::auth::guards::require_admin;
 use crate::crawler::CrawlAttempt;
 use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
+use custos_core::CoreState;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +51,7 @@ pub struct RequestCrawlResponse {
 /// Admin-authed: the master token **or** an active companion-app device's signed request
 /// ([`require_admin`]). Takes no request body.
 pub async fn request_crawl(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -102,8 +102,8 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::app::app;
-    use crate::routes::test_utils::test_state_with_admin_token;
+    use crate::test_support::test_app;
+    use crate::test_support::test_state_with_admin_token;
 
     async fn post_request_crawl(router: axum::Router, token: Option<&str>) -> StatusCode {
         let mut builder = Request::builder()
@@ -122,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn request_crawl_requires_admin_auth() {
         let state = test_state_with_admin_token().await;
-        let router = app(state);
+        let router = test_app(state);
 
         assert_eq!(
             post_request_crawl(router.clone(), None).await,
@@ -138,7 +138,7 @@ mod tests {
     async fn request_crawl_is_rejected_when_no_relay_configured() {
         // The test state configures no crawlers, so there is nothing to crawl → 400.
         let state = test_state_with_admin_token().await;
-        let router = app(state);
+        let router = test_app(state);
 
         assert_eq!(
             post_request_crawl(router, Some("test-admin-token")).await,

@@ -21,6 +21,7 @@ const ROUTER_FILES = [
   'crates/pds/src/app.rs',
   'crates/custos-agents/src/router.rs',
   'crates/custos-blobs/src/router.rs',
+  'crates/custos-firehose/src/router.rs',
   'crates/custos-oauth/src/router.rs',
   'crates/custos-spaces/src/router.rs',
 ];

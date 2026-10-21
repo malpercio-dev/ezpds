@@ -1694,7 +1694,7 @@ pub struct HealthSweepRun {
 }
 
 /// The relay-status readout — the response shape of `GET /v1/admin/relay-status`
-/// (`RelayStatusResponse` in crates/pds/src/routes/admin_relay_status.rs, pinned by a
+/// (`RelayStatusResponse` in crates/custos-firehose/src/routes/admin_relay_status.rs, pinned by a
 /// deserialization test). Literal facts only — the relay derives no ok/warn/behind
 /// verdict; the block applies its own gap thresholds. Re-serialized camelCase over IPC.
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
@@ -1728,7 +1728,7 @@ pub struct RelayStatus {
 
 /// The result of the request-crawl action — the response shape of
 /// `POST /v1/admin/request-crawl` (`RequestCrawlResponse` in
-/// crates/pds/src/routes/admin_request_crawl.rs). Re-serialized camelCase over IPC.
+/// crates/custos-firehose/src/routes/admin_request_crawl.rs). Re-serialized camelCase over IPC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestCrawlResult {

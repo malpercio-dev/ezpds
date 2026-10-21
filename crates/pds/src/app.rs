@@ -19,8 +19,6 @@ use crate::routes::admin_health::admin_health;
 use crate::routes::admin_list_accounts::list_accounts;
 use crate::routes::admin_notifications::{get_admin_sender_keys, register_admin_notifications};
 use crate::routes::admin_recovery_releases::admin_recovery_releases;
-use crate::routes::admin_relay_status::relay_status;
-use crate::routes::admin_request_crawl::request_crawl;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
 use crate::routes::admin_waitlist::admin_waitlist;
@@ -104,7 +102,6 @@ use crate::routes::sync_get_blocks::sync_get_blocks;
 use crate::routes::sync_get_latest_commit::sync_get_latest_commit;
 use crate::routes::sync_get_record::sync_get_record;
 use crate::routes::sync_get_repo_status::sync_get_repo_status;
-use crate::routes::sync_subscribe_repos::subscribe_repos;
 use crate::routes::transfer_accept::transfer_accept;
 use crate::routes::transfer_complete::transfer_complete;
 use crate::routes::transfer_initiate::transfer_initiate;
@@ -297,10 +294,6 @@ pub fn app(state: AppState) -> Router {
             get(sync_get_repo_status),
         )
         .route("/xrpc/com.atproto.sync.listRepos", get(list_repos))
-        .route(
-            "/xrpc/com.atproto.sync.subscribeRepos",
-            get(subscribe_repos),
-        )
         .route("/xrpc/com.atproto.repo.applyWrites", post(apply_writes))
         .route("/xrpc/com.atproto.repo.importRepo", post(import_repo))
         .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
@@ -328,6 +321,7 @@ pub fn app(state: AppState) -> Router {
         .merge(custos_oauth::router())
         .merge(custos_agents::router())
         .merge(custos_blobs::router())
+        .merge(custos_firehose::router())
         .merge(custos_spaces::router(&state.config.spaces));
     // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
     // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
@@ -409,8 +403,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/admin/audit", get(list_admin_audit))
         .route("/v1/admin/health", get(admin_health))
         .route("/v1/admin/recovery-releases", get(admin_recovery_releases))
-        .route("/v1/admin/relay-status", get(relay_status))
-        .route("/v1/admin/request-crawl", post(request_crawl))
         .route(
             "/v1/admin/accounts/{id}/revoke-credentials",
             post(revoke_account_credentials),
@@ -443,6 +435,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/repo-signing-key", get(get_repo_signing_key));
     let internal = internal
         .merge(custos_agents::internal_router())
+        .merge(custos_firehose::internal_router())
         .merge(custos_spaces::internal_router(&state.config.spaces));
     let internal = apply_shared_layers(internal, &state);
 

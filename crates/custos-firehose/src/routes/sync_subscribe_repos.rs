@@ -39,11 +39,11 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::app::AppState;
 use crate::firehose::{
     AccountEvent, CommitEvent, FirehoseEvent, IdentityEvent, SubscribeOutcome, Subscription,
     SyncEvent,
 };
+use custos_core::CoreState;
 use repo_engine::Cid;
 
 /// How often to send a keepalive Ping. Kept well under the reverse-proxy idle window (Railway's,
@@ -67,7 +67,7 @@ pub struct SubscribeReposParams {
 /// Protocols; all subsequent traffic is the binary firehose framing described in the module
 /// docs.
 pub async fn subscribe_repos(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Query(params): Query<SubscribeReposParams>,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -80,7 +80,7 @@ pub async fn subscribe_repos(
     clippy::expect_used,
     reason = "the replay reader and its read future exist until replay is done, and each is checked before use"
 )]
-async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) {
+async fn handle_socket(socket: WebSocket, state: CoreState, cursor: Option<u64>) {
     let (mut sender, mut receiver) = socket.split();
 
     // Attach to the firehose under one lock: `subscribe_from` snapshots the live receiver and the
@@ -735,9 +735,9 @@ mod tests {
     /// Bind an ephemeral port, serve the real router, and return the subscribeRepos URL plus a
     /// handle to the shared firehose so the test can emit commits into it.
     async fn spawn_server() -> (String, Arc<Firehose>) {
-        let state = crate::app::test_state().await;
+        let state = crate::test_support::test_state().await;
         let firehose = state.firehose.clone();
-        let router = crate::app::app(state);
+        let router = crate::test_support::test_app(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {

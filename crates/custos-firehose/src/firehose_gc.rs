@@ -50,10 +50,11 @@
 
 use std::time::Duration;
 
-use crate::app::AppState;
 use crate::db::firehose_seq;
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
+use axum::extract::FromRef;
+use custos_core::CoreState;
 
 /// Tally of what one retention pass did, for logging and tests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -102,14 +103,19 @@ pub struct FirehoseGc {
     pub interval: Duration,
 }
 
-impl Sweep<AppState> for FirehoseGc {
+impl<St> Sweep<St> for FirehoseGc
+where
+    St: Send + Sync + 'static,
+    CoreState: FromRef<St>,
+{
     const NAME: &'static str = names::FIREHOSE_GC;
 
     fn interval(&self) -> Duration {
         self.interval
     }
 
-    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+    async fn run(&self, state: &St) -> anyhow::Result<Pass> {
+        let state = &CoreState::from_ref(state);
         run_firehose_gc(state).await.pass()
     }
 }
@@ -117,7 +123,7 @@ impl Sweep<AppState> for FirehoseGc {
 /// Run a single `repo_seq` retention pass, then record the sweep's instruments
 /// (`firehose_gc_swept_total`, `firehose_gc_last_run_timestamp`,
 /// `firehose_backfill_window_seconds`).
-pub async fn run_firehose_gc(state: &AppState) -> GcStats {
+pub async fn run_firehose_gc(state: &CoreState) -> GcStats {
     let stats = sweep(state).await;
 
     // A failed pass records nothing — same posture as blob_gc: a stale
@@ -166,7 +172,7 @@ pub async fn run_firehose_gc(state: &AppState) -> GcStats {
 /// Compute the low-water mark from the enabled retention knobs, clamp it below the live
 /// frontier, and delete the contiguous prefix beneath it. A no-op when the log is empty or
 /// every retention knob is disabled.
-async fn sweep(state: &AppState) -> GcStats {
+async fn sweep(state: &CoreState) -> GcStats {
     let config = &state.config.firehose;
 
     // No policy enabled: the sweep is intentionally inert (append-only log, pre-retention
@@ -310,27 +316,24 @@ async fn sweep(state: &AppState) -> GcStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
+    use crate::test_support::test_state;
     use common::FirehoseConfig;
     use std::sync::Arc;
 
-    /// Set `config.firehose` on a fresh test `AppState`, returning the modified state.
-    async fn state_with(firehose: FirehoseConfig) -> AppState {
+    /// Set `config.firehose` on a fresh test `CoreState`, returning the modified state.
+    async fn state_with(firehose: FirehoseConfig) -> CoreState {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.firehose = firehose;
-        AppState {
-            core: custos_core::CoreState {
-                config: Arc::new(config),
-                ..base.core
-            },
+        CoreState {
+            config: Arc::new(config),
             ..base
         }
     }
 
     /// Emit `n` events via the live firehose so the durable log holds a dense 1..=n prefix with
     /// real `sequenced_at` timestamps.
-    async fn emit_n(state: &AppState, n: u64) {
+    async fn emit_n(state: &CoreState, n: u64) {
         for _ in 0..n {
             state
                 .firehose
