@@ -333,9 +333,9 @@ async fn collect_referenced_blob_cids(
     // Space records are the store itself (no MST): decode each stored DAG-CBOR block and
     // collect its links through the same JSON walk the public path uses, so both surfaces
     // apply an identical (deliberately over-broad) reference definition.
-    let mut cursor: Option<crate::db::space_repos::SpaceRecordCursor> = None;
+    let mut cursor: Option<custos_spaces::db::space_repos::SpaceRecordCursor> = None;
     loop {
-        let page = crate::db::space_repos::list_record_blocks_for_account(
+        let page = custos_spaces::db::space_repos::list_record_blocks_for_account(
             &state.db,
             did,
             cursor.as_ref(),
@@ -893,17 +893,17 @@ mod tests {
         // Both blobs are expired temporaries; only one gets referenced from a space record.
         let referenced = add_blob(&state, did, b"space bytes", "2020-01-01 00:00:00").await;
         let orphan = add_blob(&state, did, b"orphan bytes", "2020-01-01 00:00:00").await;
-        crate::space_record_write::apply_space_writes(
-            &state,
+        custos_spaces::space_record_write::apply_space_writes(
+            &state.spaces,
             &space,
             did,
-            &[crate::space_record_write::SpaceWriteOp {
-                action: crate::space_record_write::SpaceWriteAction::Put,
+            &[custos_spaces::space_record_write::SpaceWriteOp {
+                action: custos_spaces::space_record_write::SpaceWriteAction::Put,
                 collection: "org.example.note".to_string(),
                 rkey: "withblob".to_string(),
                 value: Some(blob_record(&referenced)),
             }],
-            crate::space_record_write::SpaceWriteAdmission::Active,
+            custos_spaces::space_record_write::SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();

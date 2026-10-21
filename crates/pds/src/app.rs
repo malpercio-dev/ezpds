@@ -22,7 +22,6 @@ use crate::routes::admin_recovery_releases::admin_recovery_releases;
 use crate::routes::admin_relay_status::relay_status;
 use crate::routes::admin_request_crawl::request_crawl;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
-use crate::routes::admin_spaces::{list_hosted_spaces, set_space_takedown};
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
 use crate::routes::admin_waitlist::admin_waitlist;
 use crate::routes::agent_child::{
@@ -59,7 +58,6 @@ use crate::routes::did_web_hosting::{
     set_did_web_hosting_handler, update_did_web_document_handler,
 };
 use crate::routes::get_blob::get_blob;
-use crate::routes::get_delegation_token::get_delegation_token;
 use crate::routes::get_device_pds::get_device_pds;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_metrics::get_metrics;
@@ -71,7 +69,6 @@ use crate::routes::get_repo::get_repo;
 use crate::routes::get_repo_signing_key::get_repo_signing_key;
 use crate::routes::get_service_auth::get_service_auth;
 use crate::routes::get_session::get_session;
-use crate::routes::get_space_credential::get_space_credential;
 use crate::routes::get_subject_status::get_subject_status;
 use crate::routes::health::health;
 use crate::routes::import_repo::import_repo;
@@ -119,31 +116,7 @@ use crate::routes::resolve_identity::{
 };
 use crate::routes::revoke_app_password::revoke_app_password;
 use crate::routes::sign_plc_operation::sign_plc_operation;
-use crate::routes::simplespace_create_space::simplespace_create_space;
-use crate::routes::simplespace_delete_space::simplespace_delete_space;
-use crate::routes::simplespace_get_space::simplespace_get_space;
-use crate::routes::simplespace_list_members::simplespace_list_members;
-use crate::routes::simplespace_put_member::simplespace_put_member;
-use crate::routes::simplespace_remove_member::simplespace_remove_member;
-use crate::routes::simplespace_update_space::simplespace_update_space;
 use crate::routes::sovereign_session::create_sovereign_session;
-use crate::routes::space_apply_writes::space_apply_writes;
-use crate::routes::space_create_record::space_create_record;
-use crate::routes::space_delete_record::space_delete_record;
-use crate::routes::space_get_blob::space_get_blob;
-use crate::routes::space_get_latest_commit::space_get_latest_commit;
-use crate::routes::space_get_record::space_get_record;
-use crate::routes::space_get_repo::space_get_repo;
-use crate::routes::space_import_repo::space_import_repo;
-use crate::routes::space_list_blobs::space_list_blobs;
-use crate::routes::space_list_records::space_list_records;
-use crate::routes::space_list_repo_ops::space_list_repo_ops;
-use crate::routes::space_list_repos::space_list_repos;
-use crate::routes::space_list_spaces::space_list_spaces;
-use crate::routes::space_notify_write::space_notify_write;
-use crate::routes::space_put_record::space_put_record;
-use crate::routes::space_register_notify::space_register_notify;
-use crate::routes::space_unregister_notify::space_unregister_notify;
 use crate::routes::standard_signup::{
     check_handle_availability, check_signup_queue, create_invite_code, create_invite_codes,
     get_account_invite_codes,
@@ -181,99 +154,6 @@ use crate::xrpc_dispatch::xrpc_handler;
 /// provisioning** surface (`/v1/*`, including `/v1/admin/*`) gets no CORS layer at all, since it is
 /// only ever called same-origin by first-party native/mobile clients and operators. Both groups
 /// share the trace/metrics/rate-limit stack.
-/// The public half of the operator-gated Atproto Spaces surface, merged into the CORS'd
-/// public group only when `[spaces] enabled`. The `/v1/space/import-repo` inbound
-/// migration leg is gated alongside on the internal group in [`app`].
-fn space_routes() -> Router<AppState> {
-    Router::new()
-        // The space-credential mint pair: an OAuth session trades a delegation token for a
-        // key-bound space credential.
-        .route(
-            "/xrpc/com.atproto.space.getDelegationToken",
-            get(get_delegation_token),
-        )
-        .route(
-            "/xrpc/com.atproto.space.getSpaceCredential",
-            post(get_space_credential),
-        )
-        // Atproto Spaces: the permissioned-data surface for a user's own space repos. Reads and
-        // writes are OAuth-authed here; the space-credential branch a syncer uses arrives with
-        // the credential mint.
-        .route(
-            "/xrpc/com.atproto.space.applyWrites",
-            post(space_apply_writes),
-        )
-        .route(
-            "/xrpc/com.atproto.space.createRecord",
-            post(space_create_record),
-        )
-        .route(
-            "/xrpc/com.atproto.space.deleteRecord",
-            post(space_delete_record),
-        )
-        .route(
-            "/xrpc/com.atproto.space.getLatestCommit",
-            get(space_get_latest_commit),
-        )
-        .route("/xrpc/com.atproto.space.getBlob", get(space_get_blob))
-        .route("/xrpc/com.atproto.space.getRecord", get(space_get_record))
-        .route("/xrpc/com.atproto.space.getRepo", get(space_get_repo))
-        .route("/xrpc/com.atproto.space.listBlobs", get(space_list_blobs))
-        .route(
-            "/xrpc/com.atproto.space.listRecords",
-            get(space_list_records),
-        )
-        .route(
-            "/xrpc/com.atproto.space.listRepoOps",
-            get(space_list_repo_ops),
-        )
-        .route("/xrpc/com.atproto.space.listRepos", get(space_list_repos))
-        .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
-        .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
-        // The space-host notification surface: syncers subscribe here, repo hosts report here.
-        .route(
-            "/xrpc/com.atproto.space.notifyWrite",
-            post(space_notify_write),
-        )
-        .route(
-            "/xrpc/com.atproto.space.registerNotify",
-            post(space_register_notify),
-        )
-        .route(
-            "/xrpc/com.atproto.space.unregisterNotify",
-            post(space_unregister_notify),
-        )
-        // The PDS-required simplespace management surface: spaces anchored on a local account's
-        // own DID, managed by that account under `manage=` grants.
-        .route(
-            "/xrpc/com.atproto.simplespace.putMember",
-            post(simplespace_put_member),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.createSpace",
-            post(simplespace_create_space),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.deleteSpace",
-            post(simplespace_delete_space),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.getSpace",
-            get(simplespace_get_space),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.listMembers",
-            get(simplespace_list_members),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.removeMember",
-            post(simplespace_remove_member),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.updateSpace",
-            post(simplespace_update_space),
-        )
-}
 
 pub fn app(state: AppState) -> Router {
     let public = Router::new()
@@ -509,16 +389,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/{method}", get(xrpc_handler).post(xrpc_handler))
         .route("/static/{*path}", get(static_handler));
-    // Atproto Spaces is operator-gated (`[spaces] enabled` / `EZPDS_SPACES_ENABLED`, off by
-    // default while the protocol is pre-launch alpha). Not registering the routes at all is
-    // what makes a disabled deployment answer the `/xrpc/{method}` catch-all's
-    // `MethodNotImplemented` — the same response a PDS that never implemented spaces gives.
-    // Merged before the layer stack so the routes share it when enabled.
-    let public = if state.config.spaces.enabled {
-        public.merge(space_routes())
-    } else {
-        public
-    };
+    // Feature routers merge before the layer stack so they share it. Each carries its own gate:
+    // `custos_spaces::router` is empty unless `[spaces] enabled`, so a disabled deployment's space
+    // methods fall into the `/xrpc/{method}` catch-all's `MethodNotImplemented`.
+    let public = public.merge(custos_spaces::router(&state.config.spaces));
     // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
     // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
     // never cookie-based (all Bearer/DPoP/signed-request), so a permissive policy cannot be abused
@@ -609,8 +483,6 @@ pub fn app(state: AppState) -> Router {
             "/v1/admin/accounts/{id}/revoke-credentials",
             post(revoke_account_credentials),
         )
-        .route("/v1/admin/spaces", get(list_hosted_spaces))
-        .route("/v1/admin/spaces/takedown", post(set_space_takedown))
         .route("/v1/admin/transfers", get(list_admin_transfers))
         .route("/v1/admin/waitlist", get(admin_waitlist))
         .route(
@@ -637,15 +509,7 @@ pub fn app(state: AppState) -> Router {
             get(get_pds_signing_key).post(create_signing_key),
         )
         .route("/v1/repo-signing-key", get(get_repo_signing_key));
-    // The inbound leg of permissioned-repo migration, gated with the rest of the spaces
-    // surface. A Custos-native `/v1/*` route rather than a `com.atproto.space.*` method:
-    // the alpha lexicons define no space import, so the namespace stays free for whatever
-    // the spec eventually names.
-    let internal = if state.config.spaces.enabled {
-        internal.route("/v1/space/import-repo", post(space_import_repo))
-    } else {
-        internal
-    };
+    let internal = internal.merge(custos_spaces::internal_router(&state.config.spaces));
     let internal = apply_shared_layers(internal, &state);
 
     let router = public.merge(internal);

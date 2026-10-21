@@ -98,18 +98,6 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM transfer_devices WHERE did = ?",
     "DELETE FROM did_documents WHERE did = ?",
     "DELETE FROM reserved_signing_keys WHERE did = ?",
-    // The account's permissioned space repos, in FK order (ops and records reference the repo
-    // row). `spaces` rows deliberately survive even when this account is the authority: members'
-    // records are their own, and an unanswerable space is exactly the spec's deletion semantics.
-    "DELETE FROM space_repo_ops WHERE account_did = ?",
-    "DELETE FROM space_records WHERE account_did = ?",
-    "DELETE FROM space_repos WHERE account_did = ?",
-    "DELETE FROM space_members WHERE member_did = ?",
-    "DELETE FROM space_notify_registrations WHERE subscriber_did = ?",
-    // The account's rows in any locally-hosted space's writer set. No FK to `accounts` (most
-    // writers are foreign repos), so nothing removes these implicitly — and a purged account
-    // left in `listRepos` advertises a repo every reader then gets `RepoNotFound` for.
-    "DELETE FROM space_writers WHERE repo_did = ?",
 ];
 
 /// The account's ownership rows in the content-addressed repo block store.
@@ -211,6 +199,10 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
             .await
             .map_err(map_err)?;
     }
+    // The account's permissioned space repos; custos-spaces owns the statements and their order.
+    custos_spaces::purge_account_rows(&mut tx, did)
+        .await
+        .map_err(map_err)?;
     let block_cids: Vec<String> =
         sqlx::query_scalar("SELECT cid FROM block_owners WHERE account_did = ?")
             .bind(did)
@@ -724,9 +716,9 @@ mod tests {
         let did = "did:plc:purgespaces";
         seed_account_with_repo(&state.db, did).await;
         let space = "at://did:plc:purgespaces/space/org.example.bucket/self";
-        crate::db::spaces::insert_space(
+        custos_spaces::db::spaces::insert_space(
             &state.db,
-            &crate::db::spaces::NewSpace {
+            &custos_spaces::db::spaces::NewSpace {
                 uri: space,
                 authority_did: did,
                 space_type: "org.example.bucket",
@@ -741,17 +733,17 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::space_record_write::apply_space_writes(
-            &state,
+        custos_spaces::space_record_write::apply_space_writes(
+            &state.spaces,
             &crate::space_uri::parse_space_ref(space).unwrap(),
             did,
-            &[crate::space_record_write::SpaceWriteOp {
-                action: crate::space_record_write::SpaceWriteAction::Put,
+            &[custos_spaces::space_record_write::SpaceWriteOp {
+                action: custos_spaces::space_record_write::SpaceWriteAction::Put,
                 collection: "org.example.note".to_string(),
                 rkey: "one".to_string(),
                 value: Some(serde_json::json!({"text": "purge me"})),
             }],
-            crate::space_record_write::SpaceWriteAdmission::Active,
+            custos_spaces::space_record_write::SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -1038,7 +1030,11 @@ mod tests {
                 {
                     continue;
                 }
-                let covered = DELETE_BY_DID.iter().chain([&DELETE_BLOCKS]).any(|sql| {
+                let covered = DELETE_BY_DID
+                    .iter()
+                    .chain(custos_spaces::PURGE_ACCOUNT_SQL)
+                    .chain([&DELETE_BLOCKS])
+                    .any(|sql| {
                     (sql.contains(&format!("FROM {table} "))
                         || sql.contains(&format!("UPDATE {table} ")))
                         && (sql.contains(&format!("{column} = ?"))

@@ -21,10 +21,6 @@ pub mod recovery_escrow;
 pub mod recovery_otps;
 pub mod relay_signing_keys;
 pub mod sovereign_session_nonces;
-pub mod space_jti;
-pub mod space_notify;
-pub mod space_repos;
-pub mod spaces;
 pub mod waitlist;
 
 #[cfg(test)]

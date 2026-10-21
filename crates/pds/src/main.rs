@@ -43,10 +43,6 @@ mod rewrap;
 mod routes;
 mod session_issuer;
 mod sovereign_session_nonce_sweep;
-mod space_jti_sweep;
-mod space_notify;
-mod space_oplog_sweep;
-mod space_record_write;
 mod state;
 mod telemetry;
 mod transfer;
@@ -587,33 +583,34 @@ async fn run() -> anyhow::Result<()> {
         tracing::warn!("request rate limiting is disabled");
     }
 
+    let core = custos_core::CoreState {
+        config: Arc::new(config),
+        db: pool,
+        http_client,
+        hardened_http_client,
+        dns_provider: None,
+        txt_resolver,
+        well_known_resolver,
+        jwks_cache,
+        oauth_client_jwks_cache,
+        jwt_secret,
+        oauth_signing_keypair,
+        dpop_nonces: Arc::new(auth::DpopNonceRotator::from_jwt_secret(&jwt_secret)),
+        permission_set_cache: auth::new_permission_set_cache(),
+        did_document_cache: identity::resolution::new_did_document_cache(),
+        failed_login_attempts: Arc::new(
+            std::sync::Mutex::new(std::collections::HashMap::new()),
+        ),
+        rate_limiter,
+        allow_loopback_proxy_targets: false,
+        metrics,
+        sweeps: Arc::new(sweep_status::SweepStatus::default()),
+        started_at,
+    };
     let state = app::AppState {
-        core: custos_core::CoreState {
-            config: Arc::new(config),
-            db: pool,
-            http_client,
-            hardened_http_client,
-            dns_provider: None,
-            txt_resolver,
-            well_known_resolver,
-            jwks_cache,
-            oauth_client_jwks_cache,
-            jwt_secret,
-            oauth_signing_keypair,
-            dpop_nonces: Arc::new(auth::DpopNonceRotator::from_jwt_secret(&jwt_secret)),
-            permission_set_cache: auth::new_permission_set_cache(),
-            did_document_cache: identity::resolution::new_did_document_cache(),
-            failed_login_attempts: Arc::new(
-                std::sync::Mutex::new(std::collections::HashMap::new()),
-            ),
-            rate_limiter,
-            allow_loopback_proxy_targets: false,
-            metrics,
-            sweeps: Arc::new(sweep_status::SweepStatus::default()),
-            started_at,
-        },
+        spaces: custos_spaces::SpacesState::new(core.clone()),
+        core,
         poll_tracker: auth::new_claim_poll_tracker(),
-        space_type_cache: auth::new_space_type_cache(),
         firehose,
         crawlers,
         iroh,
@@ -801,29 +798,8 @@ async fn run() -> anyhow::Result<()> {
         "sovereign-session nonce retention sweep started"
     );
 
-    // Spawn the two space retention sweeps only while the spaces surface is enabled —
-    // disabled, no route can write the tables they reclaim, and their `null` rows in the
-    // health readout then read as "not configured", like the blob mirror's. Rows already
-    // stored keep their data; only reclamation pauses with the surface.
-    if state.config.spaces.enabled {
-        // The jti retention sweep: the (scope, jti) primary key enforces anti-replay; each
-        // row's expires_at carries its own token's acceptance horizon, so the sweep only
-        // bounds storage growth.
-        sweeps.spawn(space_jti_sweep::SpaceJtiSweep);
-        tracing::info!(
-            interval_secs = space_jti_sweep::SWEEP_INTERVAL.as_secs(),
-            "space jti retention sweep started"
-        );
-
-        // The permissioned-repo oplog compaction sweep. The oplog is droppable by spec;
-        // this bounds it to a backfill window, and a syncer further behind heals via getRepo.
-        sweeps.spawn(space_oplog_sweep::SpaceOplogSweep);
-        tracing::info!(
-            interval_secs = space_oplog_sweep::SWEEP_INTERVAL.as_secs(),
-            retention_secs = space_oplog_sweep::OPLOG_RETENTION_SECS,
-            "space oplog compaction sweep started"
-        );
-    }
+    // Each feature registers its own sweeps; disabled, it registers none.
+    custos_spaces::spawn_sweeps(&mut sweeps, &state.config.spaces);
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached
     // and runs for the life of the endpoint; closing the endpoint at shutdown ends the loop.
