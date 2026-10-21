@@ -1,6 +1,6 @@
-crates/pds/src/auth/jwt.rs 2
-crates/pds/src/auth/oauth_scopes.rs 1
-crates/pds/src/auth/signing_key.rs 3
+crates/custos-core/src/auth/jwt.rs 2
+crates/custos-core/src/auth/oauth_scopes.rs 1
+crates/custos-core/src/auth/signing_key.rs 3
 crates/pds/src/auth/space.rs 7
 crates/pds/src/auth/space_consent.rs 1
 crates/pds/src/routes/account_usage.rs 1

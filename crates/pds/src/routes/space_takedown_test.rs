@@ -36,7 +36,10 @@ async fn setup() -> AppState {
     let mut config = (*base.config).clone();
     config.admin_token = Some(common::Sensitive(ADMIN.to_string()));
     let state = AppState {
-        config: std::sync::Arc::new(config),
+        core: custos_core::CoreState {
+            config: std::sync::Arc::new(config),
+            ..base.core
+        },
         ..base
     };
     seed_account_with_repo(&state.db, DID).await;

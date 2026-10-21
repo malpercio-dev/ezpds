@@ -342,7 +342,10 @@ mod tests {
             test_master_key(),
         )));
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         (state, dir)

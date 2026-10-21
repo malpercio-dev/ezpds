@@ -28,7 +28,7 @@ on:
       - "tools/interop/**"
       # tools/mcp types its XRPC calls from these; a lexicon bump must re-type-check it.
       - "tools/lexgen/**"
-      - "crates/pds/lexicons/**"
+      - "crates/custos-core/lexicons/**"
       - ".github/actions/setup-pnpm/**"
       - ".github/workflows/mcp-check.yml"
   push:
@@ -40,7 +40,7 @@ on:
       - "tools/interop/**"
       # tools/mcp types its XRPC calls from these; a lexicon bump must re-type-check it.
       - "tools/lexgen/**"
-      - "crates/pds/lexicons/**"
+      - "crates/custos-core/lexicons/**"
       - ".github/actions/setup-pnpm/**"
       - ".github/workflows/mcp-check.yml"
   workflow_dispatch:

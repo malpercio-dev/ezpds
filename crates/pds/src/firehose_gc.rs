@@ -102,7 +102,7 @@ pub struct FirehoseGc {
     pub interval: Duration,
 }
 
-impl Sweep for FirehoseGc {
+impl Sweep<AppState> for FirehoseGc {
     const NAME: &'static str = names::FIREHOSE_GC;
 
     fn interval(&self) -> Duration {
@@ -320,7 +320,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.firehose = firehose;
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }

@@ -215,7 +215,7 @@ mod tests {
         config.notifications.relay = Some("relay-node-id".to_string());
         config.signing_key_master_key =
             Some(common::Sensitive(zeroize::Zeroizing::new([0x7u8; 32])));
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
         state
     }
 
@@ -567,7 +567,7 @@ mod tests {
         let mut state = state_with_notifications().await;
         let mut config = (*state.config).clone();
         config.signing_key_master_key = None;
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
         seed_account(&state, "did:plc:notifroutes").await;
 
         let auth = format!("Bearer {}", token(&state, "did:plc:notifroutes"));

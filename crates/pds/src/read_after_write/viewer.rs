@@ -923,7 +923,7 @@ mod tests {
         config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
             test_master_key(),
         )));
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let viewer = LocalViewer::new(&state, TEST_DID.to_string(), None, None);
 
@@ -987,7 +987,7 @@ mod tests {
         config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
             test_master_key(),
         )));
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let viewer = LocalViewer::new(&state, TEST_DID.to_string(), None, None);
 

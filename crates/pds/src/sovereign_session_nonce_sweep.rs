@@ -25,7 +25,7 @@ const _: () = assert!(common::retention_covers_replay(
 
 pub struct SovereignSessionNonceSweep;
 
-impl Sweep for SovereignSessionNonceSweep {
+impl Sweep<AppState> for SovereignSessionNonceSweep {
     const NAME: &'static str = names::SOVEREIGN_SESSION_NONCE_SWEEP;
     const REPORTS_STATUS: bool = false;
 

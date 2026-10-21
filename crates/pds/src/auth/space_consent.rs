@@ -39,7 +39,7 @@ const MAX_SPACE_TYPES_PER_REQUEST: usize = 5;
 /// (proposal 0016, "Space type declarations"). Only the consent-relevant fields are read;
 /// `key` and `description` are for clients and developers respectively.
 #[derive(Clone, Deserialize)]
-pub(crate) struct SpaceTypeDecl {
+pub struct SpaceTypeDecl {
     /// Human-readable name shown to users on consent screens.
     pub name: String,
     /// Localized `name` values by language code.
@@ -305,8 +305,9 @@ pub fn preferred_languages(accept_language: Option<&str>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::auth::permission_sets::tests_support::{pds_doc, state_with_dns, AUTHORITY_DID};
+    use crate::auth::permission_sets::tests_support::{pds_doc, AUTHORITY_DID};
     use crate::db::dids::seed_did_document;
+    use crate::routes::test_utils::state_with_txt_records as state_with_dns;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

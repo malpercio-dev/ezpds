@@ -167,7 +167,10 @@ pub(crate) async fn build_test_mirror() -> (AppState, tempfile::TempDir, FakeS3,
     let mut config = (*base.config).clone();
     config.data_dir = dir.path().to_path_buf();
     let state = AppState {
-        config: Arc::new(config),
+        core: custos_core::CoreState {
+            config: Arc::new(config),
+            ..base.core
+        },
         ..base
     };
     let fake = spawn_fake_s3().await;

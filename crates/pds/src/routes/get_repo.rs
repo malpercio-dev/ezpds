@@ -628,7 +628,7 @@ mod tests {
     /// A rev-tagged account on a state whose limiter is on with the given cooldown.
     async fn setup_cooldown_account(cooldown_secs: u64) -> (AppState, String) {
         let (mut state, did) = setup_revtagged_account().await;
-        state.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
+        state.core.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
             &common::RateLimitConfig {
                 enabled: true,
                 get_repo_full_cooldown_secs: cooldown_secs,

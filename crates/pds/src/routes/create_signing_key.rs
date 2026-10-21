@@ -147,7 +147,10 @@ mod tests {
             0x1d, 0x1e, 0x1f, 0x20,
         ])));
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }
@@ -360,7 +363,10 @@ mod tests {
         config.admin_token = Some(Sensitive("test-admin-token".to_string()));
         // signing_key_master_key intentionally left as None
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
 

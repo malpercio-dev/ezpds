@@ -364,7 +364,10 @@ mod tests {
             test_master_key(),
         )));
         AppState {
-            config: std::sync::Arc::new(config),
+            core: custos_core::CoreState {
+                config: std::sync::Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }

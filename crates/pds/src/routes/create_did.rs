@@ -997,7 +997,10 @@ mod tests {
             crate::routes::test_utils::test_master_key(),
         )));
         AppState {
-            config: std::sync::Arc::new(config),
+            core: custos_core::CoreState {
+                config: std::sync::Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }
@@ -1807,7 +1810,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.accounts.password_optional = true;
         let state = AppState {
-            config: std::sync::Arc::new(config),
+            core: custos_core::CoreState {
+                config: std::sync::Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         let db = state.db.clone();
@@ -1885,7 +1891,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.accounts.password_optional = true;
         let state = AppState {
-            config: std::sync::Arc::new(config),
+            core: custos_core::CoreState {
+                config: std::sync::Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         let db = state.db.clone();

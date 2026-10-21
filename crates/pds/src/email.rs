@@ -69,7 +69,7 @@ pub trait EmailSender: Send + Sync {
 /// `build_email_sender`'s three real variants, so they don't share a kind with any of them.
 #[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum EmailSenderKind {
+pub enum EmailSenderKind {
     Log,
     Smtp,
     Http,

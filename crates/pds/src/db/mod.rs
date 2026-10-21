@@ -31,6 +31,6 @@ pub mod waitlist;
 pub(crate) use custos_db::test_pool;
 pub use custos_db::{
     accounts, admin_audit, admin_devices, blobs, blocks, dids, handles, insert_with_retry_if,
-    insert_with_retry_on_collision, iroh_identity, is_unique_violation, jwt_secret, kek, oauth,
-    open_pool, refresh_tokens, repo_keys, run_migrations, server_stats, sessions, transfers,
+    insert_with_retry_on_collision, is_unique_violation, kek, oauth, open_pool, refresh_tokens,
+    repo_keys, run_migrations, server_stats, sessions, transfers,
 };

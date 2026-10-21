@@ -1,0 +1,585 @@
+// pattern: Imperative Shell
+
+//! Request rate limiting: the shared limiter state and the Axum middleware that enforces it.
+//!
+//! The pure sliding-window algorithm lives in [`crate::auth::rate_limit`] (a Functional Core); this
+//! module owns the process-level mutable state (one `Mutex<MultiWindowLimiter>` per limiter) and
+//! the HTTP glue — client-IP resolution, exempt paths, and the standard `RateLimit-*` /
+//! `Retry-After` response headers.
+//!
+//! Three limiter families, mirroring the reference PDS (`packages/pds/src/rate-limits.ts`):
+//!
+//! 1. **Global per-IP** — every request costs 1 point against its client IP; `getRepo`,
+//!    `subscribeRepos`, and `_health` are exempt so relay backfill/firehose and platform health
+//!    checks are never throttled.
+//! 2. **Per-endpoint per-IP** — tighter caps on the sensitive auth/account endpoints
+//!    (`createAccount`/`createSession`/`resetPassword`/`updateHandle` plus the native
+//!    `/v1/accounts[/mobile]` signup routes), the public `/waitlist` signup, and every
+//!    endpoint authenticated by a short guessable credential: `/v1/transfer/accept` (6-char
+//!    code), the agent claim pair (`/agent/identity/claim/confirm` + `/v1/agents/claim-preview`,
+//!    6-digit `user_code`), and the escrow-recovery pair (`/v1/recovery/initiate` +
+//!    `/v1/recovery/release`, emailed OTP). Each guess-target pair **shares one limiter
+//!    instance** so alternating endpoints can't double the guess budget (see the constructor
+//!    comments).
+//! 3. **Per-account write points** — the four repo-write routes spend create=3/update=2/delete=1
+//!    points against the *authenticated* DID over an hourly and a daily window. Enforced in
+//!    [`crate::record_write::commit_repo_write`] where the verified DID is known (keying on an
+//!    unverified token subject would let anyone drain a victim's budget).
+//! 4. **Per-space-credential** — every credential-authed space request costs 1 point against the
+//!    credential's *verified* bound key (`cnf.kid`). Enforced at the credential seam in
+//!    `crate::auth::space` after the signature check passes, so garbage requests cannot
+//!    drain a holder's budget and re-minting a credential (fresh `jti`, same key) does not reset
+//!    it. Complements the global per-IP cap for the one caller class that legitimately works
+//!    across IPs: a syncer fleet holding one credential.
+//!
+//! 5. **Per-DID signature-mismatch refresh cool-down** — the one limiter that guards an
+//!    *outbound* resource rather than an inbound one. A token whose signature fails against the
+//!    cached DID document force-refreshes that document once to heal a fossil key
+//!    (`identity::resolution::refresh_did_document_after_signature_mismatch`), which by design
+//!    bypasses the TTL-less `did_documents` cache — so a caller replaying one badly-signed token
+//!    buys an upstream plc.directory / did:web fetch per request. Keyed by the token's `iss`.
+//!
+//! 6. **Full-`getRepo` cooldown** — `getRepo` stays exempt from the global cap, but a repeat
+//!    *full* export (no `since`) of an unchanged repo to the same IP inside
+//!    `get_repo_full_cooldown_secs` answers 429. Keyed `(ip, did)` and remembering the root CID
+//!    served, so a new commit or a delta is always served. Enforced in the `get_repo` handler,
+//!    which alone knows the root and whether `since` is present. A cost control (a client stuck
+//!    re-downloading one rev every two minutes), not a security boundary.
+//!
+//! All limiters are pure pass-throughs when `[rate_limit] enabled = false` (the test harness sets
+//! this so unit tests are never throttled).
+
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use axum::{
+    extract::{ConnectInfo, Request, State},
+    http::{header, HeaderMap, HeaderValue},
+    middleware::Next,
+    response::{IntoResponse, Response},
+};
+use common::{ApiError, ErrorCode, RateLimitConfig};
+
+use crate::auth::rate_limit::{MultiWindowLimiter, RateLimitDecision, Window};
+use crate::CoreState;
+
+const FIVE_MIN: Duration = Duration::from_secs(5 * 60);
+const ONE_HOUR: Duration = Duration::from_secs(60 * 60);
+const ONE_DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How often one DID may force-refresh its document to heal a token signature mismatch. Not a
+/// config knob: it bounds *our* upstream fetches, not a caller's service level, and one refresh
+/// per minute already heals a real key rotation on the next request.
+const DID_REFRESH_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// Hard cap on remembered full-`getRepo` exports. Past it an insert drops expired entries, and if
+/// that frees nothing, all of them.
+const GET_REPO_FULL_SWEEP_AT: usize = 10_000;
+
+/// Point cost of each repo-write action, matching the reference PDS write-point model.
+pub const WRITE_COST_CREATE: u64 = 3;
+pub const WRITE_COST_UPDATE: u64 = 2;
+pub const WRITE_COST_DELETE: u64 = 1;
+
+/// Paths exempt from the global per-IP cap: high-volume relay sync (never abuse) and the platform
+/// health probe (must not be throttled or the host looks unhealthy under load).
+fn is_global_exempt(path: &str) -> bool {
+    matches!(
+        path,
+        "/xrpc/com.atproto.sync.getRepo"
+            | "/xrpc/com.atproto.sync.subscribeRepos"
+            | "/xrpc/_health"
+    )
+}
+
+/// Shared rate-limiter state, held in [`CoreState`] behind an `Arc`.
+///
+/// Each limiter is an independent `Mutex<MultiWindowLimiter>`; the critical section is a few
+/// microseconds of in-memory bookkeeping and never awaits, so a `std::sync::Mutex` is correct
+/// (and cheaper than an async lock).
+pub struct RateLimiterState {
+    enabled: bool,
+    global_ip: Mutex<MultiWindowLimiter>,
+    /// Per-endpoint IP limiters keyed by exact request path. Values are `Arc`-shared so several
+    /// paths that must draw from one budget (the account-creation entry points) can point at the
+    /// same limiter instance.
+    endpoints: HashMap<&'static str, Arc<Mutex<MultiWindowLimiter>>>,
+    write_points: Mutex<MultiWindowLimiter>,
+    /// Wallet-confirmed OAuth consent request creation, charged in-handler against both the
+    /// requesting IP (`ip:<addr>`) and the `client_id` (`client:<id>`) keys — a single limiter with
+    /// two independent keyspaces, so neither dimension can flood the pending-request table.
+    oauth_consent_creation: Mutex<MultiWindowLimiter>,
+    /// Credential-authed space requests, keyed by the credential's verified `cnf.kid`.
+    space_credential: Mutex<MultiWindowLimiter>,
+    /// Signature-mismatch DID-document force-refreshes, keyed by the token's `iss`. Keyed on an
+    /// *unverified* claim by necessity — the mismatch is what we are reacting to — which is safe
+    /// only because exhausting a DID's budget denies nothing a valid token needs: a valid token
+    /// verifies against the cached document and never reaches this path.
+    did_refresh: Mutex<MultiWindowLimiter>,
+    /// Full-`getRepo` cooldown window; zero disables it.
+    get_repo_full_window: Duration,
+    /// Last full export per `(ip, did)`: the root CID served and when.
+    // ponytail: plain map, cleared when a sweep can't get it under the cap; a real LRU if a flood
+    // resetting everyone's cooldown ever matters.
+    get_repo_full: Mutex<HashMap<(String, String), (String, Instant)>>,
+}
+
+impl RateLimiterState {
+    /// Build the limiter set from configuration. A knob of `0` disables that limiter (see
+    /// [`MultiWindowLimiter::new`], which drops zero-max windows).
+    pub fn new(cfg: &RateLimitConfig) -> Self {
+        let per_5min = |max: u64| {
+            Arc::new(Mutex::new(MultiWindowLimiter::new([Window {
+                window: FIVE_MIN,
+                max_points: max,
+            }])))
+        };
+
+        // The account-creation cap applies to the reference XRPC path and to the
+        // native provisioning routes. All three share *one* limiter instance so the
+        // IP-keyed budget is enforced across every entry point — otherwise a client could triple its
+        // allowance by rotating between paths.
+        let mut endpoints: HashMap<&'static str, Arc<Mutex<MultiWindowLimiter>>> = HashMap::new();
+        let create_account = per_5min(cfg.create_account_per_5min);
+        for path in [
+            "/xrpc/com.atproto.server.createAccount",
+            "/v1/accounts",
+            "/v1/accounts/mobile",
+        ] {
+            endpoints.insert(path, create_account.clone());
+        }
+        // Password and sovereign session creation share one per-IP budget. They mint the same
+        // full-access credential, so alternating authentication mechanisms must not double it.
+        let create_session = per_5min(cfg.create_session_per_5min);
+        endpoints.insert(
+            "/xrpc/com.atproto.server.createSession",
+            create_session.clone(),
+        );
+        endpoints.insert("/v1/sessions/sovereign", create_session);
+        endpoints.insert(
+            "/xrpc/com.atproto.server.resetPassword",
+            per_5min(cfg.reset_password_per_5min),
+        );
+        endpoints.insert(
+            "/xrpc/com.atproto.identity.updateHandle",
+            per_5min(cfg.update_handle_per_5min),
+        );
+        // Pattern: endpoints authenticated by a bare short code (rather than a session or bearer
+        // token) belong in this tight per-endpoint limiter by default — the code *is* the
+        // credential, so the generous global cap alone leaves too much room to brute-force it.
+        // `/v1/transfer/accept` (a 6-char transfer code) was the first; the claim-ceremony
+        // confirm endpoint carries the same 6-digit-code guessing surface (its session auth
+        // gates *who* may confirm, not *how many* codes they can try).
+        endpoints.insert(
+            "/v1/transfer/accept",
+            per_5min(cfg.transfer_accept_per_5min),
+        );
+        // The preview endpoint shares the confirm limiter *instance* (like the createAccount
+        // trio): both validate the same guessable 6-digit user_code, so splitting the budget
+        // would double an attacker's guess allowance by alternating endpoints.
+        let claim_confirm = per_5min(cfg.agent_claim_confirm_per_5min);
+        endpoints.insert("/agent/identity/claim/confirm", claim_confirm.clone());
+        endpoints.insert("/v1/agents/claim-preview", claim_confirm);
+        // The escrow-recovery pair. `release` validates an emailed OTP (the guessable-credential
+        // class), and `initiate` mints one; they **share one limiter instance** so alternating the
+        // two endpoints can't double an attacker's per-IP OTP-guess budget — the same reasoning as
+        // the claim confirm/preview pair above.
+        let recovery = per_5min(cfg.recovery_per_5min);
+        endpoints.insert("/v1/recovery/initiate", recovery.clone());
+        endpoints.insert("/v1/recovery/release", recovery);
+        // Wallet-consent code-validating endpoints. The preview validates a guessable `user_code`
+        // (the short-code class), and the approve endpoint drives an outbound PLC fetch; they
+        // **share one limiter instance** so alternating them can't double an attacker's per-IP
+        // budget — the claim confirm/preview precedent above.
+        let consent_action = per_5min(cfg.oauth_consent_action_per_5min);
+        endpoints.insert("/oauth/authorize/consent-request", consent_action.clone());
+        endpoints.insert("/oauth/authorize/approve", consent_action);
+        // The public waitlist signup: unauthenticated and row-writing, so it gets its own
+        // tight per-IP cap on top of the global one (no shared instance — nothing else
+        // consumes its budget).
+        endpoints.insert("/waitlist", per_5min(cfg.waitlist_per_5min));
+
+        Self {
+            enabled: cfg.enabled,
+            global_ip: Mutex::new(MultiWindowLimiter::new([Window {
+                window: FIVE_MIN,
+                max_points: cfg.global_ip_per_5min,
+            }])),
+            endpoints,
+            write_points: Mutex::new(MultiWindowLimiter::new([
+                Window {
+                    window: ONE_HOUR,
+                    max_points: cfg.write_points_hourly,
+                },
+                Window {
+                    window: ONE_DAY,
+                    max_points: cfg.write_points_daily,
+                },
+            ])),
+            oauth_consent_creation: Mutex::new(MultiWindowLimiter::new([Window {
+                window: FIVE_MIN,
+                max_points: cfg.oauth_consent_create_per_5min,
+            }])),
+            space_credential: Mutex::new(MultiWindowLimiter::new([Window {
+                window: FIVE_MIN,
+                max_points: cfg.space_credential_per_5min,
+            }])),
+            did_refresh: Mutex::new(MultiWindowLimiter::new([Window {
+                window: DID_REFRESH_COOLDOWN,
+                max_points: 1,
+            }])),
+            get_repo_full_window: Duration::from_secs(cfg.get_repo_full_cooldown_secs),
+            get_repo_full: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Record a full `getRepo` export of `did` at `root` to `ip`, or refuse it with
+    /// [`ErrorCode::RateLimited`] (429, `Retry-After` = seconds left, `RateLimit-*` headers) when
+    /// the same root went to the same IP inside the cooldown window. Call only for full exports;
+    /// `since=` deltas are never limited. A no-op when rate limiting or the cooldown is disabled.
+    pub fn check_get_repo_full(&self, ip: &str, did: &str, root: &str) -> Result<(), ApiError> {
+        let window = self.get_repo_full_window;
+        if !self.enabled || window.is_zero() {
+            return Ok(());
+        }
+        let now = Instant::now();
+        let mut map = lock(&self.get_repo_full);
+        let key = (ip.to_string(), did.to_string());
+        if let Some((served, at)) = map.get(&key) {
+            let elapsed = now.duration_since(*at);
+            if served == root && elapsed < window {
+                let left = (window - elapsed).as_secs().max(1).to_string();
+                return Err(ApiError::new(
+                    ErrorCode::RateLimited,
+                    "this repo has not changed since your last full export; use `since` or retry later",
+                )
+                .with_header("retry-after", left.clone())
+                .with_header("ratelimit-limit", "1")
+                .with_header("ratelimit-remaining", "0")
+                .with_header("ratelimit-reset", left));
+            }
+        }
+        if map.len() >= GET_REPO_FULL_SWEEP_AT {
+            map.retain(|_, (_, at)| now.duration_since(*at) < window);
+            // Still full of live entries (a spoofed-IP flood): forget them all. Fails open — those
+            // callers get one more full export — but keeps memory bounded and the sweep amortized.
+            if map.len() >= GET_REPO_FULL_SWEEP_AT {
+                map.clear();
+            }
+        }
+        map.insert(key, (root.to_string(), now));
+        Ok(())
+    }
+
+    /// Charge one wallet-consent request creation against both the requesting IP and the
+    /// `client_id`. Returns [`ErrorCode::RateLimited`] (429, with the standard `Retry-After` /
+    /// `RateLimit-*` headers) when either dimension is exhausted, so a single IP or a single client
+    /// cannot flood the pending-request table. A no-op when rate limiting is disabled.
+    pub fn check_oauth_consent_creation(&self, client_id: &str, ip: &str) -> Result<(), ApiError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let now = Instant::now();
+        for key in [format!("ip:{ip}"), format!("client:{client_id}")] {
+            let decision = lock(&self.oauth_consent_creation).check(&key, 1, now);
+            if !decision.allowed {
+                return Err(ApiError::new(
+                    ErrorCode::RateLimited,
+                    "too many authorization requests; slow down and retry later",
+                )
+                .with_header("retry-after", decision.reset_after_secs.to_string())
+                .with_header("ratelimit-limit", decision.limit.to_string())
+                .with_header("ratelimit-remaining", decision.remaining.to_string())
+                .with_header("ratelimit-reset", decision.reset_after_secs.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Charge one credential-authed space request against the credential's bound key. Returns
+    /// [`ErrorCode::RateLimited`] (429, with the standard `Retry-After` / `RateLimit-*` headers)
+    /// when the holder's budget is exhausted. Call only with a *verified*
+    /// `cnf.kid` — keying on an unverified claim would let anyone drain a holder's budget. A
+    /// no-op when rate limiting is disabled.
+    pub fn check_space_credential(&self, kid: &str) -> Result<(), ApiError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let decision = lock(&self.space_credential).check(kid, 1, Instant::now());
+        if decision.allowed {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                ErrorCode::RateLimited,
+                "space credential rate limit exceeded; slow down and retry later",
+            )
+            .with_header("retry-after", decision.reset_after_secs.to_string())
+            .with_header("ratelimit-limit", decision.limit.to_string())
+            .with_header("ratelimit-remaining", decision.remaining.to_string())
+            .with_header("ratelimit-reset", decision.reset_after_secs.to_string()))
+        }
+    }
+
+    /// Whether `did` may force-refresh its DID document now to heal a token signature mismatch,
+    /// consuming the allowance when it may. At most one refresh per [`DID_REFRESH_COOLDOWN`], so a
+    /// caller replaying a badly-signed token cannot turn the cache-bypassing heal into one
+    /// upstream fetch per request.
+    ///
+    /// Returns `bool` rather than an `ApiError`: a suppressed refresh is not a 429 to the caller —
+    /// the cached document was there and the signature did not verify against it, so the caller
+    /// gets that verdict. A no-op (always `true`) when rate limiting is disabled, so the healing
+    /// path stays exercisable in tests.
+    pub fn allow_did_refresh(&self, did: &str) -> bool {
+        if !self.enabled {
+            return true;
+        }
+        lock(&self.did_refresh)
+            .check(did, 1, Instant::now())
+            .allowed
+    }
+
+    /// Charge `cost` write points to `did`'s repo-write budget. Returns
+    /// [`ErrorCode::RateLimited`] (429) when the hourly or daily budget is exhausted, so the four
+    /// repo-write handlers surface the standard error envelope. A no-op when disabled.
+    pub fn check_write_points(&self, did: &str, cost: u64) -> Result<(), ApiError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let decision = lock(&self.write_points).check(did, cost, Instant::now());
+        if decision.allowed {
+            Ok(())
+        } else {
+            // Carry the same Retry-After / RateLimit-* headers the middleware sets, so a client
+            // hitting the write budget learns when to retry (the error envelope alone can't).
+            Err(ApiError::new(
+                ErrorCode::RateLimited,
+                "repo write rate limit exceeded; slow down and retry later",
+            )
+            .with_header("retry-after", decision.reset_after_secs.to_string())
+            .with_header("ratelimit-limit", decision.limit.to_string())
+            .with_header("ratelimit-remaining", decision.remaining.to_string())
+            .with_header("ratelimit-reset", decision.reset_after_secs.to_string()))
+        }
+    }
+}
+
+/// Recover a `Mutex` guard even if a previous holder panicked: rate-limit accounting is
+/// self-healing (a poisoned map is still valid data), so we prefer availability over propagating
+/// the poison and turning every subsequent request into a 500.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Resolve the client IP for keying. Behind the production edge proxy (Railway) the TCP peer is the
+/// proxy, so the real client is read from `X-Forwarded-For` (leftmost entry = original client),
+/// falling back to the TCP peer and finally a shared `"unknown"` bucket.
+///
+/// **Assumption:** the edge proxy is trusted to set `X-Forwarded-For`. A client can prepend a
+/// spoofed value, which is the well-known limitation of any XFF-keyed limiter; the global cap is
+/// defence-in-depth, not an authentication boundary.
+/// Public XFF-based client-IP resolver for handlers that rate-limit or record the client IP
+/// in-handler (keyed the same way the middleware keys its per-IP limiters). Behind the edge proxy
+/// the TCP peer is unavailable to a handler, so this reads the leftmost valid `X-Forwarded-For`
+/// entry, falling back to a shared `"unknown"` bucket.
+pub fn client_ip_from_headers(headers: &HeaderMap) -> String {
+    client_ip(headers, None)
+}
+
+fn client_ip(headers: &HeaderMap, connect_info: Option<&ConnectInfo<SocketAddr>>) -> String {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = xff
+            .split(',')
+            .map(str::trim)
+            .find(|s| s.parse::<IpAddr>().is_ok())
+        {
+            return first.to_string();
+        }
+    }
+    if let Some(ConnectInfo(addr)) = connect_info {
+        return addr.ip().to_string();
+    }
+    "unknown".to_string()
+}
+
+/// Attach `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` to a response from a
+/// limiter decision. `RateLimit-Reset` is a *delta-seconds* value (seconds until capacity frees),
+/// per the IETF `RateLimit` header fields draft, so it's consistent with `Retry-After` — not an
+/// absolute Unix timestamp.
+fn apply_rate_limit_headers(resp: &mut Response, decision: &RateLimitDecision) {
+    let headers = resp.headers_mut();
+    headers.insert("ratelimit-limit", HeaderValue::from(decision.limit));
+    headers.insert("ratelimit-remaining", HeaderValue::from(decision.remaining));
+    headers.insert(
+        "ratelimit-reset",
+        HeaderValue::from(decision.reset_after_secs),
+    );
+}
+
+/// Count one 429 into `rate_limit_rejections_total{limiter=...}`. The write-points limiter
+/// counts at its call site in `record_write` (it rejects deep in the write path, not here).
+pub fn count_rejection(state: &CoreState, limiter: &'static str) {
+    state.metrics.rate_limit_rejections.add(
+        1,
+        &[crate::metrics::label(
+            crate::metrics::names::LABEL_LIMITER,
+            limiter,
+        )],
+    );
+}
+
+/// Build the 429 response for a rejected request: the standard error envelope plus the
+/// `RateLimit-*` headers and a `Retry-After` delta.
+fn rate_limited_response(decision: &RateLimitDecision, scope: &str) -> Response {
+    let mut resp = ApiError::new(
+        ErrorCode::RateLimited,
+        format!("rate limit exceeded ({scope}); slow down and retry later"),
+    )
+    .into_response();
+    apply_rate_limit_headers(&mut resp, decision);
+    resp.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from(decision.reset_after_secs),
+    );
+    resp
+}
+
+/// Axum middleware enforcing the global per-IP and per-endpoint per-IP limits.
+///
+/// `ConnectInfo` is optional so the router still works in tests driven without a connected socket
+/// (`oneshot`); production always has it via `into_make_service_with_connect_info`. Per-account
+/// write points are enforced deeper in the write path, not here (see the module docs).
+pub async fn rate_limit_middleware(
+    State(state): State<CoreState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    // axum 0.8 dropped the blanket `Option<T>` extractor; ConnectInfo lives in the
+    // request extensions, so read it there (absent under `oneshot` test harnesses).
+    let connect_info = req.extensions().get::<ConnectInfo<SocketAddr>>().copied();
+    let limiter = &state.rate_limiter;
+    if !limiter.enabled {
+        return next.run(req).await;
+    }
+
+    let now = Instant::now();
+    let path = req.uri().path().to_string();
+    let ip = client_ip(req.headers(), connect_info.as_ref());
+
+    // Track the tightest applicable decision so its headers ride on the eventual success response.
+    let mut tightest: Option<RateLimitDecision> = None;
+
+    if !is_global_exempt(&path) {
+        let decision = lock(&limiter.global_ip).check(&ip, 1, now);
+        if !decision.allowed {
+            count_rejection(&state, "global_ip");
+            return rate_limited_response(&decision, "global");
+        }
+        tightest = Some(decision);
+    }
+
+    if let Some(endpoint) = limiter.endpoints.get(path.as_str()) {
+        let decision = lock(endpoint).check(&ip, 1, now);
+        if !decision.allowed {
+            count_rejection(&state, "endpoint_ip");
+            return rate_limited_response(&decision, "endpoint");
+        }
+        tightest = Some(match tightest {
+            Some(prev) if prev.remaining <= decision.remaining => prev,
+            _ => decision,
+        });
+    }
+
+    let mut response = next.run(req).await;
+    if let Some(decision) = tightest {
+        apply_rate_limit_headers(&mut response, &decision);
+    }
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(enabled: bool) -> RateLimitConfig {
+        RateLimitConfig {
+            enabled,
+            ..RateLimitConfig::default()
+        }
+    }
+
+    #[test]
+    fn client_ip_prefers_xff_leftmost() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "203.0.113.7, 10.0.0.1".parse().unwrap());
+        assert_eq!(client_ip(&h, None), "203.0.113.7");
+    }
+
+    #[test]
+    fn client_ip_skips_garbage_xff_entries() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "garbage, 198.51.100.9".parse().unwrap());
+        assert_eq!(client_ip(&h, None), "198.51.100.9");
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_connect_info_then_unknown() {
+        let h = HeaderMap::new();
+        let ci = ConnectInfo("192.0.2.5:1234".parse::<SocketAddr>().unwrap());
+        assert_eq!(client_ip(&h, Some(&ci)), "192.0.2.5");
+        assert_eq!(client_ip(&h, None), "unknown");
+    }
+
+    #[test]
+    fn write_points_disabled_never_limits() {
+        let rl = RateLimiterState::new(&cfg(false));
+        for _ in 0..10_000 {
+            assert!(rl
+                .check_write_points("did:plc:x", WRITE_COST_CREATE)
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn write_points_exhaust_daily_budget() {
+        let rl = RateLimiterState::new(&RateLimitConfig {
+            enabled: true,
+            write_points_hourly: 0, // disable hourly; test the daily budget alone
+            write_points_daily: 5,
+            ..RateLimitConfig::default()
+        });
+        // create=3 then create=3 would be 6 > 5 → second rejected.
+        assert!(rl
+            .check_write_points("did:plc:a", WRITE_COST_CREATE)
+            .is_ok());
+        assert!(rl
+            .check_write_points("did:plc:a", WRITE_COST_CREATE)
+            .is_err());
+        // A different account has its own budget.
+        assert!(rl
+            .check_write_points("did:plc:b", WRITE_COST_CREATE)
+            .is_ok());
+    }
+
+    #[test]
+    fn get_repo_full_map_stays_bounded_under_a_flood() {
+        let limiter = RateLimiterState::new(&RateLimitConfig {
+            enabled: true,
+            get_repo_full_cooldown_secs: 3600,
+            ..RateLimitConfig::default()
+        });
+        let did = "did:plc:flood";
+        assert!(limiter.check_get_repo_full("ip-0", did, "root").is_ok());
+        assert!(limiter.check_get_repo_full("ip-0", did, "root").is_err());
+        for i in 1..GET_REPO_FULL_SWEEP_AT {
+            limiter
+                .check_get_repo_full(&format!("ip-{i}"), did, "root")
+                .unwrap();
+        }
+        // The cap is reached with every entry live: the next insert forgets them all.
+        limiter.check_get_repo_full("ip-new", did, "root").unwrap();
+        assert_eq!(lock(&limiter.get_repo_full).len(), 1);
+        assert!(limiter.check_get_repo_full("ip-0", did, "root").is_ok());
+    }
+}

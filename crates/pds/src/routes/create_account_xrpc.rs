@@ -699,7 +699,10 @@ mod tests {
         )));
         config.invite_code_required = invite_required;
         AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         }
     }

@@ -165,7 +165,7 @@ mod tests {
         config.admin_token = Some(common::Sensitive("admin-secret".to_string()));
         config.signing_key_master_key =
             Some(common::Sensitive(zeroize::Zeroizing::new([0x7u8; 32])));
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
         state
     }
 
@@ -385,7 +385,7 @@ mod tests {
         let mut state = crate::state::test_state().await;
         let mut config = (*state.config).clone();
         config.admin_token = Some(common::Sensitive("admin-secret".to_string()));
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let (status, _) = call(
             state,

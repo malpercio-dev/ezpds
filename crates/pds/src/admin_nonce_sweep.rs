@@ -25,7 +25,7 @@ pub struct AdminNonceSweep {
     pub max_age_secs: i64,
 }
 
-impl Sweep for AdminNonceSweep {
+impl Sweep<AppState> for AdminNonceSweep {
     const NAME: &'static str = names::ADMIN_NONCE_SWEEP;
 
     fn interval(&self) -> Duration {

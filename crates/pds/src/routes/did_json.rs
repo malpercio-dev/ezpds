@@ -299,7 +299,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.server_did = Some("did:plc:configured123".to_string());
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
 

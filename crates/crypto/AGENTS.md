@@ -262,7 +262,7 @@ pub fn mint_service_auth_jwt<F>(
 where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
 ```
 
-- Mints an atproto inter-service auth JWT (`base64url(header).base64url(payload).base64url(signature)`, ES256) from the crate's standard external-signer callback, so a wallet-held key (software scalar or Secure Enclave) can sign it. The wallet-side twin of the PDS's own `mint_service_auth_jwt` (`crates/pds/src/auth/jwt.rs`); this offline form is what lets the wallet mint the migration `createAccount` service-auth token from a self-controlled `atproto` signing key when the source PDS is gone (sovereign disaster recovery).
+- Mints an atproto inter-service auth JWT (`base64url(header).base64url(payload).base64url(signature)`, ES256) from the crate's standard external-signer callback, so a wallet-held key (software scalar or Secure Enclave) can sign it. The wallet-side twin of the PDS's own `mint_service_auth_jwt` (`crates/custos-core/src/auth/jwt.rs`); this offline form is what lets the wallet mint the migration `createAccount` service-auth token from a self-controlled `atproto` signing key when the source PDS is gone (sovereign disaster recovery).
 - Header is `{"typ":"JWT","alg":"ES256"}`; claims are `iss`/`aud`/`iat`/`exp`, plus `lxm` only when `Some`.
 - The callback must return a **low-S canonical** 64-byte r‖s P-256 signature (the same contract as the PLC op builders) — a non-64-byte or high-S signature is rejected here rather than minting a token the network would refuse.
 - Errors: propagates any `CryptoError` from the callback, or `CryptoError::PlcOperation` for a malformed callback signature or serialization failure.

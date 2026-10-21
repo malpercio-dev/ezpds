@@ -85,7 +85,7 @@ pub struct LabelerWatch {
     pub interval: Duration,
 }
 
-impl Sweep for LabelerWatch {
+impl Sweep<AppState> for LabelerWatch {
     const NAME: &'static str = names::LABELER_WATCH;
 
     fn interval(&self) -> Duration {
@@ -378,7 +378,7 @@ mod tests {
         let mut state = test_state().await;
         let mut config = (*state.config).clone();
         config.labeler.watched = vec![watch(labels)];
-        state.config = std::sync::Arc::new(config);
+        state.core.config = std::sync::Arc::new(config);
         state
     }
 
@@ -507,7 +507,7 @@ mod tests {
         config.notifications.relay = Some("relay-node-id".to_string());
         config.signing_key_master_key =
             Some(common::Sensitive(zeroize::Zeroizing::new([0x7u8; 32])));
-        state.config = std::sync::Arc::new(config);
+        state.core.config = std::sync::Arc::new(config);
 
         sqlx::query(
             "INSERT INTO admin_devices (id, label, public_key, platform, scopes, created_at) \

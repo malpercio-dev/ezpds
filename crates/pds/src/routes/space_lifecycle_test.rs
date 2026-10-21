@@ -259,7 +259,7 @@ async fn a_credential_stops_being_served_when_the_authority_is_not_active() {
 #[tokio::test]
 async fn credential_requests_are_rate_limited_per_bound_key() {
     let mut state = state_with_master_key().await;
-    state.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
+    state.core.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
         &common::RateLimitConfig {
             space_credential_per_5min: 1,
             ..common::RateLimitConfig::default()

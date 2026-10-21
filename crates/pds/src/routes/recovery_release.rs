@@ -487,7 +487,10 @@ mod tests {
         let emails = Arc::new(Mutex::new(Vec::new()));
         let email: Arc<dyn EmailSender> = Arc::new(CapturingEmail(emails.clone()));
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             email,
             ..base
         };
@@ -877,7 +880,7 @@ mod tests {
     async fn initiate_and_release_share_one_per_ip_budget() {
         // cap = 3, shared across both endpoints: 3 calls in any mix pass, the 4th is 429.
         let mut state = test_state().await;
-        state.rate_limiter = Arc::new(crate::rate_limit::RateLimiterState::new(
+        state.core.rate_limiter = Arc::new(crate::rate_limit::RateLimiterState::new(
             &common::RateLimitConfig {
                 enabled: true,
                 recovery_per_5min: 3,

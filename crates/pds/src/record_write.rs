@@ -237,7 +237,7 @@ pub async fn write_record(
     let (collection, rkey) = split_record_path(mst_key);
     let validation_status = crate::lexicon::registry()
         .validate_record(&collection, &rkey, record, validate)
-        .map_err(record_validation_error)?;
+        .map_err(crate::lexicon::record_validation_error)?;
 
     // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
     // writers — see [`RepoWriteLocks`]. Held until this function returns, past the GC pass.
@@ -396,22 +396,6 @@ pub async fn write_record(
     // post-commit GC); no separate full-repo reachability sweep runs on the write path.
 
     Ok((record_cid, validation_status))
-}
-
-/// Map a lexicon record-validation error to an `ApiError`: an `Invalid` record is a client-facing
-/// 400 `InvalidRequest` (the reference's `InvalidRecordError` → `InvalidRequest`), a `Lexicon`
-/// inconsistency (unreachable — registry-build-checked) a 500. Shared with `apply_writes`.
-pub(crate) fn record_validation_error(e: crate::lexicon::ValidationError) -> ApiError {
-    match e {
-        crate::lexicon::ValidationError::Invalid(message) => {
-            ApiError::new(ErrorCode::InvalidRequest, message)
-        }
-        crate::lexicon::ValidationError::Lexicon(message) => ApiError::internal_as(
-            message,
-            "vendored lexicon set is inconsistent",
-            "server lexicon configuration error",
-        ),
-    }
 }
 
 /// Advance the repo root (optimistic-concurrency CAS) and, while both the previous and new block

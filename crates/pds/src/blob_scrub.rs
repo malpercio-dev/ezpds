@@ -78,7 +78,7 @@ pub struct BlobScrub {
     pub mirror: Option<Arc<BlobMirror>>,
 }
 
-impl Sweep for BlobScrub {
+impl Sweep<AppState> for BlobScrub {
     const NAME: &'static str = names::BLOB_SCRUB;
 
     fn interval(&self) -> Duration {
@@ -315,7 +315,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.data_dir = dir.path().to_path_buf();
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         (state, dir)
@@ -468,7 +471,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.blob_scrub.auto_heal = false;
         let state = AppState {
-            config: Arc::new(config),
+            core: custos_core::CoreState {
+                config: Arc::new(config),
+                ..base.core
+            },
             ..base
         };
         let cid = add_blob(&state, "did:plc:scrubnoheal", b"good bytes", "image/png").await;

@@ -1991,9 +1991,12 @@ mod tests {
         let server = MockServer::start().await;
         let base = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let state = crate::app::AppState {
-            txt_resolver: Some(std::sync::Arc::new(FixedTxtResolver {
-                records: vec![format!("did={AUTHORITY_DID}")],
-            })),
+            core: custos_core::CoreState {
+                txt_resolver: Some(std::sync::Arc::new(FixedTxtResolver {
+                    records: vec![format!("did={AUTHORITY_DID}")],
+                })),
+                ..base.core
+            },
             ..base
         };
         seed_did_document(

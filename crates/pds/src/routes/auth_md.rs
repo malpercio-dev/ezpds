@@ -114,7 +114,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.public_url = "https://pds.example.com/".to_string();
         let state = AppState {
-            config: std::sync::Arc::new(config),
+            core: custos_core::CoreState {
+                config: std::sync::Arc::new(config),
+                ..base.core
+            },
             ..base
         };
 
@@ -129,7 +132,10 @@ mod tests {
         let mut config = (*base.config).clone();
         config.service_name = "Custos Relay".to_string();
         let state = AppState {
-            config: std::sync::Arc::new(config),
+            core: custos_core::CoreState {
+                config: std::sync::Arc::new(config),
+                ..base.core
+            },
             ..base
         };
 

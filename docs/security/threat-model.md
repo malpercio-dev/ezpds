@@ -12,15 +12,15 @@ claim doesn't belong here, it belongs in [Open items](#open-items).
 | Asset | Where it lives |
 | --- | --- |
 | Genesis/rotation keys (device, recovery, PDS) | Wallet Secure Enclave / Keychain (device), re-derived only during recovery from Shamir shares (recovery), PDS key store (PDS) — [`docs/architecture/identity-and-key-custody.md`](../architecture/identity-and-key-custody.md), genesis ops in `crates/crypto/src/plc.rs` |
-| Repo signing key | PDS-side, wrapped by the master KEK; signs every repo commit — [ADR-0004](../architecture/decisions/0004-pds-signed-repo-commits.md), rotation in `crates/pds/src/auth/signing_key.rs` |
+| Repo signing key | PDS-side, wrapped by the master KEK; signs every repo commit — [ADR-0004](../architecture/decisions/0004-pds-signed-repo-commits.md), rotation in `crates/custos-core/src/auth/signing_key.rs` |
 | Master key (KEK) | `EZPDS_SIGNING_KEY_MASTER_KEY`, env-only, wraps every at-rest secret — [`docs/operations/master-key-disaster-runbook.md`](../operations/master-key-disaster-runbook.md) |
 | Device keys | `crates/ios-device-key/src/device_key.rs` — Secure Enclave on a real device, software P-256 elsewhere, over a Keychain the calling app supplies |
 | Recovery shares (Shamir) | `crates/crypto/src/shamir.rs` (3-share split, 2-of-3 reconstruction), rendered to words by `crates/crypto/src/mnemonic.rs` |
 | Account data and blobs | SQLite (`{data_dir}/*.db`) + `{data_dir}/blobs/`, Litestream-replicated DB and mirror-replicated blobs — [`docs/deploy.md`](../deploy.md) |
-| Sessions/tokens | Access/refresh JWTs and OAuth DPoP-bound tokens — `crates/pds/src/auth/jwt.rs`, `crates/pds/src/auth/dpop.rs` |
-| DID documents / handles | `crates/pds/src/identity/` (`did.rs`, `handle.rs`, `resolution.rs`, `well_known.rs`) |
+| Sessions/tokens | Access/refresh JWTs and OAuth DPoP-bound tokens — `crates/custos-core/src/auth/jwt.rs`, `crates/custos-core/src/auth/dpop.rs` |
+| DID documents / handles | `crates/custos-core/src/identity/` (`did.rs`, `handle.rs`, `resolution.rs`, `well_known.rs`) |
 | Push-payload plaintext | HPKE-sealed to a per-device key before it leaves the PDS — `crates/crypto/src/hpke.rs`, unsealed only in the wallet's Notification Service Extension |
-| Admin authority | Master admin token or per-device signed-request envelope — `crates/pds/src/auth/guards.rs`, [ADR-0018](../architecture/decisions/0018-admin-signed-request-envelope.md) |
+| Admin authority | Master admin token or per-device signed-request envelope — `crates/custos-core/src/auth/guards.rs`, [ADR-0018](../architecture/decisions/0018-admin-signed-request-envelope.md) |
 
 ## Actors and trust boundaries
 
@@ -44,26 +44,26 @@ Boundaries and their primary control:
 | --- | --- | --- |
 | Client ↔ PDS HTTP | Bearer/DPoP tokens, XRPC bodies | `auth::extractors::authenticate_access`, TLS |
 | PDS ↔ plc.directory | Signed PLC operations | DAG-CBOR canonicalization + signature verification (`crates/crypto/src/plc.rs`) |
-| PDS ↔ outbound fetch (handle/did:web/client metadata/JWKS/blob mirror) | Caller-influenced URLs | `HardenedClient` + `CallerUrl` + `SsrfResolver` (`crates/pds/src/identity/proxy.rs`) |
+| PDS ↔ outbound fetch (handle/did:web/client metadata/JWKS/blob mirror) | Caller-influenced URLs | `HardenedClient` + `CallerUrl` + `SsrfResolver` (`crates/custos-core/src/identity/proxy.rs`) |
 | PDS ↔ SQLite/filesystem | Queries, blob reads/writes | Per-crate DB module ownership (`crates/pds/AGENTS.md`), path validation |
 | Wallet ↔ Secure Enclave/Keychain | Signing requests, key material | `crates/ios-device-key`, no key ever leaves the enclave |
-| Wallet ↔ PDS | Session tokens, DPoP proofs | RFC 9449 binding (`crates/pds/src/auth/dpop.rs`) |
+| Wallet ↔ PDS | Session tokens, DPoP proofs | RFC 9449 binding (`crates/custos-core/src/auth/dpop.rs`) |
 | PDS ↔ notify-relay (iroh) | Enrollment RPCs, sealed push payloads | Connection-identity binding (`crates/notify-relay/AGENTS.md`) |
 | Sidecar ↔ PDS | Forwarded OAuth bearer, no cached secret | [ADR-0024](../architecture/decisions/0024-hosted-agent-credential-forwarding.md) |
-| Admin-companion ↔ PDS | Per-device signed-request envelope or master token | `crates/pds/src/auth/guards.rs` |
+| Admin-companion ↔ PDS | Per-device signed-request envelope or master token | `crates/custos-core/src/auth/guards.rs` |
 
 ## Threats and mitigations
 
 ### Token theft/replay
 
 Every access-token check funnels through `auth::extractors::authenticate_access`
-(`crates/pds/src/auth/extractors.rs`), which refuses a refresh-scoped token
+(`crates/custos-core/src/auth/extractors.rs`), which refuses a refresh-scoped token
 outright (commit `73505e01`) and enforces the DPoP scheme ↔ `cnf.jkt` binding in
 both directions. The compiler holds the seam: `auth::jwt::verify_access_token`
 is `pub(super)` and its per-algorithm verifiers are private, so code outside
 `auth` cannot verify an access token any other way. Resource-endpoint DPoP proofs keep
 no `jti` replay store by design — see the documented tradeoff in
-`crates/pds/src/auth/dpop.rs` (`validate_dpop`'s doc comment: RFC 9449 §11.1
+`crates/custos-core/src/auth/dpop.rs` (`validate_dpop`'s doc comment: RFC 9449 §11.1
 makes `jti` tracking a SHOULD, replay is bounded by the 60s `iat` window plus the
 `ath` token binding, and every route behind `AuthenticatedUser` must stay
 idempotent for that to be safe).
@@ -74,14 +74,14 @@ PAR/authorize require `code_challenge_method=S256` (`crates/pds/src/routes/oauth
 an exact `redirect_uri` match against the client's registered `redirect_uris`
 (same file), and — for a Private-Use URI Scheme redirect on discoverable
 client metadata — the reverse-FQDN rule (`validate_private_use_redirect` in
-`crates/pds/src/auth/oauth_client_resolution.rs`). Client identity for a
+`crates/custos-core/src/auth/oauth_client_resolution.rs`). Client identity for a
 URL-shaped `client_id` is resolved by fetching its metadata document; a failed
 resolution is negative-cached to bound repeated outbound fetches against the
 unauthenticated PAR endpoint.
 
 ### SSRF via caller-influenced fetches
 
-`crates/pds/src/identity/proxy.rs` is the SSRF guard: a validated scheme/host
+`crates/custos-core/src/identity/proxy.rs` is the SSRF guard: a validated scheme/host
 check plus a hardened client (`HardenedClient`, stored as
 `AppState::hardened_http_client`) whose custom `SsrfResolver` re-applies a
 public-address allowlist at DNS resolution time, closing the
@@ -100,10 +100,10 @@ same `ip_allowed` allowlist ([#638](https://github.com/malpercio-dev/ezpds/pull/
 
 ### Admin-token brute force/timing
 
-`require_admin_token` (`crates/pds/src/auth/guards.rs`) compares the bearer
+`require_admin_token` (`crates/custos-core/src/auth/guards.rs`) compares the bearer
 token with `subtle::ConstantTimeEq` rather than `==`, so an early byte
 mismatch reveals nothing over timing. The admin surface is additionally
-covered by the global per-IP rate limiter in `crates/pds/src/rate_limit.rs`.
+covered by the global per-IP rate limiter in `crates/custos-core/src/rate_limit.rs`.
 Per-device admin auth ([ADR-0018](../architecture/decisions/0018-admin-signed-request-envelope.md))
 is the preferred path; the master token is a break-glass fallback.
 
@@ -121,10 +121,10 @@ write lock ([ADR-0025](../architecture/decisions/0025-wallet-driven-repo-key-rot
 ### Identity hijack via handle/DID
 
 Handle structural validation rejects bare single-label handles before they're
-baked into a did:plc genesis op (`crates/pds/src/identity/handle.rs`).
+baked into a did:plc genesis op (`crates/custos-core/src/identity/handle.rs`).
 `did:web` may be minted or hosted only after proving control of the
 user-owned domain ([ADR-0022](../architecture/decisions/0022-did-web-for-user-owned-domains.md)).
-The well-known/DNS handle resolvers (`crates/pds/src/identity/well_known.rs`,
+The well-known/DNS handle resolvers (`crates/custos-core/src/identity/well_known.rs`,
 `dns.rs`) are the caller-influenced fetch the SSRF guard above protects.
 
 ### Data loss
@@ -197,7 +197,7 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
   makes it a SHOULD; the accepted exposure is a captured (token + proof) pair
   replayable against the same method+URI within the ~60s freshness window,
   contingent on every `AuthenticatedUser` route staying idempotent
-  (`crates/pds/src/auth/dpop.rs`).
+  (`crates/custos-core/src/auth/dpop.rs`).
 - **An operator with server shell access is fully trusted.** The threat model
   here is external and semi-trusted actors, not the operator's own machine —
   consistent with `require_admin_token`'s master-token fallback existing at
@@ -205,7 +205,7 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
 - **Single-node SQLite.** No multi-writer story; Litestream gives durability,
   not horizontal scale ([ADR-0011](../architecture/decisions/0011-sqlite-via-sqlx.md)).
 - **Per-IP limits trust `X-Forwarded-For`.** The global cap and the full-`getRepo`
-  cooldown (`crates/pds/src/rate_limit.rs`) key on the leftmost forwarded address, which a
+  cooldown (`crates/custos-core/src/rate_limit.rs`) key on the leftmost forwarded address, which a
   client can spoof. Both are cost and abuse controls, not authentication boundaries; the
   cooldown in particular only stops one IP re-downloading an unchanged repo.
 - **The notify-relay is trusted for availability only, never confidentiality**
@@ -220,7 +220,7 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
   `unsafe` Objective-C interop blocks with no `// SAFETY:` justification.
 - **DIDs are typed as raw `String`, not a validated newtype.** Structural
   validity is enforced at specific call sites (e.g.
-  `crates/pds/src/identity/handle.rs`, `did.rs`) rather than at the type
+  `crates/custos-core/src/identity/handle.rs`, `did.rs`) rather than at the type
   boundary, so a malformed DID can travel further through the codebase before
   any check runs.
 

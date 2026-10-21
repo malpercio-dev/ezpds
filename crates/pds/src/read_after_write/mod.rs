@@ -963,7 +963,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         // Create request
         let req = axum::http::Request::builder()
@@ -1039,7 +1039,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let token = access_jwt(&state.jwt_secret, did);
 
@@ -1136,7 +1136,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         // Request the OTHER user's profile.
         let req = axum::http::Request::builder()
@@ -1224,7 +1224,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
@@ -1363,7 +1363,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
@@ -1449,7 +1449,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
@@ -1535,7 +1535,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         // Request the thread for a DIFFERENT post (another user's) that is not in local records.
         let requested_uri = "at://did:plc:someone_else/app.bsky.feed.post/unknown";
@@ -1659,7 +1659,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
@@ -1771,7 +1771,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
@@ -1855,7 +1855,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
@@ -1961,7 +1961,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let req = axum::http::Request::builder()
             .method(axum::http::Method::POST)
@@ -2049,7 +2049,7 @@ mod tests {
         let mut state = state.clone();
         let mut config = (*state.config).clone();
         config.appview.url = server.uri();
-        state.config = Arc::new(config);
+        state.core.config = Arc::new(config);
 
         let token = access_jwt(&state.jwt_secret, did);
 

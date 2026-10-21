@@ -144,9 +144,12 @@ mod tests {
             serde_json::Value::String("pre-existing-kid".to_string()),
         );
         let state = AppState {
-            oauth_signing_keypair: OAuthSigningKey {
-                public_key_jwk: jwk,
-                ..base.oauth_signing_keypair.clone()
+            core: custos_core::CoreState {
+                oauth_signing_keypair: OAuthSigningKey {
+                    public_key_jwk: jwk,
+                    ..base.oauth_signing_keypair.clone()
+                },
+                ..base.core
             },
             ..base
         };

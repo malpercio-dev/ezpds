@@ -1,0 +1,67 @@
+[package]
+name = "custos-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# custos-core: the runtime every Custos feature crate shares — `CoreState`, the access-token and
+# DPoP verification seam, identity resolution, the lexicon registry, rate limiting, metrics, and
+# the sweep scheduler. Depends on no feature crate and never on `pds` (see AGENTS.md).
+
+[features]
+# `test_support`: the test state constructor and fixtures, for other crates' tests. Enable only
+# under `[dev-dependencies]`.
+test-support = ["custos-db/test-support", "dep:tower", "dep:wiremock"]
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true }
+common = { workspace = true, features = ["axum", "sqlx"] }
+custos-db = { workspace = true }
+crypto = { workspace = true }
+repo-engine = { workspace = true }
+anyhow = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+data-encoding = { workspace = true }
+hickory-resolver = { workspace = true }
+hmac = { workspace = true }
+infer = { workspace = true }
+jsonwebtoken = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-prometheus = { workspace = true }
+p256 = { workspace = true }
+prometheus = { workspace = true }
+rand_core = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+unicode-segmentation = { workspace = true }
+url = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true }
+zeroize = { workspace = true }
+# test-support only (see [features]).
+tower = { workspace = true, optional = true }
+wiremock = { workspace = true, optional = true }
+
+[dev-dependencies]
+custos-db = { workspace = true, features = ["test-support"] }
+k256 = { workspace = true }
+multibase = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true }
+wiremock = { workspace = true }
