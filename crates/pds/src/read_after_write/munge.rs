@@ -132,7 +132,9 @@ pub(crate) async fn get_post_thread(
                 if author.get("did").and_then(|d| d.as_str()).unwrap_or("") == requester {
                     let author_view =
                         viewer.update_profile_view_basic(serde_json::Value::Object(author.clone()));
-                    *author = author_view.as_object().unwrap().clone();
+                    if let Some(view) = author_view.as_object() {
+                        *author = view.clone();
+                    }
                 }
             }
         }

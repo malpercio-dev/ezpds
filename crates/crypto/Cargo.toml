@@ -8,6 +8,9 @@ license.workspace = true
 # crypto: signing, Shamir secret sharing, DID operations.
 # Depends on rsky-crypto (added when Wave 3 DID/key work begins).
 
+[lints]
+workspace = true
+
 [dependencies]
 p256 = { workspace = true }
 k256 = { workspace = true }

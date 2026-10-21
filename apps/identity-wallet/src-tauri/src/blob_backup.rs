@@ -369,6 +369,10 @@ async fn load_manifest(root: &Path, did: &str) -> Result<Manifest, BlobBackupErr
 }
 
 /// Persist the manifest atomically (temp file + rename in the same directory).
+#[allow(
+    clippy::expect_used,
+    reason = "the manifest path is root/<did>/..., so it always has a parent"
+)]
 async fn save_manifest(root: &Path, did: &str, manifest: &Manifest) -> Result<(), BlobBackupError> {
     let path = manifest_path(root, did);
     let dir = path
@@ -532,7 +536,9 @@ async fn status_core(
 fn mirror_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
     let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = registry.lock().expect("mirror lock registry poisoned");
+    let mut map = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     map.entry(did.to_string()).or_default().clone()
 }
 

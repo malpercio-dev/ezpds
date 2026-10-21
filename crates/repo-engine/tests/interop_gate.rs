@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a panic is the failure signal
 // pattern: Functional Core
 
 //! Integration tests exercising atrium-repo's Tree, MemoryBlockStore, and CarStore

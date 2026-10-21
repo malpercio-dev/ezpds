@@ -1073,6 +1073,10 @@ pub fn verify_p256_signature(
 /// [`verify_p256_signature`] without the low-S rule, for RFC 9421 HTTP message signatures
 /// (Atproto Spaces), which accept either `s`. A high-S signature is normalized first:
 /// `(r, s)` and `(r, n − s)` verify against the same key and message.
+#[allow(
+    clippy::expect_used,
+    reason = "a P-256 signature serializes to exactly 64 bytes"
+)]
 pub fn verify_p256_signature_any_s(
     public_key: &DidKeyUri,
     message: &[u8],

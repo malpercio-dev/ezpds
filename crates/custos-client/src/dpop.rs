@@ -100,6 +100,10 @@ impl DpopKeypair {
     /// Build the public JWK for this keypair (EC, P-256, kty/crv/x/y only — no private fields).
     ///
     /// The custos's validator expects exactly: `{"kty":"EC","crv":"P-256","x":"<b64url>","y":"<b64url>"}`.
+    #[allow(
+        clippy::expect_used,
+        reason = "an uncompressed P-256 point always carries x and y"
+    )]
     pub fn public_jwk(&self) -> serde_json::Value {
         let verifying_key = self.signing_key.verifying_key();
         let point = verifying_key.to_encoded_point(false); // false = uncompressed: 04 || x || y
@@ -117,6 +121,10 @@ impl DpopKeypair {
     ///
     /// The canonical JSON uses lexicographically-sorted keys (crv, kty, x, y) per RFC 7638 §3.2.
     /// This matches the PDS's `jwk_thumbprint()` function in `crates/pds/src/auth/dpop.rs`.
+    #[allow(
+        clippy::expect_used,
+        reason = "serializing a map of JSON strings cannot fail"
+    )]
     pub fn public_jwk_thumbprint(&self) -> String {
         let jwk = self.public_jwk();
         // Canonical member set per RFC 7638 §3.2 — lexicographic order for EC keys.
