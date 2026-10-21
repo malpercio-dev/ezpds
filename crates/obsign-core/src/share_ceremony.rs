@@ -60,7 +60,7 @@ pub const STAGING_ACCOUNT: &str = "ceremony-staging";
 /// *different* DID's re-key started — a staged set whose rotation op has already landed
 /// is the only durable home of that account's new recovery seed. Keying the account by
 /// DID means one identity's re-key can never overwrite or orphan another's.
-pub(crate) fn rekey_staging_account(did: &str) -> String {
+pub fn rekey_staging_account(did: &str) -> String {
     format!("rekey-staging:{did}")
 }
 
@@ -71,7 +71,7 @@ pub(crate) fn rekey_staging_account(did: &str) -> String {
 /// re-key escrows it; the kit hands it to the user), so a set staged for one must never be
 /// picked up and completed by the other. The per-DID scoping carries the same load-bearing
 /// safety — one identity's kit can never overwrite or orphan another's.
-pub(crate) fn self_held_kit_staging_account(did: &str) -> String {
+pub fn self_held_kit_staging_account(did: &str) -> String {
     format!("self-held-kit-staging:{did}")
 }
 
@@ -86,7 +86,7 @@ pub enum ShareCeremonyError {
     #[error("OS RNG unavailable: {0}")]
     Rng(String),
     #[error("keychain failure: {0}")]
-    Keychain(#[from] obsign_core::keystore::KeyStoreError),
+    Keychain(#[from] crate::keystore::KeyStoreError),
     /// A staging record exists but could not be read or validated. Fail closed: the
     /// record may be the exact set already bound to a genesis op (and escrowed) by a
     /// prior attempt, so it must never be silently overwritten with fresh material —
@@ -237,7 +237,7 @@ fn load_or_create_in_account(
         })
         .expect("staging record serialization cannot fail"),
     );
-    obsign_core::keystore::store_item(account, record.as_bytes())?;
+    crate::keystore::store_item(account, record.as_bytes())?;
 
     Ok(CeremonyShareSet {
         recovery_key_id: recovery.key_id.0,
@@ -267,9 +267,9 @@ fn load_staged(
     discriminator_a: &str,
     discriminator_b: &str,
 ) -> Result<Option<CeremonyShareSet>, ShareCeremonyError> {
-    let bytes = match obsign_core::keystore::get_item(account) {
+    let bytes = match crate::keystore::get_item(account) {
         Ok(bytes) => Zeroizing::new(bytes),
-        Err(e) if obsign_core::keystore::is_not_found(&e) => return Ok(None),
+        Err(e) if crate::keystore::is_not_found(&e) => return Ok(None),
         Err(e) => {
             tracing::error!(error = %e, "ceremony staging slot unreadable; failing closed");
             return Err(ShareCeremonyError::StagingCorrupt(format!(
@@ -357,17 +357,17 @@ fn load_staged(
 
 /// Tear down the *create*-ceremony staging slot — the seed material's last transient
 /// home. Idempotent: an absent slot is success (the teardown already happened).
-pub fn clear_staging() -> Result<(), obsign_core::keystore::KeyStoreError> {
+pub fn clear_staging() -> Result<(), crate::keystore::KeyStoreError> {
     clear_staging_account(STAGING_ACCOUNT)
 }
 
 /// Tear down the per-DID re-key staging slot. Idempotent, like [`clear_staging`].
-pub fn clear_rekey_staging(did: &str) -> Result<(), obsign_core::keystore::KeyStoreError> {
+pub fn clear_rekey_staging(did: &str) -> Result<(), crate::keystore::KeyStoreError> {
     clear_staging_account(&rekey_staging_account(did))
 }
 
 /// Tear down the per-DID self-held-kit staging slot. Idempotent, like [`clear_staging`].
-pub fn clear_self_held_kit_staging(did: &str) -> Result<(), obsign_core::keystore::KeyStoreError> {
+pub fn clear_self_held_kit_staging(did: &str) -> Result<(), crate::keystore::KeyStoreError> {
     clear_staging_account(&self_held_kit_staging_account(did))
 }
 
@@ -378,7 +378,7 @@ pub fn clear_self_held_kit_staging(did: &str) -> Result<(), obsign_core::keystor
 /// transient keychain read error reads as "not in progress" — fail-open for a prompt is safe,
 /// since the identity is never worse off un-prompted.
 pub fn self_held_kit_staging_exists(did: &str) -> bool {
-    obsign_core::keystore::get_item(&self_held_kit_staging_account(did)).is_ok()
+    crate::keystore::get_item(&self_held_kit_staging_account(did)).is_ok()
 }
 
 /// Whether a per-DID re-key staging slot exists — i.e. a re-key was started for this DID and has
@@ -387,13 +387,13 @@ pub fn self_held_kit_staging_exists(did: &str) -> bool {
 /// before escrow/Share 1/confirmation completed. A transient keychain read error reads as "not in
 /// progress" (fail-open for a prompt is safe — the account is never worse off un-prompted).
 pub fn rekey_staging_exists(did: &str) -> bool {
-    obsign_core::keystore::get_item(&rekey_staging_account(did)).is_ok()
+    crate::keystore::get_item(&rekey_staging_account(did)).is_ok()
 }
 
-fn clear_staging_account(account: &str) -> Result<(), obsign_core::keystore::KeyStoreError> {
-    match obsign_core::keystore::delete_item(account) {
+fn clear_staging_account(account: &str) -> Result<(), crate::keystore::KeyStoreError> {
+    match crate::keystore::delete_item(account) {
         Ok(()) => Ok(()),
-        Err(e) if obsign_core::keystore::is_not_found(&e) => Ok(()),
+        Err(e) if crate::keystore::is_not_found(&e) => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn generates_and_stages_a_valid_set() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let set = load_or_create(HANDLE, PDS).unwrap();
 
         // All three envelopes decode, share the same set_id, and carry their indices.
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn delegation_seed_derives_from_the_sets_recovery_seed_and_survives_a_retry() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let first = load_or_create(HANDLE, PDS).unwrap();
 
         // It is exactly the HKDF of the seed the user's own shares reconstruct — the
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn retry_reuses_the_staged_set() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let first = load_or_create(HANDLE, PDS).unwrap();
         let second = load_or_create(HANDLE, PDS).unwrap();
         assert_eq!(*first.share1, *second.share1, "retry must reuse Share 1");
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn changed_ceremony_inputs_regenerate() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let first = load_or_create(HANDLE, PDS).unwrap();
         let other = load_or_create("bob.example.com", PDS).unwrap();
         assert_ne!(
@@ -482,9 +482,9 @@ mod tests {
 
     #[test]
     fn corrupt_staging_record_fails_closed_and_preserves_the_slot() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         load_or_create(HANDLE, PDS).unwrap();
-        obsign_core::keystore::store_item(STAGING_ACCOUNT, b"not json").unwrap();
+        crate::keystore::store_item(STAGING_ACCOUNT, b"not json").unwrap();
         // A present-but-unreadable record must never be overwritten with fresh
         // material — it may be the set a prior attempt already escrowed.
         // (CeremonyShareSet has no Debug — share material must not be printable.)
@@ -493,7 +493,7 @@ mod tests {
             .expect_err("corrupt staging must fail closed");
         assert!(matches!(err, ShareCeremonyError::StagingCorrupt(_)));
         assert_eq!(
-            obsign_core::keystore::get_item(STAGING_ACCOUNT).unwrap(),
+            crate::keystore::get_item(STAGING_ACCOUNT).unwrap(),
             b"not json".to_vec(),
             "the staging slot must be preserved for inspection/retry"
         );
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn tampered_staged_share_fails_closed() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let first = load_or_create(HANDLE, PDS).unwrap();
         // Corrupt one envelope inside an otherwise valid record: the checksum check
         // must fail the load closed rather than regenerate. Flip share2's first
@@ -513,11 +513,11 @@ mod tests {
         };
         let mut corrupt_share2 = first.share2.to_string();
         corrupt_share2.replace_range(0..1, flipped_first);
-        let bytes = obsign_core::keystore::get_item(STAGING_ACCOUNT).unwrap();
+        let bytes = crate::keystore::get_item(STAGING_ACCOUNT).unwrap();
         let tampered = String::from_utf8(bytes)
             .unwrap()
             .replace(&*first.share2, &corrupt_share2);
-        obsign_core::keystore::store_item(STAGING_ACCOUNT, tampered.as_bytes()).unwrap();
+        crate::keystore::store_item(STAGING_ACCOUNT, tampered.as_bytes()).unwrap();
         assert!(matches!(
             load_or_create(HANDLE, PDS),
             Err(ShareCeremonyError::StagingCorrupt(_))
@@ -525,7 +525,7 @@ mod tests {
         // The envelope-validation failure path preserves the slot exactly like the
         // JSON-corruption path — the record is never overwritten with fresh material.
         assert_eq!(
-            obsign_core::keystore::get_item(STAGING_ACCOUNT).unwrap(),
+            crate::keystore::get_item(STAGING_ACCOUNT).unwrap(),
             tampered.as_bytes().to_vec(),
             "the tampered staging record must be preserved for inspection/retry"
         );
@@ -533,12 +533,12 @@ mod tests {
 
     #[test]
     fn clear_staging_is_idempotent() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         load_or_create(HANDLE, PDS).unwrap();
         clear_staging().unwrap();
         assert!(matches!(
-            obsign_core::keystore::get_item(STAGING_ACCOUNT),
-            Err(ref e) if obsign_core::keystore::is_not_found(e)
+            crate::keystore::get_item(STAGING_ACCOUNT),
+            Err(ref e) if crate::keystore::is_not_found(e)
         ));
         clear_staging().unwrap();
     }
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn rekey_staging_is_scoped_per_did() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         // Two identities re-keying concurrently must not share a staging slot: each
         // reloads its own set, and neither abandons the other's.
         let a = load_or_create_for_rekey(DID_A).unwrap();
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn rekey_staging_does_not_collide_with_create_staging() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let create = load_or_create(HANDLE, PDS).unwrap();
         let rekey = load_or_create_for_rekey(DID_A).unwrap();
         assert_ne!(
@@ -574,7 +574,7 @@ mod tests {
         );
         // Clearing the re-key slot leaves the create slot intact and vice versa.
         clear_rekey_staging(DID_A).unwrap();
-        assert!(obsign_core::keystore::get_item(STAGING_ACCOUNT).is_ok());
+        assert!(crate::keystore::get_item(STAGING_ACCOUNT).is_ok());
         assert_eq!(
             *load_or_create(HANDLE, PDS).unwrap().share2,
             *create.share2,
@@ -587,7 +587,7 @@ mod tests {
     /// picked up and completed by the other.
     #[test]
     fn self_held_kit_staging_is_independent_of_the_rekey_slot() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let rekey = load_or_create_for_rekey(DID_A).unwrap();
         let kit = load_or_create_for_self_held_kit(DID_A).unwrap();
         assert_ne!(
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn self_held_kit_staging_is_scoped_per_did_and_resumes() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let a = load_or_create_for_self_held_kit(DID_A).unwrap();
         let b = load_or_create_for_self_held_kit(DID_B).unwrap();
         assert_ne!(*a.share2, *b.share2, "distinct DIDs get distinct sets");
@@ -621,7 +621,7 @@ mod tests {
     /// hands the user both renderings of one share, and a mismatch would hand them two.
     #[test]
     fn share2_words_encode_the_same_envelope() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let set = load_or_create_for_self_held_kit(DID_A).unwrap();
         let from_base32 = crypto::ShareEnvelope::decode_share(&set.share2).unwrap();
         let from_words = crypto::ShareEnvelope::decode_share_words(&set.share2_words).unwrap();
@@ -645,7 +645,7 @@ mod tests {
     /// recovery key and leave the user holding shares for neither.
     #[test]
     fn a_hosting_endpoint_change_never_abandons_a_staged_set() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let kit = load_or_create_for_self_held_kit(DID_A).unwrap();
         let rekey = load_or_create_for_rekey(DID_B).unwrap();
 
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn clear_self_held_kit_staging_is_idempotent() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         load_or_create_for_self_held_kit(DID_A).unwrap();
         clear_self_held_kit_staging(DID_A).unwrap();
         assert!(!self_held_kit_staging_exists(DID_A));
@@ -671,12 +671,12 @@ mod tests {
 
     #[test]
     fn clear_rekey_staging_is_idempotent() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         load_or_create_for_rekey(DID_A).unwrap();
         clear_rekey_staging(DID_A).unwrap();
         assert!(matches!(
-            obsign_core::keystore::get_item(&rekey_staging_account(DID_A)),
-            Err(ref e) if obsign_core::keystore::is_not_found(e)
+            crate::keystore::get_item(&rekey_staging_account(DID_A)),
+            Err(ref e) if crate::keystore::is_not_found(e)
         ));
         clear_rekey_staging(DID_A).unwrap();
     }

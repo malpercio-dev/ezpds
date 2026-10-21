@@ -125,10 +125,10 @@ pub use custos_client::migration::{
 
 /// Build a [`PdsClient`] wired to this app's diagnostics and `pds_capabilities` observers,
 /// with the default plc.directory URL. The one production instance lives in `AppState`.
-pub(crate) fn new_with_diagnostics() -> PdsClient {
+pub fn new_with_diagnostics() -> PdsClient {
     PdsClient::new_with_observers(
-        Arc::new(crate::oauth::WalletTransportObserver),
-        Arc::new(crate::oauth::WalletDescribeServerObserver),
+        Arc::new(crate::diagnostics::WalletTransportObserver),
+        Arc::new(crate::pds_capabilities::WalletDescribeServerObserver),
     )
 }
 
@@ -139,20 +139,21 @@ pub(crate) fn new_with_diagnostics() -> PdsClient {
 /// fixture: `pds_capabilities::probe` reads its cache rather than `describe_server`'s return
 /// value directly, so a no-op describe-observer silently starves it and any test exercising
 /// capability-gated routing (see `password_unlock`/`share_recovery`) breaks quietly.
-/// `#[cfg(test)]`, unlike the crate's own `new_for_test`: every caller of this one is inside
-/// this crate's own test code, where `#[cfg(test)]` visibility applies normally (the
+/// `#[cfg(any(test, feature = "test-support"))]`, unlike the crate's own `new_for_test`: every caller of this one is inside
+/// this crate's own test code, where `#[cfg(any(test, feature = "test-support"))]` visibility applies normally (the
 /// cross-crate restriction only bites when a *dependent* crate's test build needs to see a
-/// *dependency's* `#[cfg(test)]` item).
-#[cfg(test)]
-pub(crate) fn new_for_test(plc_directory_url: String) -> PdsClient {
+/// *dependency's* `#[cfg(any(test, feature = "test-support"))]` item).
+#[cfg(any(test, feature = "test-support"))]
+pub fn new_for_test(plc_directory_url: String) -> PdsClient {
     new_with_diagnostics().with_plc_directory_url(plc_directory_url)
 }
 
 /// [`custos_client::pds_client::try_resolve_dns`], wired to this app's diagnostics observer.
 /// Used by the change-handle DNS pre-flight to report this wallet-side vantage separately
 /// from the hosting PDS's own resolution.
-pub(crate) async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError> {
-    custos_client::pds_client::try_resolve_dns(handle, &crate::oauth::WalletTransportObserver).await
+pub async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError> {
+    custos_client::pds_client::try_resolve_dns(handle, &crate::diagnostics::WalletTransportObserver)
+        .await
 }
 
 // ============================================================================
@@ -170,7 +171,7 @@ pub async fn request_plc_operation_signature(
 ) -> Result<(), PdsClientError> {
     custos_client::identity::request_plc_operation_signature(
         client,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -183,7 +184,7 @@ pub async fn sign_plc_operation(
     custos_client::identity::sign_plc_operation(
         client,
         request,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -194,7 +195,7 @@ pub async fn get_recommended_did_credentials(
 ) -> Result<RecommendedCredentials, PdsClientError> {
     custos_client::identity::get_recommended_did_credentials(
         client,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -217,7 +218,7 @@ pub async fn create_app_password(
         name,
         privileged,
         personal_details,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -226,8 +227,11 @@ pub async fn create_app_password(
 pub async fn list_app_passwords(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<Vec<AppPasswordEntry>, PdsClientError> {
-    custos_client::app_passwords::list_app_passwords(client, &crate::oauth::WalletTransportObserver)
-        .await
+    custos_client::app_passwords::list_app_passwords(
+        client,
+        &crate::diagnostics::WalletTransportObserver,
+    )
+    .await
 }
 
 /// Revoke a named app password (and, server-side, its sessions/refresh tokens atomically).
@@ -238,7 +242,7 @@ pub async fn revoke_app_password(
     custos_client::app_passwords::revoke_app_password(
         client,
         name,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -257,7 +261,7 @@ pub async fn get_service_auth(
         client,
         aud,
         lxm,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -270,7 +274,7 @@ pub async fn create_account_migration(
     custos_client::migration::create_account_migration(
         client,
         req,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -280,7 +284,8 @@ pub async fn import_repo(
     client: &crate::oauth_client::OAuthClient,
     car: Vec<u8>,
 ) -> Result<(), PdsClientError> {
-    custos_client::migration::import_repo(client, car, &crate::oauth::WalletTransportObserver).await
+    custos_client::migration::import_repo(client, car, &crate::diagnostics::WalletTransportObserver)
+        .await
 }
 
 /// Upload a blob to the destination PDS.
@@ -293,7 +298,7 @@ pub async fn upload_blob(
         client,
         mime,
         bytes,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -306,7 +311,7 @@ pub async fn list_missing_blobs(
     custos_client::migration::list_missing_blobs(
         client,
         cursor,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -315,7 +320,8 @@ pub async fn list_missing_blobs(
 pub async fn get_preferences(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<serde_json::Value, PdsClientError> {
-    custos_client::migration::get_preferences(client, &crate::oauth::WalletTransportObserver).await
+    custos_client::migration::get_preferences(client, &crate::diagnostics::WalletTransportObserver)
+        .await
 }
 
 /// Put the user's preferences.
@@ -323,23 +329,31 @@ pub async fn put_preferences(
     client: &crate::oauth_client::OAuthClient,
     prefs: &serde_json::Value,
 ) -> Result<(), PdsClientError> {
-    custos_client::migration::put_preferences(client, prefs, &crate::oauth::WalletTransportObserver)
-        .await
+    custos_client::migration::put_preferences(
+        client,
+        prefs,
+        &crate::diagnostics::WalletTransportObserver,
+    )
+    .await
 }
 
 /// Check the account status on the destination PDS.
 pub async fn check_account_status(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<AccountStatus, PdsClientError> {
-    custos_client::migration::check_account_status(client, &crate::oauth::WalletTransportObserver)
-        .await
+    custos_client::migration::check_account_status(
+        client,
+        &crate::diagnostics::WalletTransportObserver,
+    )
+    .await
 }
 
 /// Activate the account on the destination PDS.
 pub async fn activate_account(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<(), PdsClientError> {
-    custos_client::migration::activate_account(client, &crate::oauth::WalletTransportObserver).await
+    custos_client::migration::activate_account(client, &crate::diagnostics::WalletTransportObserver)
+        .await
 }
 
 /// Deactivate the account on the destination PDS.
@@ -350,7 +364,7 @@ pub async fn deactivate_account(
     custos_client::migration::deactivate_account(
         client,
         delete_after,
-        &crate::oauth::WalletTransportObserver,
+        &crate::diagnostics::WalletTransportObserver,
     )
     .await
 }
@@ -359,14 +373,23 @@ pub async fn deactivate_account(
 pub async fn request_account_delete(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<(), PdsClientError> {
-    custos_client::migration::request_account_delete(client, &crate::oauth::WalletTransportObserver)
-        .await
+    custos_client::migration::request_account_delete(
+        client,
+        &crate::diagnostics::WalletTransportObserver,
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+
+    fn test_dpop_keypair() -> Result<custos_client::DpopKeypair, custos_client::DpopError> {
+        custos_client::DpopKeypair::get_or_create::<crate::keystore::WalletKeychain>(
+            "test-dpop-key",
+        )
+    }
 
     #[test]
     fn test_pds_client_default() {
@@ -1247,7 +1270,7 @@ mod tests {
         });
 
         // Create a test session and OAuthClient
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
             access_token: "test_access_token".to_string(),
             refresh_token: "test_refresh_token".to_string(),
             expires_at: std::time::SystemTime::now()
@@ -1258,7 +1281,7 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let keypair = test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
             crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
@@ -1281,7 +1304,7 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
             access_token: "test_access_token".to_string(),
             refresh_token: "test_refresh_token".to_string(),
             expires_at: std::time::SystemTime::now()
@@ -1292,7 +1315,7 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let keypair = test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
             crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
@@ -1327,7 +1350,7 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
             access_token: "test_access_token".to_string(),
             refresh_token: "test_refresh_token".to_string(),
             expires_at: std::time::SystemTime::now()
@@ -1338,7 +1361,7 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let keypair = test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
             crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
@@ -1371,7 +1394,7 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
             access_token: "test_access_token".to_string(),
             refresh_token: "test_refresh_token".to_string(),
             expires_at: std::time::SystemTime::now()
@@ -1382,7 +1405,7 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let keypair = test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
             crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
@@ -1419,7 +1442,7 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
             access_token: "test_access_token".to_string(),
             refresh_token: "test_refresh_token".to_string(),
             expires_at: std::time::SystemTime::now()
@@ -1430,7 +1453,7 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let keypair = test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
             crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
@@ -1511,7 +1534,7 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
             access_token: "test_access_token".to_string(),
             refresh_token: "test_refresh_token".to_string(),
             expires_at: std::time::SystemTime::now()
@@ -1522,7 +1545,7 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let keypair = test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
             crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
@@ -1584,7 +1607,7 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
+        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
             access_token: "test_access_token".to_string(),
             refresh_token: "test_refresh_token".to_string(),
             expires_at: std::time::SystemTime::now()
@@ -1595,7 +1618,7 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let keypair = test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
             crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 

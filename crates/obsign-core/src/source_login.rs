@@ -31,7 +31,7 @@ use crate::oauth_client::OAuthClient;
 /// enum (`ClaimError` / `MigrationError`) via `From`. The variants mirror exactly the ones both
 /// callers used to produce inline, so the mapping is total and lossless.
 #[derive(Debug)]
-pub(crate) enum SourceLoginError {
+pub enum SourceLoginError {
     /// The account has email two-factor enabled: `createSession` returned `AuthFactorTokenRequired`
     /// and the PDS emailed a one-time code. The UI prompts for the code and re-invokes with it.
     TwoFactorRequired,
@@ -56,7 +56,7 @@ pub(crate) enum SourceLoginError {
 /// Shared core: run `createSession` against the source PDS and build a full-session Bearer
 /// `OAuthClient`, enforcing the account-match guard. Extracted so both source-login paths share one
 /// implementation and one behavioral test suite.
-pub(crate) async fn authenticate_source_password(
+pub async fn authenticate_source_password(
     pds_client: &crate::pds_client::PdsClient,
     pds_url: &str,
     expected_did: &str,
@@ -91,7 +91,7 @@ pub(crate) async fn authenticate_source_password(
 /// The `createSession` half of [`authenticate_source_password`], returning the raw JWT pair
 /// instead of a client.
 ///
-/// A password unlock ([`crate::password_unlock`]) must **persist** the pair into the DID's
+/// A password unlock (the wallet's `password_unlock`) must **persist** the pair into the DID's
 /// `{did}:oauth-tokens` record so the session provider's refresh ladder owns it from then on,
 /// and an `OAuthClient` deliberately does not surrender its tokens. Splitting here keeps the
 /// guards that matter — HTTPS-only, one-shot password, and the account-match check below —
@@ -101,7 +101,7 @@ pub(crate) async fn authenticate_source_password(
 /// for that account, or the caller signed in to the wrong one and we refuse to bind those
 /// credentials rather than act against the wrong identity. The password is used only in
 /// `createSession` requests (including the email-2FA retry) and never stored.
-pub(crate) async fn create_source_session(
+pub async fn create_source_session(
     pds_client: &crate::pds_client::PdsClient,
     pds_url: &str,
     expected_did: &str,
@@ -175,7 +175,7 @@ mod tests {
     /// Happy path: a 200 `createSession` yields a full-session Bearer client bound to the PDS URL.
     #[tokio::test]
     async fn test_authenticate_source_password_success() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let server = MockServer::start();
@@ -211,7 +211,7 @@ mod tests {
     /// A 200 whose `did` differs from the expected DID must be refused (wrong-account guard).
     #[tokio::test]
     async fn test_authenticate_source_password_did_mismatch() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let server = MockServer::start();
@@ -249,7 +249,7 @@ mod tests {
     /// network call, so no mock server is needed.
     #[tokio::test]
     async fn test_authenticate_source_password_rejects_insecure_url() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let pds_client = crate::pds_client::PdsClient::new();
         let result = authenticate_source_password(
             &pds_client,
@@ -270,7 +270,7 @@ mod tests {
     /// A 401 `createSession` (wrong password) surfaces as SourceAuthFailed, never NetworkError.
     #[tokio::test]
     async fn test_authenticate_source_password_wrong_password() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let server = MockServer::start();
@@ -304,7 +304,7 @@ mod tests {
     /// surface as `TwoFactorRequired` (prompt for a code), NOT `SourceAuthFailed` (wrong password).
     #[tokio::test]
     async fn test_authenticate_source_password_two_factor_required() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let server = MockServer::start();

@@ -160,39 +160,6 @@ pub(crate) fn test_dpop_keypair() -> Result<DpopKeypair, custos_client::DpopErro
 // `OAuthClient` is Tauri-free; it takes its diagnostics and token-persistence seams as
 // trait objects rather than calling `crate::diagnostics`/`crate::keychain` directly.
 
-/// Records `OAuthClient` transport/server breadcrumbs into the wallet's exportable
-/// diagnostics log.
-pub(crate) struct WalletTransportObserver;
-
-impl custos_client::TransportObserver for WalletTransportObserver {
-    fn record_transport(&self, op: &str, url: Option<&str>, error: &reqwest::Error) {
-        crate::diagnostics::record_reqwest_transport(op, url, error);
-    }
-
-    fn record_server(&self, op: &str, host: Option<&str>, status: u16, error_code: Option<&str>) {
-        crate::diagnostics::record_server(op, host, status, error_code);
-    }
-
-    fn record_transport_category(&self, op: &str, host: Option<&str>, category: &str) {
-        crate::diagnostics::record_transport(op, host, category);
-    }
-}
-
-/// Warms `pds_capabilities`' per-host capability cache from every `PdsClient::describe_server`
-/// call, wherever it was made from (migration prepare, handle change, consent, sovereign
-/// login).
-pub(crate) struct WalletDescribeServerObserver;
-
-impl custos_client::DescribeServerObserver for WalletDescribeServerObserver {
-    fn record_custos_capabilities(
-        &self,
-        pds_url: &str,
-        custos: Option<&custos_client::pds_client::CustosExtension>,
-    ) {
-        crate::pds_capabilities::record(pds_url, custos);
-    }
-}
-
 /// Persists a DPoP-mode refreshed token pair to the wallet's legacy global OAuth-client
 /// Keychain item (see `keychain.rs`'s module doc). `#[cfg(test)]`: only `OAuthClient::new`
 /// (DPoP mode) would call this, and that constructor has no production caller today.
@@ -211,6 +178,7 @@ mod tests {
     use super::*;
     use custos_client::OAuthClient;
     use httpmock::prelude::*;
+    use obsign_core::diagnostics::WalletTransportObserver;
     use std::sync::{Arc, Mutex};
 
     /// End-to-end check of the wallet's own adapters (not `custos_client`'s internals, which
