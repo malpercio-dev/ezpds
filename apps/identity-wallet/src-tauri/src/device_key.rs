@@ -28,7 +28,7 @@ pub(crate) const DEVICE_KEY_PRIV_ACCOUNT: &str = "device-rotation-key-priv";
 pub(crate) const DEVICE_KEY_PUB_ACCOUNT: &str = "device-rotation-key-pub";
 pub(crate) const DEVICE_KEY_APP_LABEL_ACCOUNT: &str = "device-rotation-key-app-label";
 
-const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
+pub(crate) const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
     private_scalar: DEVICE_KEY_PRIV_ACCOUNT,
     public_key: DEVICE_KEY_PUB_ACCOUNT,
     application_label: DEVICE_KEY_APP_LABEL_ACCOUNT,

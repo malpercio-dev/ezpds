@@ -362,7 +362,7 @@ pub struct MonitorHistory {
 }
 
 /// Keychain account holding the serialized [`MonitorHistory`].
-const HISTORY_ACCOUNT: &str = "monitor-history";
+pub(crate) const HISTORY_ACCOUNT: &str = "monitor-history";
 
 /// Roughly five hours of unattended sweeps — enough to show a cadence without turning the
 /// Protection surface into a scroll.

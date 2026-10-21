@@ -73,6 +73,7 @@
 //!   localStorage under the same key.
 //! * `device-rotation-key-priv` / `-pub` / `-app-label` (`device_key`) — the global
 //!   device key: priv on the software path, pub + app-label as Secure Enclave metadata.
+//! * `device-token` — the device token `create_account` receives alongside the session.
 //! * `session-token` — the pending (pre-DID) or upgraded (post-DID) session token.
 //! * `did` — the create flow's legacy primary-DID marker.
 //! * `ceremony-staging` (`share_ceremony::STAGING_ACCOUNT`) — the in-flight create
@@ -106,7 +107,7 @@
 //! the only account family [`syncs_to_icloud`] admits to the synchronizable store) and
 //! the staging pair `rekey-staging:{did}` / `self-held-kit-staging:{did}`
 //! (`share_ceremony`). Changing [`SERVICE`] or any account name orphans previously
-//! stored items.
+//! stored items; `account_names_are_pinned` holds every name above against a literal.
 //!
 //! In test builds (`#[cfg(test)]`), all Keychain operations are redirected to an
 //! in-memory store so that tests never touch the real macOS Keychain and never
@@ -374,6 +375,13 @@ const OAUTH_ACCESS_TOKEN_ACCOUNT: &str = "oauth-access-token";
 const OAUTH_REFRESH_TOKEN_ACCOUNT: &str = "oauth-refresh-token";
 const PDS_URL_ACCOUNT: &str = "relay-base-url";
 const APPEARANCE_ACCOUNT: &str = "appearance-preference";
+
+// ── Create-flow accounts (written by `lib.rs`) ─────────────────────────────────
+
+pub(crate) const DEVICE_TOKEN_ACCOUNT: &str = "device-token";
+pub(crate) const SESSION_TOKEN_ACCOUNT: &str = "session-token";
+/// The create flow's legacy primary-DID marker.
+pub(crate) const LEGACY_DID_ACCOUNT: &str = "did";
 
 /// Store the OAuth access token and refresh token in the Keychain.
 pub fn store_oauth_tokens(access_token: &str, refresh_token: &str) -> Result<(), KeychainError> {
@@ -657,6 +665,163 @@ mod tests {
     fn stable_group_is_not_the_bundle_id() {
         assert_ne!(STABLE_ACCESS_GROUP, LEGACY_ACCESS_GROUP);
         assert!(!ENTITLEMENTS.contains("$(CFBundleIdentifier)"));
+    }
+
+    /// Frozen contract "Device / Keychain account names" (docs/architecture/frozen-contracts.md).
+    /// Left: the code's own constant or helper. Right: a literal, and whether the account is
+    /// admitted to the iCloud-synchronizable store. Editing a literal here is a wire-contract
+    /// change — a renamed account is an unreachable item on every installed phone, no error.
+    #[test]
+    fn account_names_are_pinned() {
+        use crate::{
+            bg_backup, blob_backup, device_key, identity_removal, identity_store as ids,
+            notifications, plc_monitor, rekey, repo_backup, self_held_kit, share_ceremony,
+            share_recovery,
+        };
+        let d = DID;
+
+        assert_eq!(SERVICE, "ezpds-identity-wallet");
+        assert_eq!(
+            device_key::ACCOUNTS.secure_enclave_label,
+            "ezpds-device-rotation-key"
+        );
+
+        let mut golden: Vec<(String, String, bool)> = [
+            (PDS_URL_ACCOUNT, "relay-base-url"),
+            (APPEARANCE_ACCOUNT, "appearance-preference"),
+            (DEVICE_TOKEN_ACCOUNT, "device-token"),
+            (SESSION_TOKEN_ACCOUNT, "session-token"),
+            (LEGACY_DID_ACCOUNT, "did"),
+            (DPOP_KEY_PRIV_ACCOUNT, "oauth-dpop-key-priv"),
+            (OAUTH_ACCESS_TOKEN_ACCOUNT, "oauth-access-token"),
+            (OAUTH_REFRESH_TOKEN_ACCOUNT, "oauth-refresh-token"),
+            (
+                device_key::DEVICE_KEY_PRIV_ACCOUNT,
+                "device-rotation-key-priv",
+            ),
+            (
+                device_key::DEVICE_KEY_PUB_ACCOUNT,
+                "device-rotation-key-pub",
+            ),
+            (
+                device_key::DEVICE_KEY_APP_LABEL_ACCOUNT,
+                "device-rotation-key-app-label",
+            ),
+            (share_ceremony::STAGING_ACCOUNT, "ceremony-staging"),
+            (share_recovery::EPILOGUE_ACCOUNT, "recovery-epilogue"),
+            (share_recovery::RECOVERY_SHARE1_ACCOUNT, "recovery-share-1"),
+            (plc_monitor::HISTORY_ACCOUNT, "monitor-history"),
+            (ids::MANAGED_DIDS_ACCOUNT, "managed-dids"),
+            (ids::FORGOTTEN_DIDS_ACCOUNT, "forgotten-dids"),
+            (
+                identity_removal::PENDING_REMOVALS_ACCOUNT,
+                "pending-removals",
+            ),
+            (bg_backup::SETTINGS_ACCOUNT, "blob-backup-settings"),
+            (
+                bg_backup::NEXT_MIRROR_ACCOUNT,
+                "background-backup-next-mirror",
+            ),
+        ]
+        .into_iter()
+        .map(|(actual, expected)| (actual.to_string(), expected.to_string(), false))
+        .collect();
+
+        // The five notification accounts, in `NOTIFICATION_ACCOUNTS` order.
+        let notification = [
+            "notification-device-uuid",
+            "notification-key-priv",
+            "notification-sender-keys",
+            "notification-apns-token",
+            "notification-failures",
+        ];
+        assert_eq!(
+            notifications::NOTIFICATION_ACCOUNTS.len(),
+            notification.len()
+        );
+        for (actual, expected) in notifications::NOTIFICATION_ACCOUNTS
+            .iter()
+            .zip(notification)
+        {
+            golden.push((actual.to_string(), expected.to_string(), false));
+        }
+
+        // Per-DID templates.
+        golden.extend([
+            (ids::device_key_account(d), format!("{d}:device-key"), false),
+            (
+                ids::device_key_pub_account(d),
+                format!("{d}:device-key-pub"),
+                false,
+            ),
+            (
+                ids::device_key_app_label_account(d),
+                format!("{d}:device-key-app-label"),
+                false,
+            ),
+            (ids::did_doc_account(d), format!("{d}:did-doc"), false),
+            (ids::plc_log_account(d), format!("{d}:plc-log"), false),
+            (
+                ids::oauth_tokens_account(d),
+                format!("{d}:oauth-tokens"),
+                false,
+            ),
+            (
+                ids::recovery_signing_key_account(d),
+                format!("{d}:recovery-signing-key"),
+                false,
+            ),
+            (
+                ids::delegation_seed_account(d),
+                format!("{d}:delegation-seed"),
+                false,
+            ),
+            (
+                ids::child_index_account(d),
+                format!("{d}:child-index"),
+                false,
+            ),
+            (
+                blob_backup::backup_enabled_account(d),
+                format!("{d}:blob-backup-enabled"),
+                false,
+            ),
+            (
+                repo_backup::backup_enabled_account(d),
+                format!("{d}:repo-backup-enabled"),
+                false,
+            ),
+            (
+                self_held_kit::self_held_kit_account(d),
+                format!("{d}:self-held-kit"),
+                false,
+            ),
+            (
+                share_ceremony::rekey_staging_account(d),
+                format!("rekey-staging:{d}"),
+                false,
+            ),
+            (
+                share_ceremony::self_held_kit_staging_account(d),
+                format!("self-held-kit-staging:{d}"),
+                false,
+            ),
+            // The one synchronizable account family.
+            (
+                rekey::recovery_share1_account(d),
+                format!("recovery-share-1:{d}"),
+                true,
+            ),
+        ]);
+
+        for (actual, expected, syncs) in &golden {
+            assert_eq!(actual, expected, "Keychain account name drifted");
+            assert_eq!(
+                syncs_to_icloud(actual),
+                *syncs,
+                "sync admission drifted for {actual}"
+            );
+        }
     }
 
     /// The allowlist admits exactly the per-DID Share 1 slot — not the bare prefix, and not

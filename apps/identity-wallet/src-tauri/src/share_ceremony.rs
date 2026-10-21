@@ -62,7 +62,7 @@ pub const STAGING_ACCOUNT: &str = "ceremony-staging";
 /// *different* DID's re-key started — a staged set whose rotation op has already landed
 /// is the only durable home of that account's new recovery seed. Keying the account by
 /// DID means one identity's re-key can never overwrite or orphan another's.
-fn rekey_staging_account(did: &str) -> String {
+pub(crate) fn rekey_staging_account(did: &str) -> String {
     format!("rekey-staging:{did}")
 }
 
@@ -73,7 +73,7 @@ fn rekey_staging_account(did: &str) -> String {
 /// re-key escrows it; the kit hands it to the user), so a set staged for one must never be
 /// picked up and completed by the other. The per-DID scoping carries the same load-bearing
 /// safety — one identity's kit can never overwrite or orphan another's.
-fn self_held_kit_staging_account(did: &str) -> String {
+pub(crate) fn self_held_kit_staging_account(did: &str) -> String {
     format!("self-held-kit-staging:{did}")
 }
 

@@ -296,6 +296,18 @@ mod tests {
         assert_eq!(decoded.len(), 33, "compressed P-256 point must be 33 bytes");
     }
 
+    /// Frozen contract "Device / Keychain account names" (docs/architecture/frozen-contracts.md):
+    /// the apps pin their names, so this crate must store under exactly the name it is handed
+    /// — no prefix, suffix, or second item — or every app's pin test would pass while the
+    /// item on an installed phone moved.
+    #[test]
+    fn stores_under_the_supplied_account_name_verbatim() {
+        reset();
+        create();
+        let stored: Vec<String> = ITEMS.with(|s| s.borrow().keys().cloned().collect());
+        assert_eq!(stored, vec!["test-device-key-priv".to_string()]);
+    }
+
     #[test]
     fn get_or_create_is_idempotent() {
         reset();

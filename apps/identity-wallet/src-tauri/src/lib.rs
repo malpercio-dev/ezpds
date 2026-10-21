@@ -455,14 +455,19 @@ async fn create_account(
         // 4. Store tokens in Keychain.
         // If session-token write fails, best-effort remove the already-written device-token.
         // The device key is persistent by design and is NOT cleaned up on failure.
-        keychain::store_item("device-token", body.device_token.as_bytes()).map_err(|_| {
-            // device-token write failed — nothing to clean up; the device key is persistent by design.
-            CreateAccountError::KeychainError
-        })?;
+        keychain::store_item(keychain::DEVICE_TOKEN_ACCOUNT, body.device_token.as_bytes())
+            .map_err(|_| {
+                // device-token write failed — nothing to clean up; the device key is persistent by design.
+                CreateAccountError::KeychainError
+            })?;
 
-        keychain::store_item("session-token", body.session_token.as_bytes()).map_err(|_| {
+        keychain::store_item(
+            keychain::SESSION_TOKEN_ACCOUNT,
+            body.session_token.as_bytes(),
+        )
+        .map_err(|_| {
             // Best-effort cleanup: remove the already-written device-token.
-            let _ = keychain::delete_item("device-token");
+            let _ = keychain::delete_item(keychain::DEVICE_TOKEN_ACCOUNT);
             CreateAccountError::KeychainError
         })?;
 
@@ -500,7 +505,7 @@ fn load_did_ceremony_context() -> Result<DidCeremonyContext, DIDCeremonyError> {
         tracing::warn!(error = %e, "device key creation failed during DID ceremony");
         DIDCeremonyError::KeyNotFound
     })?;
-    let token_bytes = keychain::get_item("session-token").map_err(|e| {
+    let token_bytes = keychain::get_item(keychain::SESSION_TOKEN_ACCOUNT).map_err(|e| {
         tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
         DIDCeremonyError::KeychainError
     })?;
@@ -650,15 +655,17 @@ async fn perform_did_ceremony(
     })?;
 
     // Step 6: Overwrite session-token with the upgraded full session token.
-    keychain::store_item("session-token", create_did_resp.session_token.as_bytes()).map_err(
-        |e| {
-            tracing::error!(error = %e, "failed to persist upgraded session-token to keychain");
-            DIDCeremonyError::KeychainError
-        },
-    )?;
+    keychain::store_item(
+        keychain::SESSION_TOKEN_ACCOUNT,
+        create_did_resp.session_token.as_bytes(),
+    )
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to persist upgraded session-token to keychain");
+        DIDCeremonyError::KeychainError
+    })?;
 
     // Step 7: Persist the DID for use in subsequent app sessions.
-    keychain::store_item("did", create_did_resp.did.as_bytes()).map_err(|e| {
+    keychain::store_item(keychain::LEGACY_DID_ACCOUNT, create_did_resp.did.as_bytes()).map_err(|e| {
         tracing::error!(error = %e, did = %create_did_resp.did, "failed to persist DID to keychain");
         DIDCeremonyError::KeychainError
     })?;
@@ -834,9 +841,12 @@ async fn complete_did_web_ceremony(
     //
     // Promotion is already durable and cannot be retried. Persist every irreplaceable response
     // value before the optional hosting toggle so a transient failure cannot strand the user.
-    keychain::store_item("session-token", created.session_token.as_bytes())
-        .map_err(|_| DIDCeremonyError::KeychainError)?;
-    keychain::store_item("did", created.did.as_bytes())
+    keychain::store_item(
+        keychain::SESSION_TOKEN_ACCOUNT,
+        created.session_token.as_bytes(),
+    )
+    .map_err(|_| DIDCeremonyError::KeychainError)?;
+    keychain::store_item(keychain::LEGACY_DID_ACCOUNT, created.did.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
     if enable_managed_hosting {
         let hosting_result = state
@@ -883,7 +893,7 @@ async fn register_handle(
 
     // Step 2: Read DID and session token from Keychain.
     // Missing DID here is a post-ceremony invariant violation — error! is appropriate.
-    let did_bytes = keychain::get_item("did").map_err(|e| {
+    let did_bytes = keychain::get_item(keychain::LEGACY_DID_ACCOUNT).map_err(|e| {
         tracing::error!(error = %e, "DID not found in Keychain during handle registration — ceremony invariant violated");
         RegisterHandleError::KeychainError
     })?;
@@ -892,7 +902,7 @@ async fn register_handle(
         RegisterHandleError::KeychainError
     })?;
 
-    let token_bytes = keychain::get_item("session-token").map_err(|e| {
+    let token_bytes = keychain::get_item(keychain::SESSION_TOKEN_ACCOUNT).map_err(|e| {
         tracing::warn!(error = %e, "failed to read session-token from Keychain during handle registration");
         RegisterHandleError::KeychainError
     })?;
@@ -1536,7 +1546,7 @@ async fn import_did_web_identity(
 /// logged and swallowed, never blocking launch.
 fn migrate_global_share1_to_per_did() {
     // The legacy global slot; absent on a fresh (post-unification) install — nothing to migrate.
-    let global = match keychain::get_item("recovery-share-1") {
+    let global = match keychain::get_item(share_recovery::RECOVERY_SHARE1_ACCOUNT) {
         // Sensitive key material — wipe the in-memory copy when this scope ends.
         Ok(bytes) if !bytes.is_empty() => zeroize::Zeroizing::new(bytes),
         Ok(_) => return,
@@ -1547,7 +1557,7 @@ fn migrate_global_share1_to_per_did() {
         }
     };
     // The primary identity's DID (the create/did:web flow persists it under "did").
-    let did = match keychain::get_item("did") {
+    let did = match keychain::get_item(keychain::LEGACY_DID_ACCOUNT) {
         Ok(bytes) if !bytes.is_empty() => match String::from_utf8(bytes) {
             Ok(did) => did,
             Err(_) => {
@@ -1611,7 +1621,7 @@ fn reconcile_share1_slots() {
 /// missing document as a refresh trigger and re-fetches it from plc.directory on first render,
 /// which needs neither the handle nor the PDS URL at launch.
 fn reconcile_created_identity() {
-    let did = match keychain::get_item("did") {
+    let did = match keychain::get_item(keychain::LEGACY_DID_ACCOUNT) {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(did) if !did.is_empty() => did,
             Ok(_) => return,
@@ -1730,7 +1740,7 @@ fn share1_backfill_dids() -> Vec<String> {
             tracing::warn!(error = %e, "share1 backfill: managed-DID index unreadable");
             Vec::new()
         });
-    if let Ok(bytes) = keychain::get_item("did") {
+    if let Ok(bytes) = keychain::get_item(keychain::LEGACY_DID_ACCOUNT) {
         if let Ok(did) = String::from_utf8(bytes) {
             if !did.is_empty() && !dids.contains(&did) {
                 dids.push(did);

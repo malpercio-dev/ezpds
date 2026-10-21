@@ -104,7 +104,7 @@ use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 /// resumable — on launch the UI reconciles any listed DID straight to the
 /// tombstone-only retry rather than the full request flow (which would fail against
 /// the already-deleted account).
-const PENDING_REMOVALS_ACCOUNT: &str = "pending-removals";
+pub(crate) const PENDING_REMOVALS_ACCOUNT: &str = "pending-removals";
 
 /// Load the set of DIDs with a pending post-delete removal, propagating a genuine
 /// Keychain read failure.

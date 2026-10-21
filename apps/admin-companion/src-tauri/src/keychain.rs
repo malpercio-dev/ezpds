@@ -277,6 +277,33 @@ pub fn clear_for_test() {
 mod tests {
     use super::*;
 
+    /// Frozen contract "Device / Keychain account names" (docs/architecture/frozen-contracts.md).
+    /// Left: the code's own constant. Right: a literal. Editing a literal here is a
+    /// wire-contract change — a renamed account is an unreachable item on every installed
+    /// phone, with no error. The console stores nothing in the synchronizable store.
+    #[test]
+    fn account_names_are_pinned() {
+        use crate::{device_key::ACCOUNTS, notifications as n};
+
+        assert_eq!(SERVICE, "ezpds-admin-companion");
+        for (actual, expected) in [
+            (ACCOUNTS.private_scalar, "admin-device-key-priv"),
+            (ACCOUNTS.public_key, "admin-device-key-pub"),
+            (ACCOUNTS.application_label, "admin-device-key-app-label"),
+            (ACCOUNTS.secure_enclave_label, "ezpds-admin-device-key"),
+            (PAIRINGS_ACCOUNT, "admin-pairings"),
+            (DEVICE_ID_ACCOUNT, "admin-device-id"),
+            (RELAY_URL_ACCOUNT, "admin-relay-url"),
+            (LABEL_ACCOUNT, "admin-device-label"),
+            (BIOMETRIC_PREF_ACCOUNT, "admin-biometric-enabled"),
+            (n::NOTIFICATION_KEY_ACCOUNT, "notification-key-priv"),
+            (n::PINNED_SENDER_KEYS_ACCOUNT, "notification-sender-keys"),
+            (n::APNS_TOKEN_ACCOUNT, "notification-apns-token"),
+        ] {
+            assert_eq!(actual, expected, "Keychain account name drifted");
+        }
+    }
+
     /// The entitlements files are the mechanism the constants above describe: the stable
     /// group must be declared FIRST in the app's array (unqualified writes land there),
     /// the legacy group must stay declared, and the NSE must be entitled to the stable

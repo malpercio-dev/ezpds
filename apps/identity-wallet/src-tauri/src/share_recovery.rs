@@ -72,7 +72,7 @@ pub const EPILOGUE_ACCOUNT: &str = "recovery-epilogue";
 /// only as the auto-load fallback for identities created before the per-DID unification,
 /// whose Share 1 is still under this global account. Read-only: the launch backfill promotes
 /// this slot's value into the per-DID slots rather than syncing it under this name.
-const RECOVERY_SHARE1_ACCOUNT: &str = "recovery-share-1";
+pub(crate) const RECOVERY_SHARE1_ACCOUNT: &str = "recovery-share-1";
 
 /// Decode bytes as an index-1 v2 share envelope, or `None` if they are non-UTF-8, not a valid
 /// envelope, or not Share 1. A bare legacy share (pre-envelope format) or foreign bytes are
