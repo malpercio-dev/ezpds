@@ -10,7 +10,7 @@
 // COVERAGE BOUNDARY. The `space:` grants exercised here all name their own `collection`, so the
 // scope matcher decides them without resolving anything. The *other* branch — a bare grant
 // falling back to the space type declaration's `collections` — is a live DNS-and-HTTP lookup and
-// is covered where that resolver already is, in `auth/space_consent.rs`'s tests; what is proved
+// is covered where that resolver already is, in `consent.rs`'s tests; what is proved
 // here is that the routes reach the gate at all, and fail closed when it says no.
 
 use axum::body::Body;

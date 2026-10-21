@@ -21,10 +21,10 @@ pub struct CreateSpaceInput {
     space_type: String,
     /// Optional space key (record-key syntax); a TID is generated when absent.
     skey: Option<String>,
-    /// `readPolicy` / `writePolicy` unions — mapped by `space_views::policy_from_lex`.
+    /// `readPolicy` / `writePolicy` unions — mapped by `views::policy_from_lex`.
     read_policy: serde_json::Value,
     write_policy: serde_json::Value,
-    /// `appAccess` union — mapped by `space_views::app_access_from_lex`.
+    /// `appAccess` union — mapped by `views::app_access_from_lex`.
     app_access: serde_json::Value,
 }
 

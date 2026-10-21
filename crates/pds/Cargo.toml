@@ -79,6 +79,7 @@ futures-util = { workspace = true }
 [dev-dependencies]
 custos-db = { workspace = true, features = ["test-support"] }
 custos-core = { workspace = true, features = ["test-support"] }
+custos-spaces = { workspace = true, features = ["test-support"] }
 tower = { workspace = true }
 tempfile = { workspace = true }
 # Minting ES256K service-auth test tokens (the curve bsky.social signs with);

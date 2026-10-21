@@ -21,7 +21,7 @@
 //! (and TLS handshake) per request — `routes::service_proxy`'s header-target proxying,
 //! `identity::resolution`'s did:web and handle well-known fetches, the Lexicon-authority fetch
 //! behind `auth::permission_sets`/`custos_spaces::consent`, `labeler_watch`, the OAuth-client JWKS
-//! cache, `auth::client_attestation`'s client-metadata resolution, and `auth::space`'s outbound
+//! cache, `custos_spaces`' client-attestation client-metadata resolution and outbound
 //! managing-app check. The compiler holds the invariant that a fetch whose target a caller can
 //! influence uses this client and no other: such a target is a [`CallerUrl`], and only
 //! [`HardenedClient`] has a method that accepts one. The plain `reqwest::Client` cannot be handed

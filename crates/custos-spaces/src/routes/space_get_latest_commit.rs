@@ -19,7 +19,7 @@ pub struct SpaceGetLatestCommitParams {
 
 /// GET /xrpc/com.atproto.space.getLatestCommit
 ///
-/// The commit is minted per serving (`space_views::sign_current_commit`) — never a cached
+/// The commit is minted per serving (`views::sign_current_commit`) — never a cached
 /// artifact. `RepoNotFound` covers the member who has never written, too: with no rev and no
 /// state there is no commit to sign, and the lexicon says so explicitly.
 pub async fn space_get_latest_commit(

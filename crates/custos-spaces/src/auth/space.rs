@@ -7,7 +7,7 @@
 //! so the rules live here once: authenticate the caller, confirm which repo it may touch, and
 //! check the operation against its `space:` grant. Mixed because the `collection` a bare
 //! `space:` grant covers is the space type declaration's, resolved over the network (DNS + HTTP)
-//! per the spec's dynamic-resolution rule — the same reason `auth/space_consent.rs`, whose
+//! per the spec's dynamic-resolution rule — the same reason `consent.rs`, whose
 //! resolver this reuses, cannot be a pure Functional Core.
 //!
 //! The token flow:

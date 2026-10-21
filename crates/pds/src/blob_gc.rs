@@ -894,7 +894,7 @@ mod tests {
         let referenced = add_blob(&state, did, b"space bytes", "2020-01-01 00:00:00").await;
         let orphan = add_blob(&state, did, b"orphan bytes", "2020-01-01 00:00:00").await;
         custos_spaces::space_record_write::apply_space_writes(
-            &state.spaces,
+            &axum::extract::FromRef::from_ref(&state),
             &space,
             did,
             &[custos_spaces::space_record_write::SpaceWriteOp {

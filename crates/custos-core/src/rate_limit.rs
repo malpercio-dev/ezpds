@@ -27,7 +27,7 @@
 //!    unverified token subject would let anyone drain a victim's budget).
 //! 4. **Per-space-credential** — every credential-authed space request costs 1 point against the
 //!    credential's *verified* bound key (`cnf.kid`). Enforced at the credential seam in
-//!    `crate::auth::space` after the signature check passes, so garbage requests cannot
+//!    `custos_spaces`' `auth::space` after the signature check passes, so garbage requests cannot
 //!    drain a holder's budget and re-minting a credential (fresh `jti`, same key) does not reset
 //!    it. Complements the global per-IP cap for the one caller class that legitimately works
 //!    across IPs: a syncer fleet holding one credential.

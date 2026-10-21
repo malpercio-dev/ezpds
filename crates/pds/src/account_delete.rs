@@ -734,7 +734,7 @@ mod tests {
         .await
         .unwrap();
         custos_spaces::space_record_write::apply_space_writes(
-            &state.spaces,
+            &axum::extract::FromRef::from_ref(&state),
             &custos_core::space_uri::parse_space_ref(space).unwrap(),
             did,
             &[custos_spaces::space_record_write::SpaceWriteOp {
@@ -1044,7 +1044,7 @@ mod tests {
                     covered,
                     "{table}.{column} FK-references accounts(did) but no purge statement \
                      scopes it — a purge of an account with a row here fails the FK check. \
-                     Add a DELETE_BY_DID entry (or register a mechanism in COVERED_ELSEWHERE)."
+                     Add a DELETE_BY_DID entry (a Spaces table: custos_spaces::PURGE_ACCOUNT_SQL), or register a mechanism in COVERED_ELSEWHERE."
                 );
             }
         }
