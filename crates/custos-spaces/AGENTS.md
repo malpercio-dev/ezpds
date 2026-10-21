@@ -26,7 +26,6 @@ This file is a map; mechanism and invariants live in each module's `//!` doc.
 | `spawn_sweeps(&mut Scheduler, &SpacesConfig)` | `main.rs`; registers both sweeps on `pds`'s scheduler only when enabled, so graceful shutdown covers them |
 | `CAPABILITY` | listed in `pds`'s `CAPABILITIES` between `appPasswordPersonalDetails` and `waitlist`; `enabled` must mirror the router gate plus the master key |
 | `purge_account_rows` / `PURGE_ACCOUNT_SQL` | `account_delete::purge_account` runs it inside its transaction; the schema-walking FK test reads `PURGE_ACCOUNT_SQL` |
-| `db::*` | `blob_gc` unions `db::space_repos::list_record_blocks_for_account` into blob references |
 | `space_record_write` | `pds` tests that seed space records |
 | `test_support` (`test-support` feature) | `test_app(state)`, the `SpacesState` constructors, `SpaceSigKey`, request builders |
 

@@ -21,6 +21,7 @@ common = { workspace = true, features = ["axum", "sqlx"] }
 custos-db = { workspace = true }
 custos-core = { workspace = true }
 custos-agents = { workspace = true }
+custos-blobs = { workspace = true }
 custos-oauth = { workspace = true }
 custos-spaces = { workspace = true }
 clap = { workspace = true }
@@ -82,6 +83,7 @@ futures-util = { workspace = true }
 custos-db = { workspace = true, features = ["test-support"] }
 custos-core = { workspace = true, features = ["test-support"] }
 custos-agents = { workspace = true, features = ["test-support"] }
+custos-blobs = { workspace = true, features = ["test-support"] }
 custos-oauth = { workspace = true, features = ["test-support"] }
 custos-spaces = { workspace = true, features = ["test-support"] }
 tower = { workspace = true }

@@ -1,10 +1,10 @@
 // pattern: Imperative Shell
 
 //! The sending side of the notification relay: [`RelayNotifier`] (account pushes, installed as
-//! `CoreState.account_notifier`) and `notify_admin_devices` turn a notification into one
+//! `CoreState.notifier`, which also carries the operator's admin pushes) turns a notification into one
 //! HPKE-sealed, length-quantized payload *per registered device* and hand each to the relay
 //! worker. Inert when `[notifications] relay` is unset (`AppState.notify_sender` and
-//! `account_notifier` are `None`), down to never minting key material.
+//! `notifier` are `None`), down to never minting key material.
 //!
 //! Three properties this module is responsible for, in the order they matter:
 //!
@@ -35,17 +35,16 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use custos_core::notify::AccountNotifier;
+use custos_core::notify::Notifier;
 use custos_core::CoreState;
 use zeroize::Zeroizing;
 
 pub use custos_core::notify::NotificationPayload;
 
-use crate::app::AppState;
 use crate::db::notifications as store;
 use crate::notify_relay_client::{NotifyJob, RegistrationOwner};
 
-/// The [`AccountNotifier`] `pds` installs in `CoreState.account_notifier` when a relay is
+/// The [`Notifier`] `pds` installs in `CoreState.notifier` when a relay is
 /// configured: notify every device registered to a DID.
 ///
 /// Silent and harmless when the account has no registered devices or when the relay is
@@ -55,7 +54,7 @@ use crate::notify_relay_client::{NotifyJob, RegistrationOwner};
 /// actually went out).
 pub struct RelayNotifier {
     /// Read for `db` and `config` only. Cloned before the notifier is installed, so its own
-    /// `account_notifier` is `None` and the two never form a reference cycle.
+    /// `notifier` is `None` and the two never form a reference cycle.
     core: CoreState,
     sender: crate::notify_relay_client::NotifySender,
 }
@@ -66,7 +65,7 @@ impl RelayNotifier {
     }
 }
 
-impl AccountNotifier for RelayNotifier {
+impl Notifier for RelayNotifier {
     fn notify_account<'a>(
         &'a self,
         did: &'a str,
@@ -93,29 +92,34 @@ impl AccountNotifier for RelayNotifier {
             .await
         })
     }
-}
 
-/// Notify every *active* admin-companion device — the operator alert channel.
-///
-/// Callers are the server-side ops triggers: the labeler watcher's batched new-flag alert
-/// (`labeler_watch.rs`) and the storage-cap-approaching alert (`routes/upload_blob.rs`).
-pub async fn notify_admin_devices(state: &AppState, payload: NotificationPayload) {
-    let Some(sender) = state.notify_sender.as_ref() else {
-        return;
-    };
-    let registrations = match store::list_active_admin_registrations(&state.db).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load admin notification registrations");
-            return;
-        }
-    };
-    fan_out(state, sender, registrations, payload, |device_id| {
-        RegistrationOwner::AdminDevice {
-            admin_device_id: device_id,
-        }
-    })
-    .await;
+    /// Notify every *active* admin-companion device — the operator alert channel. Callers are the
+    /// server-side ops triggers: the labeler watcher's batched new-flag alert
+    /// (`labeler_watch.rs`) and the storage-cap-approaching alert (blob upload).
+    fn notify_admins(
+        &self,
+        payload: NotificationPayload,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            let registrations = match store::list_active_admin_registrations(&self.core.db).await {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load admin notification registrations");
+                    return;
+                }
+            };
+            fan_out(
+                &self.core,
+                &self.sender,
+                registrations,
+                payload,
+                |device_id| RegistrationOwner::AdminDevice {
+                    admin_device_id: device_id,
+                },
+            )
+            .await;
+        })
+    }
 }
 
 /// Seal-and-enqueue one payload per registration, returning how many jobs were enqueued.
@@ -554,7 +558,9 @@ mod tests {
                 NotificationPayload::new("agent_claim_pending", "t", "b"),
             )
             .await;
-        notify_admin_devices(&state, NotificationPayload::new("ops_alert", "t", "b")).await;
+        state
+            .notify_admins(NotificationPayload::new("ops_alert", "t", "b"))
+            .await;
 
         let keys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_sender_keys")
             .fetch_one(&state.db)

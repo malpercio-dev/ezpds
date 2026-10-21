@@ -194,7 +194,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
         sweeps: Arc::new(crate::sweep_status::SweepStatus::default()),
         started_at: std::time::Instant::now(),
         poll_tracker: crate::auth::new_claim_poll_tracker(),
-        account_notifier: None,
+        notifier: None,
         space_type_cache: crate::scope_display::new_space_type_cache(),
         firehose,
         crawlers,

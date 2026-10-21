@@ -106,7 +106,7 @@ pub struct CoreState {
     /// Pushes to an account's registered devices. `None` when `[notifications] relay` is unset,
     /// which turns every account push into a no-op. `pds` installs it (`AppState::
     /// set_notify_sender`); features push through it without seeing the relay client.
-    pub account_notifier: Option<Arc<dyn crate::notify::AccountNotifier>>,
+    pub notifier: Option<Arc<dyn crate::notify::Notifier>>,
     /// TTL cache of resolved space type declarations, read by the consent page's `space:` scope
     /// display and by a bare `space:` grant's collection fallback in the Spaces auth seam.
     pub space_type_cache: crate::scope_display::SpaceTypeCache,

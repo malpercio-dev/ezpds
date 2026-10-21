@@ -1486,6 +1486,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "custos-blobs"
+version = "0.16.2"
+dependencies = [
+ "anyhow",
+ "atrium-repo",
+ "axum",
+ "chrono",
+ "common",
+ "crypto",
+ "custos-core",
+ "custos-db",
+ "futures-util",
+ "hmac",
+ "ipld-core",
+ "jsonwebtoken",
+ "repo-engine",
+ "reqwest",
+ "serde",
+ "serde_ipld_dagcbor",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+ "wiremock",
+ "zeroize",
+]
+
+[[package]]
 name = "custos-client"
 version = "0.16.2"
 dependencies = [
@@ -5342,6 +5378,7 @@ dependencies = [
  "common",
  "crypto",
  "custos-agents",
+ "custos-blobs",
  "custos-core",
  "custos-db",
  "custos-oauth",

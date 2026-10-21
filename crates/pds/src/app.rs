@@ -49,7 +49,6 @@ use crate::routes::did_json::did_json_handler;
 use crate::routes::did_web_hosting::{
     set_did_web_hosting_handler, update_did_web_document_handler,
 };
-use crate::routes::get_blob::get_blob;
 use crate::routes::get_device_pds::get_device_pds;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_metrics::get_metrics;
@@ -66,8 +65,6 @@ use crate::routes::health::health;
 use crate::routes::import_repo::import_repo;
 use crate::routes::landing::landing;
 use crate::routes::list_app_passwords::list_app_passwords_handler;
-use crate::routes::list_blobs::list_blobs;
-use crate::routes::list_missing_blobs::list_missing_blobs;
 use crate::routes::list_records::list_records;
 use crate::routes::list_repos::list_repos;
 use crate::routes::notifications::{
@@ -114,7 +111,6 @@ use crate::routes::transfer_initiate::transfer_initiate;
 use crate::routes::update_email::update_email;
 use crate::routes::update_handle::update_handle_handler;
 use crate::routes::update_subject_status::update_subject_status;
-use crate::routes::upload_blob::upload_blob;
 use crate::routes::waitlist_signup::waitlist_signup;
 #[cfg(test)]
 pub(crate) use crate::state::test_state;
@@ -289,8 +285,6 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/com.atproto.identity.submitPlcOperation",
             post(submit_plc_operation),
         )
-        .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
-        .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
         .route("/xrpc/com.atproto.sync.getBlocks", get(sync_get_blocks))
         .route(
             "/xrpc/com.atproto.sync.getLatestCommit",
@@ -302,7 +296,6 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/com.atproto.sync.getRepoStatus",
             get(sync_get_repo_status),
         )
-        .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
         .route("/xrpc/com.atproto.sync.listRepos", get(list_repos))
         .route(
             "/xrpc/com.atproto.sync.subscribeRepos",
@@ -310,10 +303,6 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/com.atproto.repo.applyWrites", post(apply_writes))
         .route("/xrpc/com.atproto.repo.importRepo", post(import_repo))
-        .route(
-            "/xrpc/com.atproto.repo.listMissingBlobs",
-            get(list_missing_blobs),
-        )
         .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
         .route("/xrpc/com.atproto.repo.listRecords", get(list_records))
@@ -338,6 +327,7 @@ pub fn app(state: AppState) -> Router {
     let public = public
         .merge(custos_oauth::router())
         .merge(custos_agents::router())
+        .merge(custos_blobs::router())
         .merge(custos_spaces::router(&state.config.spaces));
     // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
     // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is

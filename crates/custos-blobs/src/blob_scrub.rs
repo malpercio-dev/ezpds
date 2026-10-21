@@ -27,12 +27,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::app::AppState;
 use crate::blob_mirror::BlobMirror;
 use crate::blob_store;
 use crate::db::blobs::{self, PhysicalBlob};
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
+use axum::extract::FromRef;
+use custos_core::CoreState;
 
 /// Tally of what one scrub pass did, for logging and tests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -78,14 +79,19 @@ pub struct BlobScrub {
     pub mirror: Option<Arc<BlobMirror>>,
 }
 
-impl Sweep<AppState> for BlobScrub {
+impl<St> Sweep<St> for BlobScrub
+where
+    St: Send + Sync + 'static,
+    CoreState: FromRef<St>,
+{
     const NAME: &'static str = names::BLOB_SCRUB;
 
     fn interval(&self) -> Duration {
         self.interval
     }
 
-    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+    async fn run(&self, state: &St) -> anyhow::Result<Pass> {
+        let state = &CoreState::from_ref(state);
         run_blob_scrub(state, self.mirror.as_deref()).await.pass()
     }
 }
@@ -104,7 +110,7 @@ enum RowCheck {
 /// never aborts the pass. A failure to enumerate the `blobs` table skips the whole pass without
 /// recording, leaving the last-run timestamp stale — the operator's signal that scrubbing is
 /// not completing.
-pub async fn run_blob_scrub(state: &AppState, mirror: Option<&BlobMirror>) -> ScrubStats {
+pub async fn run_blob_scrub(state: &CoreState, mirror: Option<&BlobMirror>) -> ScrubStats {
     let mut stats = ScrubStats::default();
 
     let rows = match blobs::list_all_blobs(&state.db).await {
@@ -252,7 +258,7 @@ async fn check_row(data_dir: &Path, row: &PhysicalBlob) -> Result<RowCheck, Stri
 /// immediately before writing narrows that window to "one query, then one write" — without it,
 /// a heal could resurrect bytes on disk with no owning row, creating precisely the orphan-file
 /// leak this sweep exists to catch rather than cause.
-async fn heal(state: &AppState, mirror: &BlobMirror, row: &PhysicalBlob) -> Result<bool, String> {
+async fn heal(state: &CoreState, mirror: &BlobMirror, row: &PhysicalBlob) -> Result<bool, String> {
     let Some(content) = mirror.fetch_verified(row).await? else {
         return Ok(false);
     };
@@ -309,23 +315,20 @@ mod tests {
 
     /// Test state with a real on-disk `data_dir` so file effects are observable, and no mirror
     /// configured (the "no bucket" scrub-only path).
-    async fn scrub_state() -> (AppState, tempfile::TempDir) {
-        let base = crate::app::test_state().await;
+    async fn scrub_state() -> (CoreState, tempfile::TempDir) {
+        let base = crate::test_support::test_state().await;
         let dir = tempfile::tempdir().unwrap();
         let mut config = (*base.config).clone();
         config.data_dir = dir.path().to_path_buf();
-        let state = AppState {
-            core: custos_core::CoreState {
-                config: Arc::new(config),
-                ..base.core
-            },
+        let state = CoreState {
+            config: Arc::new(config),
             ..base
         };
         (state, dir)
     }
 
     /// Store `content` under a freshly seeded account and return its CID (no mirror involved).
-    async fn add_local_blob(state: &AppState, did: &str, content: &[u8]) -> String {
+    async fn add_local_blob(state: &CoreState, did: &str, content: &[u8]) -> String {
         add_blob(state, did, content, "application/octet-stream").await
     }
 
@@ -470,11 +473,8 @@ mod tests {
         let (base, _dir, fake, mirror) = build_test_mirror().await;
         let mut config = (*base.config).clone();
         config.blob_scrub.auto_heal = false;
-        let state = AppState {
-            core: custos_core::CoreState {
-                config: Arc::new(config),
-                ..base.core
-            },
+        let state = CoreState {
+            config: Arc::new(config),
             ..base
         };
         let cid = add_blob(&state, "did:plc:scrubnoheal", b"good bytes", "image/png").await;

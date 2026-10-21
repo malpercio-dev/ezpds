@@ -32,11 +32,11 @@ pub struct AppState {
 
 impl AppState {
     /// Turn notifications on: the relay queue `pds`'s own triggers send through, and the
-    /// [`custos_core::notify::AccountNotifier`] features push through. One switch, so the two
+    /// [`custos_core::notify::Notifier`] features push through. One switch, so the two
     /// never disagree about whether notifications are configured.
     pub fn set_notify_sender(&mut self, sender: crate::notify_relay_client::NotifySender) {
         let notifier = crate::notifications::RelayNotifier::new(self.core.clone(), sender.clone());
-        self.core.account_notifier = Some(Arc::new(notifier));
+        self.core.notifier = Some(Arc::new(notifier));
         self.notify_sender = Some(sender);
     }
 }

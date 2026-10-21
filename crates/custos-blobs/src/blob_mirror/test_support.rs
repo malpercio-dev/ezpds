@@ -17,9 +17,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use super::BlobMirror;
-use crate::app::AppState;
 use crate::blob_store;
 use crate::db::blobs;
+use custos_core::CoreState;
 
 const FAKE_BUCKET: &str = "testbucket";
 const FAKE_PAGE_SIZE: usize = 2;
@@ -159,18 +159,15 @@ fn test_mirror_config(fake: &FakeS3) -> common::BlobMirrorConfig {
     }
 }
 
-/// A fresh test `AppState` (real on-disk `data_dir` so file effects are observable) paired
+/// A fresh test `CoreState` (real on-disk `data_dir` so file effects are observable) paired
 /// with a `BlobMirror` wired to a freshly spawned fake S3 server.
-pub(crate) async fn build_test_mirror() -> (AppState, tempfile::TempDir, FakeS3, BlobMirror) {
-    let base = crate::app::test_state().await;
+pub(crate) async fn build_test_mirror() -> (CoreState, tempfile::TempDir, FakeS3, BlobMirror) {
+    let base = crate::test_support::test_state().await;
     let dir = tempfile::tempdir().unwrap();
     let mut config = (*base.config).clone();
     config.data_dir = dir.path().to_path_buf();
-    let state = AppState {
-        core: custos_core::CoreState {
-            config: Arc::new(config),
-            ..base.core
-        },
+    let state = CoreState {
+        config: Arc::new(config),
         ..base
     };
     let fake = spawn_fake_s3().await;
@@ -183,7 +180,7 @@ pub(crate) async fn build_test_mirror() -> (AppState, tempfile::TempDir, FakeS3,
 /// Store `content` on disk and insert its `blobs` + `blob_owners` rows (the FK needs an
 /// account, seeded on first use per DID). Shared by the mirror sweep/restore tests and
 /// `blob_scrub`'s tests.
-pub(crate) async fn add_blob(state: &AppState, did: &str, content: &[u8], mime: &str) -> String {
+pub(crate) async fn add_blob(state: &CoreState, did: &str, content: &[u8], mime: &str) -> String {
     let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE did = ?")
         .bind(did)
         .fetch_one(&state.db)
@@ -218,7 +215,7 @@ pub(crate) async fn add_blob(state: &AppState, did: &str, content: &[u8], mime: 
 }
 
 /// The on-disk path the blob store would use for `cid`, given `state`'s configured `data_dir`.
-pub(crate) fn local_path(state: &AppState, cid: &str) -> std::path::PathBuf {
+pub(crate) fn local_path(state: &CoreState, cid: &str) -> std::path::PathBuf {
     state
         .config
         .data_dir

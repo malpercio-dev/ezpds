@@ -8,6 +8,7 @@ members = [
     "crates/ios-device-key",
     "crates/custos-client",
     "crates/custos-agents",
+    "crates/custos-blobs",
     "crates/custos-db",
     "crates/custos-core",
     "crates/custos-oauth",
@@ -286,6 +287,7 @@ custos-db = { path = "crates/custos-db" }
 custos-core = { path = "crates/custos-core" }
 # The Atproto Spaces feature crate: routes, space auth, queries, sweeps, capability entry.
 custos-agents = { path = "crates/custos-agents" }
+custos-blobs = { path = "crates/custos-blobs" }
 custos-oauth = { path = "crates/custos-oauth" }
 custos-spaces = { path = "crates/custos-spaces" }
 # The wallet's platform-free core (ADR-0039): the five platform traits and the logic behind them.

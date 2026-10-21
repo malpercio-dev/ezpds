@@ -691,7 +691,7 @@ async fn dispatch_login_approval_push(
     login_hint: Option<&str>,
 ) -> Option<String> {
     // Cheap outs before any lookup: no relay configured, or no hint to name a recipient.
-    state.account_notifier.as_ref()?;
+    state.notifier.as_ref()?;
     let did = resolve_login_hint_to_local_did(state, login_hint?).await?;
 
     // The number is deliberately absent from the payload: it is the proof the approver can see

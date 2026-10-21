@@ -26,11 +26,11 @@ use serde::Serialize;
 
 use common::{ApiError, ApiResultExt, ErrorCode};
 
-use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::service_auth::{is_service_auth_request, require_service_auth, ServiceAuthUser};
 use crate::db::blobs;
 use crate::{auth::oauth_scopes, blob_store};
+use custos_core::CoreState;
 
 /// The lexicon method a service-auth token must authorize to upload a blob. The official video
 /// flow mints a token with `lxm = com.atproto.repo.uploadBlob`, which `video.bsky.app` presents
@@ -78,7 +78,7 @@ pub struct UploadBlobResponse {
 /// `video.bsky.app`, and the video service pushes the transcoded blob back here with it. A service
 /// token never rides the general access path: it carries no session identity and no scope claims.
 pub async fn upload_blob(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     request: Request<Body>,
 ) -> Result<(StatusCode, Json<UploadBlobResponse>), ApiError> {
     let max_size = state.config.blobs.max_blob_size as usize;
@@ -198,20 +198,20 @@ pub async fn upload_blob(
     let used_after = used + bytes.len() as i64;
     if crosses_storage_warning(used, used_after, quota) {
         let pct = used_after.saturating_mul(100) / quota;
-        crate::notifications::notify_admin_devices(
-            &state,
-            crate::notifications::NotificationPayload::new(
-                "storage_cap_approaching",
-                "Storage cap approaching",
-                format!("{did} has used {pct}% of its storage quota."),
+        state
+            .notify_admins(
+                custos_core::notify::NotificationPayload::new(
+                    "storage_cap_approaching",
+                    "Storage cap approaching",
+                    format!("{did} has used {pct}% of its storage quota."),
+                )
+                .with_data(serde_json::json!({
+                    "server": state.config.public_url,
+                    "screen": "accounts",
+                    "did": did,
+                })),
             )
-            .with_data(serde_json::json!({
-                "server": state.config.public_url,
-                "screen": "accounts",
-                "did": did,
-            })),
-        )
-        .await;
+            .await;
     }
 
     // An agent-attributed upload records its audit row before the success response: the audit
@@ -289,7 +289,7 @@ impl BlobUploader {
 /// Resolve the request's credential to a [`BlobUploader`]. A service-auth JWT (its `iss` is a DID)
 /// goes through the [`require_service_auth`] guard; everything else through the standard
 /// access-token extractor.
-async fn resolve_uploader(state: &AppState, parts: &mut Parts) -> Result<BlobUploader, ApiError> {
+async fn resolve_uploader(state: &CoreState, parts: &mut Parts) -> Result<BlobUploader, ApiError> {
     if is_service_auth_request(&parts.headers) {
         let user = require_service_auth(
             state,
@@ -340,8 +340,8 @@ fn crosses_storage_warning(used_before: i64, used_after: i64, quota: i64) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
-    use crate::routes::test_utils::{body_json, insert_account_with_email};
+    use crate::test_support::test_state;
+    use crate::test_support::{body_json, insert_account_with_email};
     use axum::{body::Body, http::Request, routing::post, Router};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -361,18 +361,18 @@ mod tests {
         assert!(!crosses_storage_warning(0, 10, 0));
     }
 
-    fn app_with_state(state: AppState) -> Router {
+    fn app_with_state(state: CoreState) -> Router {
         Router::new()
             .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
             .with_state(state)
     }
 
     /// Helper: issue a valid HS256 JWT for the given DID using the test state's secret.
-    fn issue_test_jwt(state: &AppState, did: &str) -> String {
+    fn issue_test_jwt(state: &CoreState, did: &str) -> String {
         issue_test_jwt_with_scope(state, did, "com.atproto.access")
     }
 
-    fn issue_test_jwt_with_scope(state: &AppState, did: &str, scope: &str) -> String {
+    fn issue_test_jwt_with_scope(state: &CoreState, did: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
         let now = crate::time::unix_now_secs() as u64;
@@ -391,42 +391,36 @@ mod tests {
     }
 
     /// Helper: create a test state with a small max_blob_size (100 bytes).
-    async fn state_with_small_blob_limit() -> AppState {
+    async fn state_with_small_blob_limit() -> CoreState {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.blobs.max_blob_size = 100;
-        AppState {
-            core: custos_core::CoreState {
-                config: Arc::new(config),
-                ..base.core
-            },
+        CoreState {
+            config: Arc::new(config),
             ..base
         }
     }
 
     /// Helper: create a test state with a small per-account storage quota (250 bytes).
-    async fn state_with_small_storage_quota() -> AppState {
+    async fn state_with_small_storage_quota() -> CoreState {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.blobs.max_blob_size = 1000;
         config.blobs.max_storage_per_account = 250;
-        AppState {
-            core: custos_core::CoreState {
-                config: Arc::new(config),
-                ..base.core
-            },
+        CoreState {
+            config: Arc::new(config),
             ..base
         }
     }
 
     /// Helper: seed an account for blob uploads.
-    async fn seed_account(state: &AppState, did: &str) {
+    async fn seed_account(state: &CoreState, did: &str) {
         insert_account_with_email(&state.db, did, "test@example.com").await;
     }
 
     /// Seed a local active account plus a cached DID document whose `#atproto` key is `kp` — the
     /// shape a service-auth token's issuer must resolve to.
-    async fn seed_account_with_atproto_key(state: &AppState, did: &str, kp: &crypto::P256Keypair) {
+    async fn seed_account_with_atproto_key(state: &CoreState, did: &str, kp: &crypto::P256Keypair) {
         seed_account(state, did).await;
         let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
         crate::db::dids::seed_did_document(
@@ -552,7 +546,7 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-        let jwt = crate::routes::test_utils::agent_jwt(
+        let jwt = crate::test_support::agent_jwt(
             &state.jwt_secret,
             "did:plc:agentblobaudit",
             "com.atproto.access",

@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: query params (did, limit, cursor), AppState
+// Gathers: query params (did, limit, cursor), CoreState
 // Processes: look up blob CIDs for the given DID with pagination
 // Returns: JSON { cids: [...], cursor: "..." }
 //
@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
-use crate::app::AppState;
 use crate::db::blobs;
 use crate::lexicon::LexiconParams;
+use custos_core::CoreState;
 
 // ── Query parameters ────────────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ pub struct ListBlobsResponse {
 /// Uses cursor-based pagination: pass the last CID from the previous response
 /// as `cursor` to get the next page.
 pub async fn list_blobs(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     LexiconParams(params): LexiconParams<ListBlobsParams>,
 ) -> Result<Json<ListBlobsResponse>, ApiError> {
     // `limit` is already bounded to [1, 1000] by the lexicon (anything outside is a 400 before
@@ -74,19 +74,19 @@ pub async fn list_blobs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
-    use crate::routes::test_utils::body_json;
+    use crate::test_support::body_json;
+    use crate::test_support::test_state;
     use axum::{body::Body, http::Request, routing::get, Router};
     use tower::ServiceExt;
 
-    fn app_with_state(state: AppState) -> Router {
+    fn app_with_state(state: CoreState) -> Router {
         Router::new()
             .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
             .with_state(state)
     }
 
     /// Helper: seed an account and multiple blobs for testing.
-    async fn seed_blobs(state: &AppState, did: &str, count: usize) {
+    async fn seed_blobs(state: &CoreState, did: &str, count: usize) {
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES (?, 'bloblist@example.com', NULL, datetime('now'), datetime('now'))",

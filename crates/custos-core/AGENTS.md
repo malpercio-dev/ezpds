@@ -16,7 +16,7 @@ common · crypto · repo-engine
             ▼
         custos-core      this crate
             ▼
-  feature crates         custos-agents, custos-oauth, custos-spaces (more to come)
+  feature crates         custos-agents, custos-blobs, custos-oauth, custos-spaces (more to come)
             ▼
           pds            the binary: composes every feature, owns what is not yet extracted
 ```
@@ -44,7 +44,7 @@ src/
   identity/        — everything "who is this handle/DID" (see section below)
   lexicon/         — vendored lexicon documents (`crates/custos-core/lexicons/`, pinned upstream — see its README) compiled into a registry, plus the reference-parity XRPC validation layers: input bodies (`LexiconInput<T>`), query params (`LexiconParams<T>`), repo-write records (`validate_record`), and served outputs (test-build drift detection). Strict schema parsing and byte-identical reference error messages, so Custos can't drift laxer than the reference. Start at `mod.rs`'s module doc — it maps the entry points and files
   metrics.rs       — OTel meter + Prometheus registry behind `GET /metrics`; `metrics::names` is the instrument source of truth (each constant documents what it measures and who records it) — see module doc
-  notify.rs        — the account-push seam: `NotificationPayload`, the `AccountNotifier` trait `pds`'s `RelayNotifier` implements, and `CoreState::notify_account` (`0` when `[notifications] relay` is unset). Features push through it without seeing the relay client
+  notify.rs        — the account-push seam: `NotificationPayload`, the `Notifier` trait `pds`'s `RelayNotifier` implements, and `CoreState::notify_account` (`0` when `[notifications] relay` is unset). Features push through it without seeing the relay client
   no_input.rs      — `NoInputBody` extractor: 400s any body on a no-input XRPC procedure with the reference PDS's exact message; extract it last — see module doc
   rate_limit.rs    — request rate-limiting middleware + shared limiter state — see section below
   scope_display.rs — the user-legible text `/oauth/authorize` shows for `space:` grants: the space type declaration's `name` (localized), a named authority's bidirectionally-verified handle, the collections a bare grant resolves to, and the both-wildcards warning. Owns `SpaceTypeCache` (`CoreState.space_type_cache`), which the Spaces auth seam also reads for a bare grant's collection fallback. Degrades to the raw token instead of failing the page — see module doc
