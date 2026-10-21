@@ -3,7 +3,7 @@
 //! The periodic-sweep scheduler.
 //!
 //! A sweep is a [`Sweep`] impl: its cadence plus one `run` pass. [`spawn`] owns everything
-//! else — the interval loop, the skipped boot tick, missed-tick policy, the failure posture,
+//! else — the interval loop, the skipped boot tick (or an opt-in first pass at boot), missed-tick policy, the failure posture,
 //! and writing `AppState.sweeps` for `GET /v1/admin/health`.
 //!
 //! Failure posture: a pass that returns `Err` is logged and records nothing, so a stale (or
@@ -44,6 +44,12 @@ pub trait Sweep: Send + Sync + 'static {
 
     fn interval(&self) -> Duration;
 
+    /// Run the first pass right after boot instead of one `interval` later. Only for a pass that
+    /// merely rebuilds a cache the operator wants populated by the end of a deploy.
+    fn first_pass_at_boot(&self) -> bool {
+        false
+    }
+
     /// Set [`tokio::time::MissedTickBehavior::Skip`] so a late pass is never followed by a
     /// burst of catch-up passes; `false` keeps tokio's default (`Burst`).
     fn skip_missed_ticks(&self) -> bool {
@@ -82,7 +88,9 @@ pub fn spawn<S: Sweep>(sweep: S, state: AppState) -> JoinHandle<()> {
         if sweep.skip_missed_ticks() {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         }
-        ticker.tick().await;
+        if !sweep.first_pass_at_boot() {
+            ticker.tick().await;
+        }
         loop {
             ticker.tick().await;
             run_once(&sweep, &state).await;
@@ -101,6 +109,7 @@ mod tests {
     struct Probe {
         calls: Arc<AtomicUsize>,
         fail: bool,
+        at_boot: bool,
     }
 
     impl Sweep for Probe {
@@ -108,6 +117,10 @@ mod tests {
 
         fn interval(&self) -> Duration {
             Duration::from_millis(20)
+        }
+
+        fn first_pass_at_boot(&self) -> bool {
+            self.at_boot
         }
 
         async fn run(&self, _state: &AppState) -> anyhow::Result<Pass> {
@@ -127,6 +140,7 @@ mod tests {
             Probe {
                 calls: calls.clone(),
                 fail: false,
+                at_boot: false,
             },
             state,
         );
@@ -150,13 +164,35 @@ mod tests {
         let failing = Probe {
             calls: calls.clone(),
             fail: true,
+            at_boot: false,
         };
         assert_eq!(run_once(&failing, &state).await, None);
         assert!(state.sweeps.snapshot().get("probe").is_none());
 
-        let ok = Probe { calls, fail: false };
+        let ok = Probe {
+            calls,
+            fail: false,
+            at_boot: false,
+        };
         assert_eq!(run_once(&ok, &state).await, Some(Pass::swept(3)));
         let run = state.sweeps.snapshot().get("probe").unwrap();
         assert_eq!((run.swept, run.errors), (3, 0));
+    }
+
+    #[tokio::test]
+    async fn a_first_pass_at_boot_runs_before_the_first_interval_elapses() {
+        let state = test_state().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handle = spawn(
+            Probe {
+                calls: calls.clone(),
+                fail: false,
+                at_boot: true,
+            },
+            state,
+        );
+        sleep(Duration::from_millis(10)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        handle.abort();
     }
 }

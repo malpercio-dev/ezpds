@@ -800,7 +800,12 @@ async fn run() -> anyhow::Result<()> {
     } else {
         let watch_interval =
             std::time::Duration::from_secs(state.config.labeler.poll_interval_secs);
-        let _labeler_watch = labeler_watch::spawn_labeler_watch(state.clone(), watch_interval);
+        let _labeler_watch = sweep::spawn(
+            labeler_watch::LabelerWatch {
+                interval: watch_interval,
+            },
+            state.clone(),
+        );
         tracing::info!(
             watched = state.config.labeler.watched.len(),
             interval_secs = state.config.labeler.poll_interval_secs,

@@ -30,8 +30,6 @@
 
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use common::WatchedLabeler;
 
 use crate::app::AppState;
@@ -42,6 +40,8 @@ use crate::db::account_labels::{
 use crate::identity::proxy::resolve_atproto_proxy_target;
 use crate::label_state::{active_labels, diff_labels, ActiveLabel, LabelEvent};
 use crate::notifications::{notify_admin_devices, NotificationPayload};
+use crate::sweep::{Pass, Sweep};
+use crate::sweep_status::names;
 
 /// Ozone's `queryLabels` silently returns *nothing* (not an error) past 20 `uriPatterns`
 /// per request, so hosted-DID batches must cap there.
@@ -64,21 +64,41 @@ pub struct LabelerWatchStats {
     pub removed: u64,
     /// Labelers whose poll failed this pass (logged, retried next pass).
     pub errors: u64,
+    /// The hosted accounts could not be listed, so the pass did not complete (and records nothing).
+    pub failed: bool,
 }
 
-/// Spawn the periodic labeler watcher.
-///
-/// The interval's first tick fires immediately, so the first pass runs right after boot
-/// (see the module docs for why that is safe here and deliberately skipped in the sweeps).
-/// The task loops for the life of the process and is dropped on shutdown.
-pub fn spawn_labeler_watch(state: AppState, interval: Duration) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        loop {
-            ticker.tick().await;
-            run_labeler_watch(&state).await;
+impl LabelerWatchStats {
+    /// The scheduler's view: `swept` is the label rows changed.
+    fn pass(self) -> anyhow::Result<Pass> {
+        if self.failed {
+            anyhow::bail!("labeler watch could not list hosted accounts");
         }
-    })
+        Ok(Pass::swept(self.upserted + self.removed))
+    }
+}
+
+/// Poll the watched labelers and reconcile `account_labels` once per `interval`. The first
+/// pass runs right after boot (see the module docs for why that is safe here and deliberately
+/// skipped in the other sweeps).
+pub struct LabelerWatch {
+    pub interval: Duration,
+}
+
+impl Sweep for LabelerWatch {
+    const NAME: &'static str = names::LABELER_WATCH;
+
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    fn first_pass_at_boot(&self) -> bool {
+        true
+    }
+
+    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+        run_labeler_watch(state).await.pass()
+    }
 }
 
 /// Run a single watcher pass over every watched labeler.
@@ -114,6 +134,7 @@ pub async fn run_labeler_watch(state: &AppState) -> LabelerWatchStats {
         Ok(dids) => dids,
         Err(e) => {
             tracing::error!(error = %e, "labeler watch: failed to list hosted accounts; skipping pass");
+            stats.failed = true;
             return stats;
         }
     };
@@ -163,10 +184,6 @@ pub async fn run_labeler_watch(state: &AppState) -> LabelerWatchStats {
         .metrics
         .labeler_watch_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
-    state.sweeps.record(
-        crate::sweep_status::names::LABELER_WATCH,
-        crate::sweep_status::SweepRun::now(changes),
-    );
 
     stats
 }
@@ -412,15 +429,7 @@ mod tests {
             )]
         );
         // The pass records its instruments and readable sweep state.
-        assert_eq!(
-            state
-                .sweeps
-                .snapshot()
-                .get(crate::sweep_status::names::LABELER_WATCH)
-                .unwrap()
-                .swept,
-            1
-        );
+        assert_eq!(stats.pass().unwrap().swept, 1);
         drop(first);
 
         // Second poll: the labeler has retracted alice's label.
