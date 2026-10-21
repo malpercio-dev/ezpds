@@ -15,7 +15,7 @@
 //! `delete_labels_for_unwatched` (an empty watched list clears the table — flagged state
 //! never outlives its config) remove rows; `count_flagged_accounts` backs the health badge.
 //! The filtered listing predicates (`FLAGGED_SQL`, `count_accounts_admin_flagged`) live
-//! beside `list_accounts_admin` in `db/accounts.rs`.
+//! beside `list_accounts_admin` in `custos_db::accounts`.
 
 use std::collections::HashMap;
 

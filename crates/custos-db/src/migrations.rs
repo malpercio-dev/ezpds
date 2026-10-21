@@ -4,10 +4,10 @@
 //! version number with its `include_str!`-embedded SQL file under `migrations/`.
 //! Kept in its own module so a schema change touches only this file plus the new
 //! `migrations/VNNN__*.sql` file, leaving the pool setup and migration runner in
-//! `mod.rs` untouched. The runner (`db::run_migrations`) applies every entry whose
+//! `lib.rs` untouched. The runner (`run_migrations`) applies every entry whose
 //! version is absent from `schema_migrations`, in order, inside one transaction.
 //!
-//! Invariants (see `db/AGENTS.md`): versions are sequential positive integers
+//! Invariants (see this crate's `AGENTS.md`): versions are sequential positive integers
 //! starting at 1, and an applied migration's SQL is never modified — only new
 //! higher-numbered entries are appended.
 
@@ -19,8 +19,8 @@ pub(super) struct Migration {
 
 /// Every schema migration in application order.
 ///
-/// `include_str!` paths are relative to this file's directory (`db/`), so they
-/// point at `db/migrations/VNNN__*.sql`.
+/// `include_str!` paths are relative to this file's directory (`src/`), so they
+/// point at `src/migrations/VNNN__*.sql`.
 pub(super) static MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,

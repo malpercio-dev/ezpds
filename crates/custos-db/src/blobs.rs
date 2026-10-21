@@ -522,8 +522,8 @@ pub async fn list_all_blobs(pool: &SqlitePool) -> Result<Vec<PhysicalBlob>, sqlx
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::accounts::insert_bare_account;
-    use crate::db::test_pool;
+    use crate::accounts::insert_bare_account;
+    use crate::test_pool;
 
     /// Insert a test account (required for the FK on blob_owners.account_did), returning its DID
     /// for callers that want it back rather than re-stating the literal.

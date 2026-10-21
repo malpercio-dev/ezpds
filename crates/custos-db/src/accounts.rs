@@ -40,10 +40,7 @@ use sqlx::Sqlite;
 /// Whether `did` names a locally-hosted account in an active lifecycle — not deactivated,
 /// suspended, or taken down. Executor-generic so callers can re-check inside a transaction; the
 /// sovereign-session and wallet-consent proofs both gate on this before minting anything.
-pub(crate) async fn active_local_account_exists<'e, E>(
-    executor: E,
-    did: &str,
-) -> Result<bool, ApiError>
+pub async fn active_local_account_exists<'e, E>(executor: E, did: &str) -> Result<bool, ApiError>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
@@ -61,33 +58,30 @@ where
 }
 
 /// Flat account row returned by `resolve_identifier`.
-pub(crate) struct AccountRow {
-    pub(crate) did: String,
+pub struct AccountRow {
+    pub did: String,
     /// Argon2id PHC string. `None` for mobile accounts (password auth not allowed).
-    pub(crate) password_hash: Option<String>,
+    pub password_hash: Option<String>,
     /// One associated handle (if any). `None` means no row exists in the `handles` table.
-    pub(crate) handle: Option<String>,
+    pub handle: Option<String>,
 }
 
 /// Flat account row used by `getSession` — includes confirmation status and DID document.
-pub(crate) struct SessionAccountRow {
-    pub(crate) did: String,
-    pub(crate) email: String,
+pub struct SessionAccountRow {
+    pub did: String,
+    pub email: String,
     /// `true` when `email_confirmed_at` is non-NULL in the DB.
-    pub(crate) email_confirmed: bool,
+    pub email_confirmed: bool,
     /// One associated handle (if any).
-    pub(crate) handle: Option<String>,
+    pub handle: Option<String>,
     /// Raw JSON string from `did_documents.document`, if present.
-    pub(crate) did_doc: Option<String>,
+    pub did_doc: Option<String>,
 }
 
 /// The account's stored email address by DID, or `None` when the account has no row. Used by the
 /// escrow-recovery `initiate` flow to email an OTP to the account address; unfiltered by lifecycle
 /// (the caller resolves the identifier through the lifecycle-gated `resolve_identifier` first).
-pub(crate) async fn account_email(
-    db: &sqlx::SqlitePool,
-    did: &str,
-) -> Result<Option<String>, ApiError> {
+pub async fn account_email(db: &sqlx::SqlitePool, did: &str) -> Result<Option<String>, ApiError> {
     sqlx::query_scalar("SELECT email FROM accounts WHERE did = ?")
         .bind(did)
         .fetch_optional(db)
@@ -97,7 +91,7 @@ pub(crate) async fn account_email(
 
 /// Whether a fully-provisioned account row exists for `did` (unfiltered by lifecycle). Used by the
 /// account-creation paths to reject a DID that has already been promoted.
-pub(crate) async fn account_exists(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
+pub async fn account_exists(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ?)")
         .bind(did)
         .fetch_one(db)
@@ -111,7 +105,7 @@ pub(crate) async fn account_exists(db: &sqlx::SqlitePool, did: &str) -> Result<b
 ///
 /// Returns `None` when the DID is not found or the account is not active (deactivated,
 /// suspended, or taken down).
-pub(crate) async fn get_session_account(
+pub async fn get_session_account(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<Option<SessionAccountRow>, ApiError> {
@@ -151,10 +145,7 @@ pub(crate) async fn get_session_account(
 /// deactivated, suspended, or taken down — mirroring [`get_session_account`]'s guard). Returns
 /// `true` when a row was updated, `false` when no active account matched. Re-confirming an
 /// already-confirmed account simply refreshes the timestamp — harmless and idempotent.
-pub(crate) async fn set_email_confirmed(
-    db: &sqlx::SqlitePool,
-    did: &str,
-) -> Result<bool, ApiError> {
+pub async fn set_email_confirmed(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
     let result = sqlx::query(
         "UPDATE accounts \
          SET email_confirmed_at = datetime('now'), updated_at = datetime('now') \
@@ -172,7 +163,7 @@ pub(crate) async fn set_email_confirmed(
 }
 
 /// Outcome of [`update_account_email`].
-pub(crate) enum EmailUpdateOutcome {
+pub enum EmailUpdateOutcome {
     /// The email was changed and confirmation state reset.
     Updated,
     /// No active account row matched the DID.
@@ -188,12 +179,12 @@ pub(crate) enum EmailUpdateOutcome {
 /// until re-verified — for the account named by `did`, provided it is active. A collision with the
 /// `idx_accounts_email` UNIQUE index is reported as [`EmailUpdateOutcome::Taken`] rather than a
 /// 500, so the caller can return a clean client error.
-pub(crate) async fn update_account_email(
+pub async fn update_account_email(
     db: &sqlx::SqlitePool,
     did: &str,
     new_email: &str,
 ) -> Result<EmailUpdateOutcome, ApiError> {
-    let new_email = crate::uniqueness::normalize_email(new_email);
+    let new_email = common::normalize_email(new_email);
     let result = sqlx::query(
         "UPDATE accounts \
          SET email = ?, email_confirmed_at = NULL, updated_at = datetime('now') \
@@ -208,7 +199,7 @@ pub(crate) async fn update_account_email(
     match result {
         Ok(r) if r.rows_affected() == 1 => Ok(EmailUpdateOutcome::Updated),
         Ok(_) => Ok(EmailUpdateOutcome::NotFound),
-        Err(e) if crate::db::is_unique_violation(&e) => Ok(EmailUpdateOutcome::Taken),
+        Err(e) if crate::is_unique_violation(&e) => Ok(EmailUpdateOutcome::Taken),
         Err(e) => Err({
             tracing::error!(did = %did, error = %e, "failed to update account email");
             ApiError::new(ErrorCode::InternalError, "failed to update email")
@@ -224,7 +215,7 @@ pub(crate) async fn update_account_email(
 /// route can keep serving a self-service-deactivated account — the migration window between
 /// a deactivated `createAccount` and `activateAccount` — while still refusing moderation
 /// states. The caller decides which lifecycle states it admits.
-pub(crate) async fn account_lifecycle<'e, E>(
+pub async fn account_lifecycle<'e, E>(
     db: E,
     did: &str,
 ) -> Result<Option<AccountLifecycle>, ApiError>
@@ -256,7 +247,7 @@ where
 /// Lets the route handler emit a firehose `#account` event only on a real transition and skip the
 /// redundant status-quo event when the account was already in the target state (an idempotent
 /// no-op call), while still distinguishing a missing account for the not-found response.
-pub(crate) enum AccountStateChange {
+pub enum AccountStateChange {
     /// No account row matched the DID.
     NotFound,
     /// The account was already in the target status; nothing meaningful changed.
@@ -276,7 +267,7 @@ pub(crate) enum AccountStateChange {
 /// Takes the caller's open transaction rather than opening its own: the route handler commits it
 /// only after also deciding whether to stage a firehose `#account` event in the same transaction
 /// (on `Changed`), so the status transition and the event either land together or not at all.
-pub(crate) async fn deactivate_account(
+pub async fn deactivate_account(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     did: &str,
     delete_after: Option<&str>,
@@ -332,7 +323,7 @@ pub(crate) async fn deactivate_account(
 ///
 /// Takes the caller's open transaction (see [`deactivate_account`]) rather than the pool, so a
 /// `Changed` outcome can stage a firehose `#account` event in the same transaction before commit.
-pub(crate) async fn activate_account(
+pub async fn activate_account(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     did: &str,
 ) -> Result<AccountStateChange, ApiError> {
@@ -403,7 +394,7 @@ pub async fn accounts_due_for_deletion(db: &sqlx::SqlitePool) -> Result<Vec<Stri
 /// Backs the labeler watcher's `queryLabels` batching (`labeler_watch.rs`): a takendown or
 /// deactivated account's labels are still operator-relevant triage context, so no lifecycle
 /// filter applies.
-pub(crate) async fn all_account_dids(db: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+pub async fn all_account_dids(db: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT did FROM accounts ORDER BY did ASC")
         .fetch_all(db)
         .await?;
@@ -439,7 +430,7 @@ pub async fn account_password_hash(
 /// `deactivated_at` may still be set, and the caller's firehose `#account` event must reflect
 /// the account's true resulting state (per the takendown > suspended > deactivated precedence),
 /// not just this call's own dimension.
-pub(crate) enum TakedownStateChange {
+pub enum TakedownStateChange {
     /// No account row matched the DID.
     NotFound,
     /// The takedown flag was already at the requested value; nothing meaningful changed. The
@@ -464,7 +455,7 @@ pub(crate) enum TakedownStateChange {
 ///
 /// Takes the caller's open transaction (see [`deactivate_account`]) so the status transition and
 /// its firehose `#account` event commit atomically.
-pub(crate) async fn set_account_takedown(
+pub async fn set_account_takedown(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     did: &str,
     applied: bool,
@@ -526,7 +517,7 @@ pub(crate) async fn set_account_takedown(
 /// Produced by [`classify_pending_account_conflict`] so callers don't repeat the
 /// SQLite error-string matching. `Email`/`Handle` name the conflicting column;
 /// `Other` covers a UNIQUE violation on some different column of `pending_accounts`.
-pub(crate) enum PendingAccountConflict<'a> {
+pub enum PendingAccountConflict<'a> {
     Email,
     Handle,
     Other(&'a str),
@@ -537,10 +528,8 @@ pub(crate) enum PendingAccountConflict<'a> {
 /// Returns `None` when the error is not a `pending_accounts` UNIQUE violation
 /// (e.g. a different table's constraint, or a non-constraint error). Callers
 /// decide how to surface each variant — this only inspects the error.
-pub(crate) fn classify_pending_account_conflict(
-    e: &sqlx::Error,
-) -> Option<PendingAccountConflict<'_>> {
-    match crate::db::unique_violation_column(e, "pending_accounts") {
+pub fn classify_pending_account_conflict(e: &sqlx::Error) -> Option<PendingAccountConflict<'_>> {
+    match crate::unique_violation_column(e, "pending_accounts") {
         Some("email") => Some(PendingAccountConflict::Email),
         Some("handle") => Some(PendingAccountConflict::Handle),
         Some(col) => Some(PendingAccountConflict::Other(col)),
@@ -553,7 +542,7 @@ pub(crate) fn classify_pending_account_conflict(
 /// Returns `Ok(None)` when no account row exists for the DID; `Ok(Some(cid))`
 /// with the raw stored string otherwise. Callers own the None→404 mapping and
 /// the CID parse — this function only runs the query.
-pub(crate) async fn get_repo_root_cid(
+pub async fn get_repo_root_cid(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<Option<String>, sqlx::Error> {
@@ -566,11 +555,11 @@ pub(crate) async fn get_repo_root_cid(
 /// Operator-facing account overview, fetched without the `deactivated_at IS NULL` guard that
 /// the user-facing lookups apply: the provisioning/usage endpoints report on an account
 /// regardless of its activation state.
-pub(crate) struct AccountOverview {
+pub struct AccountOverview {
     /// When the account row was created (`accounts.created_at`).
-    pub(crate) created_at: String,
+    pub created_at: String,
     /// Stored repo root commit CID, or `None` when the account has no repo yet.
-    pub(crate) repo_root_cid: Option<String>,
+    pub repo_root_cid: Option<String>,
 }
 
 /// Fetch an [`AccountOverview`] by DID for the operator usage/storage endpoints.
@@ -578,7 +567,7 @@ pub(crate) struct AccountOverview {
 /// Returns `None` only when no account row exists for `did` (the caller maps this to a 404).
 /// Unlike `resolve_identifier`'s lifecycle gate, this does **not** filter deactivated
 /// accounts — an operator still needs their usage figures.
-pub(crate) async fn get_account_overview(
+pub async fn get_account_overview(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<Option<AccountOverview>, sqlx::Error> {
@@ -603,7 +592,7 @@ pub(crate) async fn get_account_overview(
 /// table, whose `account_did` records only the first uploader. Callers fall back to the
 /// account's `created_at` when this is `None` (a freshly provisioned account with no repo
 /// and no blobs).
-pub(crate) async fn account_last_active(
+pub async fn account_last_active(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<Option<String>, sqlx::Error> {
@@ -626,11 +615,11 @@ pub(crate) async fn account_last_active(
 /// query. Backs the create/put/delete/applyWrites paths, which need both the CAS root and the
 /// lifecycle gate — reading them together avoids a second round-trip against `accounts` and
 /// narrows the window between the active check and the commit CAS.
-pub(crate) struct RepoWriteState {
+pub struct RepoWriteState {
     /// Stored repo root commit CID, or `None` when the account exists but has no repo yet.
-    pub(crate) repo_root_cid: Option<String>,
+    pub repo_root_cid: Option<String>,
     /// `true` when the account is not deactivated, suspended, or taken down.
-    pub(crate) active: bool,
+    pub active: bool,
 }
 
 /// Fetch the repo root CID and active status for `did` in a single query.
@@ -639,7 +628,7 @@ pub(crate) struct RepoWriteState {
 /// as a `None` `repo_root_cid`). `active` is derived from `deactivated_at`/`suspended_at`/
 /// `taken_down_at` via [`AccountLifecycle`] — a takedown or suspension closes the repo to writes
 /// exactly like a self-service deactivation.
-pub(crate) async fn get_repo_write_state(
+pub async fn get_repo_write_state(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<Option<RepoWriteState>, sqlx::Error> {
@@ -676,7 +665,7 @@ pub(crate) async fn get_repo_write_state(
 /// Backs `record_write::gc_repo_blocks`'s stale-root guard: GC must compare against whatever root
 /// is actually persisted, so unlike [`get_repo_write_state`] this deliberately ignores
 /// deactivation/suspension/takedown. Returns `None` when the account is missing or has no repo.
-pub(crate) async fn current_repo_root(
+pub async fn current_repo_root(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<Option<String>, sqlx::Error> {
@@ -703,7 +692,7 @@ pub(crate) async fn current_repo_root(
 /// `new_record_count` is the new head's verified MST key count, stored alongside the root as the
 /// write-path integrity witness (V068); `None` (a failed count walk) stores NULL so the check
 /// re-initializes on the next write instead of comparing against a stale value.
-pub(crate) async fn advance_repo_root_if_active<'e, E>(
+pub async fn advance_repo_root_if_active<'e, E>(
     executor: E,
     did: &str,
     new_root: &str,
@@ -734,10 +723,7 @@ where
 ///
 /// `None` means the count is unknown (pre-V068 account, fresh genesis, or a just-imported repo);
 /// the write-path integrity check skips its comparison and initializes the count on that write.
-pub(crate) async fn repo_record_count<'e, E>(
-    executor: E,
-    did: &str,
-) -> Result<Option<i64>, sqlx::Error>
+pub async fn repo_record_count<'e, E>(executor: E, did: &str) -> Result<Option<i64>, sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
@@ -768,7 +754,7 @@ where
 /// after an error. Returns `true` when exactly one row was updated, `false` otherwise. Single
 /// statement, so no transaction is opened here — generic over the executor so the caller can run it
 /// inside the transaction that persists the imported blocks.
-pub(crate) async fn swap_repo_root_for_deactivated<'e, E>(
+pub async fn swap_repo_root_for_deactivated<'e, E>(
     executor: E,
     did: &str,
     new_root: &str,
@@ -805,7 +791,7 @@ where
 /// actively hosted; every other state reports `active: false`. The lexicon `status` string is a
 /// wire concern owned by the route handler, not this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AccountLifecycle {
+pub enum AccountLifecycle {
     Active,
     Deactivated,
     Suspended,
@@ -832,7 +818,7 @@ impl AccountLifecycle {
     }
 
     /// `true` only when the repo is actively hosted (no lifecycle restriction in force).
-    pub(crate) fn is_active(self) -> bool {
+    pub fn is_active(self) -> bool {
         matches!(self, Self::Active)
     }
 
@@ -842,7 +828,7 @@ impl AccountLifecycle {
     /// because the `status` field is omitted entirely for a live repo (it carries a *reason*
     /// for being inactive, and is meaningless otherwise). The route handler calls this instead
     /// of duplicating the match.
-    pub(crate) fn as_status_str(self) -> Option<&'static str> {
+    pub fn as_status_str(self) -> Option<&'static str> {
         match self {
             Self::Active => None,
             Self::Deactivated => Some("deactivated"),
@@ -854,7 +840,7 @@ impl AccountLifecycle {
     /// Parse an operator-supplied status filter string: the wire strings from
     /// [`Self::as_status_str`] plus `"active"` (which that method expresses as omission).
     /// Returns `None` for an unrecognized value — the caller decides how to reject it.
-    pub(crate) fn from_status_filter(s: &str) -> Option<Self> {
+    pub fn from_status_filter(s: &str) -> Option<Self> {
         match s {
             "active" => Some(Self::Active),
             "deactivated" => Some(Self::Deactivated),
@@ -891,15 +877,15 @@ impl AccountLifecycle {
 /// Only accounts that have created their repo (non-NULL `repo_root_cid`) produce a row —
 /// the lexicon requires `head` and `rev`, so an account without a repo root has nothing
 /// to list. `active` is derived from the account lifecycle (deactivated/suspended/takendown).
-pub(crate) struct RepoListRow {
-    pub(crate) did: String,
+pub struct RepoListRow {
+    pub did: String,
     /// Raw stored repo root commit CID string (the repo `head`).
-    pub(crate) head: String,
+    pub head: String,
     /// Stored commit revision (TID). `None` for pre-`repo_rev`-migration accounts; the
     /// caller falls back to reading the rev from the commit block in that case.
-    pub(crate) rev: Option<String>,
+    pub rev: Option<String>,
     /// `true` when the account is actively hosted (no deactivation, suspension, or takedown).
-    pub(crate) active: bool,
+    pub active: bool,
 }
 
 /// List hosted repos in DID order for `listRepos`, starting strictly after `cursor`.
@@ -907,7 +893,7 @@ pub(crate) struct RepoListRow {
 /// Pass `cursor = ""` (or any value sorting below all DIDs) for the first page. Returns up
 /// to `limit` rows ordered by DID ascending; the caller derives the next cursor from the
 /// last returned DID. Only accounts with a non-NULL `repo_root_cid` are included.
-pub(crate) async fn list_repos(
+pub async fn list_repos(
     db: &sqlx::SqlitePool,
     cursor: &str,
     limit: i64,
@@ -951,20 +937,20 @@ pub(crate) async fn list_repos(
 }
 
 /// One row of the operator account listing (`GET /v1/admin/accounts`).
-pub(crate) struct AdminAccountRow {
-    pub(crate) did: String,
+pub struct AdminAccountRow {
+    pub did: String,
     /// The account's first-created handle, or `None` when it has none. Accounts can hold
     /// several handles; the listing surfaces one deterministic choice.
-    pub(crate) handle: Option<String>,
-    pub(crate) created_at: String,
+    pub handle: Option<String>,
+    pub created_at: String,
     /// Derived lifecycle state (takendown > suspended > deactivated > active).
-    pub(crate) lifecycle: AccountLifecycle,
+    pub lifecycle: AccountLifecycle,
     /// Total bytes of the account's owned blobs (0 when it has none).
-    pub(crate) blob_bytes: i64,
+    pub blob_bytes: i64,
     /// Whether the account carries any in-force label from a watched labeler
     /// (`account_labels`, V051). Flagged accounts sort first; this bit is also half of the
     /// page cursor, since the sort key is `(flagged DESC, did ASC)`.
-    pub(crate) flagged: bool,
+    pub flagged: bool,
     /// Whether Custos serves this account's did:web document (`did_web_hosting_enabled_at`
     /// non-NULL, V044). Derived-status doctrine, like [`lifecycle`](Self::lifecycle).
     ///
@@ -972,7 +958,7 @@ pub(crate) struct AdminAccountRow {
     /// account that isn't opted in, indistinguishably from an unknown host) and reading it
     /// otherwise needs a DB shell. Always false for a did:plc account, whose document lives
     /// on plc.directory.
-    pub(crate) did_web_hosting: bool,
+    pub did_web_hosting: bool,
 }
 
 /// Escape SQL `LIKE` metacharacters (`%`, `_`, and the `\` escape itself) in a user-supplied
@@ -1003,7 +989,7 @@ const FLAGGED_SQL: &str = "EXISTS (SELECT 1 FROM account_labels al WHERE al.did 
 /// JOINs: a JOIN on `handles` would duplicate a multi-handle account across rows
 /// (corrupting the cursor), and the subqueries run only for the ≤`limit` emitted rows as
 /// indexed lookups — one query per page instead of N+1 on the single-connection pool.
-pub(crate) async fn list_accounts_admin(
+pub async fn list_accounts_admin(
     db: &sqlx::SqlitePool,
     cursor: Option<(bool, &str)>,
     limit: i64,
@@ -1103,7 +1089,7 @@ pub(crate) async fn list_accounts_admin(
 ///
 /// Shares [`list_accounts_admin`]'s filter clauses so the count always agrees with the
 /// filtered listing it accompanies.
-pub(crate) async fn count_accounts_admin_flagged(
+pub async fn count_accounts_admin_flagged(
     db: &sqlx::SqlitePool,
     status: Option<AccountLifecycle>,
     q: Option<&str>,
@@ -1133,14 +1119,14 @@ pub(crate) async fn count_accounts_admin_flagged(
 /// that state *is* the point of `getRepoStatus`. `lifecycle` carries the derived account state
 /// (the handler maps it to the lexicon `active`/`status` fields); `head`/`rev` are `None` for an
 /// account that has not created its repo.
-pub(crate) struct RepoStatusRow {
+pub struct RepoStatusRow {
     /// The account's lifecycle state, derived from its deactivation/suspension/takedown columns.
-    pub(crate) lifecycle: AccountLifecycle,
+    pub lifecycle: AccountLifecycle,
     /// Stored repo root commit CID (the repo `head`), or `None` when the account has no repo.
-    pub(crate) head: Option<String>,
+    pub head: Option<String>,
     /// Stored commit revision (TID). `None` for an account with no repo or one created before
     /// the `repo_rev` migration; the caller falls back to reading the rev from the commit block.
-    pub(crate) rev: Option<String>,
+    pub rev: Option<String>,
 }
 
 /// Fetch repo hosting status for a single DID for `getRepoStatus`.
@@ -1148,7 +1134,7 @@ pub(crate) struct RepoStatusRow {
 /// Returns `None` only when no account row exists for `did` (the caller maps this to a 404).
 /// This query intentionally does **not** filter on any lifecycle column: a deactivated,
 /// suspended, or taken-down account still has a reportable status.
-pub(crate) async fn get_repo_status(
+pub async fn get_repo_status(
     db: &sqlx::SqlitePool,
     did: &str,
 ) -> Result<Option<RepoStatusRow>, sqlx::Error> {
@@ -1185,14 +1171,14 @@ pub(crate) async fn get_repo_status(
 ///
 /// Used by the provisioning session login endpoint (`POST /v1/accounts/sessions`) and
 /// `requestPasswordReset`. `email` is normalized first (see
-/// [`crate::uniqueness::normalize_email`]) since stored addresses are normalized — a caller does
+/// [`common::normalize_email`]) since stored addresses are normalized — a caller does
 /// not need to normalize before calling, so a differently-cased submission still resolves.
 /// Returns `None` when not found or not active; `Err` only on DB errors.
-pub(crate) async fn resolve_by_email(
+pub async fn resolve_by_email(
     db: &sqlx::SqlitePool,
     email: &str,
 ) -> Result<Option<AccountRow>, ApiError> {
-    let email = crate::uniqueness::normalize_email(email);
+    let email = common::normalize_email(email);
     let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT a.did, a.password_hash, h.handle \
          FROM accounts a \
@@ -1229,7 +1215,7 @@ pub(crate) async fn resolve_by_email(
 /// lowercase, and a DID is a case-sensitive URI in general).
 ///
 /// Returns `None` when not found or not active; `Err` only on DB errors.
-pub(crate) async fn resolve_identifier(
+pub async fn resolve_identifier(
     db: &sqlx::SqlitePool,
     identifier: &str,
 ) -> Result<Option<AccountRow>, ApiError> {
@@ -1284,10 +1270,11 @@ pub(crate) async fn resolve_identifier(
 }
 
 /// Insert a minimal active account row — enough to satisfy a foreign key or exercise
-/// account-adjacent queries where the account's own fields aren't asserted. Re-exported from
-/// `routes::test_utils` for route test call sites; other modules' tests reach it directly.
-#[cfg(test)]
-pub(crate) async fn insert_bare_account(db: &sqlx::SqlitePool, did: &str) {
+/// account-adjacent queries where the account's own fields aren't asserted. Other crates' tests
+/// reach it through the `test-support` feature (`pds` re-exports it from `routes::test_utils`).
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // fixture: a failed seed panics the test
+pub async fn insert_bare_account(db: &sqlx::SqlitePool, did: &str) {
     sqlx::query(
         "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
          VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
@@ -1305,7 +1292,7 @@ pub(crate) async fn insert_bare_account(db: &sqlx::SqlitePool, did: &str) {
 mod tests {
     use super::insert_bare_account as insert_account;
     use super::*;
-    use crate::db::test_pool;
+    use crate::test_pool;
 
     /// Insert an active account row that also has a `repo_root_cid`.
     async fn insert_account_with_repo(db: &sqlx::SqlitePool, did: &str, cid: &str) {
@@ -2332,7 +2319,7 @@ mod tests {
         for did in ["did:plc:laa_pg_a", "did:plc:laa_pg_b", "did:plc:laa_pg_c"] {
             insert_account(&db, did).await;
         }
-        crate::db::blobs::insert_blob(
+        crate::blobs::insert_blob(
             &db,
             "baflaapgblob",
             "did:plc:laa_pg_b",

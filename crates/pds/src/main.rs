@@ -18,7 +18,6 @@ mod blob_mirror;
 mod blob_scrub;
 mod blob_store;
 mod capabilities;
-mod code_gen;
 mod crawler;
 mod db;
 mod email;
@@ -63,6 +62,8 @@ mod transfer;
 mod uniqueness;
 mod xrpc_dispatch;
 mod xrpc_error_shape;
+
+use common::code_gen;
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
 ///

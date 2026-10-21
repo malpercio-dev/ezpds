@@ -20,7 +20,7 @@ use sqlx::Sqlite;
 
 /// What an admin did, recorded at every mutating admin route once the actor is known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AdminAuditAction {
+pub enum AdminAuditAction {
     /// An account takedown was applied (`com.atproto.admin.updateSubjectStatus`).
     AccountTakedown,
     /// An account takedown was cleared.
@@ -54,7 +54,7 @@ pub(crate) enum AdminAuditAction {
 }
 
 impl AdminAuditAction {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             AdminAuditAction::AccountTakedown => "account_takedown",
             AdminAuditAction::AccountRestore => "account_restore",
@@ -77,7 +77,7 @@ impl AdminAuditAction {
     /// Parse a caller-supplied `action` filter. `None` for an unknown value — the list
     /// route rejects it with a 400 (like the account listing's `status` filter) instead
     /// of silently returning an empty page.
-    pub(crate) fn from_filter(value: &str) -> Option<Self> {
+    pub fn from_filter(value: &str) -> Option<Self> {
         const ALL: [AdminAuditAction; 15] = [
             AdminAuditAction::AccountTakedown,
             AdminAuditAction::AccountRestore,
@@ -101,31 +101,31 @@ impl AdminAuditAction {
 
 /// One audit row, newest-first in list queries.
 #[derive(Debug, Clone)]
-pub(crate) struct AdminAuditEventRow {
+pub struct AdminAuditEventRow {
     /// Insertion-order sequence (the table's rowid) — the pagination cursor. The table is
     /// append-only, so rowid order is exactly event order.
-    pub(crate) seq: i64,
-    pub(crate) id: String,
-    pub(crate) actor: String,
-    pub(crate) action: String,
-    pub(crate) subject: Option<String>,
-    pub(crate) outcome: String,
-    pub(crate) detail: Option<String>,
-    pub(crate) created_at: String,
+    pub seq: i64,
+    pub id: String,
+    pub actor: String,
+    pub action: String,
+    pub subject: Option<String>,
+    pub outcome: String,
+    pub detail: Option<String>,
+    pub created_at: String,
 }
 
 /// Optional equality filters for the list query; every `None` matches all rows.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AdminAuditFilter<'a> {
-    pub(crate) action: Option<&'a str>,
-    pub(crate) actor: Option<&'a str>,
-    pub(crate) subject: Option<&'a str>,
+pub struct AdminAuditFilter<'a> {
+    pub action: Option<&'a str>,
+    pub actor: Option<&'a str>,
+    pub subject: Option<&'a str>,
 }
 
 /// Append one audit event, surfacing the raw `sqlx::Error` for callers whose enclosing
 /// transaction speaks sqlx (e.g. the claim-code mint). Generic over the executor so the
 /// write joins the same transaction as the state change it records.
-pub(crate) async fn insert_admin_audit_event<'e, E>(
+pub async fn insert_admin_audit_event<'e, E>(
     executor: E,
     actor: &str,
     action: AdminAuditAction,
@@ -154,7 +154,7 @@ where
 
 /// [`insert_admin_audit_event`] mapped to the route-facing `ApiError`. A failed write
 /// fails the request — a privileged action must not land unattributed.
-pub(crate) async fn record_admin_audit_event<'e, E>(
+pub async fn record_admin_audit_event<'e, E>(
     executor: E,
     actor: &str,
     action: AdminAuditAction,
@@ -178,7 +178,7 @@ where
 
 /// Page the audit log newest-first. `before_seq` is the previous page's last `seq`
 /// (exclusive); `None` starts from the newest event.
-pub(crate) async fn list_admin_audit_events(
+pub async fn list_admin_audit_events(
     db: &sqlx::SqlitePool,
     filter: AdminAuditFilter<'_>,
     before_seq: Option<i64>,
@@ -239,7 +239,7 @@ pub(crate) async fn list_admin_audit_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
+    use crate::test_pool;
 
     async fn record(
         db: &sqlx::SqlitePool,
@@ -254,30 +254,24 @@ mod tests {
 
     #[tokio::test]
     async fn lists_newest_first_and_pages_on_seq() {
-        let state = test_state().await;
+        let db = test_pool().await;
         record(
-            &state.db,
+            &db,
             "master-token",
             AdminAuditAction::AccountTakedown,
             Some("did:plc:a"),
         )
         .await;
         record(
-            &state.db,
+            &db,
             "device:dev-1",
             AdminAuditAction::AccountRestore,
             Some("did:plc:a"),
         )
         .await;
-        record(
-            &state.db,
-            "master-token",
-            AdminAuditAction::RequestCrawl,
-            None,
-        )
-        .await;
+        record(&db, "master-token", AdminAuditAction::RequestCrawl, None).await;
 
-        let page1 = list_admin_audit_events(&state.db, AdminAuditFilter::default(), None, 2)
+        let page1 = list_admin_audit_events(&db, AdminAuditFilter::default(), None, 2)
             .await
             .expect("page 1");
         assert_eq!(
@@ -286,14 +280,10 @@ mod tests {
             "newest first"
         );
 
-        let page2 = list_admin_audit_events(
-            &state.db,
-            AdminAuditFilter::default(),
-            Some(page1[1].seq),
-            2,
-        )
-        .await
-        .expect("page 2");
+        let page2 =
+            list_admin_audit_events(&db, AdminAuditFilter::default(), Some(page1[1].seq), 2)
+                .await
+                .expect("page 2");
         assert_eq!(
             page2.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(),
             vec!["account_takedown"],
@@ -303,23 +293,23 @@ mod tests {
 
     #[tokio::test]
     async fn filters_are_conjunctive() {
-        let state = test_state().await;
+        let db = test_pool().await;
         record(
-            &state.db,
+            &db,
             "master-token",
             AdminAuditAction::DeviceRevoked,
             Some("dev-1"),
         )
         .await;
         record(
-            &state.db,
+            &db,
             "device:dev-2",
             AdminAuditAction::DeviceRevoked,
             Some("dev-1"),
         )
         .await;
         record(
-            &state.db,
+            &db,
             "device:dev-2",
             AdminAuditAction::CredentialsRevoked,
             Some("did:plc:a"),
@@ -327,7 +317,7 @@ mod tests {
         .await;
 
         let by_action = list_admin_audit_events(
-            &state.db,
+            &db,
             AdminAuditFilter {
                 action: Some("device_revoked"),
                 ..Default::default()
@@ -340,7 +330,7 @@ mod tests {
         assert_eq!(by_action.len(), 2);
 
         let combined = list_admin_audit_events(
-            &state.db,
+            &db,
             AdminAuditFilter {
                 action: Some("device_revoked"),
                 actor: Some("device:dev-2"),
@@ -357,9 +347,9 @@ mod tests {
 
     #[tokio::test]
     async fn detail_and_outcome_round_trip() {
-        let state = test_state().await;
+        let db = test_pool().await;
         record_admin_audit_event(
-            &state.db,
+            &db,
             "master-token",
             AdminAuditAction::ClaimCodeRevoked,
             Some("ABC123"),
@@ -369,7 +359,7 @@ mod tests {
         .await
         .expect("insert");
 
-        let events = list_admin_audit_events(&state.db, AdminAuditFilter::default(), None, 10)
+        let events = list_admin_audit_events(&db, AdminAuditFilter::default(), None, 10)
             .await
             .expect("list");
         assert_eq!(events.len(), 1);

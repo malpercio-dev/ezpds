@@ -1074,8 +1074,11 @@ name = "common"
 version = "0.16.2"
 dependencies = [
  "axum",
+ "base64 0.21.7",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tempfile",
  "thiserror 2.0.18",
@@ -1472,6 +1475,24 @@ dependencies = [
  "urlencoding",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "custos-db"
+version = "0.16.2"
+dependencies = [
+ "atrium-repo",
+ "chrono",
+ "common",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -5163,6 +5184,7 @@ dependencies = [
  "clap",
  "common",
  "crypto",
+ "custos-db",
  "data-encoding",
  "futures-util",
  "hickory-resolver",

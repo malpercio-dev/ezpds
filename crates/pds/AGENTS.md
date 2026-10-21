@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-08-29
+Last verified: 2026-10-21
 
 ## Purpose
 
@@ -57,17 +57,16 @@ src/
   identity/        — everything "who is this handle/DID" (see section below)
   session_issuer.rs— shared legacy access+refresh JWT issuance transaction; explicit full-access vs app-password authority — see module doc
   capabilities.rs  — the `CAPABILITIES` table behind `describeServer`'s `custos` extension; an entry's `enabled` predicate must be the same condition its routes enforce, and `just capability-docs-check` gates the operator docs. Also owns `IDENTIFYING_VERSION` — see module doc
-  code_gen.rs      — random claim-code generation (pure), shared by claim-code + account-creation routes
-  uniqueness.rs    — email/handle pre-flight uniqueness DB checks, shared by the account-creation routes
+  uniqueness.rs    — email/handle pre-flight uniqueness DB checks, shared by the account-creation routes (the pure `normalize_email` / `is_plausible_email` and claim-code generation live in `common`)
   platform.rs      — device `Platform` enum, shared by the device-registration routes
   request_host.rs  — `request_host` (Functional Core): resolve the client-addressed host and normalize default ports for the Host-keyed well-known routes — see module doc
   lexicon/         — vendored lexicon documents (`crates/pds/lexicons/`, pinned upstream — see its README) compiled into a registry, plus the reference-parity XRPC validation layers: input bodies (`LexiconInput<T>`), query params (`LexiconParams<T>`), repo-write records (`validate_record`), and served outputs (test-build drift detection). Strict schema parsing and byte-identical reference error messages, so Custos can't drift laxer than the reference. Start at `mod.rs`'s module doc — it maps the entry points and files
-  rewrap.rs        — offline `pds rewrap-master-key` KEK rotation (inventory in `db/kek.rs`; keys env-only, server stopped) — see module doc
+  rewrap.rs        — offline `pds rewrap-master-key` KEK rotation (inventory in `custos_db::kek`; keys env-only, server stopped) — see module doc
   recovery_share.rs— the KEK boundary for PDS-held Shamir Share 2: base32↔bytes, authenticated wrap/unwrap, idempotent startup data migration — see module doc
   no_input.rs      — `NoInputBody` extractor: 400s any body on a no-input XRPC procedure with the reference PDS's exact message; extract it last — see module doc
   read_after_write/— buffered AppView response munge path for read-after-write (see section below)
   auth/            — authentication primitives + route guards (HTTP-aware, no DB schema ownership)
-  db/              — SQL query functions + migration runner (no business logic)
+  db/              — feature-local SQL query functions (no business logic); the pool, migrations, and cross-feature queries are `crates/custos-db`
   routes/          — HTTP handlers, one file per endpoint
 ```
 
@@ -131,7 +130,6 @@ example `authority.rs` reads through `plc.rs` and `resolution.rs`, and `well_kno
 
 | File | Contents |
 |---|---|
-| `mod.rs` | `pub mod` declarations only — no shared code |
 | `resolution.rs` | shared handle/DID resolution chain, the cache-first DID-document reads (two tiers: the `did_documents` table holds this server's own/migrated accounts with no TTL, force-refreshed by `resolve_did_document_force_refresh`; `AppState::did_document_cache` holds every remote document on 1h-stale / 24h-hard TTLs with stale-while-revalidate), the cool-down-bounded `refresh_did_document_after_signature_mismatch` seam every token-signature-mismatch retry takes (`auth/space.rs` and `auth/service_auth.rs` both), and the pure DID-document accessors including the Atproto Spaces fallbacks (`space_verification_key`, `space_host_endpoint`) — see module doc |
 | `proxy.rs` | the `atproto-proxy` header target guard and the shared SSRF-hardened client (`AppState::hardened_http_client`). Security-critical — the module doc carries the full design (`SsrfResolver` connect-time DNS allowlist, TOCTOU closure, all four consumers); a caller-influenced URL is a `CallerUrl`, which only `HardenedClient` accepts |
 | `did.rs` | re-exports `common::is_valid_did` (the validator behind `common::Did`) and holds its interop-fixture test; re-exported again by `auth/validation.rs` and called by `lexicon/formats.rs` for the `did` string format |
@@ -178,7 +176,7 @@ Pure authentication logic and middleware. Submodules:
 | `signed_proof.rs` | Functional Core | shared decoding for the device-key-signed proof envelopes three routes verify (`sovereign_session`, `oauth_consent`, `delete_account`): fixed lengths + canonical base64url — see module doc |
 | `signing_key.rs` | Imperative Shell | ES256 signing key load-or-create |
 | `bearer.rs` | Functional Core | Authorization-header extraction: `extract_access_token` (Bearer + DPoP, RFC 9449) and Bearer-only `extract_bearer_token` — see module doc |
-| `token.rs` | Functional Core | single source of truth for the bearer/device token format (32 random bytes → base64url wire, SHA-256 hex DB): `generate_token`, `sha256_hex`, `hash_bearer_token` — see module doc |
+| `token` | Functional Core | re-export of `common::token`, the bearer/device token format (`generate_token`, `sha256_hex`, `hash_bearer_token`) shared with `custos-db` |
 | `validation.rs` | Functional Core | pure format/shape helpers shared across routes (`is_valid_did` re-export, device-public-key bounds, failed-login lock plumbing); each returns a bool or a message the caller maps to its own `ApiError` — see module doc |
 
 **Rule:** `auth/` has no knowledge of specific routes. Route handlers call into `auth/`; `auth/` never imports from `routes/`.
@@ -188,37 +186,31 @@ Pure authentication logic and middleware. Submodules:
 SQL query functions organised by domain entity. Each submodule exposes plain data structs
 and async query functions; no business logic lives here.
 
+The pool, the migration log and runner, `DbError`, the unique-violation / retry helpers, and
+the cross-feature modules (`accounts`, `dids`, `handles`, `blobs`, `blocks`, `kek`,
+`admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`) live in
+[`crates/custos-db`](../custos-db/AGENTS.md); `db/mod.rs` re-exports them, so `db::accounts::…`
+paths resolve unchanged. The table below lists only what stays in `pds`.
+
 | File | Contents |
 |---|---|
 | `mod.rs` | `open_pool`, `run_migrations`, `DbError`, `is_unique_violation` |
-| `migrations.rs` | the forward-only schema manifest; a schema change touches only this file plus its `migrations/VNNN__*.sql` — see module doc |
-| `accounts.rs` | account lookups, lifecycle transitions, repo-root CAS, and the operator listing; the module doc carries the full inventory (which lookups are lifecycle-gated and the all-NULL rule, `AccountLifecycle` derivation) |
 | `app_passwords.rs` | app-password store (V031) — see module doc; revocation's multi-table delete lives in `routes/revoke_app_password.rs` |
 | `claim_codes.rs` | invite/claim-code store (V004/V041): preflight, mint, keyset inventory page, revoke — see module doc |
-| `handles.rs` | `handles` table (V002) single-table queries; multi-table swaps stay in route handlers — see module doc |
-| `dids.rs` | `did_documents` cache queries (V002) plus the Custos did:web hosting queries (V044) — see module doc |
-| `blocks.rs` | content-addressed repo-block store + `block_owners` (V035), `SqliteBlockStore` adapter, `account_block_stats` — see module doc |
-| `blobs.rs` | blob metadata store: physical `blobs` + per-owner `blob_owners` lifecycle (V039); `account_uploaded_blob_metrics` is the one query bypassing `blob_owners` — see module doc |
-| `oauth.rs` | OAuth server-side state: clients, auth codes, signing key, refresh tokens, PAR + expiry sweeps — see module doc |
 | `password_reset.rs` | password-reset token store (the hashed 1-hour single-use envelope) — see module doc |
 | `plc_operation_tokens.rs` | PLC-operation email-token store (V033), gating `signPlcOperation` — see module doc |
 | `account_deletion_tokens.rs` | account-deletion email-token store (V034, same hashed envelope) — see module doc |
 | `email_tokens.rs` | email verification token store (V036, purpose-discriminated single-use envelope) — see module doc |
 | `preferences.rs` | preferences blob get/put, executor-generic for the one-transaction read-merge-write — see module doc |
-| `refresh_tokens.rs` | `refresh_tokens` reads (V002/V006); rotation/revocation transactions stay in route handlers — see module doc |
 | `relay_signing_keys.rs` | operator-level PDS signing keys (V003) backing `/v1/pds/keys` — see module doc |
-| `kek.rs` | the exhaustive `SecretFamily` inventory of KEK-wrapped columns + generic fetch/update; a new KEK-wrapped column must be added as a variant here — see module doc |
 | `recovery_escrow.rs` | PDS-held Shamir Share 2 escrow (V050) plus the release state machine — see module doc |
 | `recovery_otps.rs` | recovery-release email OTP store (V053) — see module doc |
 | `recovery_audit.rs` | append-only recovery-escrow audit log (V050, the V040 doctrine) — see module doc |
 | `jwt_secret.rs` | persistent encrypted HS256 JWT signing secret (V015) — see module doc |
 | `iroh_identity.rs` | persistent encrypted Iroh node Ed25519 key (V022) — see module doc |
-| `sessions.rs` | `sessions` writes (V009): the standalone provisioning-session insert only; every other session insert stays in its route's transaction — see module doc |
 | `repo_keys.rs` | per-account repo signing keys: ceremony storage, migration reservations, commit-signer lookup (V048), rotation staging — see module doc |
 | `transfers.rs` | planned device-swap sessions (V027/V029/V030): initiate/accept/complete plus the operator view and cancel — see module doc |
 | `firehose_seq.rs` | persistent firehose event log (V028): boot seed, append, cursor-replay page — see module doc |
-| `server_stats.rs` | whole-server aggregates for `GET /v1/admin/health`; the unowned-blob readout's meaning lives on the `ServerStats` field docs |
-| `admin_audit.rs` | server-wide append-only admin-action audit log (V052); doctrine and function inventory in the module doc |
 | `admin_devices.rs` | admin-device model (V025): pairing codes, devices, anti-replay nonces — see module doc |
 | `sovereign_session_nonces.rs` | sovereign-session anti-replay store (V043); the sweep-retention rule is in the module doc |
 | `spaces.rs` | `spaces` rows (V065/V069/V070): every space this PDS interacts with, keyed by canonical URI, plus the `space_members` list and the `allowList` client-ID set (`app_allowed`, read through `SpaceRow::allowed_client_ids` — an absent or unparseable list reads as empty, which admits no app) — the `insert_space` (member write) vs `create_space` (simplespace create) distinction is in the module doc; the remaining notify queries land with the space-host surface. V070's `takendown_at` is the operator's refusal to serve, independent of the owner's `deleted_at` tombstone — `set_space_takedown` writes it, `list_hosted_spaces` is the operator listing |
@@ -228,7 +220,7 @@ and async query functions; no business logic lives here.
 | `waitlist.rs` | public waitlist signup store (V057, no FKs — off the purge path) — see module doc |
 | `account_labels.rs` | watched-labeler flag store (V051) — see module doc; the filtered listing predicates live beside `list_accounts_admin` in `accounts.rs` |
 
-See [`src/db/AGENTS.md`](src/db/AGENTS.md) for migration history and invariants.
+Migration history and invariants: [`crates/custos-db/AGENTS.md`](../custos-db/AGENTS.md).
 
 **Rule:** `db/` submodules never import from `routes/` or `auth/`. They accept `&SqlitePool`
 and return data; callers decide what to do with it.
@@ -444,7 +436,7 @@ Look here before writing a helper. Each row is the one home; copies elsewhere ar
 | the account row + genesis repo + announce shared by account promotion | `account_genesis` |
 | a periodic background pass | `sweep::Sweep` run by `sweep::Scheduler` (tests call `sweep::run_once`) |
 | a nonce store's retention-above-replay rule | `common::{replay_span_secs, retention_covers_replay}` |
-| lower-case hex of a SHA-256 digest | `auth::token::sha256_hex` (inside `crates/crypto` itself: its crate-private `hex::to_hex`) |
+| lower-case hex of a SHA-256 digest | `common::token::sha256_hex` (inside `crates/crypto` itself: its crate-private `hex::to_hex`) |
 | percent-encoding | `urlencoding::encode` |
 | a validated DID or handle (parse once at the boundary; `name()`/`domain()` instead of re-finding the dot) | `common::{Did, Handle}` — `Deref<Target = str>`, serde and sqlx (SQLite TEXT) both run the validator |
 | test state, accounts, tokens, DPoP proofs, request builders, body decoding | `routes::test_utils` |
@@ -484,6 +476,8 @@ must be tightened (explicit origin allowlist + credentials handling) in the same
 ## Adding a New DB Query
 
 1. Identify the owning entity (`accounts`, `oauth`, etc.).
-2. Add the function to the matching `db/<entity>.rs` file.
+2. Add the function to the matching `db/<entity>.rs` file, or `crates/custos-db/src/<entity>.rs`
+   for a cross-feature entity.
 3. If no matching file exists, create one with `// pattern: Imperative Shell`.
-4. Export the function and any new data struct via `db/mod.rs` (`pub mod <entity>;`).
+4. Export the function and any new data struct via `db/mod.rs` (`pub mod <entity>;`). A new
+   table's migration goes in `crates/custos-db` (see its AGENTS.md).

@@ -9,14 +9,14 @@
 //!
 //! `generate_token` mints, `sha256_hex` digests, and `hash_bearer_token` converts a wire token
 //! back into its stored hash — verification lives beside generation so the encoding stays
-//! consistent. Homed here beside its extractor (`bearer.rs`) and the guards that verify it;
-//! consumed broadly by `routes/`, `db/`, and the auth guards.
+//! consistent. Lives in `common` so the database layer and the `pds` auth guards share one
+//! format.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
-use common::{ApiError, ErrorCode};
+use crate::{ApiError, ErrorCode};
 
 /// A freshly generated token: plaintext for the wire, hash for the database.
 pub struct GeneratedToken {

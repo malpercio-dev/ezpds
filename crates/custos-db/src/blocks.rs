@@ -408,8 +408,8 @@ impl AsyncBlockStoreWrite for SqliteBlockStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::accounts::insert_bare_account as insert_test_account;
-    use crate::db::test_pool;
+    use crate::accounts::insert_bare_account as insert_test_account;
+    use crate::test_pool;
 
     async fn owner_exists(pool: &SqlitePool, did: &str, cid: &str) -> bool {
         sqlx::query_scalar(

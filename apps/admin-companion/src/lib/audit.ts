@@ -14,7 +14,7 @@ export type AuditChip = 'active' | 'ready' | 'revoked' | 'error' | 'pending' | '
 /**
  * Every action word the relay can record, in the relay's own vocabulary — the filter
  * chip row renders these verbatim (the console reports the literal truth; no renaming).
- * Must stay in lockstep with `AdminAuditAction` in `crates/pds/src/db/admin_audit.rs`.
+ * Must stay in lockstep with `AdminAuditAction` in `crates/custos-db/src/admin_audit.rs`.
  */
 export const AUDIT_ACTIONS = [
   'account_takedown',

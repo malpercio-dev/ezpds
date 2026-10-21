@@ -1,7 +1,10 @@
+pub mod code_gen;
 mod config;
 mod config_loader;
+mod email;
 mod error;
 mod ident;
+pub mod token;
 
 pub use config::{
     default_reserved_handles, parse_hex_32, replay_span_secs, retention_covers_replay,
@@ -16,5 +19,6 @@ pub use config::{
 pub use config_loader::{
     collect_ezpds_env, load_config, load_config_from_env_only, load_config_with_env,
 };
+pub use email::{is_plausible_email, normalize_email};
 pub use error::{ApiError, ApiErrorParts, ApiResultExt, ErrorCode};
 pub use ident::{is_valid_did, validate_handle_structure, Did, Handle, InvalidIdentifier};

@@ -5,12 +5,13 @@ edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
-# common: shared types, error envelope, config parsing.
+# common: shared types, error envelope, config parsing, and the pure token / code / email helpers
+# the database layer and the server both use.
 
 [features]
 # Enable Axum integration: ApiError implements IntoResponse.
 # pds enables this; pure-logic crates (crypto, repo-engine) do not.
-axum = ["dep:axum", "dep:tracing"]
+axum = ["dep:axum"]
 # sqlx::Type/Encode/Decode (SQLite TEXT) for Did and Handle; pds enables this.
 sqlx = ["dep:sqlx"]
 
@@ -19,13 +20,16 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true, optional = true }
-tracing = { workspace = true, optional = true }
+tracing = { workspace = true }
 serde = { workspace = true }
 sqlx = { workspace = true, optional = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
+base64 = { workspace = true }
+rand_core = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

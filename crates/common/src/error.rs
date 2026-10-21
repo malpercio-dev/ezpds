@@ -393,7 +393,6 @@ pub struct ApiErrorParts {
     pub details: Option<Value>,
 }
 
-#[cfg(feature = "axum")]
 impl ApiError {
     /// Log `err` at ERROR level under `context`, then build the matching
     /// `ErrorCode::InternalError`, using `context` as the public-facing message too. Covers
@@ -415,7 +414,6 @@ impl ApiError {
 
 /// Extends `Result<T, E>` with a `.map_err` shorthand for the "log the failure, answer 500"
 /// call site, so it reads as one line at the `?` instead of a `.map_err(|e| { .. })` closure.
-#[cfg(feature = "axum")]
 pub trait ApiResultExt<T> {
     /// `.map_err(|e| ApiError::internal(e, context))`.
     fn or_internal(self, context: &'static str) -> Result<T, ApiError>;
@@ -427,7 +425,6 @@ pub trait ApiResultExt<T> {
     ) -> Result<T, ApiError>;
 }
 
-#[cfg(feature = "axum")]
 impl<T, E: std::fmt::Display> ApiResultExt<T> for Result<T, E> {
     fn or_internal(self, context: &'static str) -> Result<T, ApiError> {
         self.map_err(|e| ApiError::internal(e, context))

@@ -103,7 +103,9 @@ mod tests {
     /// server whose served document disagrees with its own seeded row.
     #[test]
     fn v042_seed_matches_canonical_consts() {
-        let sql = include_str!("../db/migrations/V042__canonical_wallet_oauth_client.sql");
+        let sql = include_str!(
+            "../../../custos-db/src/migrations/V042__canonical_wallet_oauth_client.sql"
+        );
         assert!(
             sql.contains(CANONICAL_WALLET_CLIENT_ID),
             "V042 seed must reference the canonical client_id {CANONICAL_WALLET_CLIENT_ID}"
