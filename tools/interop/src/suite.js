@@ -61,9 +61,9 @@ export async function runSuite({ account = 'primary', interact = true, lifecycle
   await step(report, 'repo: CRUD round-trip', () => crudRoundTrip(account));
   await step(report, 'spaces: simplespace + records + sync reads round-trip', () => spacesRoundTrip(account));
   // Degenerate cross-host (one account, one PDS on both sides) still drives the whole
-  // credential path — delegation token, DPoP mint, credential-authed reads — so the
-  // surface a foreign host judges us on is covered without a second deployment.
-  await step(report, 'spaces: delegation → DPoP credential → credential-authed reads', () => crossHostRoundTrip({ member: account }));
+  // credential path — delegation token, RFC 9421-signed credential mint, credential-authed
+  // reads — so the surface a foreign host judges us on is covered without a second deployment.
+  await step(report, 'spaces: delegation → space credential → credential-authed reads', () => crossHostRoundTrip({ member: account }));
   await step(report, 'spaces: allowList refuses an unattested credential request', () => allowListRefusal(account));
   await step(report, 'firehose: write observed on subscribeRepos', async () => {
     const result = await firehoseWriteCheck(account);

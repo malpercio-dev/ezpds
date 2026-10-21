@@ -1,6 +1,9 @@
-// The two pieces of the spaces client with logic worth pinning: DPoP proof
-// construction (a wrong claim is a 401 with no useful message) and CAR parsing
-// (whose whole point is rejecting a malformed export the old length check passed).
+// Two pieces of the interop client with logic worth pinning: OAuth DPoP proof
+// construction (a wrong claim is a 401 with no useful message) and the spaces
+// CAR parsing (whose whole point is rejecting a malformed export the old length
+// check passed). Spaces credentials are no longer DPoP-bound — they carry an
+// RFC 9421 signature (src/space-signature.js), so the DPoP builder here is
+// OAuth's alone.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
