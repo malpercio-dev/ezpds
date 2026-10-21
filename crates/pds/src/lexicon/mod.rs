@@ -200,6 +200,10 @@ pub struct Registry {
     defs: HashMap<String, LexSchema>,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the sources are compile-time constants and a test builds the registry"
+)]
 static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
     // The sources are compile-time constants, so a failure here is a defect in the vendored
     // set or the parser, not a runtime condition — and `tests::registry_builds` turns it into

@@ -203,6 +203,10 @@ const CHILD_SEED_HKDF_INFO: &[u8] = b"ezpds child account seed";
 /// **Changing the salt, info string, or ordering here orphans every existing child identity** — the
 /// re-derived key would no longer match the one recorded in the child's `rotationKeys` at
 /// plc.directory, leaving the account unrecoverable. Pinned by a golden vector.
+#[allow(
+    clippy::expect_used,
+    reason = "a 32-byte HKDF-SHA256 expand is far below the 255*32 output ceiling, the only way expand fails"
+)]
 pub fn derive_delegation_seed(recovery_seed: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(Some(DELEGATION_SEED_HKDF_SALT), recovery_seed.as_slice());
     let mut okm = Zeroizing::new([0u8; 32]);
@@ -224,6 +228,10 @@ pub fn derive_delegation_seed(recovery_seed: &[u8; 32]) -> Zeroizing<[u8; 32]> {
 ///
 /// **Changing the salt, info string, or index encoding here orphans every existing child identity.**
 /// Pinned by golden vectors.
+#[allow(
+    clippy::expect_used,
+    reason = "a 32-byte HKDF-SHA256 expand is far below the 255*32 output ceiling, the only way expand fails"
+)]
 pub fn derive_child_seed(delegation_seed: &[u8; 32], index: u32) -> Zeroizing<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(Some(CHILD_SEED_HKDF_SALT), delegation_seed.as_slice());
     let mut info = Vec::with_capacity(CHILD_SEED_HKDF_INFO.len() + 4);

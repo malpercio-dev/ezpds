@@ -22,6 +22,7 @@ use axum::{
     body::Body,
     extract::Request,
     http::header::{CONTENT_LENGTH, CONTENT_TYPE},
+    http::HeaderValue,
     middleware::Next,
     response::Response,
 };
@@ -64,7 +65,7 @@ pub async fn flatten_xrpc_errors(req: Request, next: Next) -> Response {
     // The rebuilt body has a different length; drop the stale header and let hyper set it.
     head.headers.remove(CONTENT_LENGTH);
     head.headers
-        .insert(CONTENT_TYPE, "application/json".parse().expect("static"));
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     Response::from_parts(head, Body::from(bytes))
 }
 

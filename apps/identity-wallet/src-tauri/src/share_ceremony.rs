@@ -192,6 +192,10 @@ pub fn load_or_create_for_rekey(did: &str) -> Result<CeremonyShareSet, ShareCere
 /// Shared implementation: load the staged set from `account` (bound to the
 /// `(discriminator_a, discriminator_b)` pair), else generate a fresh set and stage it
 /// there before returning.
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
+)]
 fn load_or_create_in_account(
     account: &str,
     discriminator_a: &str,

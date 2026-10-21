@@ -25,6 +25,10 @@ pub struct OAuthSigningKey {
 ///
 /// If `master_key` is `None`, generates an ephemeral (non-persistent) key and logs a warning.
 /// Ephemeral keys are not stored in the DB and invalidate all issued tokens on restart.
+#[allow(
+    clippy::expect_used,
+    reason = "an uncompressed P-256 point always carries x and y"
+)]
 pub async fn load_or_create_oauth_signing_key(
     pool: &SqlitePool,
     master_key: Option<&[u8; 32]>,

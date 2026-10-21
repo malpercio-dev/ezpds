@@ -40,14 +40,15 @@ fn now_tid_int() -> u64 {
     use rand_core::{OsRng, RngCore};
     let micros = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
-        .as_micros() as u64;
+        // A host clock before 1970 is broken; a zero timestamp beats crashing the writer.
+        .map_or(0, |d| d.as_micros() as u64);
     let clock_id: u64 = (OsRng.next_u32() & 0x3FF) as u64;
     // 0 | micros (53 bits) | clock_id (10 bits).
     (micros << 10) | clock_id
 }
 
 /// Encode a TID integer as a 13-character base32-sortable string (big-endian).
+#[allow(clippy::expect_used, reason = "base32 output is always ASCII")]
 fn encode_tid(mut v: u64) -> String {
     let mut chars = [0u8; 13];
     for i in (0..13).rev() {

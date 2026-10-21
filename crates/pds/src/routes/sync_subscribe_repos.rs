@@ -76,6 +76,10 @@ pub async fn subscribe_repos(
 
 /// Drive a single subscriber connection: optional replay, then live streaming with a
 /// heartbeat, until the peer closes or falls too far behind.
+#[allow(
+    clippy::expect_used,
+    reason = "the replay reader and its read future exist until replay is done, and each is checked before use"
+)]
 async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) {
     let (mut sender, mut receiver) = socket.split();
 
@@ -284,6 +288,10 @@ struct FrameHeader {
 /// `encode_*_frame` function shares. Every header and current body type is a fixed shape of
 /// scalars, links, and byte strings with no floats, so a DAG-CBOR encode failure here is a
 /// programming bug, not a runtime condition callers need to handle.
+#[allow(
+    clippy::expect_used,
+    reason = "frame header and body are plain serde structs that DAG-CBOR encodes infallibly"
+)]
 fn frame<B: Serialize>(op: i64, t: Option<&'static str>, body: &B) -> Vec<u8> {
     let mut bytes =
         serde_ipld_dagcbor::to_vec(&FrameHeader { op, t }).expect("frame header must encode");

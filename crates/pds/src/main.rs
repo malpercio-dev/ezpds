@@ -384,7 +384,7 @@ async fn run() -> anyhow::Result<()> {
     let http_client = Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .expect("failed to build HTTP client");
+        .context("failed to build HTTP client")?;
 
     // Shared, pooled client for every SSRF-guarded fetch to a caller-influenced target
     // (atproto-proxy header target, did:web document, handle well-known endpoint,
@@ -392,7 +392,7 @@ async fn run() -> anyhow::Result<()> {
     // re-checks the public-address allowlist at connect time. `false` (never `allow_loopback`) in
     // production.
     let hardened_http_client = identity::proxy::build_hardened_client(false)
-        .expect("failed to build hardened HTTP client");
+        .context("failed to build hardened HTTP client")?;
 
     let txt_resolver: Option<Arc<dyn identity::dns::TxtResolver>> =
         match identity::dns::HickoryTxtResolver::from_system_conf() {
@@ -738,7 +738,7 @@ async fn run() -> anyhow::Result<()> {
     let nonce_sweep_interval =
         std::time::Duration::from_secs(state.config.admin_devices.nonce_sweep_interval_secs);
     let nonce_max_age_secs = i64::try_from(state.config.admin_devices.nonce_max_age_secs)
-        .expect("admin_devices.nonce_max_age_secs is validated to fit in i64 at config load");
+        .context("admin_devices.nonce_max_age_secs does not fit in i64")?;
     let _admin_nonce_sweep = admin_nonce_sweep::spawn_admin_nonce_sweep(
         state.clone(),
         nonce_sweep_interval,

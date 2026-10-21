@@ -194,8 +194,7 @@ pub fn authenticate_access(
     }
 
     // 6. DPoP proof validation — only when the DPoP header is present.
-    if has_dpop {
-        let dpop_token = dpop_value.as_deref().unwrap();
+    if let Some(dpop_token) = dpop_value.as_deref() {
         validate_dpop(
             dpop_token,
             method,

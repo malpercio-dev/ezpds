@@ -300,6 +300,10 @@ pub fn car_v1_header(root: Cid) -> Vec<u8> {
 ///
 /// The multi-root variant of [`car_v1_header`], for CARs whose format pins more than one root —
 /// the Atproto Spaces `getRepo` export declares two (signed commit, then DRISL index).
+#[allow(
+    clippy::expect_used,
+    reason = "a CAR header is a fixed-shape map that DAG-CBOR encodes infallibly"
+)]
 pub fn car_v1_header_roots(roots: Vec<Cid>) -> Vec<u8> {
     let header = CarV1Header { version: 1, roots };
     // The header is a tiny fixed-shape map; DAG-CBOR encoding cannot fail.

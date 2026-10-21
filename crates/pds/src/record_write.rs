@@ -51,7 +51,10 @@ impl RepoWriteLocks {
     /// Acquire the write lock for `did`, waiting behind any in-flight write to the same repo.
     pub async fn lock(&self, did: &str) -> tokio::sync::OwnedMutexGuard<()> {
         let lock = {
-            let mut map = self.locks.lock().expect("repo write lock map poisoned");
+            let mut map = self
+                .locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             Arc::clone(map.entry(did.to_string()).or_default())
         };
         lock.lock_owned().await

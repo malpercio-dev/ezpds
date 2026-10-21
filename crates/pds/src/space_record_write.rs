@@ -338,6 +338,7 @@ pub async fn apply_space_writes(
                         "record does not exist; use createRecord or putRecord to create it",
                     ));
                 }
+                #[allow(clippy::expect_used, reason = "the value was validated present above")]
                 let value = op.value.as_ref().expect("validated above");
                 let ipld = repo_engine::json_to_record_value(value)
                     .map_err(|e| ApiError::new(ErrorCode::InvalidRequest, e.to_string()))?;

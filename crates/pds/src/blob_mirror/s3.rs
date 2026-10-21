@@ -157,6 +157,7 @@ impl S3Client {
 
     /// Build, sign, and send one request. `key` is the object key ("" for a bucket-level
     /// operation); `query` is the unencoded query pairs.
+    #[allow(clippy::expect_used, reason = "the method is a static HTTP verb token")]
     async fn send(
         &self,
         method: &str,
@@ -322,6 +323,10 @@ impl SigningInput<'_> {
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "HMAC-SHA256 accepts a key of any length"
+)]
 fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC-SHA256 accepts any key length");
     mac.update(message);
