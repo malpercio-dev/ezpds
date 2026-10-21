@@ -203,6 +203,13 @@ impl W3cDidDocument {
 /// OAuth authorization server metadata.
 ///
 /// Returned from `GET {pds_url}/.well-known/oauth-authorization-server`.
+/// `com.atproto.sync.getLatestCommit` output.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LatestCommit {
+    pub cid: String,
+    pub rev: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AuthServerMetadata {
     pub issuer: String,
@@ -1092,6 +1099,30 @@ impl PdsClient {
                 message: format!("failed to read repo CAR bytes: {}", e),
             }
         })
+    }
+
+    /// Fetch the repo's current commit CID and rev (auth: none).
+    ///
+    /// Calls `GET {pds_url}/xrpc/com.atproto.sync.getLatestCommit?did={did}`. The answer is
+    /// unsigned, so it is only fit for deciding whether a full [`Self::fetch_repo_car`] is needed,
+    /// never for trusting repo contents.
+    pub async fn fetch_latest_commit(
+        &self,
+        pds_url: &str,
+        did: &str,
+    ) -> Result<LatestCommit, PdsClientError> {
+        let url = format!(
+            "{}/xrpc/com.atproto.sync.getLatestCommit?did={}",
+            pds_url.trim_end_matches('/'),
+            urlencoding::encode(did)
+        );
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            self.note_transport_failure("getLatestCommit", Some(&url), &e);
+            PdsClientError::NetworkError {
+                message: format!("failed to fetch latest commit: {}", e),
+            }
+        })?;
+        xrpc_json("getLatestCommit", resp, self.observer.as_ref()).await
     }
 
     /// Fetch a blob by DID and CID (auth: none).
