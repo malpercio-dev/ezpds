@@ -8,6 +8,9 @@ license.workspace = true
 # repo-engine: MST construction, CAR file storage, commit construction.
 # Functional Core — no HTTP, no DB schema ownership, no process-level state.
 
+[lints]
+workspace = true
+
 [dependencies]
 atrium-api = { workspace = true }
 atrium-repo = { workspace = true }

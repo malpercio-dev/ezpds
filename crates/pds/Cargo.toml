@@ -11,6 +11,9 @@ license.workspace = true
 name = "pds"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 axum = { workspace = true, features = ["ws"] }
 http-body-util = { workspace = true }

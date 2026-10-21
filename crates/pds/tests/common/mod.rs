@@ -1,10 +1,11 @@
-// pattern: Imperative Shell
-//
-// Shared harness machinery for the black-box HTTP integration suite. Everything here is I/O:
-// it binds sockets, spawns the real compiled `pds` binary, mocks plc.directory over HTTP, and
-// drives the server over real TCP. The `pds` crate is binary-only (no lib target), so the suite
-// cannot call `app()` in-process — it must exercise the shipped binary through EZPDS_* config,
-// which is the whole point: this covers the real migration/startup path, not `test_state()`.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a panic is the failure signal
+                                                    // pattern: Imperative Shell
+                                                    //
+                                                    // Shared harness machinery for the black-box HTTP integration suite. Everything here is I/O:
+                                                    // it binds sockets, spawns the real compiled `pds` binary, mocks plc.directory over HTTP, and
+                                                    // drives the server over real TCP. The `pds` crate is binary-only (no lib target), so the suite
+                                                    // cannot call `app()` in-process — it must exercise the shipped binary through EZPDS_* config,
+                                                    // which is the whole point: this covers the real migration/startup path, not `test_state()`.
 
 use std::net::TcpListener;
 use std::process::{Child, Command};

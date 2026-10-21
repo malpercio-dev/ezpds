@@ -17,6 +17,9 @@ path = "src/lib.rs"
 name = "notify-relay"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { workspace = true }
 iroh = { workspace = true }

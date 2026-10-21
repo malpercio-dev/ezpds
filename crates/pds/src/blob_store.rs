@@ -98,6 +98,10 @@ fn is_mime_token_byte(b: u8) -> bool {
 /// SHA-256 multihash) encoded in base32 (`bafk...`). `mime_type` is stored verbatim — the
 /// caller resolves it (see [`resolve_mime_type`]) so the scope check that gates the upload,
 /// the persisted row, and the later `getBlob` response all agree on one type.
+#[allow(
+    clippy::expect_used,
+    reason = "the path is blobs/{prefix}/{cid}, so it always has a parent"
+)]
 pub async fn store_blob(
     data_dir: &Path,
     content: &[u8],
@@ -200,6 +204,10 @@ pub fn compute_cid(content: &[u8]) -> String {
 ///   <multihash: 0x12 (sha-256)><0x20 (32 bytes)><hash bytes>
 ///
 /// Encoded in base32 with `bafk` prefix (standard for raw CIDv1 with SHA-256).
+#[allow(
+    clippy::expect_used,
+    reason = "the base32 spec is a compile-time constant that is valid"
+)]
 fn build_cid(hash: &[u8]) -> String {
     debug_assert_eq!(hash.len(), 32, "SHA-256 hash must be 32 bytes");
 

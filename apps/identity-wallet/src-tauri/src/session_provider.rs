@@ -165,7 +165,9 @@ fn did_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
     static REGISTRY: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
         OnceLock::new();
     let registry = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = registry.lock().unwrap();
+    let mut map = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     map.entry(did.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone()

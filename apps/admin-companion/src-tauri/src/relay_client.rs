@@ -242,6 +242,10 @@ fn resolve_pairing(id: &str) -> Result<Pairing, RelayClientError> {
 
 /// Mint a single account claim code via a signed `POST /v1/accounts/claim-codes`.
 /// The demo-lifesaver action: an operator generates a claim code from their phone.
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
+)]
 pub async fn generate_claim_code() -> Result<String, RelayClientError> {
     let pairing = resolve_active()?;
 
@@ -411,6 +415,10 @@ pub fn build_get_subject_status_request(
 /// Build the signed takedown/restore write (`POST /xrpc/com.atproto.admin.updateSubjectStatus`).
 /// `applied = true` takes the account down; `false` restores it. The body is serialized
 /// once here so the exact bytes signed are the exact bytes sent.
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
+)]
 pub fn build_update_subject_status_request(
     pairing: &Pairing,
     did: &str,
@@ -618,6 +626,10 @@ pub async fn list_claim_codes(
 /// minted-but-unredeemed signup credential. The code travels in the signed body, so a
 /// revoke signature is bound to its code. Idempotent for an already-revoked code; a
 /// redeemed code is refused by the relay with 409 (surfaced as `RELAY_REJECTED`).
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
+)]
 pub async fn revoke_claim_code(
     pairing_id: &str,
     code: &str,
@@ -772,6 +784,10 @@ struct SpaceTakedownBody<'a> {
 ///
 /// The space URI travels in the signed *body*, so a takedown signature is bound to its
 /// space and can never be replayed against another.
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
+)]
 pub fn build_space_takedown_request(
     pairing: &Pairing,
     uri: &str,
@@ -913,6 +929,10 @@ struct SetAccountEmailBody<'a> {
     email: &'a str,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
+)]
 pub fn build_set_account_email_request(
     pairing: &Pairing,
     did: &str,
@@ -1077,6 +1097,10 @@ pub enum NotificationRegistration {
 }
 
 /// Build the signed notification registration (`POST /v1/admin/notifications/register`).
+#[allow(
+    clippy::expect_used,
+    reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
+)]
 pub fn build_register_notifications_request(
     pairing: &Pairing,
     notification_public_key: &str,

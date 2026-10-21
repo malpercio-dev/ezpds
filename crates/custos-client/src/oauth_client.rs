@@ -135,6 +135,10 @@ pub struct TokenResponse {
 ///
 /// `reqwest::Response: From<http::Response<T>>` is the only public `Response` constructor. Building
 /// from an already-valid status + header map + owned body is infallible.
+#[allow(
+    clippy::expect_used,
+    reason = "the builder only fails on invalid parts, and these came from a response that already parsed"
+)]
 fn rebuild_response(
     status: reqwest::StatusCode,
     headers: reqwest::header::HeaderMap,
@@ -271,7 +275,10 @@ impl OAuthClient {
     /// persist the destination Bearer session for a did:web identity, which has no PLC
     /// rotation keys to mint a sovereign session with.
     pub fn session_tokens(&self) -> (String, String) {
-        let session = self.session.lock().unwrap();
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (session.access_token.clone(), session.refresh_token.clone())
     }
 
@@ -335,7 +342,10 @@ impl OAuthClient {
 
         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
         let nonce_opt = {
-            let s = self.session.lock().unwrap();
+            let s = self
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             s.dpop_nonce.clone()
         };
 
@@ -370,7 +380,10 @@ impl OAuthClient {
             if is_use_dpop_nonce {
                 if let Some(fresh_nonce) = maybe_nonce {
                     {
-                        let mut s = self.session.lock().unwrap();
+                        let mut s = self
+                            .session
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         s.dpop_nonce = Some(fresh_nonce.clone());
                     }
                     tracing::debug!(nonce = %fresh_nonce, "retrying post_bytes with server DPoP nonce");
@@ -405,7 +418,10 @@ impl OAuthClient {
         self.maybe_refresh_token().await?;
 
         let nonce_opt = {
-            let s = self.session.lock().unwrap();
+            let s = self
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             s.dpop_nonce.clone()
         };
 
@@ -444,7 +460,10 @@ impl OAuthClient {
             if is_use_dpop_nonce {
                 if let Some(fresh_nonce) = maybe_nonce {
                     {
-                        let mut s = self.session.lock().unwrap();
+                        let mut s = self
+                            .session
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         s.dpop_nonce = Some(fresh_nonce.clone());
                     }
                     tracing::debug!(nonce = %fresh_nonce, "retrying request with server DPoP nonce");
@@ -471,6 +490,7 @@ impl OAuthClient {
 
     /// The DPoP keypair. Panics if called in Bearer mode — an internal invariant violation,
     /// since only DPoP-mode code paths call this.
+    #[allow(clippy::expect_used, reason = "only DPoP-mode code paths call this")]
     fn dpop(&self) -> &DpopKeypair {
         self.dpop
             .as_ref()
@@ -489,7 +509,10 @@ impl OAuthClient {
         nonce: Option<&str>,
     ) -> Result<Response, OAuthError> {
         let access_token = {
-            let s = self.session.lock().unwrap();
+            let s = self
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             s.access_token.clone()
         };
 
@@ -555,7 +578,10 @@ impl OAuthClient {
         nonce: Option<&str>,
     ) -> Result<Response, OAuthError> {
         let access_token = {
-            let s = self.session.lock().unwrap();
+            let s = self
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             s.access_token.clone()
         };
 
@@ -593,7 +619,10 @@ impl OAuthClient {
     /// Refresh the access token if it expires within the next 60 seconds.
     async fn maybe_refresh_token(&self) -> Result<(), OAuthError> {
         let should_refresh = {
-            let s = self.session.lock().unwrap();
+            let s = self
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // A one-shot Bearer client (e.g. carrying a service-auth JWT) is built with an empty
             // refresh token — it cannot refresh, so never attempt it (a refresh with an empty
             // Bearer would fail and abort the in-flight request).
@@ -632,7 +661,10 @@ impl OAuthClient {
     /// DPoP token refresh via `/oauth/token`.
     async fn refresh_token_dpop(&self) -> Result<(), OAuthError> {
         let (refresh_token, nonce_opt) = {
-            let s = self.session.lock().unwrap();
+            let s = self
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (s.refresh_token.clone(), s.dpop_nonce.clone())
         };
 
@@ -743,7 +775,10 @@ impl OAuthClient {
     /// separately-persisted DPoP session state.
     async fn refresh_token_bearer(&self) -> Result<(), OAuthError> {
         let refresh_token = {
-            let s = self.session.lock().unwrap();
+            let s = self
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             s.refresh_token.clone()
         };
 
@@ -793,7 +828,10 @@ impl OAuthClient {
                 .unwrap_or(0)
         });
 
-        let mut s = self.session.lock().unwrap();
+        let mut s = self
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.access_token = token_resp.access_jwt;
         s.refresh_token = token_resp.refresh_jwt;
         s.expires_at = expires_at;
@@ -845,7 +883,10 @@ impl OAuthClient {
             .store_tokens(&token_resp.access_token, &token_resp.refresh_token)
             .map_err(|_| OAuthError::KeychainError)?;
 
-        let mut s = self.session.lock().unwrap();
+        let mut s = self
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.access_token = token_resp.access_token;
         s.refresh_token = token_resp.refresh_token;
         s.expires_at = expires_at;

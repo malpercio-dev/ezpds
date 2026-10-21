@@ -926,10 +926,14 @@ pub async fn build_migration_op(
     }
     let proposed_vms = recommended_verification_methods(&recommended)?;
     let proposed_services = recommended_services(&recommended)?;
+    #[allow(
+        clippy::expect_used,
+        reason = "recommended_services guarantees atproto_pds is present"
+    )]
     let proposed_endpoint = proposed_services
         .get(ATPROTO_PDS_SERVICE_ID)
         .map(|s| s.endpoint.clone())
-        .expect("recommended_services guarantees atproto_pds is present");
+        .expect("atproto_pds present");
     // A migration preserves the handle: keep current alsoKnownAs.
     let also_known_as = current.also_known_as.clone();
 

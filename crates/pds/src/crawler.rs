@@ -223,7 +223,7 @@ impl CrawlerNotifier {
         let mut last = self
             .last_notified
             .lock()
-            .expect("crawler rate-limit mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut due = Vec::new();
         for url in &self.crawlers {
             let allowed = match last.get(url) {
