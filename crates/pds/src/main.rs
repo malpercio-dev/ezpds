@@ -604,11 +604,11 @@ async fn run() -> anyhow::Result<()> {
         metrics,
         sweeps: Arc::new(sweep_status::SweepStatus::default()),
         started_at,
+        poll_tracker: auth::new_claim_poll_tracker(),
     };
     let state = app::AppState {
         spaces: custos_spaces::SpacesState::new(core.clone()),
         core,
-        poll_tracker: auth::new_claim_poll_tracker(),
         firehose,
         crawlers,
         iroh,

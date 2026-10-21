@@ -4,8 +4,6 @@
 
 pub mod account_deletion_tokens;
 pub mod account_labels;
-pub mod agent_audit;
-pub mod agent_auth;
 pub mod agent_child_deletions;
 pub mod app_passwords;
 pub mod claim_codes;
@@ -26,7 +24,7 @@ pub mod waitlist;
 #[cfg(test)]
 pub(crate) use custos_db::test_pool;
 pub use custos_db::{
-    accounts, admin_audit, admin_devices, blobs, blocks, dids, handles, insert_with_retry_if,
+    accounts, admin_audit, admin_devices, agent_audit, agent_auth, blobs, blocks, dids, handles, insert_with_retry_if,
     insert_with_retry_on_collision, is_unique_violation, kek, oauth, open_pool, refresh_tokens,
     repo_keys, run_migrations, server_stats, sessions, transfers,
 };

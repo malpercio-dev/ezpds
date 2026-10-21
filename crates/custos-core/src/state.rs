@@ -98,4 +98,9 @@ pub struct CoreState {
     pub sweeps: Arc<crate::sweep_status::SweepStatus>,
     /// Process start, for the health endpoint's uptime readout.
     pub started_at: std::time::Instant,
+    /// In-memory last-poll clock for the auth.md claim-polling grant, keyed by the SHA-256 of each
+    /// agent's `claim_token`. Paces polling to the advertised `interval` (returns `slow_down` when
+    /// exceeded). Read by the OAuth token endpoint and the agents surface; ephemeral (resets on
+    /// restart).
+    pub poll_tracker: crate::auth::ClaimPollTracker,
 }

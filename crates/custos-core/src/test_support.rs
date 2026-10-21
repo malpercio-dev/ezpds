@@ -176,6 +176,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
         metrics,
         sweeps: Arc::new(crate::sweep_status::SweepStatus::default()),
         started_at: std::time::Instant::now(),
+        poll_tracker: crate::auth::new_claim_poll_tracker(),
     }
 }
 

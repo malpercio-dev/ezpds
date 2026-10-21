@@ -1,3 +1,4 @@
+pub mod agent_assertion;
 pub mod dpop;
 pub mod extractors;
 pub mod guards;
@@ -868,3 +869,5 @@ mod tests {
         assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 }
+
+pub use agent_assertion::{new_claim_poll_tracker, ClaimPollTracker};

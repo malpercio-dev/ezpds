@@ -7,17 +7,11 @@ use axum::extract::FromRef;
 use custos_core::CoreState;
 use custos_spaces::SpacesState;
 
-use crate::auth::ClaimPollTracker;
-
 /// The state every `pds` handler extracts: the shared [`CoreState`] plus the fields only `pds`'s
 /// features read. Core helpers take `&CoreState`; a `&AppState` reaches them through [`Deref`].
 #[derive(Clone)]
 pub struct AppState {
     pub core: CoreState,
-    /// In-memory last-poll clock for the auth.md claim-polling grant, keyed by the SHA-256 of each
-    /// agent's `claim_token`. Paces polling to the advertised `interval` (returns `slow_down` when
-    /// exceeded). Shared across all token endpoint requests; ephemeral (resets on restart).
-    pub poll_tracker: ClaimPollTracker,
     /// The Spaces feature's state. Extracted through `FromRef`, which pins its `core` to this
     /// struct's, so a state built with a swapped config is seen the same way by every handler.
     pub spaces: SpacesState,
@@ -93,7 +87,6 @@ impl AppState {
             Arc::new(c)
         };
         AppState {
-            poll_tracker: crate::auth::new_claim_poll_tracker(),
             spaces: SpacesState::new(core.clone()),
             firehose,
             crawlers,
