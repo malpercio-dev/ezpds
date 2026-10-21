@@ -358,7 +358,7 @@ where
 /// whatever `sign` returns over the `header.payload` bytes (for an account key, the 64-byte r‖s
 /// low-S ECDSA signature — see [`mint_service_auth_jwt`]). Shared by every account-key-signed
 /// token this server mints: service auth, and the Atproto Spaces delegation tokens and space
-/// credentials (`auth/space.rs`), which differ only in header `typ`/`kid` and claims.
+/// credentials (`custos_spaces` `auth/space.rs`), which differ only in header `typ`/`kid` and claims.
 #[allow(
     clippy::expect_used,
     reason = "serde_json serializes a plain struct or map with string keys infallibly"
@@ -440,7 +440,7 @@ pub struct DidKeyJwt {
 /// Verify a JWT's signature against an account's `did:key` — the structural core shared by
 /// every account-key-signed token this server accepts: service auth
 /// ([`verify_service_auth_jwt`]) and the Atproto Spaces delegation tokens and space credentials
-/// (`auth/space.rs`). Performs no claims checks beyond the header `alg`; callers check their own.
+/// (`custos_spaces` `auth/space.rs`). Performs no claims checks beyond the header `alg`; callers check their own.
 ///
 /// The `alg` header is allowlisted to **ES256 or ES256K** — both curves atproto permits for an
 /// account's signing key; the reference ecosystem (bsky.social) signs with secp256k1, so its

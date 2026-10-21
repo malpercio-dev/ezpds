@@ -163,7 +163,7 @@ revocation — not expiry — as the actual kill switch ([ADR-0036](../architect
 ### Spaces authorization
 
 Every `com.atproto.space.*` read/sync route authenticates through
-`auth::space::authenticate_space_read` (`crates/pds/src/auth/space.rs`), the
+`auth::space::authenticate_space_read` (`crates/custos-spaces/src/auth/space.rs`), the
 one seam accepting a covering OAuth grant *or* a space credential — never a
 bearer credential. A credential is bound to a P-256 key (`cnf.kid`) and every
 use carries an RFC 9421 `atproto-space` signature over `Authorization` and

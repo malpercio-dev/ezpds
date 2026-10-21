@@ -1546,7 +1546,7 @@ pub struct AccountListEntry {
 }
 
 /// A page of the relay's hosted-space list — the response shape of `GET /v1/admin/spaces`
-/// (`ListSpacesResponse` in crates/pds/src/routes/admin_spaces.rs; shared by value like
+/// (`ListSpacesResponse` in crates/custos-spaces/src/routes/admin_spaces.rs; shared by value like
 /// [`AccountList`], pinned by a deserialization test). `cursor` is omitted by the relay on
 /// the last page.
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
@@ -3008,7 +3008,7 @@ mod tests {
     }
 
     // Pins the relay's hosted-space wire shapes by value (`ListSpacesResponse` /
-    // `HostedSpaceEntry` / `SpaceTakedownResponse` in crates/pds/src/routes/admin_spaces.rs;
+    // `HostedSpaceEntry` / `SpaceTakedownResponse` in crates/custos-spaces/src/routes/admin_spaces.rs;
     // the `pds` crate is binary-only, so the contract is shared by value, not import).
     // `deletedAt`, `takendownAt`, and `cursor` are *omitted* by the relay when absent, not
     // null — and `takendownAt`'s absence is what the screen reads as "being served".

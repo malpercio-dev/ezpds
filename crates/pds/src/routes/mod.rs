@@ -11,7 +11,6 @@ pub mod admin_recovery_releases;
 pub mod admin_relay_status;
 pub mod admin_request_crawl;
 pub mod admin_revoke_credentials;
-pub mod admin_spaces;
 mod admin_subject_defs;
 pub mod admin_transfers;
 pub mod admin_waitlist;
@@ -45,7 +44,6 @@ pub mod describe_server;
 pub mod did_json;
 pub mod did_web_hosting;
 pub mod get_blob;
-pub mod get_delegation_token;
 pub mod get_device_pds;
 pub mod get_did;
 pub mod get_metrics;
@@ -57,7 +55,6 @@ pub mod get_repo;
 pub mod get_repo_signing_key;
 pub mod get_service_auth;
 pub mod get_session;
-pub mod get_space_credential;
 pub mod get_subject_status;
 pub mod health;
 pub mod import_repo;
@@ -101,32 +98,7 @@ pub mod resolve_identity;
 pub mod revoke_app_password;
 pub mod service_proxy;
 pub mod sign_plc_operation;
-pub mod simplespace_create_space;
-pub mod simplespace_delete_space;
-pub mod simplespace_get_space;
-pub mod simplespace_list_members;
-pub mod simplespace_put_member;
-pub mod simplespace_remove_member;
-pub mod simplespace_update_space;
 pub mod sovereign_session;
-pub mod space_apply_writes;
-pub mod space_create_record;
-pub mod space_delete_record;
-pub mod space_get_blob;
-pub mod space_get_latest_commit;
-pub mod space_get_record;
-pub mod space_get_repo;
-pub mod space_import_repo;
-pub mod space_list_blobs;
-pub mod space_list_records;
-pub mod space_list_repo_ops;
-pub mod space_list_repos;
-pub mod space_list_spaces;
-pub mod space_notify_write;
-pub mod space_put_record;
-pub mod space_register_notify;
-pub mod space_unregister_notify;
-pub mod space_views;
 pub mod standard_signup;
 pub mod static_assets;
 pub mod submit_plc_operation;
@@ -150,9 +122,6 @@ mod preference_scope;
 pub(crate) mod test_utils;
 
 #[cfg(test)]
-mod space_test_support;
-
-#[cfg(test)]
 mod contract_tests;
 
 #[cfg(test)]
@@ -163,21 +132,3 @@ mod didweb_migration_test;
 
 #[cfg(test)]
 mod agent_auth_test;
-
-#[cfg(test)]
-mod space_lifecycle_test;
-
-#[cfg(test)]
-mod space_routes_test;
-
-#[cfg(test)]
-mod space_takedown_test;
-
-#[cfg(test)]
-mod space_sync_routes_test;
-
-#[cfg(test)]
-mod space_notify_routes_test;
-
-#[cfg(test)]
-mod simplespace_routes_test;

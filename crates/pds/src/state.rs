@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use axum::extract::FromRef;
 use custos_core::CoreState;
+use custos_spaces::SpacesState;
 
-use crate::auth::{ClaimPollTracker, SpaceTypeCache};
+use crate::auth::ClaimPollTracker;
 
 /// The state every `pds` handler extracts: the shared [`CoreState`] plus the fields only `pds`'s
 /// features read. Core helpers take `&CoreState`; a `&AppState` reaches them through [`Deref`].
@@ -17,7 +18,9 @@ pub struct AppState {
     /// agent's `claim_token`. Paces polling to the advertised `interval` (returns `slow_down` when
     /// exceeded). Shared across all token endpoint requests; ephemeral (resets on restart).
     pub poll_tracker: ClaimPollTracker,
-    pub space_type_cache: SpaceTypeCache,
+    /// The Spaces feature's state. Extracted through `FromRef`, which pins its `core` to this
+    /// struct's, so a state built with a swapped config is seen the same way by every handler.
+    pub spaces: SpacesState,
     /// In-memory firehose pipeline: every repo commit emits a sequenced event here, which
     /// `com.atproto.sync.subscribeRepos` fans out to connected relays/BGSes. Shared via Arc.
     pub firehose: Arc<crate::firehose::Firehose>,
@@ -58,6 +61,15 @@ impl FromRef<AppState> for CoreState {
     }
 }
 
+impl FromRef<AppState> for SpacesState {
+    fn from_ref(state: &AppState) -> SpacesState {
+        SpacesState {
+            core: state.core.clone(),
+            ..state.spaces.clone()
+        }
+    }
+}
+
 #[cfg(test)]
 impl AppState {
     /// `core` plus test defaults for the `pds`-owned fields: a live firehose and crawler notifier
@@ -82,7 +94,7 @@ impl AppState {
         };
         AppState {
             poll_tracker: crate::auth::new_claim_poll_tracker(),
-            space_type_cache: crate::auth::new_space_type_cache(),
+            spaces: SpacesState::new(core.clone()),
             firehose,
             crawlers,
             iroh: None,

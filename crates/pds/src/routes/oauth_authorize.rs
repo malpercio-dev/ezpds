@@ -474,11 +474,11 @@ pub async fn get_authorization(
     // User-legible text for any `space:` tokens. Best-effort by design: unlike the `include:`
     // expansion above, this changes only the labels — the checkbox values stay the raw tokens —
     // so a failed lookup degrades to the raw NSID instead of failing the page.
-    let spaces = crate::auth::space_consent::resolve_space_displays(
+    let spaces = custos_spaces::consent::resolve_space_displays(
         &state,
-        &state.space_type_cache,
+        &state.spaces.space_type_cache,
         &display_scope,
-        &crate::auth::space_consent::preferred_languages(
+        &custos_spaces::consent::preferred_languages(
             headers
                 .get(axum::http::header::ACCEPT_LANGUAGE)
                 .and_then(|v| v.to_str().ok()),
@@ -849,7 +849,7 @@ pub async fn post_authorization(
     // network I/O. Resolving declarations here would mean outbound DNS/HTTP *before* the
     // identifier-keyed login rate-limit gate below — the amplification hole that gate exists to
     // close — so this path shows the raw NSID and keeps the warning.
-    let spaces = crate::auth::space_consent::space_displays_without_resolution(&form.scope);
+    let spaces = custos_spaces::consent::space_displays_without_resolution(&form.scope);
 
     // Helper closure to re-render the consent page without redirecting to the client.
     let rerender = |hint: Option<&str>, error: &str| -> Response {

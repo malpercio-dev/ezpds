@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-28
 - **Deciders:** malpercio
-- **Related:** MM-526; V070; `crates/pds/src/auth/space.rs` (`require_space_servable`), `crates/pds/src/routes/admin_spaces.rs`; [ADR-0016 lineage: the Atproto Spaces proposal's deletion semantics]
+- **Related:** MM-526; V070; `crates/custos-spaces/src/auth/space.rs` (`require_space_servable`), `crates/custos-spaces/src/routes/admin_spaces.rs`; [ADR-0016 lineage: the Atproto Spaces proposal's deletion semantics]
 
 ## Context
 

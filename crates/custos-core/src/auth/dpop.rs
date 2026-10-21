@@ -443,7 +443,7 @@ pub fn validate_dpop_for_token_endpoint(
 ///
 /// The bound token is an OAuth access token (`auth/extractors.rs`); `bound_jkt` is its `cnf.jkt`
 /// and `bound_token_str` its exact wire form (the `ath` input). Atproto Spaces credentials are not
-/// DPoP-bound — they use RFC 9421 signatures (`auth/http_signature.rs`).
+/// DPoP-bound — they use RFC 9421 signatures (`custos_spaces` `auth/http_signature.rs`).
 ///
 /// Checks:
 /// - `typ` header is `"dpop+jwt"`
