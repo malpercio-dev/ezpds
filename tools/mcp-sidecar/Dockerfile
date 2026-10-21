@@ -42,6 +42,17 @@ RUN pnpm install --prod --frozen-lockfile
 # ── Runtime stage ────────────────────────────────────────────────────────
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production
+# Trust the Alpine CA bundle instead of Node's compiled-in root list, so a CA
+# distrust lands with an `apk` update rather than waiting on a Node release.
+# --use-openssl-ca loads OpenSSL's store; SSL_CERT_FILE pins it to the bundle
+# the denylist check below inspects. NODE_OPTIONS covers CMD and HEALTHCHECK.
+# The 20261020-r0 floor drops the roots anchoring the compromised eMudhra
+# intermediates; the check fails the build if a denied root is ever back.
+ENV NODE_OPTIONS=--use-openssl-ca \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+COPY tools/mcp-sidecar/scripts/assert-ca-denylist.mjs /usr/local/lib/assert-ca-denylist.mjs
+RUN apk add --no-cache --upgrade 'ca-certificates-bundle>=20261020-r0' \
+ && node /usr/local/lib/assert-ca-denylist.mjs
 WORKDIR /app
 
 # Source first, then the installed node_modules over the top (the .dockerignore
