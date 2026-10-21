@@ -324,7 +324,7 @@ pub async fn sweep_stale_nonces(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::test_pool;
+    use crate::test_pool;
 
     fn sample_device(id: &str) -> NewAdminDevice<'_> {
         NewAdminDevice {
@@ -412,7 +412,7 @@ mod tests {
         insert_pairing_code(&pool, "DUP", 5).await.unwrap();
         let err = insert_pairing_code(&pool, "DUP", 5).await.unwrap_err();
         assert!(
-            crate::db::is_unique_violation(&err),
+            crate::is_unique_violation(&err),
             "duplicate pairing code must hit the PRIMARY KEY constraint"
         );
     }
@@ -470,7 +470,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            crate::db::is_unique_violation(&err),
+            crate::is_unique_violation(&err),
             "duplicate device id must hit the PRIMARY KEY constraint"
         );
     }

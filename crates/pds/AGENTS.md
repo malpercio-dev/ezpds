@@ -53,7 +53,7 @@ src/
   sovereign_session_nonce_sweep.rs— hourly `sovereign_session_nonces` sweep; a compile-time assertion keeps retention above the replay window
   sweep.rs         — the `Sweep` trait (name, cadence, one `run` pass → `Pass`) and the one `Scheduler` (`spawn`/`shutdown`/`run_once`) that owns the interval loop, the skipped boot tick, per-pass jitter, graceful shutdown, and publishing each completed pass to `AppState.sweeps`; a pass returning `Err` records nothing. Every periodic sweep is a `Sweep`: account_reaper, agent_claim_sweep, admin_nonce_sweep, sovereign_session_nonce_sweep, space_jti_sweep, space_oplog_sweep, firehose_gc, blob_gc, blob_scrub, blob_mirror, labeler_watch (the one that opts into `first_pass_at_boot`)
   sweep_status.rs  — readable last-run state per periodic sweep (`AppState.sweeps`) for `GET /v1/admin/health`; a failed pass records nothing — staleness is the alarm — see module doc
-  transfer.rs      — planned device-transfer accept/complete/cancel workflows; `db/transfers.rs` owns the SQL, this module owns the cross-table ordering — see module doc
+  transfer.rs      — planned device-transfer accept/complete/cancel workflows; `custos_db::transfers` owns the SQL, this module owns the cross-table ordering — see module doc
   identity/        — everything "who is this handle/DID" (see section below)
   session_issuer.rs— shared legacy access+refresh JWT issuance transaction; explicit full-access vs app-password authority — see module doc
   capabilities.rs  — the `CAPABILITIES` table behind `describeServer`'s `custos` extension; an entry's `enabled` predicate must be the same condition its routes enforce, and `just capability-docs-check` gates the operator docs. Also owns `IDENTIFYING_VERSION` — see module doc
@@ -188,7 +188,9 @@ and async query functions; no business logic lives here.
 
 The pool, the migration log and runner, `DbError`, the unique-violation / retry helpers, and
 the cross-feature modules (`accounts`, `dids`, `handles`, `blobs`, `blocks`, `kek`,
-`admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`) live in
+`admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`, plus `admin_devices`,
+`iroh_identity`, `jwt_secret`, `repo_keys`, `transfers`, which the auth guards and signing-key
+loaders read) live in
 [`crates/custos-db`](../custos-db/AGENTS.md); `db/mod.rs` re-exports them, so `db::accounts::…`
 paths resolve unchanged. The table below lists only what stays in `pds`.
 
@@ -206,12 +208,7 @@ paths resolve unchanged. The table below lists only what stays in `pds`.
 | `recovery_escrow.rs` | PDS-held Shamir Share 2 escrow (V050) plus the release state machine — see module doc |
 | `recovery_otps.rs` | recovery-release email OTP store (V053) — see module doc |
 | `recovery_audit.rs` | append-only recovery-escrow audit log (V050, the V040 doctrine) — see module doc |
-| `jwt_secret.rs` | persistent encrypted HS256 JWT signing secret (V015) — see module doc |
-| `iroh_identity.rs` | persistent encrypted Iroh node Ed25519 key (V022) — see module doc |
-| `repo_keys.rs` | per-account repo signing keys: ceremony storage, migration reservations, commit-signer lookup (V048), rotation staging — see module doc |
-| `transfers.rs` | planned device-swap sessions (V027/V029/V030): initiate/accept/complete plus the operator view and cancel — see module doc |
 | `firehose_seq.rs` | persistent firehose event log (V028): boot seed, append, cursor-replay page — see module doc |
-| `admin_devices.rs` | admin-device model (V025): pairing codes, devices, anti-replay nonces — see module doc |
 | `sovereign_session_nonces.rs` | sovereign-session anti-replay store (V043); the sweep-retention rule is in the module doc |
 | `spaces.rs` | `spaces` rows (V065/V069/V070): every space this PDS interacts with, keyed by canonical URI, plus the `space_members` list and the `allowList` client-ID set (`app_allowed`, read through `SpaceRow::allowed_client_ids` — an absent or unparseable list reads as empty, which admits no app) — the `insert_space` (member write) vs `create_space` (simplespace create) distinction is in the module doc; the remaining notify queries land with the space-host surface. V070's `takendown_at` is the operator's refusal to serve, independent of the owner's `deleted_at` tombstone — `set_space_takedown` writes it, `list_hosted_spaces` is the operator listing |
 | `space_notify.rs` | the space-host notification tables: `space_notify_registrations` (V065, one table for both roles — `repo_did = ''` is a whole-space subscription on a space host, a named repo is the auto-registration a repo host writes for itself) and `space_writers` (V067, the `listRepos` set). Expiry is enforced by the read query, not a sweep — see module doc |

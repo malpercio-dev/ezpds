@@ -27,7 +27,7 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 
 pub type SqliteTransaction<'a> = Transaction<'a, Sqlite>;
 
-use crate::db::{is_unique_violation, unique_violation_column};
+use crate::{is_unique_violation, unique_violation_column};
 
 /// Outcome of attempting to open a transfer session for an account.
 ///
@@ -514,15 +514,15 @@ pub async fn insert_transfer_audit_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
-    use crate::db::accounts::insert_bare_account as seed_account;
+    use crate::accounts::insert_bare_account as seed_account;
+    use crate::test_pool;
 
     #[tokio::test]
     async fn first_transfer_is_created() {
-        let state = test_state().await;
-        seed_account(&state.db, "did:plc:initiate1").await;
+        let db = test_pool().await;
+        seed_account(&db, "did:plc:initiate1").await;
 
-        let outcome = insert_transfer(&state.db, "t1", "did:plc:initiate1", "ABC123", 15)
+        let outcome = insert_transfer(&db, "t1", "did:plc:initiate1", "ABC123", 15)
             .await
             .unwrap();
 
@@ -531,13 +531,13 @@ mod tests {
 
     #[tokio::test]
     async fn second_active_transfer_is_rejected() {
-        let state = test_state().await;
-        seed_account(&state.db, "did:plc:initiate2").await;
+        let db = test_pool().await;
+        seed_account(&db, "did:plc:initiate2").await;
 
-        insert_transfer(&state.db, "t1", "did:plc:initiate2", "ABC123", 15)
+        insert_transfer(&db, "t1", "did:plc:initiate2", "ABC123", 15)
             .await
             .unwrap();
-        let outcome = insert_transfer(&state.db, "t2", "did:plc:initiate2", "DEF456", 15)
+        let outcome = insert_transfer(&db, "t2", "did:plc:initiate2", "DEF456", 15)
             .await
             .unwrap();
 
@@ -546,8 +546,8 @@ mod tests {
 
     #[tokio::test]
     async fn expired_transfer_does_not_block_new_one() {
-        let state = test_state().await;
-        seed_account(&state.db, "did:plc:initiate3").await;
+        let db = test_pool().await;
+        seed_account(&db, "did:plc:initiate3").await;
 
         // A pending transfer that has already expired.
         sqlx::query(
@@ -555,11 +555,11 @@ mod tests {
              VALUES ('old', 'did:plc:initiate3', 'OLD000', 'pending', \
                      datetime('now', '-1 minute'), datetime('now', '-16 minutes'))",
         )
-        .execute(&state.db)
+        .execute(&db)
         .await
         .unwrap();
 
-        let outcome = insert_transfer(&state.db, "new", "did:plc:initiate3", "NEW111", 15)
+        let outcome = insert_transfer(&db, "new", "did:plc:initiate3", "NEW111", 15)
             .await
             .unwrap();
 
@@ -573,7 +573,7 @@ mod tests {
             "SELECT COUNT(*) FROM transfers WHERE did = 'did:plc:initiate3' \
              AND status IN ('pending', 'accepted', 'completing')",
         )
-        .fetch_one(&state.db)
+        .fetch_one(&db)
         .await
         .unwrap();
         assert_eq!(active, 1);
@@ -608,15 +608,15 @@ mod tests {
 
     #[tokio::test]
     async fn inflight_list_follows_capability_not_the_clock() {
-        let state = test_state().await;
+        let db = test_pool().await;
         for n in 1..=7 {
-            seed_account(&state.db, &format!("did:plc:inflight{n}")).await;
+            seed_account(&db, &format!("did:plc:inflight{n}")).await;
         }
 
         // In flight: unexpired pending, accepted (fresh AND lapsed — completion has no
         // expiry check, so a lapsed accepted transfer can still finish), completing.
         seed_transfer(
-            &state.db,
+            &db,
             "t-pend",
             "did:plc:inflight1",
             "AAA111",
@@ -626,7 +626,7 @@ mod tests {
         )
         .await;
         seed_transfer(
-            &state.db,
+            &db,
             "t-acc",
             "did:plc:inflight2",
             "BBB222",
@@ -636,7 +636,7 @@ mod tests {
         )
         .await;
         seed_transfer(
-            &state.db,
+            &db,
             "t-acc-lapsed",
             "did:plc:inflight3",
             "CCC333",
@@ -646,7 +646,7 @@ mod tests {
         )
         .await;
         seed_transfer(
-            &state.db,
+            &db,
             "t-completing",
             "did:plc:inflight4",
             "DDD444",
@@ -657,7 +657,7 @@ mod tests {
         .await;
         // Not in flight: a lapsed pending row (nothing can accept it), and terminal rows.
         seed_transfer(
-            &state.db,
+            &db,
             "t-pend-lapsed",
             "did:plc:inflight5",
             "EEE555",
@@ -667,7 +667,7 @@ mod tests {
         )
         .await;
         seed_transfer(
-            &state.db,
+            &db,
             "t-complete",
             "did:plc:inflight6",
             "FFF666",
@@ -677,7 +677,7 @@ mod tests {
         )
         .await;
         seed_transfer(
-            &state.db,
+            &db,
             "t-cancelled",
             "did:plc:inflight7",
             "GGG777",
@@ -687,7 +687,7 @@ mod tests {
         )
         .await;
 
-        let rows = list_inflight_transfers(&state.db, None, 50).await.unwrap();
+        let rows = list_inflight_transfers(&db, None, 50).await.unwrap();
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -698,11 +698,11 @@ mod tests {
 
     #[tokio::test]
     async fn inflight_list_pages_on_created_at_id_keyset() {
-        let state = test_state().await;
+        let db = test_pool().await;
         for n in 1..=3 {
-            seed_account(&state.db, &format!("did:plc:page{n}")).await;
+            seed_account(&db, &format!("did:plc:page{n}")).await;
             seed_transfer(
-                &state.db,
+                &db,
                 &format!("t-page{n}"),
                 &format!("did:plc:page{n}"),
                 &format!("PAG10{n}"),
@@ -713,12 +713,12 @@ mod tests {
             .await;
         }
 
-        let first = list_inflight_transfers(&state.db, None, 2).await.unwrap();
+        let first = list_inflight_transfers(&db, None, 2).await.unwrap();
         assert_eq!(first.len(), 2);
         assert_eq!(first[0].id, "t-page3");
 
         let last = first.last().unwrap();
-        let second = list_inflight_transfers(&state.db, Some((&last.created_at, &last.id)), 2)
+        let second = list_inflight_transfers(&db, Some((&last.created_at, &last.id)), 2)
             .await
             .unwrap();
         let ids: Vec<&str> = second.iter().map(|r| r.id.as_str()).collect();
@@ -727,24 +727,24 @@ mod tests {
 
     #[tokio::test]
     async fn inflight_list_carries_handle_and_accepted_device_platform() {
-        let state = test_state().await;
-        seed_account(&state.db, "did:plc:detail1").await;
+        let db = test_pool().await;
+        seed_account(&db, "did:plc:detail1").await;
         sqlx::query(
             "INSERT INTO handles (handle, did, created_at) \
              VALUES ('detail.example.com', 'did:plc:detail1', datetime('now'))",
         )
-        .execute(&state.db)
+        .execute(&db)
         .await
         .unwrap();
 
-        let mut tx = state.db.begin().await.unwrap();
+        let mut tx = db.begin().await.unwrap();
         insert_transfer_device(&mut tx, "dev-1", "did:plc:detail1", "ios", "pk", "hash-1")
             .await
             .unwrap();
         tx.commit().await.unwrap();
 
         seed_transfer(
-            &state.db,
+            &db,
             "t-detail",
             "did:plc:detail1",
             "HHH888",
@@ -757,11 +757,11 @@ mod tests {
             "UPDATE transfers SET accepted_device_id = 'dev-1', accepted_at = datetime('now') \
              WHERE id = 't-detail'",
         )
-        .execute(&state.db)
+        .execute(&db)
         .await
         .unwrap();
 
-        let rows = list_inflight_transfers(&state.db, None, 50).await.unwrap();
+        let rows = list_inflight_transfers(&db, None, 50).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].handle.as_deref(), Some("detail.example.com"));
         assert_eq!(rows[0].accepted_device_platform.as_deref(), Some("ios"));
@@ -770,19 +770,19 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_active_code_reports_collision() {
-        let state = test_state().await;
-        seed_account(&state.db, "did:plc:codea").await;
-        seed_account(&state.db, "did:plc:codeb").await;
+        let db = test_pool().await;
+        seed_account(&db, "did:plc:codea").await;
+        seed_account(&db, "did:plc:codeb").await;
 
         // Account A holds an active transfer with a known code.
-        let a = insert_transfer(&state.db, "ta", "did:plc:codea", "DUP123", 15)
+        let a = insert_transfer(&db, "ta", "did:plc:codea", "DUP123", 15)
             .await
             .unwrap();
         assert!(matches!(a, InitiateOutcome::Created { .. }));
 
         // A *different* account taking the same active code is a collision (caller
         // retries with a new code), distinct from the per-account DuplicateActive 409.
-        let b = insert_transfer(&state.db, "tb", "did:plc:codeb", "DUP123", 15)
+        let b = insert_transfer(&db, "tb", "did:plc:codeb", "DUP123", 15)
             .await
             .unwrap();
         assert_eq!(b, InitiateOutcome::CodeCollision);

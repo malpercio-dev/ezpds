@@ -14,7 +14,8 @@ depends on no HTTP stack and on nothing above it.
 - **`DbError`** and the shared write helpers: `is_unique_violation`,
   `unique_violation_column`, `insert_with_retry_on_collision`, `insert_with_retry_if`.
 - **Cross-feature query modules**: `accounts`, `dids`, `handles`, `blobs`, `blocks`, `kek`,
-  `admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`. A query module lives
+  `admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`, `admin_devices`,
+  `iroh_identity`, `jwt_secret`, `repo_keys`, `transfers`. A query module lives
   here when more than one feature reads its tables; a feature-local one stays with its feature
   (`crates/pds/src/db/` today) until a second crate needs it.
 
