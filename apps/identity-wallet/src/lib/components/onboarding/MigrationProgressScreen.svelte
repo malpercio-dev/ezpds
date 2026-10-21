@@ -13,6 +13,7 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import { describeBlobLoss, describeBlobTransferDetail } from '$lib/migration-errors';
+  import { formatRateLimitMessage } from '$lib/claim-errors';
 
   let {
     did,
@@ -103,6 +104,8 @@
           return 'The destination server already has an account that conflicts with this identity.';
         case 'REPO_TRANSFER_FAILED':
           return "Couldn't transfer the repository.";
+        case 'RATE_LIMITED':
+          return formatRateLimitMessage(err.retryAfter);
         case 'BLOB_TRANSFER_FAILED':
           return "Couldn't transfer one or more blobs.";
         case 'BLOB_DRAIN_INCOMPLETE':

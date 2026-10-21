@@ -615,16 +615,41 @@ pub(crate) async fn run_backup_core(
     let lock = repo_lock(did);
     let _guard = lock.lock().await;
 
+    let existing = load_manifest(root, did).await?;
+    let car_present = tokio::fs::try_exists(car_path(root, did))
+        .await
+        .unwrap_or(false);
+
+    // Ask for the current rev before pulling a multi-MB CAR: an unchanged repo costs one tiny
+    // request, and a PDS that cools down repeat full exports of one rev never sees a repeat.
+    // Any failure here just falls through to the full download, which reports its own errors.
+    if let (true, Some(mut manifest)) = (car_present, existing.clone()) {
+        match pds_client.fetch_latest_commit(pds_url, did).await {
+            Ok(latest) if latest.rev == manifest.rev => {
+                let now = chrono::Utc::now().to_rfc3339();
+                manifest.last_backup_at = Some(now.clone());
+                save_manifest(root, did, &manifest).await?;
+                return Ok(RepoBackupRunReport {
+                    root_cid: manifest.root_cid,
+                    rev: manifest.rev,
+                    size_bytes: manifest.size_bytes,
+                    updated: false,
+                    last_backup_at: now,
+                });
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(did = %did, error = %e, "repo backup: getLatestCommit failed; doing a full fetch");
+            }
+        }
+    }
+
     let car = pds_client
         .fetch_repo_car(pds_url, did)
         .await
         .map_err(|e| map_fetch_error("failed to fetch repo snapshot", e))?;
     let validated = validate_repo_car(&car, did)?;
 
-    let existing = load_manifest(root, did).await?;
-    let car_present = tokio::fs::try_exists(car_path(root, did))
-        .await
-        .unwrap_or(false);
     let unchanged = car_present && existing.as_ref().is_some_and(|m| m.rev == validated.rev);
 
     let size_bytes = car.len() as u64;
@@ -1141,6 +1166,53 @@ mod tests {
             .modified()
             .unwrap();
         assert_eq!(before, after, "the CAR file must not be rewritten");
+    }
+
+    #[tokio::test]
+    async fn unchanged_latest_commit_skips_the_car_download() {
+        let did = "did:plc:precheck";
+        let (car, root, rev) = valid_empty_repo(did, "3lkkkkkkk2az");
+        let server = MockServer::start_async().await;
+        let get_repo = server.mock(|when, then| {
+            when.method(GET).path("/xrpc/com.atproto.sync.getRepo");
+            then.status(200).body(&car);
+        });
+        let latest = server.mock(|when, then| {
+            when.method(GET)
+                .path("/xrpc/com.atproto.sync.getLatestCommit")
+                .query_param("did", did);
+            then.status(200)
+                .json_body(serde_json::json!({ "cid": root, "rev": rev }));
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let client = PdsClient::new();
+        // First pass: nothing on disk yet, so no pre-check — straight to the full fetch.
+        run_backup_core(&client, dir.path(), did, &server.base_url())
+            .await
+            .unwrap();
+        assert_eq!(latest.calls(), 0);
+        let first_stamp = load_manifest(dir.path(), did)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_backup_at;
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let second = run_backup_core(&client, dir.path(), did, &server.base_url())
+            .await
+            .unwrap();
+        assert!(!second.updated);
+        assert_eq!(second.rev, rev);
+        assert_eq!(second.size_bytes, car.len() as u64);
+        assert_eq!(latest.calls(), 1);
+        assert_eq!(
+            get_repo.calls(),
+            1,
+            "an unchanged rev must not re-download the CAR"
+        );
+        let manifest = load_manifest(dir.path(), did).await.unwrap().unwrap();
+        assert_ne!(manifest.last_backup_at, first_stamp, "timestamp advances");
     }
 
     #[tokio::test]

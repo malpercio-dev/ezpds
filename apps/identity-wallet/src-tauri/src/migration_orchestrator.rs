@@ -17,7 +17,8 @@
 //! - `transfer_repo` — getRepo → importRepo. On a source `getRepo` failure it falls
 //!   back to the local iCloud repo mirror (`repo_backup::mirror_repo_car`) when that
 //!   mirror holds a CID/commit-valid snapshot for the DID, else surfaces the original
-//!   source failure unchanged — the repo twin of the blob drain's mirror fallback.
+//!   source failure unchanged — the repo twin of the blob drain's mirror fallback. A source
+//!   `429` is the exception: it surfaces as `RateLimited` and never falls back.
 //! - `transfer_blobs` — cursor-paginated `listMissingBlobs` drain
 //!   (`drain_missing_blobs` / `transfer_one_blob`) that degrades PER BLOB rather than
 //!   aborting: an unrecoverable blob becomes a `BlobLoss` (cid, record_uri,
@@ -225,7 +226,7 @@ pub enum MigrationError {
     /// endpoint comes from the DID document, so a plaintext `http://` endpoint is rejected.
     #[error("insecure source url")]
     InsecureSourceUrl,
-    /// The source PDS rate-limited the login (HTTP 429). `retry_after` carries the server's
+    /// The source PDS rate-limited the login or the repo export (HTTP 429). `retry_after` carries the server's
     /// `Retry-After` value when present, so the UI can say how long to wait rather than blaming the
     /// connection.
     #[error("rate limited")]
@@ -786,7 +787,8 @@ pub async fn create_destination_account(
 /// doubt), so a backed-up user's dead source repo becomes a non-event. When the mirror can't supply
 /// a valid snapshot the original source failure is surfaced unchanged, exactly as before the mirror
 /// existed. The fallback is consulted only for the source `getRepo` half; a destination `importRepo`
-/// refusal is a genuinely different failure the mirror can't fix.
+/// refusal is a genuinely different failure the mirror can't fix. A source `429` never falls back:
+/// the source is alive and pacing repeat full exports, and the mirror may be older than it.
 async fn transfer_repo_impl(
     pds_client: &crate::pds_client::PdsClient,
     dest_client: &OAuthClient,
@@ -799,6 +801,12 @@ async fn transfer_repo_impl(
     tracing::debug!(did = %did, source_url = %source_pds_url, "fetching repository from source");
     let car = match pds_client.fetch_repo_car(source_pds_url, did).await {
         Ok(car) => car,
+        // A 429 means the source can serve the repo and is only pacing us; the mirror may be older
+        // than the live repo, so importing it would silently roll the account back. Wait instead.
+        Err(crate::pds_client::PdsClientError::RateLimited { retry_after, .. }) => {
+            tracing::warn!(did = %did, ?retry_after, "source getRepo rate-limited; not falling back to the mirror");
+            return Err(MigrationError::RateLimited { retry_after });
+        }
         Err(source_err) => {
             tracing::error!(did = %did, error = %source_err, "failed to fetch repository CAR from source");
             // The source PDS can't serve getRepo. Try the local mirror: a CID/commit-valid backup
@@ -2753,6 +2761,55 @@ mod tests {
         );
         // Sanity: the seeded snapshot is a real, non-empty CAR (it is what got imported).
         assert!(!car.is_empty());
+    }
+
+    // A 429 is pacing, not a dead source: the transfer surfaces RATE_LIMITED with the server's
+    // Retry-After and never imports the (possibly older) mirror snapshot.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_transfer_repo_rate_limited_never_falls_back_to_mirror() {
+        let did = "did:plc:repomirrorratelimit";
+        let mirror = tempfile::tempdir().unwrap();
+        crate::repo_backup::seed_mirror_repo_for_test(mirror.path(), did).await;
+
+        let source = MockServer::start();
+        source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getRepo");
+            then.status(429).header("Retry-After", "1800").json_body(
+                serde_json::json!({ "error": "RateLimitExceeded", "message": "slow down" }),
+            );
+        });
+        let dest = MockServer::start();
+        let import = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.importRepo");
+            then.status(200);
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+        let result = transfer_repo_impl(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            did,
+            Some(mirror.path()),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(MigrationError::RateLimited { retry_after: Some(ref r) }) if r == "1800"
+            ),
+            "got {result:?}"
+        );
+        assert_eq!(
+            import.calls(),
+            0,
+            "the mirror snapshot must not be imported"
+        );
     }
 
     // The fallback never masks a genuine failure: with the mirror empty (no snapshot for the DID),
