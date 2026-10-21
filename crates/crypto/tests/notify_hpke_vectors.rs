@@ -10,6 +10,7 @@
 //!
 //! Cross-verification against CryptoKit happens on-device in the wallet phase: the same
 //! fixtures are read by an XCTest that opens them with `HPKE.Recipient`.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a panic is the failure signal
 
 use base64::Engine;
 use crypto::{open_notification, public_key_for_secret, seal_notification};

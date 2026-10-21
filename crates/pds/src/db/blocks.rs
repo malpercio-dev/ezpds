@@ -372,6 +372,7 @@ impl AsyncBlockStoreRead for SqliteBlockStore {
 }
 
 impl AsyncBlockStoreWrite for SqliteBlockStore {
+    #[allow(clippy::expect_used, reason = "a SHA2-256 digest is always 32 bytes")]
     async fn write_block(
         &mut self,
         codec: u64,

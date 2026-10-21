@@ -116,6 +116,7 @@ pub(crate) fn is_valid_record_key(value: &str) -> bool {
 
 /// TID syntax per `@atproto/syntax`'s `ensureValidTid`: exactly 13 chars from the base32-sortable
 /// alphabet, with the high bit clear (first char in `[234567abcdefghij]`).
+#[allow(clippy::expect_used, reason = "the length was checked to be 13 above")]
 pub(super) fn is_valid_tid(value: &str) -> bool {
     const ALPHABET: &str = "234567abcdefghijklmnopqrstuvwxyz";
     if value.len() != 13 {

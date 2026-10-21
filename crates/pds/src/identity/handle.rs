@@ -122,6 +122,10 @@ fn validate_label(label: &str) -> Result<(), &'static str> {
 ///
 /// # Errors
 /// Returns a static message suitable for a 400 response body.
+#[allow(
+    clippy::expect_used,
+    reason = "validate_handle_structure above guarantees at least one dot"
+)]
 pub(crate) fn validate_handle<'a>(
     handle: &'a str,
     available_domains: &[String],

@@ -176,6 +176,10 @@ pub fn encode_space_commit_ctx(
 }
 
 // RFC 5869 §2.3 expand only — `ikm` is the PRK, ctx the info.
+#[allow(
+    clippy::expect_used,
+    reason = "a 32-byte PRK, 32-byte output and an HMAC key of any length are all within RFC 5869/2104 bounds"
+)]
 fn commit_mac(ikm: &[u8; 32], ctx_bytes: &[u8], hash: &[u8; 32]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::from_prk(ikm).expect("32-byte PRK is a valid HKDF-SHA256 PRK");
     let mut okm = [0u8; 32];

@@ -90,6 +90,10 @@ pub async fn update_handle_handler(
 
     let is_served_domain = {
         // Structural validation guarantees at least one dot.
+        #[allow(
+            clippy::expect_used,
+            reason = "structural validation guarantees at least one dot"
+        )]
         let dot = payload
             .handle
             .find('.')
@@ -107,6 +111,10 @@ pub async fn update_handle_handler(
         // once we insert it — skip external resolution. Because this branch skips
         // the resolution proof, the infrastructure-name reservation must gate here
         // (registration paths get it via validate_handle).
+        #[allow(
+            clippy::expect_used,
+            reason = "structural validation guarantees at least one dot"
+        )]
         let dot = payload
             .handle
             .find('.')
