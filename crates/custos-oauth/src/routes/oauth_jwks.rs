@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: OAuth signing keypair from AppState
+// Gathers: OAuth signing keypair from CoreState
 // Processes: ensures kid, use, and alg fields are present in the JWK; wraps in JWK Set envelope
 // Returns: RFC 7517 JWK Set JSON with Cache-Control for client-side caching
 
@@ -11,9 +11,9 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::app::AppState;
+use custos_core::CoreState;
 
-pub async fn oauth_jwks(State(state): State<AppState>) -> Response {
+pub async fn oauth_jwks(State(state): State<CoreState>) -> Response {
     let keypair = &state.oauth_signing_keypair;
     let mut jwk = keypair.public_key_jwk.clone();
 
@@ -52,11 +52,12 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
     use crate::auth::OAuthSigningKey;
+    use crate::test_support::{test_app, test_state};
+    use custos_core::CoreState;
 
     async fn jwks_json() -> serde_json::Value {
-        let response = app(test_state().await)
+        let response = test_app(test_state().await)
             .oneshot(
                 Request::builder()
                     .uri("/oauth/jwks")
@@ -74,7 +75,7 @@ mod tests {
 
     #[tokio::test]
     async fn has_cache_control_header() {
-        let response = app(test_state().await)
+        let response = test_app(test_state().await)
             .oneshot(
                 Request::builder()
                     .uri("/oauth/jwks")
@@ -113,11 +114,11 @@ mod tests {
 
     #[tokio::test]
     async fn kid_matches_signing_key_id() {
-        // Uses the same AppState instance for the request and the expected kid —
+        // Uses the same CoreState instance for the request and the expected kid —
         // avoids relying on the hardcoded "test-oauth-key-01" fixture value.
         let state = test_state().await;
         let expected_kid = state.oauth_signing_keypair.key_id.clone();
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .uri("/oauth/jwks")
@@ -143,17 +144,14 @@ mod tests {
             "kid".to_string(),
             serde_json::Value::String("pre-existing-kid".to_string()),
         );
-        let state = AppState {
-            core: custos_core::CoreState {
-                oauth_signing_keypair: OAuthSigningKey {
-                    public_key_jwk: jwk,
-                    ..base.oauth_signing_keypair.clone()
-                },
-                ..base.core
+        let state = CoreState {
+            oauth_signing_keypair: OAuthSigningKey {
+                public_key_jwk: jwk,
+                ..base.oauth_signing_keypair.clone()
             },
             ..base
         };
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .uri("/oauth/jwks")

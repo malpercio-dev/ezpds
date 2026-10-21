@@ -24,7 +24,7 @@
 //! `jwks` or its `jwks_uri`; the latter is a client-controlled URL, so it gets the same
 //! transport policy as `client_id` itself (https except loopback, no credentials) and is
 //! fetched with the SSRF-hardened client, which is the actual guard, and cached
-//! (`AppState::oauth_client_jwks_cache`, `[oauth] client_jwks_*` config — see `auth::jwks`'s
+//! (`CoreState::oauth_client_jwks_cache`, `[oauth] client_jwks_*` config — see `auth::jwks`'s
 //! module doc) rather than repeated on every token request. `jti` presence
 //! is required but not replay-tracked: every protected grant is already single-use
 //! (authorization codes) or rotation-guarded (refresh tokens), so a replayed assertion alone
@@ -33,9 +33,9 @@
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
-use crate::app::AppState;
 use crate::db::oauth::{get_oauth_client, ClientMetadata};
-use crate::routes::oauth_errors::OAuthTokenError;
+use crate::oauth_errors::OAuthTokenError;
+use custos_core::CoreState;
 
 pub(super) const CLIENT_ASSERTION_TYPE_JWT_BEARER: &str =
     "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
@@ -67,7 +67,7 @@ fn invalid_client(description: impl Into<String>) -> OAuthTokenError {
 /// an unknown client or one whose stored metadata predates the extended fields is treated
 /// as a public client, matching the pre-existing behavior for every seeded row).
 pub(super) async fn authenticate_token_client(
-    state: &AppState,
+    state: &CoreState,
     client_id: &str,
     assertion_type: Option<&str>,
     assertion: Option<&str>,
@@ -107,7 +107,7 @@ pub(super) async fn authenticate_token_client(
 }
 
 async fn verify_private_key_jwt(
-    state: &AppState,
+    state: &CoreState,
     client_id: &str,
     metadata: &ClientMetadata,
     assertion_type: Option<&str>,
@@ -173,7 +173,7 @@ async fn verify_private_key_jwt(
 /// cached, SSRF-hardened fetch — is shared with Atproto Spaces client attestations; see
 /// [`crate::auth::jwks::client_verification_key`].
 async fn resolve_client_key(
-    state: &AppState,
+    state: &CoreState,
     metadata: &ClientMetadata,
     kid: Option<&str>,
 ) -> Result<DecodingKey, OAuthTokenError> {
@@ -204,13 +204,14 @@ mod tests {
     use rand_core::OsRng;
 
     use super::*;
-    use crate::app::{test_state, AppState};
     use crate::db::oauth::upsert_oauth_client;
-    use crate::routes::test_utils::ec_jwk;
+    use crate::test_support::ec_jwk;
+    use crate::test_support::test_state;
+    use custos_core::CoreState;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
 
-    async fn seed_client(state: &AppState, metadata: serde_json::Value) {
+    async fn seed_client(state: &CoreState, metadata: serde_json::Value) {
         upsert_oauth_client(&state.db, CLIENT_ID, &metadata.to_string())
             .await
             .unwrap();
@@ -254,7 +255,7 @@ mod tests {
 
     /// Authenticate `assertion` for [`CLIENT_ID`] and assert it is refused as `invalid_client` —
     /// the shape every rejected-assertion test in this module ends with.
-    async fn expect_invalid_client(state: &AppState, assertion: &str) {
+    async fn expect_invalid_client(state: &CoreState, assertion: &str) {
         let err = authenticate_token_client(
             state,
             CLIENT_ID,

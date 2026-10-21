@@ -70,7 +70,7 @@ idempotent for that to be safe).
 
 ### OAuth client impersonation
 
-PAR/authorize require `code_challenge_method=S256` (`crates/pds/src/routes/oauth_par.rs`),
+PAR/authorize require `code_challenge_method=S256` (`crates/custos-oauth/src/routes/oauth_par.rs`),
 an exact `redirect_uri` match against the client's registered `redirect_uris`
 (same file), and — for a Private-Use URI Scheme redirect on discoverable
 client metadata — the reverse-FQDN rule (`validate_private_use_redirect` in

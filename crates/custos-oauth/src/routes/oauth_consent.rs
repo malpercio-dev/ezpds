@@ -40,7 +40,6 @@ use axum::{
 use common::{ApiError, ApiResultExt, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use serde::{Deserialize, Serialize};
 
-use crate::app::AppState;
 use crate::auth::signed_proof::{decode_canonical_base64url, NONCE_BYTES, SIGNATURE_BYTES};
 use crate::auth::token::generate_token;
 use crate::db::oauth::store_authorization_code;
@@ -51,7 +50,8 @@ use crate::db::pending_oauth_authorizations::{
 };
 use crate::identity::authority::{authorized_signing_keys, AuthorityError, AuthoritySet};
 use crate::identity::resolution::resolve_handle_to_did;
-use crate::routes::oauth_templates::{build_code_redirect, error_page};
+use crate::oauth_templates::{build_code_redirect, error_page};
+use custos_core::CoreState;
 
 /// Minimum spacing between accepted status polls for one request; a faster poll gets the
 /// `slow_down` 429 the page's JS backs off on (the `claim_polling` discipline).
@@ -131,7 +131,7 @@ pub struct ConsentRequestPreview {
 /// `user_code` (typed) or `request_id` (handoff). Returns 404 for anything not currently pending so
 /// a guessed code reveals nothing.
 pub async fn get_consent_request(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Query(query): Query<ConsentRequestQuery>,
 ) -> Result<Json<ConsentRequestPreview>, ApiError> {
     let pending = match (&query.user_code, &query.request_id) {
@@ -181,7 +181,7 @@ struct StatusResponse {
 /// the `slow_down` discipline (429 when polled faster than `STATUS_POLL_MIN_INTERVAL`), and reports
 /// a derived `expired` for a lapsed or reclaimed request so the page stops.
 pub async fn get_authorization_status(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Query(query): Query<StatusQuery>,
 ) -> Response {
     // slow_down throttle, reusing the shared poll tracker with a namespaced key so it can't collide
@@ -275,7 +275,7 @@ pub struct ApprovalResponse {
 /// outage resolves to `Ok(None)` rather than an error, so a user-domain handle is refused while its
 /// resolution is down; entering the DID still binds, since that path performs no resolution.
 async fn hint_binds_account(
-    state: &AppState,
+    state: &CoreState,
     hint: &str,
     did: &str,
     authority: &AuthoritySet,
@@ -295,7 +295,7 @@ async fn hint_binds_account(
 /// `POST /oauth/authorize/approve` — verify a device-key-signed approve/deny envelope against the
 /// account's authoritative current signing authority and terminate the request accordingly.
 pub async fn post_authorization_approve(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Json(request): Json<ApprovalRequest>,
 ) -> Result<Json<ApprovalResponse>, ApiError> {
     // 1. Cheap syntactic gates before any DB or network work.
@@ -472,7 +472,7 @@ fn issuance_failed_page() -> Response {
 /// transition mints at most one code; a no-JS "I've approved — continue" button and the page's JS
 /// poller both post here.
 pub async fn post_authorization_complete(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Form(form): Form<CompleteForm>,
 ) -> Response {
     let issuer = state.config.issuer().to_string();
@@ -571,10 +571,11 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
     };
 
-    use crate::app::{app, test_state_with_plc_url, AppState};
     use crate::db::oauth::register_oauth_client;
     use crate::db::pending_oauth_authorizations::NewPendingOAuthAuthorization;
-    use crate::routes::test_utils;
+    use crate::test_support;
+    use crate::test_support::{test_app, test_state_with_plc_url};
+    use custos_core::CoreState;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const CLIENT_METADATA: &str =
@@ -603,16 +604,16 @@ mod tests {
         URL_SAFE_NO_PAD.encode(sig.normalize_s().unwrap_or(sig).to_bytes())
     }
 
-    async fn setup(plc: &MockServer) -> AppState {
+    async fn setup(plc: &MockServer) -> CoreState {
         let state = test_state_with_plc_url(plc.uri()).await;
         register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
             .await
             .unwrap();
-        test_utils::seed_handle(&state.db, "owner.example.com", DID).await;
+        test_support::seed_handle(&state.db, "owner.example.com", DID).await;
         state
     }
 
-    async fn seed_pending(state: &AppState, request_id: &str, login_hint: Option<&str>) {
+    async fn seed_pending(state: &CoreState, request_id: &str, login_hint: Option<&str>) {
         let new = NewPendingOAuthAuthorization {
             request_id,
             user_code: "TEST-CODE",
@@ -664,7 +665,7 @@ mod tests {
     }
 
     fn approval_body(
-        state: &AppState,
+        state: &CoreState,
         key: &TestKey,
         request_id: &str,
         decision: &str,
@@ -696,8 +697,8 @@ mod tests {
         })
     }
 
-    async fn post_json(state: AppState, uri: &str, body: Value) -> axum::response::Response {
-        app(state)
+    async fn post_json(state: CoreState, uri: &str, body: Value) -> axum::response::Response {
+        test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -710,8 +711,8 @@ mod tests {
             .unwrap()
     }
 
-    async fn get(state: AppState, uri: &str) -> axum::response::Response {
-        app(state)
+    async fn get(state: CoreState, uri: &str) -> axum::response::Response {
+        test_app(state)
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
             .await
             .unwrap()
@@ -777,7 +778,7 @@ mod tests {
         assert_eq!(status["status"], "approved");
 
         // Complete issues an authorization code and redirects back to the client.
-        let complete = app(state.clone())
+        let complete = test_app(state.clone())
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -1315,11 +1316,11 @@ mod tests {
     /// only ever reads `location.hash`.
     #[tokio::test]
     async fn completion_answers_in_the_stored_fragment_response_mode() {
-        let state = crate::app::test_state().await;
+        let state = crate::test_support::test_state().await;
         register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
             .await
             .unwrap();
-        test_utils::seed_handle(&state.db, "owner.example.com", DID).await;
+        test_support::seed_handle(&state.db, "owner.example.com", DID).await;
 
         let request_id = "poauth_fragment_mode";
         let new = crate::db::pending_oauth_authorizations::NewPendingOAuthAuthorization {
@@ -1356,7 +1357,7 @@ mod tests {
         .await
         .unwrap();
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")

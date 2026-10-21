@@ -19,17 +19,17 @@ use super::{
     cleanup_expired_state, issue_access_token, token_response_headers, TokenRequestForm,
     TokenResponse,
 };
-use crate::app::AppState;
 use crate::auth::token::generate_token;
 use crate::db::oauth::{
     delete_oauth_refresh_session, get_oauth_refresh_token, store_rotated_oauth_refresh_token,
     supersede_oauth_refresh_token,
 };
-use crate::routes::oauth_dpop::token_endpoint_dpop;
-use crate::routes::oauth_errors::{require, OAuthTokenError};
+use crate::oauth_dpop::token_endpoint_dpop;
+use crate::oauth_errors::{require, OAuthTokenError};
+use custos_core::CoreState;
 
 pub(super) async fn handle_refresh_token(
-    state: &AppState,
+    state: &CoreState,
     headers: &HeaderMap,
     form: TokenRequestForm,
 ) -> Response {
@@ -219,12 +219,12 @@ mod tests {
     use tower::ServiceExt;
 
     use super::super::test_support::{json_body, post_token_with_dpop};
-    use crate::app::{app, test_state};
-    use crate::routes::test_utils::{self, seed_refresh_row};
+    use crate::test_support::{self, seed_refresh_row};
+    use crate::test_support::{test_app, test_state};
 
     /// Seed a fresh refresh token bound to `jkt`, carrying the granted granular scope
     /// (`atproto transition:generic`) and the default +24h session expiry.
-    async fn seed_refresh_token(state: &crate::app::AppState, jkt: &str) -> String {
+    async fn seed_refresh_token(state: &custos_core::CoreState, jkt: &str) -> String {
         seed_refresh_row(
             state,
             Some(jkt),
@@ -235,7 +235,7 @@ mod tests {
     }
 
     /// Seed an already-expired refresh token (bypasses the default +24h expiry).
-    async fn seed_expired_refresh_token(state: &crate::app::AppState, jkt: &str) -> String {
+    async fn seed_expired_refresh_token(state: &custos_core::CoreState, jkt: &str) -> String {
         seed_refresh_row(
             state,
             Some(jkt),
@@ -247,7 +247,7 @@ mod tests {
 
     /// Seed a valid refresh token holding the legacy fixed `com.atproto.refresh`
     /// scope (as written before granular scopes were persisted).
-    async fn seed_legacy_refresh_token(state: &crate::app::AppState, jkt: &str) -> String {
+    async fn seed_legacy_refresh_token(state: &custos_core::CoreState, jkt: &str) -> String {
         seed_refresh_row(
             state,
             Some(jkt),
@@ -264,11 +264,11 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_legacy_scope_is_coerced_to_atproto() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let jkt = key.thumbprint();
 
         let plaintext = seed_legacy_refresh_token(&state, &jkt).await;
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
 
         let body = format!(
             "grant_type=refresh_token\
@@ -276,7 +276,7 @@ mod tests {
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();
@@ -300,11 +300,11 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_happy_path_returns_200_with_new_tokens() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let jkt = key.thumbprint();
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
 
         let body = format!(
             "grant_type=refresh_token\
@@ -312,7 +312,7 @@ mod tests {
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();
@@ -381,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_second_use_within_grace_succeeds() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let jkt = key.thumbprint();
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
@@ -392,8 +392,8 @@ mod tests {
         );
 
         // First use: succeeds. Clone state so the second request shares the same DB.
-        let dpop1 = test_utils::token_proof(&state, &key);
-        let first_resp = app(state.clone())
+        let dpop1 = test_support::token_proof(&state, &key);
+        let first_resp = test_app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop1))
             .await
             .unwrap();
@@ -406,8 +406,8 @@ mod tests {
 
         // Second use of the same original token, seconds later: still inside the grace
         // window, so it must succeed and mint its own distinct token pair.
-        let dpop2 = test_utils::token_proof(&state, &key);
-        let resp2 = app(state)
+        let dpop2 = test_support::token_proof(&state, &key);
+        let resp2 = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop2))
             .await
             .unwrap();
@@ -430,7 +430,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_stale_reuse_revokes_session_family() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let jkt = key.thumbprint();
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
@@ -441,8 +441,8 @@ mod tests {
              &refresh_token={plaintext}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let dpop1 = test_utils::token_proof(&state, &key);
-        let first_resp = app(state.clone())
+        let dpop1 = test_support::token_proof(&state, &key);
+        let first_resp = test_app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop1))
             .await
             .unwrap();
@@ -463,8 +463,8 @@ mod tests {
         .unwrap();
 
         // Replaying the superseded token now must fail AND revoke the successor too.
-        let dpop2 = test_utils::token_proof(&state, &key);
-        let resp2 = app(state.clone())
+        let dpop2 = test_support::token_proof(&state, &key);
+        let resp2 = test_app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop2))
             .await
             .unwrap();
@@ -478,8 +478,8 @@ mod tests {
              &refresh_token={successor}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let dpop3 = test_utils::token_proof(&state, &key);
-        let resp3 = app(state)
+        let dpop3 = test_support::token_proof(&state, &key);
+        let resp3 = test_app(state)
             .oneshot(post_token_with_dpop(&successor_body, &dpop3))
             .await
             .unwrap();
@@ -497,7 +497,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_rotation_carries_absolute_expiry_forward() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let jkt = key.thumbprint();
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
@@ -512,8 +512,8 @@ mod tests {
              &refresh_token={plaintext}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let dpop = test_utils::token_proof(&state, &key);
-        let resp = app(state.clone())
+        let dpop = test_support::token_proof(&state, &key);
+        let resp = test_app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();
@@ -534,11 +534,11 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_expired_returns_invalid_grant() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let jkt = key.thumbprint();
 
         let plaintext = seed_expired_refresh_token(&state, &jkt).await;
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
 
         let body = format!(
             "grant_type=refresh_token\
@@ -546,7 +546,7 @@ mod tests {
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();
@@ -562,15 +562,15 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_jkt_mismatch_returns_invalid_grant() {
         let state = test_state().await;
-        let stored_key = test_utils::DpopProofKey::generate();
+        let stored_key = test_support::DpopProofKey::generate();
         let stored_jkt = stored_key.thumbprint();
 
         // Seed token bound to stored_key's thumbprint.
         let plaintext = seed_refresh_token(&state, &stored_jkt).await;
 
         // Build proof with a DIFFERENT key — thumbprint will not match stored_jkt.
-        let different_key = test_utils::DpopProofKey::generate();
-        let dpop = test_utils::token_proof(&state, &different_key);
+        let different_key = test_support::DpopProofKey::generate();
+        let dpop = test_support::token_proof(&state, &different_key);
 
         let body = format!(
             "grant_type=refresh_token\
@@ -578,7 +578,7 @@ mod tests {
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();
@@ -597,11 +597,11 @@ mod tests {
     async fn refresh_token_not_consumed_on_client_id_mismatch() {
         // Verifies that the refresh token is NOT deleted when client_id validation fails.
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let jkt = key.thumbprint();
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
 
         // Attempt 1: wrong client_id — must fail.
         let bad_body = format!(
@@ -609,7 +609,7 @@ mod tests {
              &refresh_token={plaintext}\
              &client_id=https%3A%2F%2Fwrong.example.com%2Fclient-metadata.json"
         );
-        let bad_resp = app(state.clone())
+        let bad_resp = test_app(state.clone())
             .oneshot(post_token_with_dpop(&bad_body, &dpop))
             .await
             .unwrap();
@@ -618,13 +618,13 @@ mod tests {
         assert_eq!(bad_json["error"], "invalid_grant");
 
         // Attempt 2: correct client_id — must succeed (token was not consumed above).
-        let dpop2 = test_utils::token_proof(&state, &key);
+        let dpop2 = test_support::token_proof(&state, &key);
         let good_body = format!(
             "grant_type=refresh_token\
              &refresh_token={plaintext}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let good_resp = app(state)
+        let good_resp = test_app(state)
             .oneshot(post_token_with_dpop(&good_body, &dpop2))
             .await
             .unwrap();
@@ -642,7 +642,7 @@ mod tests {
         // Tokens issued before DPoP binding enforcement may have jkt = NULL.
         // These must be rejected rather than silently accepting any DPoP key.
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
 
         // jkt = NULL simulates a pre-V012 row, predating DPoP binding enforcement.
         let plaintext = seed_refresh_row(
@@ -653,14 +653,14 @@ mod tests {
         )
         .await;
 
-        let dpop = test_utils::token_proof(&state, &key);
+        let dpop = test_support::token_proof(&state, &key);
         let body = format!(
             "grant_type=refresh_token\
              &refresh_token={plaintext}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
             .unwrap();

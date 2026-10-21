@@ -465,7 +465,7 @@ async fn a_hinted_login_pushes_a_sealed_login_approval_to_the_wallet() {
     let (_kid, sender_public_key) = published_sender_key(&state).await;
 
     // A registered OAuth client, and the login another device starts against it.
-    crate::db::oauth::register_oauth_client(
+    custos_db::oauth::register_oauth_client(
         &state.db,
         "https://app.example.com/client-metadata.json",
         r#"{"redirect_uris":["https://app.example.com/callback"],"client_name":"Test App"}"#,
@@ -476,7 +476,7 @@ async fn a_hinted_login_pushes_a_sealed_login_approval_to_the_wallet() {
     // The authorize endpoint is PAR-only, so the login's parameters are pushed first
     // and the GET carries only the issued reference.
     let request_uri = "urn:ietf:params:oauth:request_uri:notify-e2e-hinted-login";
-    crate::db::oauth::store_par_request(
+    custos_db::oauth::store_par_request(
         &state.db,
         request_uri,
         "https://app.example.com/client-metadata.json",

@@ -70,12 +70,7 @@ pub const CAPABILITIES: &[Capability] = &[
                 || !config.agent_auth.trusted_issuers.is_empty()
         },
     },
-    Capability {
-        name: "walletConsent",
-        control: CONTROL_ALWAYS,
-        summary: "OAuth authorization can be approved in the identity wallet with a device-key-signed decision instead of a browser password.",
-        enabled: |_| true,
-    },
+    custos_oauth::CAPABILITY,
     Capability {
         name: "optionalPassword",
         control: "accounts.password_optional",

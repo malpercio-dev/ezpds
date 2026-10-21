@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: AppState (DB, DPoP nonce store), DPoP header, form body
+// Gathers: CoreState (DB, DPoP nonce store), DPoP header, form body
 // Processes: DPoP proof validation → refresh-token lookup (key- and client-bound) → delete
 // Returns: 200 with an empty body on success or on an unknown/unauthorized token
 //          (RFC 7009 §2.2 non-disclosure); JSON OAuthTokenError on a malformed or
@@ -39,12 +39,12 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 
-use crate::app::AppState;
 use crate::db::oauth::{
     cleanup_expired_refresh_tokens, delete_oauth_refresh_session, get_oauth_refresh_token,
 };
-use crate::routes::oauth_dpop::token_endpoint_dpop;
-use crate::routes::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
+use crate::oauth_dpop::token_endpoint_dpop;
+use crate::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
+use custos_core::CoreState;
 
 /// Flat form body for `POST /oauth/revoke` (application/x-www-form-urlencoded, RFC 7009 §2.1).
 ///
@@ -61,7 +61,7 @@ pub struct RevokeRequestForm {
 
 /// `POST /oauth/revoke` — revoke a refresh token (RFC 7009).
 pub async fn post_revoke(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     headers: HeaderMap,
     Form(form): Form<RevokeRequestForm>,
 ) -> Response {
@@ -148,20 +148,21 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
-    use crate::routes::test_utils;
+    use crate::test_support;
+    use crate::test_support::{test_app, test_state};
+    use custos_core::CoreState;
 
     const REVOKE_HTU: &str = "https://test.example.com/oauth/revoke";
     const TEST_CLIENT: &str = "https://app.example.com/client-metadata.json";
 
     /// Seed a refresh token bound to `jkt` for the group's fixed test client/DID (see
-    /// [`test_utils::seed_refresh_row`]). Returns the token plaintext.
-    async fn seed_refresh_token(state: &AppState, jkt: &str) -> String {
-        test_utils::seed_refresh_row(state, Some(jkt), "atproto", "datetime('now', '+24 hours')")
+    /// [`test_support::seed_refresh_row`]). Returns the token plaintext.
+    async fn seed_refresh_token(state: &CoreState, jkt: &str) -> String {
+        test_support::seed_refresh_row(state, Some(jkt), "atproto", "datetime('now', '+24 hours')")
             .await
     }
 
-    async fn refresh_token_exists(state: &AppState, plaintext: &str) -> bool {
+    async fn refresh_token_exists(state: &CoreState, plaintext: &str) -> bool {
         let bytes = URL_SAFE_NO_PAD.decode(plaintext).unwrap();
         let hash = crate::auth::token::sha256_hex(&bytes);
         let row: Option<(String,)> = sqlx::query_as("SELECT id FROM oauth_tokens WHERE id = ?")
@@ -201,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn missing_token_returns_400_invalid_request() {
         // `token` is checked before DPoP, so this fails even with no proof.
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(post_revoke("token_type_hint=refresh_token"))
             .await
             .unwrap();
@@ -211,7 +212,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_revoke_endpoint_returns_405() {
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -228,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_dpop_header_returns_invalid_dpop_proof() {
-        let resp = app(test_state().await)
+        let resp = test_app(test_state().await)
             .oneshot(post_revoke("token=sometoken"))
             .await
             .unwrap();
@@ -239,10 +240,10 @@ mod tests {
     #[tokio::test]
     async fn dpop_without_nonce_returns_use_dpop_nonce_with_header() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let dpop = key.proof_with("POST", REVOKE_HTU, None, None);
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_revoke_with_dpop("token=sometoken", &dpop))
             .await
             .unwrap();
@@ -259,10 +260,10 @@ mod tests {
     async fn dpop_for_wrong_htu_returns_invalid_dpop_proof() {
         // A proof minted for the token endpoint must not be replayable at /oauth/revoke.
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
-        let dpop = test_utils::token_proof(&state, &key);
+        let key = test_support::DpopProofKey::generate();
+        let dpop = test_support::token_proof(&state, &key);
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_revoke_with_dpop("token=sometoken", &dpop))
             .await
             .unwrap();
@@ -275,7 +276,7 @@ mod tests {
     #[tokio::test]
     async fn revokes_bound_refresh_token() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let jkt = key.thumbprint();
         let plaintext = seed_refresh_token(&state, &jkt).await;
         assert!(refresh_token_exists(&state, &plaintext).await);
@@ -283,7 +284,7 @@ mod tests {
         let nonce = state.dpop_nonces.issue();
         let dpop = key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
-        let resp = app(state.clone())
+        let resp = test_app(state.clone())
             .oneshot(post_revoke_with_dpop(
                 &format!("token={plaintext}&client_id={TEST_CLIENT}"),
                 &dpop,
@@ -305,7 +306,7 @@ mod tests {
         // non-disclosure) rather than surfacing that it was already gone.
         let nonce2 = state.dpop_nonces.issue();
         let dpop2 = key.proof_with("POST", REVOKE_HTU, Some(&nonce2), None);
-        let resp2 = app(state)
+        let resp2 = test_app(state)
             .oneshot(post_revoke_with_dpop(&format!("token={plaintext}"), &dpop2))
             .await
             .unwrap();
@@ -319,7 +320,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_token_returns_200() {
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let nonce = state.dpop_nonces.issue();
         let dpop = key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
@@ -327,7 +328,7 @@ mod tests {
         // Encoded from readable bytes at runtime so no opaque high-entropy literal (which a
         // secret scanner flags) sits in the source.
         let unknown_token = URL_SAFE_NO_PAD.encode(b"never-issued-refresh-token-value");
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_revoke_with_dpop(
                 &format!("token={unknown_token}"),
                 &dpop,
@@ -341,11 +342,11 @@ mod tests {
     async fn non_base64url_token_is_noop_200() {
         // An access-token JWT (carries dots) can't be a refresh-token hash — accepted as a no-op.
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let nonce = state.dpop_nonces.issue();
         let dpop = key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_revoke_with_dpop(
                 "token=aaa.bbb.ccc&token_type_hint=access_token",
                 &dpop,
@@ -360,15 +361,15 @@ mod tests {
         // A caller who holds a valid DPoP key but not the one the token is bound to gets a
         // non-disclosing 200, yet the token must survive.
         let state = test_state().await;
-        let bound_key = test_utils::DpopProofKey::generate();
+        let bound_key = test_support::DpopProofKey::generate();
         let jkt = bound_key.thumbprint();
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
-        let attacker_key = test_utils::DpopProofKey::generate();
+        let attacker_key = test_support::DpopProofKey::generate();
         let nonce = state.dpop_nonces.issue();
         let dpop = attacker_key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
-        let resp = app(state.clone())
+        let resp = test_app(state.clone())
             .oneshot(post_revoke_with_dpop(&format!("token={plaintext}"), &dpop))
             .await
             .unwrap();
@@ -387,14 +388,14 @@ mod tests {
     async fn mismatched_client_id_does_not_revoke() {
         // Right key, wrong client_id → the token is left intact.
         let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
+        let key = test_support::DpopProofKey::generate();
         let jkt = key.thumbprint();
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
         let nonce = state.dpop_nonces.issue();
         let dpop = key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
-        let resp = app(state.clone())
+        let resp = test_app(state.clone())
             .oneshot(post_revoke_with_dpop(
                 &format!("token={plaintext}&client_id=https%3A%2F%2Fwrong.example.com%2F"),
                 &dpop,

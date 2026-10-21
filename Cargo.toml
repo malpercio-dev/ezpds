@@ -9,6 +9,7 @@ members = [
     "crates/custos-client",
     "crates/custos-db",
     "crates/custos-core",
+    "crates/custos-oauth",
     "crates/custos-spaces",
     "crates/obsign-core",
     "apps/identity-wallet/src-tauri",
@@ -283,6 +284,7 @@ custos-db = { path = "crates/custos-db" }
 # CoreState, the auth verification seam, identity, lexicons, rate limiting, metrics, sweeps.
 custos-core = { path = "crates/custos-core" }
 # The Atproto Spaces feature crate: routes, space auth, queries, sweeps, capability entry.
+custos-oauth = { path = "crates/custos-oauth" }
 custos-spaces = { path = "crates/custos-spaces" }
 # The wallet's platform-free core (ADR-0039): the five platform traits and the logic behind them.
 obsign-core = { path = "crates/obsign-core" }

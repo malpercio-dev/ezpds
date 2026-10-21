@@ -81,18 +81,6 @@ use crate::routes::list_repos::list_repos;
 use crate::routes::notifications::{
     get_sender_keys, register_notifications, unregister_notifications,
 };
-use crate::routes::oauth_authorize::{get_authorization, post_authorization};
-use crate::routes::oauth_client_metadata::oauth_client_metadata;
-use crate::routes::oauth_consent::{
-    get_authorization_status, get_consent_request, post_authorization_approve,
-    post_authorization_complete,
-};
-use crate::routes::oauth_jwks::oauth_jwks;
-use crate::routes::oauth_par::post_par;
-use crate::routes::oauth_protected_resource::oauth_protected_resource_metadata;
-use crate::routes::oauth_revoke::post_revoke;
-use crate::routes::oauth_server_metadata::oauth_server_metadata;
-use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
 use crate::routes::put_preferences::put_preferences_handler;
 use crate::routes::put_record::put_record;
@@ -160,30 +148,6 @@ pub fn app(state: AppState) -> Router {
         .route("/auth.md", get(serve_auth_md))
         .route("/.well-known/atproto-did", get(atproto_did_handler))
         .route("/.well-known/did.json", get(did_json_handler))
-        .route(
-            "/.well-known/oauth-protected-resource",
-            get(oauth_protected_resource_metadata),
-        )
-        .route(
-            "/.well-known/oauth-authorization-server",
-            get(oauth_server_metadata),
-        )
-        .route(
-            "/oauth/authorize",
-            get(get_authorization).post(post_authorization),
-        )
-        .route("/oauth/authorize/consent-request", get(get_consent_request))
-        .route("/oauth/authorize/status", get(get_authorization_status))
-        .route("/oauth/authorize/approve", post(post_authorization_approve))
-        .route(
-            "/oauth/authorize/complete",
-            post(post_authorization_complete),
-        )
-        .route("/oauth/client-metadata.json", get(oauth_client_metadata))
-        .route("/oauth/jwks", get(oauth_jwks))
-        .route("/oauth/par", post(post_par))
-        .route("/oauth/token", post(post_token))
-        .route("/oauth/revoke", post(post_revoke))
         .route("/agent/identity", post(post_agent_identity))
         .route("/agent/child", get(list_children).post(mint_child))
         .route("/agent/child/assertion", post(remint_child_assertion))
@@ -388,10 +352,12 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/{method}", get(xrpc_handler).post(xrpc_handler))
         .route("/static/{*path}", get(static_handler));
-    // Feature routers merge before the layer stack so they share it. Each carries its own gate:
+    // Feature routers merge before the layer stack so they share it. A gated feature carries its gate:
     // `custos_spaces::router` is empty unless `[spaces] enabled`, so a disabled deployment's space
     // methods fall into the `/xrpc/{method}` catch-all's `MethodNotImplemented`.
-    let public = public.merge(custos_spaces::router(&state.config.spaces));
+    let public = public
+        .merge(custos_oauth::router())
+        .merge(custos_spaces::router(&state.config.spaces));
     // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
     // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
     // never cookie-based (all Bearer/DPoP/signed-request), so a permissive policy cannot be abused

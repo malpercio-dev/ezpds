@@ -1,5 +1,5 @@
 // The wallet's side of OAuth consent: a hand-rolled client for the four device-key endpoints
-// in `crates/pds/src/routes/oauth_consent.rs`.
+// in `crates/custos-oauth/src/routes/oauth_consent.rs`.
 //
 // Written by hand for the same reason as `wire-client.ts`: this is a protocol surface a real
 // wallet speaks, and the interesting failures are in what exactly goes on the wire. It signs a

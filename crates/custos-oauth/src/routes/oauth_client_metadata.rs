@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: public_url from AppState config
+// Gathers: public_url from CoreState config
 // Processes: canonical-vs-loopback client_id selection (pure)
 // Returns: OAuth client metadata JSON per AT Protocol spec
 
@@ -16,7 +16,7 @@
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::Serialize;
 
-use crate::app::AppState;
+use custos_core::CoreState;
 
 /// The identity wallet's canonical OAuth client_id: this document's HTTPS URL on the
 /// production host. The atproto OAuth spec requires a native client's private-use
@@ -67,7 +67,7 @@ fn wallet_client_id(public_url: &str) -> String {
     }
 }
 
-pub async fn oauth_client_metadata(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn oauth_client_metadata(State(state): State<CoreState>) -> impl IntoResponse {
     let client_id = wallet_client_id(&state.config.public_url);
     // client_uri must stay same-origin with client_id.
     let client_uri = client_id.trim_end_matches(CLIENT_METADATA_PATH).to_string();
@@ -95,7 +95,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{wallet_client_id, CANONICAL_WALLET_CLIENT_ID, WALLET_REDIRECT_URI};
-    use crate::app::{app, test_state};
+    use crate::test_support::{test_app, test_state};
 
     /// The V042 SQL seed and this route serve the same client_id/redirect literals but can't
     /// share a Rust const (a migration is raw SQL). Tie the in-crate pair here so a rename of
@@ -159,7 +159,7 @@ mod tests {
     async fn client_metadata_returns_200_with_canonical_client_id() {
         // test_state's public_url is a non-loopback host, so the canonical branch applies.
         let state = test_state().await;
-        let response = app(state.clone())
+        let response = test_app(state.clone())
             .oneshot(
                 Request::builder()
                     .uri("/oauth/client-metadata.json")
@@ -187,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn client_metadata_has_json_content_type() {
-        let response = app(test_state().await)
+        let response = test_app(test_state().await)
             .oneshot(
                 Request::builder()
                     .uri("/oauth/client-metadata.json")
@@ -205,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn client_metadata_redirect_uri_matches_wallet() {
-        let response = app(test_state().await)
+        let response = test_app(test_state().await)
             .oneshot(
                 Request::builder()
                     .uri("/oauth/client-metadata.json")

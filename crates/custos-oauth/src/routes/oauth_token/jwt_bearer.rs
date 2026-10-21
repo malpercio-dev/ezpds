@@ -41,9 +41,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use super::{cleanup_expired_state, issue_access_token, TokenRequestForm};
-use crate::app::AppState;
 use crate::db::agent_auth::{get_agent_identity, AgentIdentityStatus};
-use crate::routes::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
+use crate::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
+use custos_core::CoreState;
 
 /// Successful jwt-bearer response body. Unlike [`super::TokenResponse`], it carries no
 /// `refresh_token`: the agent re-exchanges its `identity_assertion` (RFC 7523 §2.1) instead of
@@ -78,7 +78,7 @@ struct AgentAssertionClaims {
 /// key-bound by the registration ceremony that minted it — and no refresh token is issued: the
 /// response instead carries a renewed `identity_assertion` for the agent to persist and
 /// re-exchange (see the module doc).
-pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) -> Response {
+pub(super) async fn handle_jwt_bearer(state: &CoreState, form: TokenRequestForm) -> Response {
     // Prune stale nonces and expired tokens on every request, matching the other grant handlers.
     cleanup_expired_state(state).await;
 
@@ -259,7 +259,7 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
 /// rejection.
 fn verify_agent_assertion(
     assertion: &str,
-    state: &AppState,
+    state: &CoreState,
 ) -> Result<AgentAssertionClaims, OAuthTokenError> {
     // Reuse the shared loader — the assertion is signed by the same OAuth key as access tokens.
     let decoding_key = crate::auth::jwt::oauth_es256_decoding_key(state)
@@ -292,16 +292,14 @@ fn verify_agent_assertion(
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use tower::ServiceExt;
 
     use super::super::test_support::{json_body, mint_assertion, post_token};
-    use crate::app::{app, test_state, AppState};
-    use crate::routes::test_utils;
+    use crate::test_support;
+    use crate::test_support::{test_app, test_state};
+    use custos_core::CoreState;
 
     const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
@@ -314,7 +312,12 @@ mod tests {
     }
 
     /// Seed an account + an agent identity row with the given registration id and status.
-    async fn seed_agent_identity(state: &AppState, registration_id: &str, did: &str, status: &str) {
+    async fn seed_agent_identity(
+        state: &CoreState,
+        registration_id: &str,
+        did: &str,
+        status: &str,
+    ) {
         seed_agent_identity_with_scopes(
             state,
             registration_id,
@@ -328,13 +331,13 @@ mod tests {
     /// [`seed_agent_identity`] with an explicit stored-scopes JSON array (the grant the sliding
     /// renewal re-clamps).
     async fn seed_agent_identity_with_scopes(
-        state: &AppState,
+        state: &CoreState,
         registration_id: &str,
         did: &str,
         status: &str,
         scopes_json: &str,
     ) {
-        test_utils::seed_handle(
+        test_support::seed_handle(
             &state.db,
             &format!("{registration_id}.test.example.com"),
             did,
@@ -372,7 +375,10 @@ mod tests {
 
         let body = format!("grant_type={JWT_BEARER}&assertion={assertion}");
         // No DPoP header — the jwt-bearer grant requires none.
-        let resp = app(state.clone()).oneshot(post_token(&body)).await.unwrap();
+        let resp = test_app(state.clone())
+            .oneshot(post_token(&body))
+            .await
+            .unwrap();
 
         assert_eq!(
             resp.status(),
@@ -437,7 +443,7 @@ mod tests {
     #[tokio::test]
     async fn jwt_bearer_missing_assertion_returns_invalid_request() {
         let state = test_state().await;
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token(&format!("grant_type={JWT_BEARER}")))
             .await
             .unwrap();
@@ -538,7 +544,7 @@ mod tests {
                 assertion = tamper_signature(&assertion);
             }
 
-            let resp = app(state)
+            let resp = test_app(state)
                 .oneshot(post_token(&format!(
                     "grant_type={JWT_BEARER}&assertion={assertion}"
                 )))
@@ -589,7 +595,7 @@ mod tests {
             crate::time::unix_now_secs() + 600,
         );
 
-        let resp = app(state.clone())
+        let resp = test_app(state.clone())
             .oneshot(post_token(&format!(
                 "grant_type={JWT_BEARER}&assertion={assertion}"
             )))
@@ -623,7 +629,7 @@ mod tests {
         );
 
         // The renewal itself exchanges — the sliding window closes the loop.
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token(&format!(
                 "grant_type={JWT_BEARER}&assertion={renewed}"
             )))
@@ -659,7 +665,7 @@ mod tests {
             crate::time::unix_now_secs() + 600,
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token(&format!(
                 "grant_type={JWT_BEARER}&assertion={assertion}"
             )))
@@ -690,7 +696,7 @@ mod tests {
             crate::time::unix_now_secs() + 600,
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token(&format!(
                 "grant_type={JWT_BEARER}&assertion={assertion}"
             )))
@@ -698,80 +704,6 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert_eq!(json_body(resp).await["error"], "invalid_grant");
-    }
-
-    /// Drive the full jwt-bearer exchange and return the issued agent Bearer access token.
-    async fn exchange_agent_token(state: &AppState, did: &str, registration_id: &str) -> String {
-        seed_agent_identity(state, registration_id, did, "claimed").await;
-        let assertion = mint_assertion(
-            state,
-            did,
-            registration_id,
-            // The conservative default agent profile: repo writes + blobs, no account/identity.
-            "atproto repo:*?action=create&action=update blob:*/*",
-            crate::time::unix_now_secs() + 600,
-        );
-        let resp = app(state.clone())
-            .oneshot(post_token(&format!(
-                "grant_type={JWT_BEARER}&assertion={assertion}"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        json_body(resp).await["access_token"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    }
-
-    fn bearer_post(uri: &str, token: &str, body: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Content-Type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap()
-    }
-
-    /// A bounded agent token is refused (403) on the account-lifecycle and app-password-management
-    /// surface — via the granular scope check (`deactivateAccount`) and the agent-token guard
-    /// (`createAppPassword`), respectively.
-    #[tokio::test]
-    async fn agent_token_is_forbidden_on_account_and_app_password_routes() {
-        let state = test_state().await;
-        let did = "did:plc:agentbounded00000000";
-        let at = exchange_agent_token(&state, did, "reg_bounded").await;
-
-        // createAppPassword: rejected by the agent-token guard (require_not_agent).
-        let resp = app(state.clone())
-            .oneshot(bearer_post(
-                "/xrpc/com.atproto.server.createAppPassword",
-                &at,
-                r#"{"name":"botpass"}"#,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::FORBIDDEN,
-            "an agent token must not create app passwords"
-        );
-
-        // deactivateAccount: rejected by the granular scope check (no account:status?action=manage).
-        let resp = app(state)
-            .oneshot(bearer_post(
-                "/xrpc/com.atproto.server.deactivateAccount",
-                &at,
-                "{}",
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::FORBIDDEN,
-            "an agent token must not deactivate the account"
-        );
     }
 
     #[tokio::test]
@@ -788,7 +720,7 @@ mod tests {
             crate::time::unix_now_secs() + 600,
         );
 
-        let resp = app(state)
+        let resp = test_app(state)
             .oneshot(post_token(&format!(
                 "grant_type={JWT_BEARER}&assertion={assertion}"
             )))
@@ -824,7 +756,7 @@ mod tests {
             "grant_type={JWT_BEARER}&assertion={assertion}&resource=https%3A%2F%2Fother.example.com%2F"
         );
 
-        let resp = app(state).oneshot(post_token(&body)).await.unwrap();
+        let resp = test_app(state).oneshot(post_token(&body)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert_eq!(json_body(resp).await["error"], "invalid_target");
     }
@@ -846,7 +778,7 @@ mod tests {
             "grant_type={JWT_BEARER}&assertion={assertion}&resource=https%3A%2F%2Ftest.example.com%2F"
         );
 
-        let resp = app(state).oneshot(post_token(&body)).await.unwrap();
+        let resp = test_app(state).oneshot(post_token(&body)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(json_body(resp).await["token_type"], "Bearer");
     }

@@ -36,7 +36,6 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::app::AppState;
 use crate::auth::oauth_response_mode::ResponseMode;
 use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
@@ -52,10 +51,11 @@ use crate::db::pending_oauth_authorizations::{
     insert_pending_authorization, set_push_dispatched, NewPendingOAuthAuthorization,
     OAuthConsentAuditEventType,
 };
-use crate::routes::oauth_templates::{
+use crate::oauth_templates::{
     build_code_redirect, error_page, error_redirect, render_consent_page, WalletConsentPath,
 };
 use custos_core::notify::NotificationPayload;
+use custos_core::CoreState;
 
 /// Time-to-live of a pending wallet-consent request (~5 minutes, per the design).
 const PENDING_REQUEST_TTL_SECS: i64 = 300;
@@ -183,7 +183,7 @@ const UNSUPPORTED_RESPONSE_MODE_MSG: &str = "The app asked for a kind of sign-in
 /// rejected before anything is consumed — neither names a redirect target this server
 /// has validated, so both get the no-redirect error page.
 async fn resolve_authorize_params(
-    state: &AppState,
+    state: &CoreState,
     raw: GetAuthorizationQuery,
 ) -> Result<AuthorizeQuery, ResolveError> {
     // Checked before the PAR row is touched, so a request that mixes a valid
@@ -347,7 +347,7 @@ impl ClientValidationError {
 /// never pushed (a forged POST, or a row lost between PAR and now) — not a real
 /// client this server should go fetch on demand.
 async fn lookup_and_validate_client(
-    state: &AppState,
+    state: &CoreState,
     client_id: &str,
     redirect_uri: &str,
 ) -> Result<ClientMetadata, ClientValidationError> {
@@ -396,7 +396,7 @@ async fn lookup_and_validate_client(
 /// unknown `client_id`, or mismatched `redirect_uri`. All other parameter errors
 /// redirect to `redirect_uri` with an `error` query parameter per RFC 6749 §4.1.2.1.
 pub async fn get_authorization(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     headers: HeaderMap,
     Query(raw): Query<GetAuthorizationQuery>,
 ) -> Response {
@@ -542,7 +542,7 @@ struct PendingWalletRequest {
 /// `login_hint` names a local account, a sealed `login-approval` push is dispatched to that
 /// account's registered wallet devices (Phase C).
 async fn create_pending_request(
-    state: &AppState,
+    state: &CoreState,
     headers: &HeaderMap,
     params: &AuthorizeQuery,
     client_name: &str,
@@ -657,7 +657,7 @@ async fn create_pending_request(
 /// only**. This runs on an unauthenticated surface with an attacker-suppliable hint, so it must
 /// never drive outbound handle resolution (the SSRF/amplification posture); an account not on
 /// this instance has no registered wallet devices to push to anyway.
-async fn resolve_login_hint_to_local_did(state: &AppState, hint: &str) -> Option<String> {
+async fn resolve_login_hint_to_local_did(state: &CoreState, hint: &str) -> Option<String> {
     let did = match crate::identity::handle::normalize_login_hint(hint)? {
         crate::identity::handle::LoginHint::Did(did) => did,
         crate::identity::handle::LoginHint::Handle(handle) => {
@@ -683,7 +683,7 @@ async fn resolve_login_hint_to_local_did(state: &AppState, hint: &str) -> Option
 /// looking at any sign-in page has nothing to type. The payload is HPKE-sealed to each device and
 /// the relay sees only an opaque push handle, so the relay never learns a login is happening.
 async fn dispatch_login_approval_push(
-    state: &AppState,
+    state: &CoreState,
     request_id: &str,
     client_id: &str,
     client_name: &str,
@@ -772,7 +772,7 @@ async fn dispatch_login_approval_push(
 /// code_challenge_method=S256, before issuing an authorization code or redirect.
 /// Hidden form fields could be tampered with by a malicious browser.
 pub async fn post_authorization(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Form(form): Form<ConsentForm>,
 ) -> Response {
     // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
@@ -1063,10 +1063,10 @@ mod tests {
     use tower::ServiceExt;
 
     use super::resolve_login_hint_to_local_did;
-    use crate::app::{app, test_state};
     use crate::auth::token::hash_bearer_token;
     use crate::db::oauth::register_oauth_client;
-    use crate::routes::test_utils;
+    use crate::test_support;
+    use crate::test_support::{test_app, test_state};
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";
@@ -1076,7 +1076,7 @@ mod tests {
     const TEST_HANDLE: &str = "alice.test";
     const TEST_PASSWORD: &str = "correcthorse";
 
-    async fn state_with_client() -> crate::app::AppState {
+    async fn state_with_client() -> custos_core::CoreState {
         let state = test_state().await;
         register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
             .await
@@ -1084,7 +1084,7 @@ mod tests {
         state
     }
 
-    async fn state_with_client_and_account() -> crate::app::AppState {
+    async fn state_with_client_and_account() -> custos_core::CoreState {
         let state = state_with_client().await;
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
@@ -1100,9 +1100,9 @@ mod tests {
 
     /// Creates a test state with a registered client and an account that has a real Argon2id
     /// password hash, plus an associated handle for identifier-based login tests.
-    async fn state_with_client_and_account_with_password(password: &str) -> crate::app::AppState {
+    async fn state_with_client_and_account_with_password(password: &str) -> custos_core::CoreState {
         let state = state_with_client().await;
-        test_utils::insert_account_with_password(
+        test_support::insert_account_with_password(
             &state.db,
             DID,
             TEST_HANDLE,
@@ -1130,14 +1130,14 @@ mod tests {
     }
 
     /// Test state with a mobile-provisioned account: handle is set but password_hash is NULL.
-    async fn state_with_client_and_mobile_account() -> crate::app::AppState {
+    async fn state_with_client_and_mobile_account() -> custos_core::CoreState {
         let state = state_with_client().await;
-        test_utils::seed_handle(&state.db, TEST_HANDLE, DID).await;
+        test_support::seed_handle(&state.db, TEST_HANDLE, DID).await;
         state
     }
 
     /// Test state with a deactivated account (deactivated_at is set).
-    async fn state_with_client_and_deactivated_account() -> crate::app::AppState {
+    async fn state_with_client_and_deactivated_account() -> custos_core::CoreState {
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
             .bind(DID)
@@ -1163,7 +1163,7 @@ mod tests {
     /// Store `params` as a PAR request under a fresh `request_uri` and return the
     /// authorize URL referencing it — the only shape the PAR-only endpoint accepts.
     async fn authorize_url_via_par(
-        state: &crate::app::AppState,
+        state: &custos_core::CoreState,
         params: &serde_json::Value,
     ) -> String {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -1189,22 +1189,22 @@ mod tests {
 
     /// Push `params` via PAR, then GET the authorize endpoint with the issued reference.
     async fn get_authorize_via_par(
-        state: crate::app::AppState,
+        state: custos_core::CoreState,
         params: serde_json::Value,
     ) -> axum::response::Response {
         let url = authorize_url_via_par(&state, &params).await;
         get_authorize(state, &url).await
     }
 
-    async fn get_authorize(state: crate::app::AppState, url: &str) -> axum::response::Response {
-        app(state)
+    async fn get_authorize(state: custos_core::CoreState, url: &str) -> axum::response::Response {
+        test_app(state)
             .oneshot(Request::builder().uri(url).body(Body::empty()).unwrap())
             .await
             .unwrap()
     }
 
-    async fn post_authorize(state: crate::app::AppState, body: &str) -> axum::response::Response {
-        app(state)
+    async fn post_authorize(state: custos_core::CoreState, body: &str) -> axum::response::Response {
+        test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -1978,7 +1978,7 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use crate::routes::test_utils::{seed_did_document, FixedTxtResolver};
+    use crate::test_support::{seed_did_document, FixedTxtResolver};
 
     const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
     const AUTHORITY_NSID: &str = "app.bsky.authFull";
@@ -1987,16 +1987,13 @@ mod tests {
     /// resolution wired up for `AUTHORITY_NSID` to a mock PDS serving `schema`.
     async fn state_with_include_authority(
         schema: serde_json::Value,
-    ) -> (crate::app::AppState, MockServer) {
+    ) -> (custos_core::CoreState, MockServer) {
         let server = MockServer::start().await;
         let base = state_with_client_and_account_with_password(TEST_PASSWORD).await;
-        let state = crate::app::AppState {
-            core: custos_core::CoreState {
-                txt_resolver: Some(std::sync::Arc::new(FixedTxtResolver {
-                    records: vec![format!("did={AUTHORITY_DID}")],
-                })),
-                ..base.core
-            },
+        let state = custos_core::CoreState {
+            txt_resolver: Some(std::sync::Arc::new(FixedTxtResolver {
+                records: vec![format!("did={AUTHORITY_DID}")],
+            })),
             ..base
         };
         seed_did_document(

@@ -14,7 +14,7 @@ Companion to: Provisioning API Spec, Mobile Architecture Spec
 > thesis — that the PDS would *integrate an existing Rust OAuth crate rather than
 > build OAuth from scratch* (§1.1, §2, §3.1, §8, §10) — describes a path that was
 > **not** taken. The shipped PDS implements the ATProto OAuth authorization server
-> **entirely by hand** in `crates/pds/src/routes/oauth_*` (authorize/PAR/token/
+> **entirely by hand** in `crates/custos-oauth/src/routes/oauth_*` (authorize/PAR/token/
 > revoke/jwks/metadata/client-metadata) and `crates/pds/src/auth/` (DPoP, client
 > resolution, scopes, JWT). `atproto-oauth-axum`, `atproto-oauth-aip`, and
 > graze-social/aip are **not** dependencies (check `Cargo.toml`); §§2–3, 8, and 10
