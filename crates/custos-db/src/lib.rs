@@ -10,6 +10,7 @@ pub mod agent_auth;
 pub mod blobs;
 pub mod blocks;
 pub mod dids;
+pub mod firehose_seq;
 pub mod handles;
 pub mod iroh_identity;
 pub mod jwt_secret;

@@ -6,6 +6,8 @@
 pub mod auth;
 pub mod blob_store;
 pub mod capability;
+pub mod crawler;
+pub mod firehose;
 pub mod identity;
 mod layers;
 pub mod lexicon;

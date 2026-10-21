@@ -110,4 +110,10 @@ pub struct CoreState {
     /// TTL cache of resolved space type declarations, read by the consent page's `space:` scope
     /// display and by a bare `space:` grant's collection fallback in the Spaces auth seam.
     pub space_type_cache: crate::scope_display::SpaceTypeCache,
+    /// In-memory firehose pipeline: every repo commit emits a sequenced event here, which
+    /// `com.atproto.sync.subscribeRepos` fans out to connected relays/BGSes. Shared via Arc.
+    pub firehose: Arc<crate::firehose::Firehose>,
+    /// Outbound `requestCrawl` notifier: after each commit, pings the configured relays/BGSes
+    /// so newly produced content is crawled promptly. Shared via Arc.
+    pub crawlers: Arc<crate::crawler::CrawlerNotifier>,
 }

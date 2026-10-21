@@ -37,8 +37,10 @@ src/
   layers.rs        — `apply_shared_layers(router, &CoreState)`: Trace → HTTP metrics → rate limiting, generic over the router's state; each route group applies it before its own CORS layer
   auth/            — the verification core plus the auth.md agent machinery the token endpoint and the agents surface share (table below); the OAuth server's response mode is `custos-oauth`'s; the Spaces seam is `custos-spaces`'
   test_support.rs  — `test-support` feature only: the test state constructor and shared fixtures (see "Tests from other crates")
+  crawler.rs       — outbound `requestCrawl` notifier (`CoreState.crawlers`) — see section below
   capability.rs    — the `Capability` type (`Clone, Copy`): wire name, operator controls, summary, `enabled` predicate. `pds` owns the `CAPABILITIES` table and its order; a feature crate exports its entry as `CAPABILITY`
   blob_store.rs    — blob storage backend: durable filesystem I/O, CID computation, MIME detection; blobs at `{data_dir}/blobs/{cid[0:2]}/{cid}` — see module doc
+  firehose/        — the sequencer every writer emits through (`CoreState.firehose`); the `subscribeRepos` serving side stays with its route — see section below
   identity/        — everything "who is this handle/DID" (see section below)
   lexicon/         — vendored lexicon documents (`crates/custos-core/lexicons/`, pinned upstream — see its README) compiled into a registry, plus the reference-parity XRPC validation layers: input bodies (`LexiconInput<T>`), query params (`LexiconParams<T>`), repo-write records (`validate_record`), and served outputs (test-build drift detection). Strict schema parsing and byte-identical reference error messages, so Custos can't drift laxer than the reference. Start at `mod.rs`'s module doc — it maps the entry points and files
   metrics.rs       — OTel meter + Prometheus registry behind `GET /metrics`; `metrics::names` is the instrument source of truth (each constant documents what it measures and who records it) — see module doc
@@ -68,6 +70,28 @@ src/
   `HardenedClient::into_inner` is the one escape hatch.
 - **`SweepSnapshot` keeps every sweep's typed field**, including the two space sweeps: the
   `GET /v1/admin/health` JSON shape is what the Brass Console reads.
+
+### `firehose/`
+
+The persistent event pipeline behind `com.atproto.sync.subscribeRepos`: a durable monotonic
+sequencer (`repo_seq`, V028) plus a Tokio broadcast fan-out, shared as `CoreState.firehose`.
+Three files — `mod.rs` (sequencer, bare `emit_*` primitives, and the staged-transaction path
+`lock_emit`/`EmitGuard`/`Pending*`), `events.rs` (wire-facing event model + DAG-CBOR stored
+encoding), `replay.rs` (cursor replay over the durable log) — with every public type
+re-exported at `custos_core::firehose::*`. The invariants that make it subtle (persist-before-
+broadcast under one `emit_lock`, the lock-before-transaction deadlock rule on the
+single-connection pool, staging into a caller's transaction, cancellation recovery via
+`insert_at_frontier`, and the emission map of which routes emit which frames) are documented
+in `firehose/mod.rs`'s module and item docs — read those before touching any emit path.
+
+### `crawler.rs`
+
+Outbound `com.atproto.sync.requestCrawl` notifier (`CoreState.crawlers`). Fires on startup and on
+**every** firehose broadcast frame — lifecycle frames included, so a relay that silently dropped
+its subscription is re-invited even when the only news is a post-migration `#account`/`#sync`.
+Fire-and-forget, rate-limited to one notification per crawler per 30s, retried with backoff;
+configured via `[crawlers] urls` / `EZPDS_CRAWLERS` (default `["https://bsky.network"]`, empty
+disables). Mechanism and invariants: the module doc in `crawler.rs`.
 
 ### `identity/`
 

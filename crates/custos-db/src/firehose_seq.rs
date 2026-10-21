@@ -269,7 +269,7 @@ pub async fn recent_commits_for_did(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
+    use crate::{open_pool, run_migrations};
 
     async fn pool() -> SqlitePool {
         let db = open_pool("sqlite::memory:").await.unwrap();

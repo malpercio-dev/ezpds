@@ -518,7 +518,7 @@ mod tests {
         // Rejected *before* persistence: no row and no consumed seq, so it can't become a durable
         // replay poison pill.
         assert_eq!(fh.current_seq(), 0);
-        assert_eq!(crate::db::firehose_seq::max_seq(&fh.db).await.unwrap(), 0);
+        assert_eq!(custos_db::firehose_seq::max_seq(&fh.db).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -528,7 +528,7 @@ mod tests {
         input.since = Some("3kprev".to_string());
         fh.emit_commit(input).await.unwrap();
 
-        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+        let rows = custos_db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
             .await
             .unwrap();
         let event =
@@ -580,7 +580,7 @@ mod tests {
         ];
         fh.emit_commit(input).await.unwrap();
 
-        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+        let rows = custos_db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
             .await
             .unwrap();
         let FirehoseEvent::Commit(c) =
@@ -615,7 +615,7 @@ mod tests {
         .await
         .unwrap();
 
-        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+        let rows = custos_db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
             .await
             .unwrap();
         let event =
@@ -640,7 +640,7 @@ mod tests {
         .await
         .unwrap();
 
-        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+        let rows = custos_db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
             .await
             .unwrap();
         assert_eq!(rows[0].event_type, "identity");
@@ -657,7 +657,7 @@ mod tests {
         fh.emit_identity("did:plc:ident".to_string(), None)
             .await
             .unwrap();
-        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 1, 2, 1)
+        let rows = custos_db::firehose_seq::events_in_range(&fh.db, 1, 2, 1)
             .await
             .unwrap();
         let FirehoseEvent::Identity(i2) =
@@ -678,7 +678,7 @@ mod tests {
         input.prev_data = Some(VALID_CID.to_string());
         fh.emit_commit(input).await.unwrap();
 
-        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+        let rows = custos_db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
             .await
             .unwrap();
         let FirehoseEvent::Commit(c) =
@@ -692,7 +692,7 @@ mod tests {
         let mut genesis = commit_input("did:plc:prevdata");
         genesis.prev_data = None;
         fh.emit_commit(genesis).await.unwrap();
-        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 1, 2, 1)
+        let rows = custos_db::firehose_seq::events_in_range(&fh.db, 1, 2, 1)
             .await
             .unwrap();
         let FirehoseEvent::Commit(c2) =
@@ -726,7 +726,7 @@ mod tests {
         );
         // Rejected before persistence: no row, no consumed seq.
         assert_eq!(fh.current_seq(), 0);
-        assert_eq!(crate::db::firehose_seq::max_seq(&fh.db).await.unwrap(), 0);
+        assert_eq!(custos_db::firehose_seq::max_seq(&fh.db).await.unwrap(), 0);
 
         // A CAR exactly at the cap is accepted.
         let mut at_cap = sync_input("did:plc:big");
@@ -739,7 +739,7 @@ mod tests {
         let fh = test_firehose().await;
         fh.emit_sync(sync_input("did:plc:sync")).await.unwrap();
 
-        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
+        let rows = custos_db::firehose_seq::events_in_range(&fh.db, 0, 1, 1)
             .await
             .unwrap();
         assert_eq!(rows[0].event_type, "sync");

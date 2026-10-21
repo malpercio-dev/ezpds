@@ -107,7 +107,7 @@ impl<'f> ReplayReader<'f> {
         }
 
         let batch = if self.first_page {
-            let page = crate::db::firehose_seq::first_events_in_range_with_cursor_presence(
+            let page = custos_db::firehose_seq::first_events_in_range_with_cursor_presence(
                 &self.firehose.db,
                 self.cursor,
                 self.upper,
@@ -118,7 +118,7 @@ impl<'f> ReplayReader<'f> {
             self.cursor_present = page.cursor_present;
             page.rows
         } else {
-            crate::db::firehose_seq::events_in_range(
+            custos_db::firehose_seq::events_in_range(
                 &self.firehose.db,
                 self.after,
                 self.upper,
@@ -228,8 +228,8 @@ impl<'f> ReplayReader<'f> {
     }
 }
 
-#[cfg(test)]
-pub(crate) async fn collect_replay_seqs(
+#[cfg(any(test, feature = "test-support"))]
+pub async fn collect_replay_seqs(
     mut replay: Option<ReplayReader<'_>>,
 ) -> Result<Vec<u64>, FirehoseError> {
     let mut seqs = Vec::new();
@@ -255,8 +255,8 @@ mod tests {
     async fn replay_survives_restart() {
         // Regression: after a redeploy, a relay reconnecting with a prior cursor must replay the
         // commits it missed from the durable log, not an in-memory buffer the restart cleared.
-        let db = crate::db::open_pool("sqlite::memory:").await.unwrap();
-        crate::db::run_migrations(&db).await.unwrap();
+        let db = custos_db::open_pool("sqlite::memory:").await.unwrap();
+        custos_db::run_migrations(&db).await.unwrap();
 
         // First "process": three commits, then the firehose (and its broadcast backlog) is gone.
         {
