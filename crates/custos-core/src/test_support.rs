@@ -85,6 +85,23 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
     // Enabled in tests so instrument assertions can read the rendered output; each test
     // state gets its own registry (no global exporter state to collide on).
     let metrics = Arc::new(crate::metrics::Metrics::new("test-pds").expect("test metrics"));
+    // A live firehose and crawler notifier over the test pool and metrics (no crawler URLs).
+    let firehose = {
+        let mut f = crate::firehose::Firehose::new(db.clone())
+            .await
+            .expect("test firehose");
+        f.attach_metrics(metrics.clone());
+        Arc::new(f)
+    };
+    let crawlers = {
+        let mut c = crate::crawler::CrawlerNotifier::new(
+            http_client.clone(),
+            "test.example.com".into(),
+            &[],
+        );
+        c.attach_metrics(metrics.clone());
+        Arc::new(c)
+    };
 
     CoreState {
         config: Arc::new(Config {
@@ -179,6 +196,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
         poll_tracker: crate::auth::new_claim_poll_tracker(),
         account_notifier: None,
         space_type_cache: crate::scope_display::new_space_type_cache(),
+        firehose,
+        crawlers,
     }
 }
 

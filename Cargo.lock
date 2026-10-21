@@ -1505,6 +1505,8 @@ dependencies = [
  "repo-engine",
  "reqwest",
  "serde",
+ "serde_bytes",
+ "serde_ipld_dagcbor",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",

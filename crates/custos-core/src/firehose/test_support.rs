@@ -6,19 +6,19 @@
 
 use sqlx::SqlitePool;
 
-use crate::db::{open_pool, run_migrations};
+use custos_db::{open_pool, run_migrations};
 
 use super::{CommitInput, Firehose, OpAction, RepoOp, SyncInput};
 
 /// A firehose backed by a fresh migrated in-memory database.
-pub(crate) async fn test_firehose() -> Firehose {
+pub async fn test_firehose() -> Firehose {
     let db = open_pool("sqlite::memory:").await.expect("test pool");
     run_migrations(&db).await.expect("test migrations");
     Firehose::new(db).await.expect("firehose")
 }
 
 /// A firehose with a tiny broadcast buffer for exercising slow-consumer lag.
-pub(crate) async fn test_firehose_with_capacity(capacity: usize) -> Firehose {
+pub async fn test_firehose_with_capacity(capacity: usize) -> Firehose {
     let db = open_pool("sqlite::memory:").await.expect("test pool");
     run_migrations(&db).await.expect("test migrations");
     Firehose::with_capacity(db, capacity)
@@ -28,9 +28,9 @@ pub(crate) async fn test_firehose_with_capacity(capacity: usize) -> Firehose {
 
 /// A valid CIDv1 (dag-cbor, sha2-256) — `emit_commit` validates wire CIDs before persisting, so
 /// test commits must carry real CIDs rather than placeholder strings.
-pub(crate) const VALID_CID: &str = "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm";
+pub const VALID_CID: &str = "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uwrf3e2o6cw3djmprrm";
 
-pub(crate) fn commit_input(repo: &str) -> CommitInput {
+pub fn commit_input(repo: &str) -> CommitInput {
     CommitInput {
         repo: repo.to_string(),
         commit: VALID_CID.to_string(),
@@ -49,7 +49,7 @@ pub(crate) fn commit_input(repo: &str) -> CommitInput {
     }
 }
 
-pub(crate) fn sync_input(did: &str) -> SyncInput {
+pub fn sync_input(did: &str) -> SyncInput {
     SyncInput {
         did: did.to_string(),
         rev: "3ksync".to_string(),
@@ -59,7 +59,7 @@ pub(crate) fn sync_input(did: &str) -> SyncInput {
 
 /// Seed a minimal `accounts` row so a test can mutate it inside the same transaction as a staged
 /// event, to observe whether that write survives a commit or a rollback.
-pub(crate) async fn insert_account(db: &SqlitePool, did: &str, repo_root_cid: &str) {
+pub async fn insert_account(db: &SqlitePool, did: &str, repo_root_cid: &str) {
     sqlx::query(
         "INSERT INTO accounts (did, email, password_hash, repo_root_cid, created_at, updated_at) \
          VALUES (?, ?, NULL, ?, datetime('now'), datetime('now'))",

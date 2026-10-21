@@ -24,15 +24,13 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; `[telemetry]` config incl. `log_format = "json"` — see module doc
   app.rs           — router construction (route table; the shared middleware is `custos_core::apply_shared_layers`); re-exports `AppState` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged. Each feature crate's `router`/`internal_router` merges in unconditionally before the layer stack; the feature gate lives inside the crate
-  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (firehose, crawlers, iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (built from `AppState.core`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.account_notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
+  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (built from `AppState.core`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.account_notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
   rate_limit_test.rs — the rate-limit middleware tests that need the full `app()` router (CORS on a 429, the `getRepo` exemption, per-endpoint caps); the limiter's unit tests are in `custos_core::rate_limit`
   xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (`xrpc_handler` at `/xrpc/{method}`): upstream resolution for the three proxied namespaces + the read-after-write branch — see module doc
-  firehose/        — persistent subscribeRepos event pipeline (see section below)
-  firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
+  firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier); the sequencer itself is `custos_core::firehose`
   blob_gc.rs       — periodic blob GC over per-account ownership rows (`blob_owners`, V039); references union the public MST and stored space records (V065); fails closed on a failed reconcile (that account leaks disk until fixed) — see module doc
   blob_mirror/     — off-volume blob replication to an S3-compatible bucket (`[blob_mirror]` / `EZPDS_BLOB_MIRROR_*`); boot restore runs before the listener binds; `s3.rs` is a hand-rolled SigV4 client — see module doc
   blob_scrub.rs    — periodic blob-integrity scrub: re-hash every stored blob + walk both orphan directions; auto-heals from the mirror when configured — see module doc
-  crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget) — see section below
   relay_status.rs  — inbound `com.atproto.sync.getHostStatus` client (total, never fatal) backing `GET /v1/admin/relay-status` — see section below
   email.rs         — pluggable outbound email (`Arc<dyn EmailSender>`: log default, SMTP, Mailtrap HTTPS) behind the token-delivery flows; `[email]` / `EZPDS_EMAIL_*` — see module doc
   iroh_tunnel.rs   — opt-in (`[iroh] enabled`) NAT-traversing QUIC endpoint devices dial by node id; v0.1 echo ALPN, IPv6 gate for v4-only hosts — see module doc
@@ -61,28 +59,6 @@ src/
   db/              — feature-local SQL query functions (no business logic); the pool, migrations, and cross-feature queries are `crates/custos-db`
   routes/          — HTTP handlers, one file per endpoint
 ```
-
-### `firehose/`
-
-The persistent event pipeline behind `com.atproto.sync.subscribeRepos`: a durable monotonic
-sequencer (`repo_seq`, V028) plus a Tokio broadcast fan-out, shared as `AppState.firehose`.
-Three files — `mod.rs` (sequencer, bare `emit_*` primitives, and the staged-transaction path
-`lock_emit`/`EmitGuard`/`Pending*`), `events.rs` (wire-facing event model + DAG-CBOR stored
-encoding), `replay.rs` (cursor replay over the durable log) — with every public type
-re-exported at `crate::firehose::*`. The invariants that make it subtle (persist-before-
-broadcast under one `emit_lock`, the lock-before-transaction deadlock rule on this crate's
-single-connection pool, staging into a caller's transaction, cancellation recovery via
-`insert_at_frontier`, and the emission map of which routes emit which frames) are documented
-in `firehose/mod.rs`'s module and item docs — read those before touching any emit path.
-
-### `crawler.rs`
-
-Outbound `com.atproto.sync.requestCrawl` notifier (`AppState.crawlers`). Fires on startup and on
-**every** firehose broadcast frame — lifecycle frames included, so a relay that silently dropped
-its subscription is re-invited even when the only news is a post-migration `#account`/`#sync`.
-Fire-and-forget, rate-limited to one notification per crawler per 30s, retried with backoff;
-configured via `[crawlers] urls` / `EZPDS_CRAWLERS` (default `["https://bsky.network"]`, empty
-disables). Mechanism and invariants: the module doc in `src/crawler.rs`.
 
 ### `relay_status.rs`
 
@@ -137,7 +113,6 @@ which the auth guards and signing-key loaders read) live in
 | `recovery_escrow.rs` | PDS-held Shamir Share 2 escrow (V050) plus the release state machine — see module doc |
 | `recovery_otps.rs` | recovery-release email OTP store (V053) — see module doc |
 | `recovery_audit.rs` | append-only recovery-escrow audit log (V050, the V040 doctrine) — see module doc |
-| `firehose_seq.rs` | persistent firehose event log (V028): boot seed, append, cursor-replay page — see module doc |
 | `sovereign_session_nonces.rs` | sovereign-session anti-replay store (V043); the sweep-retention rule is in the module doc |
 | `waitlist.rs` | public waitlist signup store (V057, no FKs — off the purge path) — see module doc |
 | `account_labels.rs` | watched-labeler flag store (V051) — see module doc; the filtered listing predicates live beside `list_accounts_admin` in `accounts.rs` |

@@ -17,10 +17,8 @@ mod blob_gc;
 mod blob_mirror;
 mod blob_scrub;
 mod capabilities;
-mod crawler;
 mod db;
 mod email;
-mod firehose;
 mod firehose_gc;
 mod iroh_tunnel;
 mod label_state;
@@ -53,8 +51,8 @@ use common::code_gen;
 // Modules that moved to custos-core, aliased at the crate root so `crate::identity::…` and its
 // siblings keep resolving.
 use custos_core::{
-    blob_store, identity, lexicon, metrics, no_input, rate_limit, request_host, sweep,
-    sweep_status, time, xrpc_error_shape,
+    blob_store, crawler, firehose, identity, lexicon, metrics, no_input, rate_limit, request_host,
+    sweep, sweep_status, time, xrpc_error_shape,
 };
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
@@ -607,11 +605,11 @@ async fn run() -> anyhow::Result<()> {
         poll_tracker: auth::new_claim_poll_tracker(),
         account_notifier: None,
         space_type_cache: custos_core::scope_display::new_space_type_cache(),
+        firehose,
+        crawlers,
     };
     let mut state = app::AppState {
         core,
-        firehose,
-        crawlers,
         iroh,
         notify_sender: None,
         email,

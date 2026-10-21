@@ -81,8 +81,8 @@ pub use events::{
     decode_stored_event, AccountEvent, CommitEvent, CommitInput, FirehoseError, FirehoseEvent,
     IdentityEvent, OpAction, RepoOp, SyncEvent, SyncInput,
 };
-#[cfg(test)]
-pub(crate) use replay::collect_replay_seqs;
+#[cfg(any(test, feature = "test-support"))]
+pub use replay::collect_replay_seqs;
 pub use replay::{ReplayReader, SubscribeOutcome, Subscription};
 
 use events::{
@@ -148,7 +148,7 @@ impl Firehose {
     /// Create a firehose whose broadcast buffer retains `capacity` events for slow consumers,
     /// seeding the sequence counter from `MAX(seq)` in the persisted log.
     pub async fn with_capacity(db: SqlitePool, capacity: usize) -> Result<Self, sqlx::Error> {
-        let last = crate::db::firehose_seq::max_seq(&db).await?;
+        let last = custos_db::firehose_seq::max_seq(&db).await?;
         let (tx, _rx) = broadcast::channel(capacity);
         Ok(Self {
             db,
@@ -231,12 +231,12 @@ impl Firehose {
         time: &str,
     ) -> Result<u64, FirehoseError> {
         let seq = self.last_seq.load(Ordering::Acquire) + 1;
-        match crate::db::firehose_seq::insert_event(&mut *conn, seq, did, event_type, blob, time)
+        match custos_db::firehose_seq::insert_event(&mut *conn, seq, did, event_type, blob, time)
             .await
         {
             Ok(()) => Ok(seq),
-            Err(e) if crate::db::is_unique_violation(&e) => {
-                let durable = crate::db::firehose_seq::max_seq(&mut *conn).await?;
+            Err(e) if custos_db::is_unique_violation(&e) => {
+                let durable = custos_db::firehose_seq::max_seq(&mut *conn).await?;
                 let healed_seq = durable + 1;
                 // The wedge never surfaces as an outage, so this log line is the only
                 // signal the cancellation window was actually hit in production.
@@ -249,7 +249,7 @@ impl Firehose {
                      was cancelled between its transaction commit and finish); re-seeded from \
                      MAX(seq) and retrying"
                 );
-                crate::db::firehose_seq::insert_event(
+                custos_db::firehose_seq::insert_event(
                     &mut *conn, healed_seq, did, event_type, blob, time,
                 )
                 .await?;
@@ -309,13 +309,13 @@ impl Firehose {
     /// floor with `Acquire` after the page read — is what keeps that classification race-free over
     /// the single-connection pool (the reader only consults the floor once it has actually observed
     /// a missing row, which cannot happen until the delete this call precedes has committed).
-    pub(crate) fn note_pruned(&self, watermark: u64) {
+    pub fn note_pruned(&self, watermark: u64) {
         self.prune_floor.fetch_max(watermark, Ordering::Release);
     }
 
     /// The highest `seq` the retention sweep has pruned so far (0 if none). Read by
     /// [`ReplayReader::next_batch`] to tell a prune-induced gap from a genuine mid-range hole.
-    pub(crate) fn prune_floor(&self) -> u64 {
+    pub fn prune_floor(&self) -> u64 {
         self.prune_floor.load(Ordering::Acquire)
     }
 
@@ -821,7 +821,7 @@ async fn stage_sync_row(
         };
         serde_ipld_dagcbor::to_vec(&stored).map_err(|e| FirehoseError::Encode(e.to_string()))?
     };
-    crate::db::firehose_seq::insert_event(&mut **tx, seq, &input.did, "sync", &blob, time).await?;
+    custos_db::firehose_seq::insert_event(&mut **tx, seq, &input.did, "sync", &blob, time).await?;
     Ok(())
 }
 
@@ -942,7 +942,7 @@ mod tests {
         .unwrap();
 
         // Both events are durable, in order, with their types recorded.
-        let rows = crate::db::firehose_seq::events_in_range(&fh.db, 0, 2, 10)
+        let rows = custos_db::firehose_seq::events_in_range(&fh.db, 0, 2, 10)
             .await
             .unwrap();
         let types: Vec<&str> = rows.iter().map(|r| r.event_type.as_str()).collect();
@@ -952,8 +952,8 @@ mod tests {
 
     #[tokio::test]
     async fn sequence_continues_across_restart() {
-        let db = crate::db::open_pool("sqlite::memory:").await.unwrap();
-        crate::db::run_migrations(&db).await.unwrap();
+        let db = custos_db::open_pool("sqlite::memory:").await.unwrap();
+        custos_db::run_migrations(&db).await.unwrap();
 
         // First "process": emit two events, then drop the firehose (process exits).
         {
@@ -1025,7 +1025,7 @@ mod tests {
         assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 1);
         assert_eq!(fh.emit_commit(commit_input("did:plc:a")).await.unwrap(), 2);
         assert_eq!(fh.current_seq(), 2);
-        assert_eq!(crate::db::firehose_seq::max_seq(&fh.db).await.unwrap(), 2);
+        assert_eq!(custos_db::firehose_seq::max_seq(&fh.db).await.unwrap(), 2);
     }
 
     #[tokio::test]
@@ -1141,7 +1141,7 @@ mod tests {
             "the reactivation must roll back with the rejected #sync"
         );
         assert_eq!(
-            crate::db::firehose_seq::max_seq(&fh.db).await.unwrap(),
+            custos_db::firehose_seq::max_seq(&fh.db).await.unwrap(),
             0,
             "no repo_seq row must persist"
         );

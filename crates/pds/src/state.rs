@@ -12,12 +12,6 @@ use custos_spaces::SpacesState;
 #[derive(Clone)]
 pub struct AppState {
     pub core: CoreState,
-    /// In-memory firehose pipeline: every repo commit emits a sequenced event here, which
-    /// `com.atproto.sync.subscribeRepos` fans out to connected relays/BGSes. Shared via Arc.
-    pub firehose: Arc<crate::firehose::Firehose>,
-    /// Outbound `requestCrawl` notifier: after each commit, pings the configured relays/BGSes
-    /// so newly produced content is crawled promptly. Shared via Arc.
-    pub crawlers: Arc<crate::crawler::CrawlerNotifier>,
     /// Bound Iroh QUIC endpoint, when `[iroh] enabled`. `None` when the tunnel is disabled.
     /// Handlers read `iroh.node_id` to advertise the pds's node id. Shared via Arc.
     pub iroh: Option<Arc<crate::iroh_tunnel::IrohState>>,
@@ -71,29 +65,10 @@ impl FromRef<AppState> for SpacesState {
 
 #[cfg(test)]
 impl AppState {
-    /// `core` plus test defaults for the `pds`-owned fields: a live firehose and crawler notifier
-    /// over `core`'s pool and metrics (no crawler URLs), no iroh, notifications off, and the log
-    /// email sender.
+    /// `core` plus test defaults for the `pds`-owned fields: no iroh, notifications off, and the
+    /// log email sender.
     pub async fn for_test(core: CoreState) -> AppState {
-        let firehose = {
-            let mut f = crate::firehose::Firehose::new(core.db.clone())
-                .await
-                .expect("test firehose");
-            f.attach_metrics(core.metrics.clone());
-            Arc::new(f)
-        };
-        let crawlers = {
-            let mut c = crate::crawler::CrawlerNotifier::new(
-                core.http_client.clone(),
-                "test.example.com".to_string(),
-                &[],
-            );
-            c.attach_metrics(core.metrics.clone());
-            Arc::new(c)
-        };
         AppState {
-            firehose,
-            crawlers,
             iroh: None,
             notify_sender: None,
             email: Arc::new(crate::email::LogEmailSender),
