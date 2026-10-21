@@ -21,6 +21,7 @@ on:
       - "apps/admin-companion/vendor/tauri-plugin-sharesheet/**"
       - "crates/crypto/**"
       - "crates/custos-client/**"
+      - "crates/obsign-core/**"
       - "crates/ios-device-key/**"
       - "Cargo.toml"
       - "Cargo.lock"

@@ -3387,6 +3387,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-ui-kit",
  "objc2-user-notifications",
+ "obsign-core",
  "p256",
  "rand_core 0.6.4",
  "reqwest",
@@ -4991,6 +4992,14 @@ dependencies = [
  "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
+]
+
+[[package]]
+name = "obsign-core"
+version = "0.16.2"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

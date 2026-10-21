@@ -220,7 +220,7 @@ mod tests {
     /// Keychain via `keychain::load_oauth_tokens`.
     #[tokio::test]
     async fn refresh_persists_tokens_through_wallet_keychain_adapter() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
 
         let server = MockServer::start();
         server.mock(|when, then| {

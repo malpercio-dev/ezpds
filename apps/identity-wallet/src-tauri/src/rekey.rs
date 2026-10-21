@@ -36,7 +36,7 @@
 //!
 //! This module also owns the durable per-DID Share 1 slot: `recovery-share-1:{did}`
 //! ([`recovery_share1_account`] is the single source of the naming, and
-//! [`is_recovery_share1_account`] is the sole account family `keychain::syncs_to_icloud`
+//! `obsign_core::keystore::is_recovery_share1_account` is the sole account family `syncs_to_icloud`
 //! admits to the iCloud-synchronizable store), with accessors [`store_share1`],
 //! [`load_share1`] (synced-first read, device-local fallback), and
 //! [`read_share1_synced`] (write read-back, deliberately no fallback). The slot holds
@@ -61,50 +61,33 @@ use crate::pds_client::{PdsClient, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 use crypto::PlcService;
 
-/// Account-name prefix of the per-DID Share 1 slot. The single source of the
-/// `recovery-share-1:{did}` naming, consumed by `keychain::syncs_to_icloud`.
-const RECOVERY_SHARE1_PREFIX: &str = "recovery-share-1:";
-
-/// Per-DID Keychain account holding this identity's Share 1.
-///
-/// A per-DID slot (never a single app-global one) so writing one identity's Share 1 can never
-/// overwrite a sibling identity's — which would drop that sibling's recovery capability below its
-/// baseline. Every write path shares this convention: the create ceremony, this re-key flow, and
-/// the recovery epilogue.
-///
-/// The account name addresses **two** Keychain records — an iCloud-synchronizable one and a
-/// device-local one (see `keychain`'s module docs). Share 1's job is to outlive the device that
-/// created it, so writes go to the synchronizable store via [`store_share1`] and reads prefer it
-/// via [`load_share1`], with the device-local slot kept as a fallback for identities onboarded
-/// before the synchronizable write path existed.
-pub(crate) fn recovery_share1_account(did: &str) -> String {
-    format!("{RECOVERY_SHARE1_PREFIX}{did}")
-}
-
-/// Whether `account` names a per-DID Share 1 slot — the sole account family the wallet
-/// permits in the iCloud-synchronizable Keychain store.
-pub(crate) fn is_recovery_share1_account(account: &str) -> bool {
-    account
-        .strip_prefix(RECOVERY_SHARE1_PREFIX)
-        .is_some_and(|did| !did.is_empty())
-}
+/// The per-DID Share 1 account naming. It lives with the cloud-slot guard in
+/// `obsign_core::keystore`, which admits only this family; the account addresses two records, the
+/// synchronizable one [`store_share1`] writes and [`load_share1`] prefers, and a device-local
+/// fallback for identities onboarded before the synchronizable path existed.
+pub(crate) use obsign_core::keystore::recovery_share1_account;
 
 /// Write this identity's Share 1 to the **iCloud-synchronizable** slot.
 ///
 /// Additive with respect to the device-local slot: it neither reads nor removes it, so a
 /// legacy copy stays put as a fallback. A successful return proves only that the item carries
 /// `kSecAttrSynchronizable` — whether it reached the user's Apple account is not observable
-/// from the app (see `keychain::store_item_synced`).
-pub(crate) fn store_share1(did: &str, share1: &[u8]) -> Result<(), crate::keychain::KeychainError> {
-    crate::keychain::store_item_synced(&recovery_share1_account(did), share1)
+/// from the app (see `obsign_core::keystore::store_item_synced`).
+pub(crate) fn store_share1(
+    did: &str,
+    share1: &[u8],
+) -> Result<(), obsign_core::keystore::KeyStoreError> {
+    obsign_core::keystore::store_item_synced(&recovery_share1_account(did), share1)
 }
 
 /// Read this identity's Share 1 from the **iCloud-synchronizable** slot only.
 ///
 /// Used for write read-back verification, where falling back to the device-local slot would
 /// let a stale legacy copy mask a synchronizable write that never landed.
-pub(crate) fn read_share1_synced(did: &str) -> Result<Vec<u8>, crate::keychain::KeychainError> {
-    crate::keychain::get_item_synced(&recovery_share1_account(did))
+pub(crate) fn read_share1_synced(
+    did: &str,
+) -> Result<Vec<u8>, obsign_core::keystore::KeyStoreError> {
+    obsign_core::keystore::get_item_synced(&recovery_share1_account(did))
 }
 
 /// Read this identity's Share 1, preferring the iCloud-synchronizable slot and falling back to
@@ -115,15 +98,15 @@ pub(crate) fn read_share1_synced(did: &str) -> Result<Vec<u8>, crate::keychain::
 /// operational failure of the synchronizable read the device-local slot is still consulted —
 /// but if that is also unavailable the original error is returned, so a locked device is never
 /// reported as "the share was never saved".
-pub(crate) fn load_share1(did: &str) -> Result<Vec<u8>, crate::keychain::KeychainError> {
+pub(crate) fn load_share1(did: &str) -> Result<Vec<u8>, obsign_core::keystore::KeyStoreError> {
     let account = recovery_share1_account(did);
-    match crate::keychain::get_item_synced(&account) {
+    match obsign_core::keystore::get_item_synced(&account) {
         Ok(bytes) if !bytes.is_empty() => Ok(bytes),
-        Ok(empty) => match crate::keychain::get_item(&account) {
+        Ok(empty) => match obsign_core::keystore::get_item(&account) {
             Ok(bytes) if !bytes.is_empty() => Ok(bytes),
             _ => Ok(empty),
         },
-        Err(synced_err) => match crate::keychain::get_item(&account) {
+        Err(synced_err) => match obsign_core::keystore::get_item(&account) {
             Ok(bytes) => Ok(bytes),
             Err(_) => Err(synced_err),
         },
@@ -705,7 +688,9 @@ pub fn confirm_rekey(did: &str) -> Result<(), RekeyError> {
     match load_share1(did) {
         Ok(bytes) if !bytes.is_empty() => {}
         Ok(_) => return Err(RekeyError::ShareNotStored),
-        Err(ref e) if crate::keychain::is_not_found(e) => return Err(RekeyError::ShareNotStored),
+        Err(ref e) if obsign_core::keystore::is_not_found(e) => {
+            return Err(RekeyError::ShareNotStored)
+        }
         Err(e) => {
             return Err(RekeyError::ShareStorageFailed {
                 message: format!("keychain read failed: {e}"),
@@ -761,35 +746,20 @@ mod tests {
 
     const TEST_DID: &str = "did:plc:rekeytest0123456789abcd";
 
-    /// Only the per-DID Share 1 account family may enter the iCloud-synchronizable store —
-    /// the predicate `keychain::syncs_to_icloud` delegates to.
-    #[test]
-    fn share1_account_recognition_is_exact() {
-        assert!(is_recovery_share1_account(&recovery_share1_account(
-            TEST_DID
-        )));
-        // The deprecated app-global slot and a prefix with no DID are not per-DID slots.
-        assert!(!is_recovery_share1_account("recovery-share-1"));
-        assert!(!is_recovery_share1_account("recovery-share-1:"));
-        assert!(!is_recovery_share1_account(&format!(
-            "{TEST_DID}:recovery-signing-key"
-        )));
-    }
-
     /// The synchronizable slot answers first (it is the only one that can reach a replacement
     /// device); the device-local slot is the fallback that keeps a not-yet-backfilled install
     /// recoverable on the device that holds it.
     #[test]
     fn load_share1_prefers_the_synchronizable_slot_and_falls_back_to_local() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let account = recovery_share1_account(TEST_DID);
 
         // Nothing anywhere.
-        assert!(load_share1(TEST_DID).is_err_and(|e| crate::keychain::is_not_found(&e)));
+        assert!(load_share1(TEST_DID).is_err_and(|e| obsign_core::keystore::is_not_found(&e)));
 
         // Only the device-local slot: still readable, so a confirmation gate on a
         // pre-backfill install is not told the share was never saved.
-        crate::keychain::store_item(&account, b"LOCAL").unwrap();
+        obsign_core::keystore::store_item(&account, b"LOCAL").unwrap();
         assert_eq!(load_share1(TEST_DID).unwrap(), b"LOCAL");
 
         // Both present: the synchronizable slot wins.
@@ -798,7 +768,7 @@ mod tests {
 
         // The read-back helper never falls back — a stale local copy must not be able to
         // stand in for a synchronizable write that failed.
-        crate::keychain::delete_item_synced(&account).unwrap();
+        obsign_core::keystore::delete_item_synced(&account).unwrap();
         assert!(read_share1_synced(TEST_DID).is_err());
         assert_eq!(load_share1(TEST_DID).unwrap(), b"LOCAL");
     }

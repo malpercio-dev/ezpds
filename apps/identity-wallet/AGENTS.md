@@ -116,7 +116,7 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 |---|---|
 | `lib.rs` | crate root and app wiring: the cross-cutting IPC commands (account creation, both DID ceremonies, PDS config/capabilities, IdentityStore reads, appearance) plus `run()`'s startup sequence — see module doc |
 | `main.rs` | desktop entry point (calls `lib::run()`) |
-| `keychain.rs` | the two Keychain stores (device-local + iCloud-synchronizable, allowlist-gated), protection classes, the access-group entitlement invariant, and the **canonical account inventory** — the module doc is the authority on every account name |
+| `keychain.rs` | `AppleKeychain`, the iOS `KeyStore` that `run()` installs into `obsign_core::keystore` (whose module doc owns the two-store and protection-class semantics, the accessors every module calls, and the Share 1 cloud-slot allowlist); the access-group entitlement invariant; and the **canonical account inventory**: the module doc is the authority on every account name |
 | `device_key.rs` | the global P-256 device key: this app's Keychain and account names bound to the shared `crates/ios-device-key` implementation (software-or-Secure-Enclave by `#[cfg]`; `get_or_create` idempotent, `sign` low-S-normalized r\|\|s) — see both module docs |
 | `identity_store.rs` | multi-identity Keychain lifecycle (`managed-dids` index + per-DID entries), lazy per-DID device keys with the Secure-Enclave liveness probe, the shared `SovereignTokenRecord` session record; removal semantics and the Share 1 exception in the module doc |
 | `share_ceremony.rs` | client-side 2-of-3 share generation + the three fail-closed staging slots (create / re-key / self-held kit); staging contract and load-bearing teardown order in the module doc |
@@ -170,7 +170,7 @@ PDS running at the configured URL for account creation to succeed at runtime.
 ## Dependencies
 
 - Frontend → Rust via Tauri IPC (`@tauri-apps/api/core` `invoke()`).
-- Rust → workspace deps: `crates/crypto` (P-256 software path + envelope builders),
+- Rust → workspace deps: `crates/obsign-core` (the platform-free core: `KeyStore` and the other platform traits; see its AGENTS.md), `crates/crypto` (P-256 software path + envelope builders),
   `crates/custos-client` (the DPoP/OAuth/XRPC client, including DNS TXT handle resolution — see
   its AGENTS.md), `crates/ios-device-key` (device key), `p256`, `multibase`, `urlencoding`,
   `chrono`; reqwest is rustls-only (no OpenSSL — rustls handles iOS TLS natively).

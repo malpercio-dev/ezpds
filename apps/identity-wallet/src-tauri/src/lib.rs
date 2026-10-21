@@ -455,19 +455,22 @@ async fn create_account(
         // 4. Store tokens in Keychain.
         // If session-token write fails, best-effort remove the already-written device-token.
         // The device key is persistent by design and is NOT cleaned up on failure.
-        keychain::store_item(keychain::DEVICE_TOKEN_ACCOUNT, body.device_token.as_bytes())
-            .map_err(|_| {
-                // device-token write failed — nothing to clean up; the device key is persistent by design.
-                CreateAccountError::KeychainError
-            })?;
+        obsign_core::keystore::store_item(
+            keychain::DEVICE_TOKEN_ACCOUNT,
+            body.device_token.as_bytes(),
+        )
+        .map_err(|_| {
+            // device-token write failed — nothing to clean up; the device key is persistent by design.
+            CreateAccountError::KeychainError
+        })?;
 
-        keychain::store_item(
+        obsign_core::keystore::store_item(
             keychain::SESSION_TOKEN_ACCOUNT,
             body.session_token.as_bytes(),
         )
         .map_err(|_| {
             // Best-effort cleanup: remove the already-written device-token.
-            let _ = keychain::delete_item(keychain::DEVICE_TOKEN_ACCOUNT);
+            let _ = obsign_core::keystore::delete_item(keychain::DEVICE_TOKEN_ACCOUNT);
             CreateAccountError::KeychainError
         })?;
 
@@ -505,10 +508,11 @@ fn load_did_ceremony_context() -> Result<DidCeremonyContext, DIDCeremonyError> {
         tracing::warn!(error = %e, "device key creation failed during DID ceremony");
         DIDCeremonyError::KeyNotFound
     })?;
-    let token_bytes = keychain::get_item(keychain::SESSION_TOKEN_ACCOUNT).map_err(|e| {
-        tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
-        DIDCeremonyError::KeychainError
-    })?;
+    let token_bytes =
+        obsign_core::keystore::get_item(keychain::SESSION_TOKEN_ACCOUNT).map_err(|e| {
+            tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
+            DIDCeremonyError::KeychainError
+        })?;
     let pending_token = String::from_utf8(token_bytes).map_err(|e| {
         tracing::warn!(error = %e, "session-token bytes are not valid UTF-8");
         DIDCeremonyError::KeychainError
@@ -655,7 +659,7 @@ async fn perform_did_ceremony(
     })?;
 
     // Step 6: Overwrite session-token with the upgraded full session token.
-    keychain::store_item(
+    obsign_core::keystore::store_item(
         keychain::SESSION_TOKEN_ACCOUNT,
         create_did_resp.session_token.as_bytes(),
     )
@@ -665,7 +669,7 @@ async fn perform_did_ceremony(
     })?;
 
     // Step 7: Persist the DID for use in subsequent app sessions.
-    keychain::store_item(keychain::LEGACY_DID_ACCOUNT, create_did_resp.did.as_bytes()).map_err(|e| {
+    obsign_core::keystore::store_item(keychain::LEGACY_DID_ACCOUNT, create_did_resp.did.as_bytes()).map_err(|e| {
         tracing::error!(error = %e, did = %create_did_resp.did, "failed to persist DID to keychain");
         DIDCeremonyError::KeychainError
     })?;
@@ -755,7 +759,7 @@ fn confirm_share_backup(did: String) -> Result<(), ShareBackupError> {
             );
             return Err(ShareBackupError::ShareNotStored);
         }
-        Err(ref e) if keychain::is_not_found(e) => {
+        Err(ref e) if obsign_core::keystore::is_not_found(e) => {
             tracing::error!("confirm_share_backup: recovery share 1 missing; keeping staging slot");
             return Err(ShareBackupError::ShareNotStored);
         }
@@ -841,12 +845,12 @@ async fn complete_did_web_ceremony(
     //
     // Promotion is already durable and cannot be retried. Persist every irreplaceable response
     // value before the optional hosting toggle so a transient failure cannot strand the user.
-    keychain::store_item(
+    obsign_core::keystore::store_item(
         keychain::SESSION_TOKEN_ACCOUNT,
         created.session_token.as_bytes(),
     )
     .map_err(|_| DIDCeremonyError::KeychainError)?;
-    keychain::store_item(keychain::LEGACY_DID_ACCOUNT, created.did.as_bytes())
+    obsign_core::keystore::store_item(keychain::LEGACY_DID_ACCOUNT, created.did.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
     if enable_managed_hosting {
         let hosting_result = state
@@ -893,7 +897,7 @@ async fn register_handle(
 
     // Step 2: Read DID and session token from Keychain.
     // Missing DID here is a post-ceremony invariant violation — error! is appropriate.
-    let did_bytes = keychain::get_item(keychain::LEGACY_DID_ACCOUNT).map_err(|e| {
+    let did_bytes = obsign_core::keystore::get_item(keychain::LEGACY_DID_ACCOUNT).map_err(|e| {
         tracing::error!(error = %e, "DID not found in Keychain during handle registration — ceremony invariant violated");
         RegisterHandleError::KeychainError
     })?;
@@ -902,7 +906,7 @@ async fn register_handle(
         RegisterHandleError::KeychainError
     })?;
 
-    let token_bytes = keychain::get_item(keychain::SESSION_TOKEN_ACCOUNT).map_err(|e| {
+    let token_bytes = obsign_core::keystore::get_item(keychain::SESSION_TOKEN_ACCOUNT).map_err(|e| {
         tracing::warn!(error = %e, "failed to read session-token from Keychain during handle registration");
         RegisterHandleError::KeychainError
     })?;
@@ -1546,18 +1550,18 @@ async fn import_did_web_identity(
 /// logged and swallowed, never blocking launch.
 fn migrate_global_share1_to_per_did() {
     // The legacy global slot; absent on a fresh (post-unification) install — nothing to migrate.
-    let global = match keychain::get_item(share_recovery::RECOVERY_SHARE1_ACCOUNT) {
+    let global = match obsign_core::keystore::get_item(share_recovery::RECOVERY_SHARE1_ACCOUNT) {
         // Sensitive key material — wipe the in-memory copy when this scope ends.
         Ok(bytes) if !bytes.is_empty() => zeroize::Zeroizing::new(bytes),
         Ok(_) => return,
-        Err(ref e) if keychain::is_not_found(e) => return,
+        Err(ref e) if obsign_core::keystore::is_not_found(e) => return,
         Err(e) => {
             tracing::warn!(error = %e, "share1 migration: global slot read failed; skipping");
             return;
         }
     };
     // The primary identity's DID (the create/did:web flow persists it under "did").
-    let did = match keychain::get_item(keychain::LEGACY_DID_ACCOUNT) {
+    let did = match obsign_core::keystore::get_item(keychain::LEGACY_DID_ACCOUNT) {
         Ok(bytes) if !bytes.is_empty() => match String::from_utf8(bytes) {
             Ok(did) => did,
             Err(_) => {
@@ -1570,16 +1574,16 @@ fn migrate_global_share1_to_per_did() {
     };
     let per_did = rekey::recovery_share1_account(&did);
     // Never clobber an already-populated per-DID slot — a newer ceremony or re-key owns it.
-    match keychain::get_item(&per_did) {
+    match obsign_core::keystore::get_item(&per_did) {
         Ok(bytes) if !bytes.is_empty() => return,
         Ok(_) => {}
-        Err(ref e) if keychain::is_not_found(e) => {}
+        Err(ref e) if obsign_core::keystore::is_not_found(e) => {}
         Err(e) => {
             tracing::warn!(error = %e, "share1 migration: per-DID slot read failed; skipping");
             return;
         }
     }
-    match keychain::store_item(&per_did, &global) {
+    match obsign_core::keystore::store_item(&per_did, &global) {
         Ok(()) => tracing::info!(
             "migrated global recovery-share-1 into the per-DID slot for the primary identity"
         ),
@@ -1621,7 +1625,7 @@ fn reconcile_share1_slots() {
 /// missing document as a refresh trigger and re-fetches it from plc.directory on first render,
 /// which needs neither the handle nor the PDS URL at launch.
 fn reconcile_created_identity() {
-    let did = match keychain::get_item(keychain::LEGACY_DID_ACCOUNT) {
+    let did = match obsign_core::keystore::get_item(keychain::LEGACY_DID_ACCOUNT) {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(did) if !did.is_empty() => did,
             Ok(_) => return,
@@ -1703,17 +1707,17 @@ fn backfill_synced_share1() {
         match rekey::read_share1_synced(&did) {
             Ok(bytes) if !bytes.is_empty() => continue,
             Ok(_) => {}
-            Err(ref e) if keychain::is_not_found(e) => {}
+            Err(ref e) if obsign_core::keystore::is_not_found(e) => {}
             Err(e) => {
                 tracing::warn!(error = %e, "share1 backfill: synced slot read failed; skipping");
                 continue;
             }
         }
         // Sensitive key material — wipe the in-memory copy when this scope ends.
-        let local = match keychain::get_item(&rekey::recovery_share1_account(&did)) {
+        let local = match obsign_core::keystore::get_item(&rekey::recovery_share1_account(&did)) {
             Ok(bytes) if !bytes.is_empty() => zeroize::Zeroizing::new(bytes),
             Ok(_) => continue,
-            Err(ref e) if keychain::is_not_found(e) => continue,
+            Err(ref e) if obsign_core::keystore::is_not_found(e) => continue,
             Err(e) => {
                 tracing::warn!(error = %e, "share1 backfill: local slot read failed; skipping");
                 continue;
@@ -1740,7 +1744,7 @@ fn share1_backfill_dids() -> Vec<String> {
             tracing::warn!(error = %e, "share1 backfill: managed-DID index unreadable");
             Vec::new()
         });
-    if let Ok(bytes) = keychain::get_item(keychain::LEGACY_DID_ACCOUNT) {
+    if let Ok(bytes) = obsign_core::keystore::get_item(keychain::LEGACY_DID_ACCOUNT) {
         if let Ok(did) = String::from_utf8(bytes) {
             if !did.is_empty() && !dids.contains(&did) {
                 dids.push(did);
@@ -1756,6 +1760,10 @@ fn share1_backfill_dids() -> Vec<String> {
     reason = "Tauri's run only fails when the app cannot start, which is fatal"
 )]
 pub fn run() {
+    // First, before anything touches storage. A second `run()` in one process would be refused
+    // and keep the store already installed, which is the same Keychain.
+    let _ = obsign_core::keystore::install(Box::new(keychain::AppleKeychain));
+
     let builder = tauri::Builder::default()
         .manage(oauth::AppState::new())
         .plugin(
@@ -2315,7 +2323,7 @@ mod tests {
     // -- confirm_share_backup teardown ordering --
     #[test]
     fn confirm_share_backup_requires_durable_share1() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:aliceceremony";
         share_ceremony::load_or_create("alice.example.com", "https://pds.example.com").unwrap();
 
@@ -2324,11 +2332,11 @@ mod tests {
             confirm_share_backup(did.to_string()),
             Err(ShareBackupError::ShareNotStored)
         ));
-        assert!(keychain::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
+        assert!(obsign_core::keystore::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
 
         // A different identity's Share 1 must NOT satisfy this DID's durability check — the
         // teardown is gated on the exact ceremony DID's slot, not any global one.
-        keychain::store_item(
+        obsign_core::keystore::store_item(
             &rekey::recovery_share1_account("did:plc:someoneelse"),
             b"OTHER1",
         )
@@ -2337,15 +2345,15 @@ mod tests {
             confirm_share_backup(did.to_string()),
             Err(ShareBackupError::ShareNotStored)
         ));
-        assert!(keychain::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
+        assert!(obsign_core::keystore::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
 
         // Once THIS DID's Share 1 is durably stored, confirmation tears the staging slot down.
         // The synchronizable slot is what a fresh ceremony writes; the gate must see it.
         rekey::store_share1(did, b"SHARE1ENVELOPE").unwrap();
         confirm_share_backup(did.to_string()).expect("confirmation should succeed");
         assert!(matches!(
-            keychain::get_item(share_ceremony::STAGING_ACCOUNT),
-            Err(ref e) if keychain::is_not_found(e)
+            obsign_core::keystore::get_item(share_ceremony::STAGING_ACCOUNT),
+            Err(ref e) if obsign_core::keystore::is_not_found(e)
         ));
         // Idempotent repeat.
         confirm_share_backup(did.to_string()).expect("repeat confirmation is a no-op");
@@ -2354,55 +2362,59 @@ mod tests {
     // -- legacy global -> per-DID Share 1 migration --
     #[test]
     fn migrate_global_share1_copies_into_primary_per_did_slot() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:legacyprimary";
 
         // Pre-unification install: Share 1 in the global slot, primary DID under "did", and no
         // per-DID slot yet.
-        keychain::store_item("recovery-share-1", b"LEGACY1").unwrap();
-        keychain::store_item("did", did.as_bytes()).unwrap();
+        obsign_core::keystore::store_item("recovery-share-1", b"LEGACY1").unwrap();
+        obsign_core::keystore::store_item("did", did.as_bytes()).unwrap();
 
         migrate_global_share1_to_per_did();
 
         // The per-DID slot now mirrors the global one; the global slot is left intact.
         assert_eq!(
-            keychain::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            obsign_core::keystore::get_item(&rekey::recovery_share1_account(did)).unwrap(),
             b"LEGACY1"
         );
-        assert_eq!(keychain::get_item("recovery-share-1").unwrap(), b"LEGACY1");
+        assert_eq!(
+            obsign_core::keystore::get_item("recovery-share-1").unwrap(),
+            b"LEGACY1"
+        );
     }
 
     #[test]
     fn migrate_global_share1_never_clobbers_existing_per_did_slot() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:legacyprimary";
 
         // A per-DID slot already populated by a fresh ceremony/re-key must win over any stale
         // global slot left behind.
-        keychain::store_item("recovery-share-1", b"STALE_GLOBAL").unwrap();
-        keychain::store_item("did", did.as_bytes()).unwrap();
-        keychain::store_item(&rekey::recovery_share1_account(did), b"CURRENT_PER_DID").unwrap();
+        obsign_core::keystore::store_item("recovery-share-1", b"STALE_GLOBAL").unwrap();
+        obsign_core::keystore::store_item("did", did.as_bytes()).unwrap();
+        obsign_core::keystore::store_item(&rekey::recovery_share1_account(did), b"CURRENT_PER_DID")
+            .unwrap();
 
         migrate_global_share1_to_per_did();
 
         assert_eq!(
-            keychain::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            obsign_core::keystore::get_item(&rekey::recovery_share1_account(did)).unwrap(),
             b"CURRENT_PER_DID"
         );
     }
 
     #[test]
     fn migrate_global_share1_noop_without_global_slot() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:freshinstall";
-        keychain::store_item("did", did.as_bytes()).unwrap();
+        obsign_core::keystore::store_item("did", did.as_bytes()).unwrap();
 
         // Fresh (post-unification) install has no global slot: nothing is written.
         migrate_global_share1_to_per_did();
 
         assert!(matches!(
-            keychain::get_item(&rekey::recovery_share1_account(did)),
-            Err(ref e) if keychain::is_not_found(e)
+            obsign_core::keystore::get_item(&rekey::recovery_share1_account(did)),
+            Err(ref e) if obsign_core::keystore::is_not_found(e)
         ));
     }
 
@@ -2420,14 +2432,15 @@ mod tests {
 
     #[test]
     fn backfill_copies_local_share1_into_the_synced_slot_and_keeps_the_local_one() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:preSyncInstall";
         let share1 = ceremony_share1();
 
         // A build from before the synchronizable write path: Share 1 exists, but only in the
         // device-local store, where it can never reach a replacement device.
         identity_store::IdentityStore.add_identity(did).unwrap();
-        keychain::store_item(&rekey::recovery_share1_account(did), share1.as_bytes()).unwrap();
+        obsign_core::keystore::store_item(&rekey::recovery_share1_account(did), share1.as_bytes())
+            .unwrap();
         assert!(rekey::read_share1_synced(did).is_err());
 
         backfill_synced_share1();
@@ -2435,7 +2448,7 @@ mod tests {
         assert_eq!(rekey::read_share1_synced(did).unwrap(), share1.as_bytes());
         // Copy, never move: the local slot may be the share's only surviving copy.
         assert_eq!(
-            keychain::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            obsign_core::keystore::get_item(&rekey::recovery_share1_account(did)).unwrap(),
             share1.as_bytes()
         );
 
@@ -2446,7 +2459,7 @@ mod tests {
 
     #[test]
     fn backfill_never_overwrites_a_populated_synced_slot() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:alreadysynced";
 
         // A re-key or recovery epilogue owns the synchronizable slot; a stale local copy from
@@ -2454,7 +2467,8 @@ mod tests {
         identity_store::IdentityStore.add_identity(did).unwrap();
         rekey::store_share1(did, ceremony_share1().as_bytes()).unwrap();
         let current = rekey::read_share1_synced(did).unwrap();
-        keychain::store_item(&rekey::recovery_share1_account(did), b"STALE_LOCAL").unwrap();
+        obsign_core::keystore::store_item(&rekey::recovery_share1_account(did), b"STALE_LOCAL")
+            .unwrap();
 
         backfill_synced_share1();
 
@@ -2463,43 +2477,44 @@ mod tests {
 
     #[test]
     fn backfill_skips_a_local_slot_that_is_not_a_v2_share1_envelope() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:bareshareinstall";
 
         // did:web ceremonies stored a bare base32 share, which the recovery ceremony's
         // auto-load cannot use anyway — syncing it would spend an iCloud secret for nothing.
         identity_store::IdentityStore.add_identity(did).unwrap();
-        keychain::store_item(&rekey::recovery_share1_account(did), b"NOTANENVELOPE").unwrap();
+        obsign_core::keystore::store_item(&rekey::recovery_share1_account(did), b"NOTANENVELOPE")
+            .unwrap();
 
         backfill_synced_share1();
 
         assert!(matches!(
             rekey::read_share1_synced(did),
-            Err(ref e) if keychain::is_not_found(e)
+            Err(ref e) if obsign_core::keystore::is_not_found(e)
         ));
     }
 
     #[test]
     fn backfill_reaches_a_legacy_primary_did_absent_from_the_managed_index() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:legacyprimaryonly";
         let share1 = ceremony_share1();
 
         // Pre-unification install: the global slot plus a primary DID that was never
         // registered in `managed-dids`. One launch must carry it through both hops.
-        keychain::store_item("recovery-share-1", share1.as_bytes()).unwrap();
-        keychain::store_item("did", did.as_bytes()).unwrap();
+        obsign_core::keystore::store_item("recovery-share-1", share1.as_bytes()).unwrap();
+        obsign_core::keystore::store_item("did", did.as_bytes()).unwrap();
 
         reconcile_share1_slots();
 
         assert_eq!(rekey::read_share1_synced(did).unwrap(), share1.as_bytes());
         // Neither source slot is disturbed.
         assert_eq!(
-            keychain::get_item("recovery-share-1").unwrap(),
+            obsign_core::keystore::get_item("recovery-share-1").unwrap(),
             share1.as_bytes()
         );
         assert_eq!(
-            keychain::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            obsign_core::keystore::get_item(&rekey::recovery_share1_account(did)).unwrap(),
             share1.as_bytes()
         );
     }
@@ -2508,12 +2523,12 @@ mod tests {
 
     #[test]
     fn reconcile_registers_a_created_identity_missing_from_the_managed_index() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:strandedcreate";
 
         // The state the reported bug leaves behind: the ceremony persisted the DID, but
         // `register_created_identity` never landed, so the home screen lists nothing.
-        keychain::store_item("did", did.as_bytes()).unwrap();
+        obsign_core::keystore::store_item("did", did.as_bytes()).unwrap();
         assert!(identity_store::IdentityStore
             .list_identities()
             .unwrap()
@@ -2529,13 +2544,13 @@ mod tests {
 
     #[test]
     fn reconcile_never_resurrects_a_deliberately_forgotten_identity() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:forgottenonpurpose";
 
         // Forgetting an identity locally leaves the legacy "did" slot untouched, so the
         // tombstone is the only thing standing between the user's decision and a relaunch
         // putting the identity straight back on the home screen.
-        keychain::store_item("did", did.as_bytes()).unwrap();
+        obsign_core::keystore::store_item("did", did.as_bytes()).unwrap();
         identity_store::IdentityStore.add_identity(did).unwrap();
         identity_store::IdentityStore.remove_identity(did).unwrap();
 
@@ -2549,9 +2564,9 @@ mod tests {
 
     #[test]
     fn reconcile_is_idempotent_and_never_duplicates() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:idempotentreconcile";
-        keychain::store_item("did", did.as_bytes()).unwrap();
+        obsign_core::keystore::store_item("did", did.as_bytes()).unwrap();
 
         reconcile_created_identity();
         reconcile_created_identity();
@@ -2564,7 +2579,7 @@ mod tests {
 
     #[test]
     fn reconcile_is_a_no_op_without_a_primary_did() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
 
         // A fresh install, or an import-only wallet: nothing to reconcile from.
         reconcile_created_identity();
@@ -2577,9 +2592,9 @@ mod tests {
 
     #[test]
     fn reconcile_leaves_an_already_registered_identity_alone() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:alreadyregistered";
-        keychain::store_item("did", did.as_bytes()).unwrap();
+        obsign_core::keystore::store_item("did", did.as_bytes()).unwrap();
         identity_store::IdentityStore.add_identity(did).unwrap();
 
         reconcile_created_identity();
@@ -2785,7 +2800,7 @@ mod tests {
 
     #[test]
     fn persist_imported_did_web_registers_and_stores_doc() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let store = identity_store::IdentityStore;
         let did = "did:web:import.example";
         let aka = vec!["at://import.example".to_string()];
@@ -2877,13 +2892,13 @@ mod tests {
 
     #[test]
     fn get_appearance_preference_returns_none_before_save() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         assert!(get_appearance_preference().is_none());
     }
 
     #[test]
     fn appearance_preference_round_trips_through_keychain() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         set_appearance_preference("dark".to_string()).unwrap();
         assert_eq!(get_appearance_preference().as_deref(), Some("dark"));
         set_appearance_preference("system".to_string()).unwrap();
@@ -2893,7 +2908,7 @@ mod tests {
 
     #[test]
     fn set_appearance_preference_rejects_unknown_values() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let err = set_appearance_preference("sepia".to_string()).unwrap_err();
         assert!(matches!(err, AppearanceError::InvalidPreference));
         assert!(get_appearance_preference().is_none());
@@ -2901,7 +2916,7 @@ mod tests {
 
     #[test]
     fn get_appearance_preference_treats_corrupt_value_as_absent() {
-        keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         // A value written outside set_appearance_preference's validation
         // (or corrupted) must read back as "follow the system", not an error.
         keychain::store_appearance_preference("neon").unwrap();

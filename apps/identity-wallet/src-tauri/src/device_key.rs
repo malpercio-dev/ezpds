@@ -44,22 +44,22 @@ pub(crate) const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
 pub(crate) struct WalletKeychain;
 
 impl KeychainStore for WalletKeychain {
-    type Error = crate::keychain::KeychainError;
+    type Error = obsign_core::keystore::KeyStoreError;
 
     fn get(account: &str) -> Result<Vec<u8>, Self::Error> {
-        crate::keychain::get_item(account)
+        obsign_core::keystore::get_item(account)
     }
 
     fn store(account: &str, data: &[u8]) -> Result<(), Self::Error> {
-        crate::keychain::store_item(account, data)
+        obsign_core::keystore::store_item(account, data)
     }
 
     fn delete(account: &str) -> Result<(), Self::Error> {
-        crate::keychain::delete_item(account)
+        obsign_core::keystore::delete_item(account)
     }
 
     fn is_not_found(error: &Self::Error) -> bool {
-        crate::keychain::is_not_found(error)
+        obsign_core::keystore::is_not_found(error)
     }
 }
 
@@ -82,7 +82,7 @@ mod tests {
     /// error shape are covered by `ios-device-key`'s own tests.
     #[test]
     fn the_key_round_trips_through_the_wallet_keychain() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
 
         let key = get_or_create().expect("get_or_create must succeed");
         assert!(key.key_id.starts_with("did:key:z"));
@@ -93,11 +93,11 @@ mod tests {
         );
 
         assert!(
-            crate::keychain::get_item(DEVICE_KEY_PRIV_ACCOUNT).is_ok(),
+            obsign_core::keystore::get_item(DEVICE_KEY_PRIV_ACCOUNT).is_ok(),
             "the software path must store the scalar under the pinned account name"
         );
 
-        crate::keychain::delete_item(DEVICE_KEY_PRIV_ACCOUNT).expect("delete");
+        obsign_core::keystore::delete_item(DEVICE_KEY_PRIV_ACCOUNT).expect("delete");
         assert!(matches!(sign(b"no key"), Err(DeviceKeyError::KeyNotFound)));
     }
 }

@@ -1726,7 +1726,7 @@ mod tests {
     /// request_claim_verification calls requestPlcOperationSignature on the old PDS
     #[tokio::test]
     async fn test_request_claim_verification_success() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::sync::{Arc, Mutex};
 
@@ -1806,7 +1806,7 @@ mod tests {
     /// request_claim_verification returns NetworkError on PDS failure
     #[tokio::test]
     async fn test_request_claim_verification_pds_returns_500() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::sync::{Arc, Mutex};
 
@@ -1913,7 +1913,7 @@ mod tests {
     /// mapped to NETWORK_ERROR, killing every first-time claim before any network call.
     #[test]
     fn ensure_claim_device_key_registers_fresh_did() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let did = "did:plc:freshclaimdevicekey";
 
         let key = ensure_claim_device_key(did).expect("fresh DID must get a device key");
@@ -1933,7 +1933,7 @@ mod tests {
     /// Test 1: Success path with device key at rotationKeys[0]
     #[tokio::test]
     async fn test_sign_and_verify_claim_success() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2048,7 +2048,7 @@ mod tests {
     /// Test 2: Wrong key at rotationKeys[0]
     #[tokio::test]
     async fn test_sign_and_verify_claim_wrong_key_at_rotation_keys_0() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2151,7 +2151,7 @@ mod tests {
     /// Test 3: prev chain mismatch
     #[tokio::test]
     async fn test_sign_and_verify_claim_prev_mismatch() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2253,7 +2253,7 @@ mod tests {
     /// Test 4: unexpected key removal
     #[tokio::test]
     async fn test_sign_and_verify_claim_unexpected_key_removal() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2354,7 +2354,7 @@ mod tests {
     /// Test 5: unexpected service change
     #[tokio::test]
     async fn test_sign_and_verify_claim_unexpected_service_change() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2462,7 +2462,7 @@ mod tests {
     /// Test 6: warnings for benign additions
     #[tokio::test]
     async fn test_sign_and_verify_claim_warnings_for_added_service() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::{Arc, Mutex};
@@ -2586,7 +2586,7 @@ mod tests {
     /// Test 7: Invalid token error from PDS
     #[tokio::test]
     async fn test_sign_and_verify_claim_invalid_token() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::HashMap;
         use std::sync::Arc;
@@ -2658,7 +2658,7 @@ mod tests {
     /// Test Success: submit_claim POSTs signed operation and persists identity
     #[tokio::test]
     async fn test_submit_claim_success() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let mock_server = MockServer::start();

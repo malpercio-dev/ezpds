@@ -87,7 +87,7 @@ impl Mirror {
 /// trouble is non-fatal: the sweep still protects data, and the next fire retries the flip.
 #[cfg(any(target_os = "ios", test))]
 fn take_mirror_lead() -> Mirror {
-    let lead = match crate::keychain::get_item(NEXT_MIRROR_ACCOUNT) {
+    let lead = match obsign_core::keystore::get_item(NEXT_MIRROR_ACCOUNT) {
         Ok(raw) if raw == Mirror::Repo.encoded() => Mirror::Repo,
         Ok(raw) if raw == Mirror::Blob.encoded() => Mirror::Blob,
         Ok(_) => {
@@ -96,7 +96,7 @@ fn take_mirror_lead() -> Mirror {
             );
             Mirror::Blob
         }
-        Err(e) if crate::keychain::is_not_found(&e) => Mirror::Blob,
+        Err(e) if obsign_core::keystore::is_not_found(&e) => Mirror::Blob,
         Err(e) => {
             tracing::warn!(
                 error = %e,
@@ -106,7 +106,7 @@ fn take_mirror_lead() -> Mirror {
         }
     };
 
-    if let Err(e) = crate::keychain::store_item(NEXT_MIRROR_ACCOUNT, lead.other().encoded()) {
+    if let Err(e) = obsign_core::keystore::store_item(NEXT_MIRROR_ACCOUNT, lead.other().encoded()) {
         tracing::warn!(
             error = %e,
             "background backup: could not persist the next mirror order"
@@ -157,7 +157,7 @@ pub enum BackgroundBackupError {
 /// unreadable value reads as the defaults (background on), never an error — a diagnostic
 /// hiccup must not silently disable a backup the user relies on.
 pub(crate) fn load_settings() -> BackgroundBackupSettings {
-    crate::keychain::get_item(SETTINGS_ACCOUNT)
+    obsign_core::keystore::get_item(SETTINGS_ACCOUNT)
         .ok()
         .and_then(|raw| serde_json::from_slice(&raw).ok())
         .unwrap_or_default()
@@ -181,7 +181,7 @@ pub fn set_background_backup_settings(
         serde_json::to_vec(&settings).map_err(|e| BackgroundBackupError::SerializationError {
             message: e.to_string(),
         })?;
-    crate::keychain::store_item(SETTINGS_ACCOUNT, &json).map_err(|e| {
+    obsign_core::keystore::store_item(SETTINGS_ACCOUNT, &json).map_err(|e| {
         BackgroundBackupError::KeychainError {
             message: e.to_string(),
         }
@@ -797,16 +797,16 @@ mod tests {
 
     #[test]
     fn mirror_lead_alternates_durably_across_fires() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
 
         assert_eq!(take_mirror_lead(), Mirror::Blob);
         assert_eq!(
-            crate::keychain::get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
+            obsign_core::keystore::get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
             Mirror::Repo.encoded()
         );
         assert_eq!(take_mirror_lead(), Mirror::Repo);
         assert_eq!(
-            crate::keychain::get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
+            obsign_core::keystore::get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
             Mirror::Blob.encoded()
         );
         assert_eq!(take_mirror_lead(), Mirror::Blob);
@@ -814,8 +814,8 @@ mod tests {
 
     #[test]
     fn invalid_mirror_lead_state_recovers_to_blob_then_repo() {
-        crate::keychain::clear_for_test();
-        crate::keychain::store_item(NEXT_MIRROR_ACCOUNT, b"invalid").unwrap();
+        obsign_core::keystore::clear_for_test();
+        obsign_core::keystore::store_item(NEXT_MIRROR_ACCOUNT, b"invalid").unwrap();
 
         assert_eq!(take_mirror_lead(), Mirror::Blob);
         assert_eq!(take_mirror_lead(), Mirror::Repo);

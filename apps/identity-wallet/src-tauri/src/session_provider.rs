@@ -487,7 +487,7 @@ mod tests {
     /// Register `did` fresh and store `record` under it. Clears the (thread-local test)
     /// Keychain first so scenarios do not bleed into one another.
     fn seed(did: &str, record: &SovereignTokenRecord) {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         IdentityStore.add_identity(did).unwrap();
         IdentityStore.store_oauth_tokens(did, record).unwrap();
     }
@@ -792,7 +792,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_record_needs_unlock() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         IdentityStore.add_identity(DID).unwrap();
 
         let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
@@ -837,7 +837,7 @@ mod tests {
 
     #[tokio::test]
     async fn two_identities_hold_independent_sessions() {
-        crate::keychain::clear_for_test();
+        obsign_core::keystore::clear_for_test();
         let alice_record = record_for(
             now() + 3_600,
             now() + 86_400,

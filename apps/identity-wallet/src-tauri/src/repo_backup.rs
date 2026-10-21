@@ -531,7 +531,7 @@ pub(crate) fn backup_enabled_account(did: &str) -> String {
 }
 
 fn load_enabled(did: &str) -> bool {
-    crate::keychain::get_item(&backup_enabled_account(did))
+    obsign_core::keystore::get_item(&backup_enabled_account(did))
         .map(|v| v == b"true")
         .unwrap_or(false)
 }
@@ -548,7 +548,7 @@ pub(crate) fn is_backup_enabled(did: &str) -> bool {
 
 fn store_enabled(did: &str, enabled: bool) -> Result<(), RepoBackupError> {
     let value: &[u8] = if enabled { b"true" } else { b"false" };
-    crate::keychain::store_item(&backup_enabled_account(did), value).map_err(|e| {
+    obsign_core::keystore::store_item(&backup_enabled_account(did), value).map_err(|e| {
         RepoBackupError::KeychainError {
             message: e.to_string(),
         }

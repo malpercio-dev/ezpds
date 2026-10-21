@@ -1008,10 +1008,11 @@ mod tests {
         let device_pub = store
             .get_or_create_device_key(did)
             .expect("device key generation failed");
-        let device_priv_bytes: [u8; 32] = crate::keychain::get_item(&format!("{did}:device-key"))
-            .expect("device key retrieval")
-            .try_into()
-            .expect("device key 32 bytes");
+        let device_priv_bytes: [u8; 32] =
+            obsign_core::keystore::get_item(&format!("{did}:device-key"))
+                .expect("device key retrieval")
+                .try_into()
+                .expect("device key 32 bytes");
 
         // Generate rotation key for genesis
         let rotation_key = crypto::generate_p256_keypair().expect("rotation key generation");
@@ -1185,8 +1186,8 @@ mod tests {
         let client = crate::pds_client::new_for_test(mock_server.base_url());
 
         // Generate a test genesis operation
-        let device_priv_bytes =
-            crate::keychain::get_item(&format!("{did}:device-key")).expect("device key retrieval");
+        let device_priv_bytes = obsign_core::keystore::get_item(&format!("{did}:device-key"))
+            .expect("device key retrieval");
         let device_priv_array: [u8; 32] =
             device_priv_bytes.try_into().expect("device key 32 bytes");
         let rotation_key = crypto::generate_p256_keypair().expect("rotation key generation");
