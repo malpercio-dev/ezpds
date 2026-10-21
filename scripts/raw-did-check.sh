@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fail on a new raw-string DID parameter or field in the PDS's auth/ and routes/ trees (pds's,
-# custos-core's, and custos-spaces' auth/; pds's and custos-spaces' routes/, plus the two Spaces
-# modules that were auth/ and routes/ files before the crate split).
+# custos-core's, custos-oauth's, and custos-spaces' auth/; the routes/ of pds and every feature
+# crate; plus the modules that were auth/ and routes/ files before the crate split: custos-core's
+# scope_display.rs, custos-oauth's oauth_*.rs support modules, and custos-spaces' views.rs).
 #
 # DIDs cross these boundaries as `common::Did`, which can only be built by the syntax
 # validator. A `did: &str` / `did: String` (or `user_did`, `authority_did`, ...) lets a handle
@@ -42,8 +43,12 @@ count_file() {
 list_files() {
   git ls-files 'crates/pds/src/auth/*.rs' 'crates/custos-core/src/auth/*.rs' \
     'crates/pds/src/routes/*.rs' 'crates/pds/src/routes/**/*.rs' \
+    'crates/custos-agents/src/routes/*.rs' 'crates/custos-blobs/src/routes/*.rs' \
+    'crates/custos-firehose/src/routes/*.rs' \
+    'crates/custos-oauth/src/auth/*.rs' 'crates/custos-oauth/src/routes/*.rs' \
+    'crates/custos-oauth/src/routes/**/*.rs' 'crates/custos-oauth/src/oauth_*.rs' \
     'crates/custos-spaces/src/auth/*.rs' 'crates/custos-spaces/src/routes/*.rs' \
-    'crates/custos-spaces/src/consent.rs' 'crates/custos-spaces/src/views.rs' |
+    'crates/custos-core/src/scope_display.rs' 'crates/custos-spaces/src/views.rs' |
     grep -vE '(_test|_tests|test_utils|_test_support)\.rs$' | sort -u
 }
 

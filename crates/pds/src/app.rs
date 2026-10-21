@@ -19,21 +19,11 @@ use crate::routes::admin_health::admin_health;
 use crate::routes::admin_list_accounts::list_accounts;
 use crate::routes::admin_notifications::{get_admin_sender_keys, register_admin_notifications};
 use crate::routes::admin_recovery_releases::admin_recovery_releases;
-use crate::routes::admin_relay_status::relay_status;
-use crate::routes::admin_request_crawl::request_crawl;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
 use crate::routes::admin_waitlist::admin_waitlist;
-use crate::routes::agent_child::{
-    delete_child, list_children, mint_child, remint_child_assertion, revoke_child,
-};
-use crate::routes::agent_claim::{post_agent_claim, post_agent_claim_confirm};
-use crate::routes::agent_event::post_agent_event;
-use crate::routes::agent_identity::post_agent_identity;
-use crate::routes::agents::{agent_audit_log, claim_preview, list_agents, revoke_agent};
 use crate::routes::apply_writes::apply_writes;
 use crate::routes::atproto_did::atproto_did_handler;
-use crate::routes::auth_md::serve_auth_md;
 use crate::routes::check_account_status::check_account_status;
 use crate::routes::claim_codes::{claim_codes, list_claim_code_inventory, revoke_claim_code_route};
 use crate::routes::confirm_email::confirm_email;
@@ -57,7 +47,6 @@ use crate::routes::did_json::did_json_handler;
 use crate::routes::did_web_hosting::{
     set_did_web_hosting_handler, update_did_web_document_handler,
 };
-use crate::routes::get_blob::get_blob;
 use crate::routes::get_device_pds::get_device_pds;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_metrics::get_metrics;
@@ -74,25 +63,11 @@ use crate::routes::health::health;
 use crate::routes::import_repo::import_repo;
 use crate::routes::landing::landing;
 use crate::routes::list_app_passwords::list_app_passwords_handler;
-use crate::routes::list_blobs::list_blobs;
-use crate::routes::list_missing_blobs::list_missing_blobs;
 use crate::routes::list_records::list_records;
 use crate::routes::list_repos::list_repos;
 use crate::routes::notifications::{
     get_sender_keys, register_notifications, unregister_notifications,
 };
-use crate::routes::oauth_authorize::{get_authorization, post_authorization};
-use crate::routes::oauth_client_metadata::oauth_client_metadata;
-use crate::routes::oauth_consent::{
-    get_authorization_status, get_consent_request, post_authorization_approve,
-    post_authorization_complete,
-};
-use crate::routes::oauth_jwks::oauth_jwks;
-use crate::routes::oauth_par::post_par;
-use crate::routes::oauth_protected_resource::oauth_protected_resource_metadata;
-use crate::routes::oauth_revoke::post_revoke;
-use crate::routes::oauth_server_metadata::oauth_server_metadata;
-use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
 use crate::routes::put_preferences::put_preferences_handler;
 use crate::routes::put_record::put_record;
@@ -127,14 +102,12 @@ use crate::routes::sync_get_blocks::sync_get_blocks;
 use crate::routes::sync_get_latest_commit::sync_get_latest_commit;
 use crate::routes::sync_get_record::sync_get_record;
 use crate::routes::sync_get_repo_status::sync_get_repo_status;
-use crate::routes::sync_subscribe_repos::subscribe_repos;
 use crate::routes::transfer_accept::transfer_accept;
 use crate::routes::transfer_complete::transfer_complete;
 use crate::routes::transfer_initiate::transfer_initiate;
 use crate::routes::update_email::update_email;
 use crate::routes::update_handle::update_handle_handler;
 use crate::routes::update_subject_status::update_subject_status;
-use crate::routes::upload_blob::upload_blob;
 use crate::routes::waitlist_signup::waitlist_signup;
 #[cfg(test)]
 pub(crate) use crate::state::test_state;
@@ -157,44 +130,8 @@ use crate::xrpc_dispatch::xrpc_handler;
 pub fn app(state: AppState) -> Router {
     let public = Router::new()
         .route("/", get(landing))
-        .route("/auth.md", get(serve_auth_md))
         .route("/.well-known/atproto-did", get(atproto_did_handler))
         .route("/.well-known/did.json", get(did_json_handler))
-        .route(
-            "/.well-known/oauth-protected-resource",
-            get(oauth_protected_resource_metadata),
-        )
-        .route(
-            "/.well-known/oauth-authorization-server",
-            get(oauth_server_metadata),
-        )
-        .route(
-            "/oauth/authorize",
-            get(get_authorization).post(post_authorization),
-        )
-        .route("/oauth/authorize/consent-request", get(get_consent_request))
-        .route("/oauth/authorize/status", get(get_authorization_status))
-        .route("/oauth/authorize/approve", post(post_authorization_approve))
-        .route(
-            "/oauth/authorize/complete",
-            post(post_authorization_complete),
-        )
-        .route("/oauth/client-metadata.json", get(oauth_client_metadata))
-        .route("/oauth/jwks", get(oauth_jwks))
-        .route("/oauth/par", post(post_par))
-        .route("/oauth/token", post(post_token))
-        .route("/oauth/revoke", post(post_revoke))
-        .route("/agent/identity", post(post_agent_identity))
-        .route("/agent/child", get(list_children).post(mint_child))
-        .route("/agent/child/assertion", post(remint_child_assertion))
-        .route("/agent/child/revoke", post(revoke_child))
-        .route("/agent/child/delete", post(delete_child))
-        .route("/agent/identity/claim", post(post_agent_claim))
-        .route(
-            "/agent/identity/claim/confirm",
-            post(post_agent_claim_confirm),
-        )
-        .route("/agent/event/notify", post(post_agent_event))
         // Public + credential-free by design (the `waitlist` capability): a marketing
         // page on another origin posts here, so it belongs on this CORS'd group, not
         // `/v1/*`. The handler itself 404s unless `[waitlist] enabled`.
@@ -345,8 +282,6 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/com.atproto.identity.submitPlcOperation",
             post(submit_plc_operation),
         )
-        .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
-        .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
         .route("/xrpc/com.atproto.sync.getBlocks", get(sync_get_blocks))
         .route(
             "/xrpc/com.atproto.sync.getLatestCommit",
@@ -358,18 +293,9 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/com.atproto.sync.getRepoStatus",
             get(sync_get_repo_status),
         )
-        .route("/xrpc/com.atproto.sync.listBlobs", get(list_blobs))
         .route("/xrpc/com.atproto.sync.listRepos", get(list_repos))
-        .route(
-            "/xrpc/com.atproto.sync.subscribeRepos",
-            get(subscribe_repos),
-        )
         .route("/xrpc/com.atproto.repo.applyWrites", post(apply_writes))
         .route("/xrpc/com.atproto.repo.importRepo", post(import_repo))
-        .route(
-            "/xrpc/com.atproto.repo.listMissingBlobs",
-            get(list_missing_blobs),
-        )
         .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
         .route("/xrpc/com.atproto.repo.listRecords", get(list_records))
@@ -388,10 +314,15 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/{method}", get(xrpc_handler).post(xrpc_handler))
         .route("/static/{*path}", get(static_handler));
-    // Feature routers merge before the layer stack so they share it. Each carries its own gate:
+    // Feature routers merge before the layer stack so they share it. A gated feature carries its gate:
     // `custos_spaces::router` is empty unless `[spaces] enabled`, so a disabled deployment's space
     // methods fall into the `/xrpc/{method}` catch-all's `MethodNotImplemented`.
-    let public = public.merge(custos_spaces::router(&state.config.spaces));
+    let public = public
+        .merge(custos_oauth::router())
+        .merge(custos_agents::router())
+        .merge(custos_blobs::router())
+        .merge(custos_firehose::router())
+        .merge(custos_spaces::router(&state.config.spaces));
     // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
     // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
     // never cookie-based (all Bearer/DPoP/signed-request), so a permissive policy cannot be abused
@@ -449,10 +380,6 @@ pub fn app(state: AppState) -> Router {
             "/v1/repo-keys/rotation/complete",
             post(complete_repo_key_rotation),
         )
-        .route("/v1/agents", get(list_agents))
-        .route("/v1/agents/claim-preview", post(claim_preview))
-        .route("/v1/agents/{registration_id}/revoke", post(revoke_agent))
-        .route("/v1/agents/{registration_id}/audit", get(agent_audit_log))
         .route("/v1/notifications/register", post(register_notifications))
         .route(
             "/v1/notifications/register/{deviceUuid}",
@@ -476,8 +403,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/admin/audit", get(list_admin_audit))
         .route("/v1/admin/health", get(admin_health))
         .route("/v1/admin/recovery-releases", get(admin_recovery_releases))
-        .route("/v1/admin/relay-status", get(relay_status))
-        .route("/v1/admin/request-crawl", post(request_crawl))
         .route(
             "/v1/admin/accounts/{id}/revoke-credentials",
             post(revoke_account_credentials),
@@ -508,7 +433,10 @@ pub fn app(state: AppState) -> Router {
             get(get_pds_signing_key).post(create_signing_key),
         )
         .route("/v1/repo-signing-key", get(get_repo_signing_key));
-    let internal = internal.merge(custos_spaces::internal_router(&state.config.spaces));
+    let internal = internal
+        .merge(custos_agents::internal_router())
+        .merge(custos_firehose::internal_router())
+        .merge(custos_spaces::internal_router(&state.config.spaces));
     let internal = apply_shared_layers(internal, &state);
 
     let router = public.merge(internal);

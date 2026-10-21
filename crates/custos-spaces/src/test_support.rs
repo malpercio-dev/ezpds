@@ -58,10 +58,7 @@ pub async fn state_with_master_key() -> SpacesState {
 
 /// `state` with a [`FixedTxtResolver`] wired in, answering every TXT lookup with `records`.
 pub fn state_with_txt_records(state: SpacesState, records: Vec<String>) -> SpacesState {
-    SpacesState {
-        core: core::state_with_txt_records(state.core, records),
-        ..state
-    }
+    SpacesState::new(core::state_with_txt_records(state.core, records))
 }
 
 /// A P-256 key a space client binds its credential to, plus the RFC 9421 `atproto-space`

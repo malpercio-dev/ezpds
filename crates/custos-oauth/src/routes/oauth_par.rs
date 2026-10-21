@@ -1,0 +1,1018 @@
+// pattern: Imperative Shell
+//
+// Gathers: CoreState (DB + outbound HTTP client), form body (authorization request parameters)
+// Processes: client lookup (with ATProto URL-client_id metadata resolution on a cache miss)
+//            → redirect_uri validation → param validation → DB store
+// Returns:
+//   POST: 201 JSON { request_uri, expires_in } on success
+//         400 JSON { error, error_description } on invalid request (RFC 9126 §2.3)
+
+//! `POST /oauth/par` — Pushed Authorization Requests (RFC 9126).
+//!
+//! For discoverable (https-URL) client_ids, a private-use-scheme `redirect_uri` must be the
+//! client_id host's FQDN in reverse order (`invalid_redirect_uri` otherwise), matching
+//! bsky.social's enforcement of the atproto OAuth rule; the check is shared with the
+//! authorization endpoint via `auth/oauth_client_resolution.rs`.
+//!
+//! Accepts and stores `response_mode` (`query`/`fragment`; anything else is `invalid_request`)
+//! for the authorization endpoint to honor on its redirects.
+
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    Form, Json,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::auth::token::generate_token;
+use crate::db::oauth::{
+    cleanup_expired_par_requests, get_oauth_client, store_par_request, upsert_oauth_client,
+    ClientMetadata, StoredPARParams,
+};
+use crate::oauth_errors::{require, OAuthTokenError};
+use custos_core::CoreState;
+
+// ── Request / response types ──────────────────────────────────────────────────
+
+/// Form body for `POST /oauth/par` (application/x-www-form-urlencoded).
+///
+/// Accepts the same authorization request parameters as `GET /oauth/authorize`
+/// so clients can push large parameter sets before sending the user to the auth endpoint.
+#[derive(Debug, Deserialize)]
+pub struct PARForm {
+    pub client_id: Option<String>,
+    pub redirect_uri: Option<String>,
+    pub code_challenge: Option<String>,
+    pub code_challenge_method: Option<String>,
+    pub state: Option<String>,
+    pub response_type: Option<String>,
+    pub response_mode: Option<String>,
+    pub scope: Option<String>,
+    pub login_hint: Option<String>,
+    /// RFC 9449 §10: the client may name its DPoP key thumbprint directly instead of (or
+    /// as well as) sending a proof header. When both arrive they must agree.
+    pub dpop_jkt: Option<String>,
+}
+
+/// Successful PAR response body (RFC 9126 §2.2).
+#[derive(Debug, Serialize)]
+pub struct PARResponse {
+    pub request_uri: String,
+    pub expires_in: u32,
+}
+
+// ── Handler ───────────────────────────────────────────────────────────────────
+
+/// Resolve the DPoP key this pushed request is bound to, from a proof header, an explicit
+/// `dpop_jkt` parameter, or both (which must then agree).
+///
+/// Unlike the token endpoint, a proof here is **not** required to carry a server nonce: a
+/// PAR is typically a flow's first contact, so the client cannot hold one yet, and the proof
+/// only asserts the client's own key rather than authorizing issuance. Requiring a nonce
+/// here is a known interop trap (bluesky-social/atproto#3078).
+async fn resolve_par_dpop_jkt(
+    state: &CoreState,
+    headers: &HeaderMap,
+    declared_jkt: Option<&str>,
+) -> Result<Option<String>, Response> {
+    if headers.get_all("DPoP").iter().count() > 1 {
+        return Err(OAuthTokenError::new(
+            "invalid_dpop_proof",
+            "multiple DPoP headers are not permitted",
+        )
+        .into_response());
+    }
+
+    let par_url = format!("{}/oauth/par", state.config.issuer());
+    let proven_jkt = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
+        Some(proof) => {
+            match crate::auth::validate_dpop_for_par(proof, "POST", &par_url) {
+                Ok(jkt) => Some(jkt),
+                Err(crate::auth::DpopTokenEndpointError::InvalidProof(msg)) => {
+                    return Err(OAuthTokenError::new("invalid_dpop_proof", msg).into_response());
+                }
+                // `validate_dpop_for_par` never asks for a nonce and never reports a missing
+                // header (one was present to get here).
+                Err(_) => {
+                    return Err(
+                        OAuthTokenError::new("invalid_dpop_proof", "DPoP proof invalid")
+                            .into_response(),
+                    );
+                }
+            }
+        }
+        None => None,
+    };
+
+    let declared_jkt = declared_jkt.filter(|s| !s.is_empty());
+    match (proven_jkt, declared_jkt) {
+        (Some(proven), Some(declared)) if proven != declared => Err(OAuthTokenError::new(
+            "invalid_request",
+            "dpop_jkt does not match the DPoP proof's key",
+        )
+        .into_response()),
+        (Some(proven), _) => Ok(Some(proven)),
+        (None, Some(declared)) => Ok(Some(declared.to_string())),
+        (None, None) => Ok(None),
+    }
+}
+
+/// `POST /oauth/par` — accept pushed authorization request parameters.
+///
+/// Clients POST their authorization parameters here first, receiving back an opaque
+/// `request_uri` they then pass to `GET /oauth/authorize?request_uri=...`. This keeps
+/// large payloads (DPoP key assertions, PKCE challenges) out of query strings and
+/// browser history (RFC 9126).
+pub async fn post_par(
+    State(state): State<CoreState>,
+    headers: HeaderMap,
+    Form(form): Form<PARForm>,
+) -> Response {
+    let client_id = match require(form.client_id.as_deref(), "client_id") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
+    };
+
+    let redirect_uri = match require(form.redirect_uri.as_deref(), "redirect_uri") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
+    };
+
+    let code_challenge = match require(form.code_challenge.as_deref(), "code_challenge") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
+    };
+
+    let code_challenge_method = match require(
+        form.code_challenge_method.as_deref(),
+        "code_challenge_method",
+    ) {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
+    };
+
+    // `state` is RECOMMENDED, not required (RFC 6749 §4.1.1) and the atproto profile adds
+    // no requirement of its own — PKCE already binds the flow. Requiring it rejected
+    // conformant clients that rely on PKCE alone; an absent one is simply not echoed back
+    // on the authorization response.
+    let state_param = form
+        .state
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string();
+
+    let response_type = match require(form.response_type.as_deref(), "response_type") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
+    };
+
+    // Both advertised response modes are validated up front, so a mode this server can't
+    // answer in fails the PAR loudly instead of being silently answered in the wrong place.
+    let response_mode = match crate::auth::oauth_response_mode::ResponseMode::parse(
+        form.response_mode.as_deref(),
+    ) {
+        Ok(m) => m,
+        Err(desc) => return OAuthTokenError::new("invalid_request", desc).into_response(),
+    };
+
+    // Validate & canonically normalize the requested granular scopes; a malformed
+    // or unsupported scope is rejected up-front (RFC 6749 §4.1.2.1 `invalid_scope`).
+    let requested_scope = form
+        .scope
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("atproto");
+    let scope = match crate::auth::oauth_scopes::normalize_scope_request(requested_scope) {
+        Ok(s) => s,
+        Err(desc) => return OAuthTokenError::new("invalid_scope", desc).into_response(),
+    };
+
+    // Look up the client: registered/cached rows first; on a miss, a URL-shaped
+    // client_id is resolved by fetching its metadata document (ATProto OAuth —
+    // client_id IS the metadata URL). The fetched document is only cached below,
+    // after the whole request validates.
+    let known_client = match get_oauth_client(&state.db, &client_id).await {
+        Ok(row) => row,
+        Err(e) => {
+            tracing::error!(error = %e, "db error looking up OAuth client in PAR");
+            return OAuthTokenError::new("server_error", "database error").into_response();
+        }
+    };
+    let (client_metadata_json, freshly_fetched) = match known_client {
+        Some(row) => (row.client_metadata, false),
+        None if client_id.starts_with("https://") || client_id.starts_with("http://") => {
+            // The fetched URL is caller-supplied (the client_id itself), so it must go through
+            // the SSRF-hardened client, not the plain one used for trusted admin-configured
+            // upstreams; `resolve_client_metadata` takes a `HardenedClient`, so no other compiles.
+            match crate::auth::oauth_client_resolution::resolve_client_metadata(
+                &state.hardened_http_client,
+                &client_id,
+            )
+            .await
+            {
+                Ok(json) => (json, true),
+                Err(e) => {
+                    tracing::info!(client_id = %client_id, error = %e, "URL client_id resolution failed in PAR");
+                    return OAuthTokenError::new("invalid_client", e.to_string()).into_response();
+                }
+            }
+        }
+        None => {
+            return OAuthTokenError::new("invalid_client", "client_id is not registered")
+                .into_response()
+        }
+    };
+
+    let metadata: ClientMetadata = match serde_json::from_str(&client_metadata_json) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(
+                client_id = %client_id,
+                error = %e,
+                "failed to parse stored client metadata in PAR"
+            );
+            return OAuthTokenError::new("server_error", "client metadata is malformed")
+                .into_response();
+        }
+    };
+
+    if !metadata.redirect_uris.contains(&redirect_uri) {
+        return OAuthTokenError::new(
+            "invalid_request",
+            "redirect_uri does not match registered URIs",
+        )
+        .into_response();
+    }
+
+    if let Err(desc) = crate::auth::oauth_client_resolution::validate_private_use_redirect(
+        &client_id,
+        &redirect_uri,
+    ) {
+        return OAuthTokenError::new("invalid_redirect_uri", desc).into_response();
+    }
+
+    if response_type != "code" {
+        return OAuthTokenError::new(
+            "unsupported_response_type",
+            "only response_type=code is supported",
+        )
+        .into_response();
+    }
+
+    if code_challenge_method != "S256" {
+        return OAuthTokenError::new("invalid_request", "code_challenge_method must be S256")
+            .into_response();
+    }
+
+    // Bind the flow to the client's DPoP key when it proves one here (RFC 9449 §10), so the
+    // authorization code this request eventually yields can only be redeemed by that key.
+    // The key may arrive as a proof header (which is verified) or as a bare `dpop_jkt`
+    // parameter; a client sending both must be consistent.
+    let dpop_jkt = match resolve_par_dpop_jkt(&state, &headers, form.dpop_jkt.as_deref()).await {
+        Ok(jkt) => jkt,
+        Err(response) => return response,
+    };
+
+    let params = StoredPARParams {
+        redirect_uri,
+        code_challenge,
+        code_challenge_method,
+        state: state_param,
+        response_type,
+        response_mode: response_mode.as_str().to_string(),
+        scope,
+        login_hint: form.login_hint.filter(|s| !s.is_empty()),
+        dpop_jkt,
+    };
+
+    let params_json = match serde_json::to_string(&params) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!(client_id = %client_id, error = %e, "failed to serialize PAR params to JSON");
+            return OAuthTokenError::new("server_error", "failed to serialize request parameters")
+                .into_response();
+        }
+    };
+
+    // The request has fully validated — now cache a freshly resolved metadata document
+    // so the authorize/token endpoints' client lookups find it. Caching only after full
+    // validation keeps rejected requests from planting rows.
+    if freshly_fetched {
+        if let Err(e) = upsert_oauth_client(&state.db, &client_id, &client_metadata_json).await {
+            tracing::error!(error = %e, client_id = %client_id, "failed to cache resolved OAuth client metadata");
+            return OAuthTokenError::new("server_error", "database error").into_response();
+        }
+    }
+
+    // Generate the opaque request_uri token. The plaintext is used as the URN reference.
+    let token = generate_token();
+    let request_uri = format!("urn:ietf:params:oauth:request_uri:{}", token.plaintext);
+
+    if let Err(e) = store_par_request(&state.db, &request_uri, &client_id, &params_json).await {
+        tracing::error!(error = %e, "failed to store PAR request");
+        return OAuthTokenError::new("server_error", "failed to store authorization request")
+            .into_response();
+    }
+
+    if let Err(e) = cleanup_expired_par_requests(&state.db).await {
+        tracing::warn!(error = %e, "failed to cleanup expired PAR requests");
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(PARResponse {
+            request_uri,
+            expires_in: 60,
+        }),
+    )
+        .into_response()
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use crate::db::oauth::register_oauth_client;
+    use crate::test_support::{test_app, test_state};
+
+    const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
+    const REDIRECT_URI: &str = "https://app.example.com/callback";
+    const CLIENT_METADATA: &str =
+        r#"{"redirect_uris":["https://app.example.com/callback"],"client_name":"Test App"}"#;
+
+    /// Build a form-urlencoded body for POST /oauth/par.
+    ///
+    /// Pass `overrides` to replace specific field values. Pass `("field", "")` to
+    /// simulate a missing/empty required field.
+    ///
+    /// Note: values are NOT percent-encoded. Test data is chosen to contain only
+    /// characters safe in form values (no `&`, `=`, `+`, `?`). Do not add test
+    /// values that contain these characters without first encoding them.
+    fn par_body(overrides: &[(&str, &str)]) -> String {
+        let mut fields = vec![
+            ("client_id", CLIENT_ID),
+            ("redirect_uri", REDIRECT_URI),
+            ("code_challenge", "abc123challengevalue"),
+            ("code_challenge_method", "S256"),
+            ("state", "state-value-xyz"),
+            ("response_type", "code"),
+            ("scope", "atproto"),
+        ];
+        for (k, v) in overrides {
+            if let Some(pos) = fields.iter().position(|(fk, _)| fk == k) {
+                fields[pos] = (k, v);
+            } else {
+                fields.push((k, v));
+            }
+        }
+        fields
+            .iter()
+            .filter(|(_, v)| !v.is_empty()) // empty value = omit the field entirely
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&")
+    }
+
+    async fn register_client(state: &custos_core::CoreState) {
+        register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_201_with_request_uri_and_expires_in() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let request_uri = json["request_uri"]
+            .as_str()
+            .expect("request_uri must be present");
+        assert!(
+            request_uri.starts_with("urn:ietf:params:oauth:request_uri:"),
+            "request_uri must use the OAuth PAR URN scheme"
+        );
+        assert_eq!(json["expires_in"].as_u64(), Some(60));
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_400_for_unknown_client() {
+        let state = test_state().await;
+
+        // A non-URL client_id exercises the registered-only path: a URL-shaped one
+        // would instead attempt live metadata resolution (covered by its own tests).
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[(
+                        "client_id",
+                        "dev.unregistered.client",
+                    )])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"].as_str(), Some("invalid_client"));
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_400_for_invalid_redirect_uri() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[(
+                        "redirect_uri",
+                        "https://evil.example.com/cb",
+                    )])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"].as_str(), Some("invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_400_for_unsupported_response_type() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("response_type", "token")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"].as_str(), Some("unsupported_response_type"));
+    }
+
+    /// Every required-field guard shares the same shape: blank (or, for `code_challenge_method`,
+    /// non-S256) the field, post, and expect a 400 `invalid_request`.
+    #[tokio::test]
+    async fn post_par_returns_400_for_missing_or_invalid_field() {
+        let cases = [
+            ("client_id", ""),
+            ("redirect_uri", ""),
+            ("code_challenge", ""),
+            ("code_challenge_method", ""),
+            ("response_type", ""),
+            ("code_challenge_method", "plain"),
+        ];
+        for (field, value) in cases {
+            let state = test_state().await;
+            register_client(&state).await;
+
+            let response = test_app(state)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oauth/par")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from(par_body(&[(field, value)])))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "field {field:?} = {value:?}"
+            );
+            let json = error_json(response).await;
+            assert_eq!(
+                json["error"].as_str(),
+                Some("invalid_request"),
+                "field {field:?} = {value:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    /// `state` is RECOMMENDED, not required (RFC 6749 §4.1.1) — PKCE already binds the
+    /// flow — so a client that relies on PKCE alone must not be turned away.
+    async fn post_par_accepts_a_request_without_state() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("state", "")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn post_par_returns_distinct_request_uri_per_call() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        async fn request_uri(state: custos_core::CoreState) -> String {
+            let response = test_app(state)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oauth/par")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from(par_body(&[])))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            error_json(response).await["request_uri"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+
+        let uri1 = request_uri(state.clone()).await;
+        let uri2 = request_uri(state).await;
+
+        assert_ne!(
+            uri1, uri2,
+            "each PAR call must produce a unique request_uri"
+        );
+    }
+
+    /// Serve a client-metadata document on an ephemeral loopback port; returns the document's
+    /// URL (which doubles as the client_id). The JSON is produced by `make_json(url)` so the
+    /// document can reference its own URL as `client_id`, mirroring a real ATProto OAuth client
+    /// metadata document.
+    ///
+    /// The path carries a per-call UUID: the client-resolution negative cache is process-global
+    /// and keyed by client_id, and the test binary runs modules in parallel, so a loopback port
+    /// reused within the cache TTL by a test whose resolution failed would otherwise make an
+    /// unrelated test see "recently failed" instead of its own error.
+    async fn serve_client_metadata(make_json: impl FnOnce(&str) -> String) -> String {
+        use std::future::IntoFuture;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let path = format!("/oauth/client-metadata-{}.json", uuid::Uuid::new_v4());
+        let url = format!(
+            "http://127.0.0.1:{}{path}",
+            listener.local_addr().unwrap().port()
+        );
+        let json = make_json(&url);
+        let router = axum::Router::new().route(
+            &path,
+            axum::routing::get(move || {
+                let json = json.clone();
+                async move { ([("content-type", "application/json")], json) }
+            }),
+        );
+        tokio::spawn(axum::serve(listener, router).into_future());
+        url
+    }
+
+    async fn par_with_client_id(
+        state: custos_core::CoreState,
+        client_id: &str,
+    ) -> axum::response::Response {
+        test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("client_id", client_id)])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn error_json(response: axum::response::Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn post_par_fetches_and_caches_metadata_for_unregistered_url_client_id() {
+        let state = test_state().await;
+        let client_id = serve_client_metadata(|url| {
+            serde_json::json!({
+                "client_id": url,
+                "redirect_uris": [REDIRECT_URI],
+                "client_name": "Fetched Test App",
+            })
+            .to_string()
+        })
+        .await;
+
+        let response = par_with_client_id(state.clone(), &client_id).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "PAR must resolve an unregistered URL client_id by fetching its metadata document"
+        );
+        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
+            .await
+            .unwrap();
+        assert!(
+            cached.is_some(),
+            "fetched metadata must be cached so authorize/token lookups find the client"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_url_client_metadata_with_mismatched_client_id() {
+        let state = test_state().await;
+        let client_id = serve_client_metadata(|_url| {
+            serde_json::json!({
+                "client_id": "https://elsewhere.example.com/client-metadata.json",
+                "redirect_uris": [REDIRECT_URI],
+            })
+            .to_string()
+        })
+        .await;
+
+        let response = par_with_client_id(state.clone(), &client_id).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_client"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("client_id mismatch"),
+            "mismatch must be reported distinctly, got: {}",
+            json["error_description"]
+        );
+        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
+            .await
+            .unwrap();
+        assert!(cached.is_none(), "mismatched metadata must not be cached");
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_url_client_when_redirect_uri_not_listed() {
+        let state = test_state().await;
+        let client_id = serve_client_metadata(|url| {
+            serde_json::json!({
+                "client_id": url,
+                "redirect_uris": ["https://other.example.com/cb"],
+            })
+            .to_string()
+        })
+        .await;
+
+        let response = par_with_client_id(state.clone(), &client_id).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(
+            json["error"].as_str(),
+            Some("invalid_request"),
+            "resolved-but-unlisted redirect_uri is an invalid_request, not an unknown client"
+        );
+        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
+            .await
+            .unwrap();
+        assert!(
+            cached.is_none(),
+            "metadata must only be cached after the PAR fully validates"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_unreachable_url_client_id() {
+        let state = test_state().await;
+        // Bind then immediately drop a listener to obtain a loopback port that refuses
+        // connections — a deterministic "metadata document unreachable" target.
+        let port = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let client_id = format!("http://127.0.0.1:{port}/oauth/client-metadata.json");
+
+        let response = par_with_client_id(state, &client_id).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_client"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("failed to fetch"),
+            "unreachable metadata must be reported as a fetch failure, got: {}",
+            json["error_description"]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_http_url_client_id_for_non_loopback_host() {
+        let state = test_state().await;
+
+        let response =
+            par_with_client_id(state, "http://app.example.com/client-metadata.json").await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_client"));
+        assert!(
+            json["error_description"].as_str().unwrap().contains("https"),
+            "plain-http client_id on a non-loopback host must be rejected before any fetch, got: {}",
+            json["error_description"]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_https_url_client_id_at_a_private_address() {
+        // A private/link-local IP-literal client_id must be refused by URL policy before any
+        // fetch is attempted — it bypasses the hardened client's own connect-time guard (only
+        // consulted for names needing DNS resolution), which is exactly why
+        // `resolve_client_metadata` checks IP literals itself. `10.0.0.1` stands in for any
+        // private target; a real SSRF probe would more plausibly use the cloud-metadata address.
+        let state = test_state().await;
+
+        let response = par_with_client_id(state, "https://10.0.0.1/client-metadata.json").await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_client"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("private, loopback, or link-local"),
+            "a private-address client_id must be rejected before any fetch, got: {}",
+            json["error_description"]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_private_use_redirect_not_matching_reverse_fqdn() {
+        let state = test_state().await;
+        // A registered discoverable client whose metadata lists a custom-scheme
+        // redirect that does NOT reverse the client_id host.
+        register_oauth_client(
+            &state.db,
+            CLIENT_ID,
+            r#"{"redirect_uris":["dev.other.app:/oauth/callback"],"client_name":"Test App"}"#,
+        )
+        .await
+        .unwrap();
+
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[(
+                        "redirect_uri",
+                        "dev.other.app:/oauth/callback",
+                    )])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_redirect_uri"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("com.example.app:"),
+            "the rejection must name the required reverse-FQDN scheme, got: {}",
+            json["error_description"]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_accepts_private_use_redirect_matching_reverse_fqdn() {
+        let state = test_state().await;
+        register_oauth_client(
+            &state.db,
+            CLIENT_ID,
+            r#"{"redirect_uris":["com.example.app:/oauth/callback"],"client_name":"Test App"}"#,
+        )
+        .await
+        .unwrap();
+
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[(
+                        "redirect_uri",
+                        "com.example.app:/oauth/callback",
+                    )])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "a reverse-FQDN-matching private-use redirect must be accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_freshly_fetched_loopback_client_is_exempt_from_reverse_fqdn() {
+        // The freshly-fetched (unregistered URL client_id) branch resolves metadata live via
+        // resolve_client_metadata. The harness serves it over loopback http, which is the spec's
+        // local-development exception, so its private-use redirect is NOT held to the reverse-FQDN
+        // rule even though the scheme doesn't reverse the (loopback) host. This exercises the new
+        // check on the fetch branch and pins that exemption. The rule itself — for https URL
+        // client_ids — is covered by the registered-client tests above, since redirect validation
+        // runs after and independent of the registered-vs-fetched branch.
+        let state = test_state().await;
+        let client_id = serve_client_metadata(|url| {
+            serde_json::json!({
+                "client_id": url,
+                "redirect_uris": ["dev.anything.at.all:/oauth/callback"],
+            })
+            .to_string()
+        })
+        .await;
+
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[
+                        ("client_id", client_id.as_str()),
+                        ("redirect_uri", "dev.anything.at.all:/oauth/callback"),
+                    ])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "a loopback-http fetched client is exempt from the reverse-FQDN rule (local-dev exception)"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_accepts_and_stores_response_mode_fragment() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = test_app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("response_mode", "fragment")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "response_mode=fragment must be accepted (the @atproto/oauth-client-browser default)"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let request_uri = json["request_uri"].as_str().unwrap();
+
+        // The stored params must carry the mode so the authorize/complete tail answers in it.
+        let row = crate::db::oauth::consume_par_request(&state.db, request_uri)
+            .await
+            .unwrap()
+            .expect("PAR row stored");
+        let stored: crate::db::oauth::StoredPARParams =
+            serde_json::from_str(&row.request_parameters).unwrap();
+        assert_eq!(stored.response_mode, "fragment");
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_unsupported_response_mode() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("response_mode", "form_post")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_request"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("response_mode"),
+            "the rejection must name response_mode, got: {}",
+            json["error_description"]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_accepts_optional_login_hint() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = test_app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("login_hint", "alice.example.com")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "PAR with login_hint must succeed"
+        );
+    }
+}

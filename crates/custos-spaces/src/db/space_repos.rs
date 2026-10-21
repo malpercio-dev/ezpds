@@ -210,59 +210,6 @@ where
     Ok(())
 }
 
-/// The keyset cursor for [`list_record_blocks_for_account`]: the primary-key
-/// tail of the last row seen (`space_uri`, `collection`, `rkey`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpaceRecordCursor {
-    pub space_uri: String,
-    pub collection: String,
-    pub rkey: String,
-}
-
-/// One page of an account's stored record blocks across all of its space
-/// repos, in primary-key order — the blob GC's input for unioning space blob
-/// references with the public repo's. Pass the last row's cursor to continue;
-/// a page shorter than `limit` is the last one.
-pub async fn list_record_blocks_for_account(
-    pool: &SqlitePool,
-    account_did: &str,
-    after: Option<&SpaceRecordCursor>,
-    limit: i64,
-) -> Result<Vec<(SpaceRecordCursor, Vec<u8>)>, sqlx::Error> {
-    // Row-value comparison keysets on the PK tail; the empty-string triple
-    // sorts before every real key, so it doubles as "from the start".
-    let (space_uri, collection, rkey) = match after {
-        Some(c) => (c.space_uri.as_str(), c.collection.as_str(), c.rkey.as_str()),
-        None => ("", "", ""),
-    };
-    let rows: Vec<(String, String, String, Vec<u8>)> = sqlx::query_as(
-        "SELECT space_uri, collection, rkey, value FROM space_records \
-         WHERE account_did = ? AND (space_uri, collection, rkey) > (?, ?, ?) \
-         ORDER BY space_uri, collection, rkey \
-         LIMIT ?",
-    )
-    .bind(account_did)
-    .bind(space_uri)
-    .bind(collection)
-    .bind(rkey)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(space_uri, collection, rkey, value)| {
-            (
-                SpaceRecordCursor {
-                    space_uri,
-                    collection,
-                    rkey,
-                },
-                value,
-            )
-        })
-        .collect())
-}
-
 /// One row of a `listRecords` page. `value` is the stored DAG-CBOR block, absent when the
 /// caller asked for a metadata-only listing (`excludeValues`).
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -438,7 +385,7 @@ pub async fn list_record_index(
 
 /// One page of a repo's stored record blocks, optionally only records written after `since` —
 /// the input for deriving a repo's blob references (`listBlobs`, `getBlob`'s membership check).
-/// PK-keyset paged like [`list_record_blocks_for_account`]; a page shorter than `limit` is the
+/// PK-keyset paged on the record primary key; a page shorter than `limit` is the
 /// last. A pre-V066 row whose backfilled `rev` is NULL never matches a `since` filter, which is
 /// the safe direction only because the backfill leaves none behind.
 pub async fn list_record_blocks_for_repo(
