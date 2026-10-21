@@ -21,14 +21,13 @@ This file is a map; mechanism and invariants live in each module's `//!` doc.
 
 | Export | Use in `pds` |
 |---|---|
-| `SpacesState` (`core: CoreState` + `space_type_cache`, `Deref<Target = CoreState>`) | `AppState.spaces`, projected by `impl FromRef<AppState> for SpacesState` |
+| `SpacesState` (`core: CoreState`, `Deref<Target = CoreState>`; no feature fields yet) | projected from `AppState.core` by `impl FromRef<AppState> for SpacesState` |
 | `router` / `internal_router` | merged unconditionally in `app.rs` before the layer stack. `router` is empty unless `[spaces] enabled`; `internal_router` always carries `/v1/admin/spaces{,/takedown}` (the operator's takedown governs data already stored, ADR-0035) and adds `/v1/space/import-repo` only when enabled |
 | `spawn_sweeps(&mut Scheduler, &SpacesConfig)` | `main.rs`; registers both sweeps on `pds`'s scheduler only when enabled, so graceful shutdown covers them |
 | `CAPABILITY` | listed in `pds`'s `CAPABILITIES` between `appPasswordPersonalDetails` and `waitlist`; `enabled` must mirror the router gate plus the master key |
 | `purge_account_rows` / `PURGE_ACCOUNT_SQL` | `account_delete::purge_account` runs it inside its transaction; the schema-walking FK test reads `PURGE_ACCOUNT_SQL` |
 | `db::*` | `blob_gc` unions `db::space_repos::list_record_blocks_for_account` into blob references |
 | `space_record_write` | `pds` tests that seed space records |
-| `consent` | the OAuth consent page (`routes/oauth_authorize.rs`, `routes/oauth_templates.rs`) renders `space:` grants through it; takes `&CoreState` |
 | `test_support` (`test-support` feature) | `test_app(state)`, the `SpacesState` constructors, `SpaceSigKey`, request builders |
 
 ## Module Map
@@ -43,7 +42,6 @@ src/
   space_notify.rs  — outbound Atproto Spaces write notifications: the repo-host → space-host report (with the authority auto-registration that creates the subscription) and the space-host → registered-syncer fan-out; detached, retrying, bounded — see module doc
   space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon
   space_oplog_sweep.rs — hourly `space_repo_ops` compaction sweep (7-day retention): the oplog is droppable by spec, and a syncer whose `since` predates the window heals via `getRepo` — see module doc
-  consent.rs       — the user-legible text `/oauth/authorize` shows for `space:` grants: the space type declaration's `name` (localized), a named authority's bidirectionally-verified handle, the collections a bare grant resolves to, and the both-wildcards warning. Reuses `permission_sets.rs`'s Lexicon resolution path and TTL-cache machinery; degrades to the raw token instead of failing the page — see module doc
   views.rs         — shared handler-free support for the space + simplespace routes: space-ref parsing, the `validate`-flag record check, stored-block decoding, the write-result shape, repo-head load + per-serving commit signing (`load_repo`/`sign_current_commit`/`commit_json`), blob-reference derivation (`space_blob_cids`), and the simplespace config's lexicon-union ↔ column mapping
   test_support.rs  — `test-support` feature (and this crate's own tests): `test_app` merges both routers under the same layers `pds` applies (shared stack, XRPC error dialect, CORS), so a path no Spaces route claims is a plain 404 here — tests that need `pds`'s `/xrpc/{method}` catch-all stay in `pds`
   auth/            — the space authorization seam (table below); `custos_core::auth` is re-exported here

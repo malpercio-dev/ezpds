@@ -178,6 +178,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
         started_at: std::time::Instant::now(),
         poll_tracker: crate::auth::new_claim_poll_tracker(),
         account_notifier: None,
+        space_type_cache: crate::scope_display::new_space_type_cache(),
     }
 }
 

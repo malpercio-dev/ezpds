@@ -606,9 +606,9 @@ async fn run() -> anyhow::Result<()> {
         started_at,
         poll_tracker: auth::new_claim_poll_tracker(),
         account_notifier: None,
+        space_type_cache: custos_core::scope_display::new_space_type_cache(),
     };
     let mut state = app::AppState {
-        spaces: custos_spaces::SpacesState::new(core.clone()),
         core,
         firehose,
         crawlers,

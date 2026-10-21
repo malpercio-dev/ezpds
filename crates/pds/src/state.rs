@@ -12,9 +12,6 @@ use custos_spaces::SpacesState;
 #[derive(Clone)]
 pub struct AppState {
     pub core: CoreState,
-    /// The Spaces feature's state. Extracted through `FromRef`, which pins its `core` to this
-    /// struct's, so a state built with a swapped config is seen the same way by every handler.
-    pub spaces: SpacesState,
     /// In-memory firehose pipeline: every repo commit emits a sequenced event here, which
     /// `com.atproto.sync.subscribeRepos` fans out to connected relays/BGSes. Shared via Arc.
     pub firehose: Arc<crate::firehose::Firehose>,
@@ -68,10 +65,7 @@ impl FromRef<AppState> for CoreState {
 
 impl FromRef<AppState> for SpacesState {
     fn from_ref(state: &AppState) -> SpacesState {
-        SpacesState {
-            core: state.core.clone(),
-            ..state.spaces.clone()
-        }
+        SpacesState::new(state.core.clone())
     }
 }
 
@@ -98,7 +92,6 @@ impl AppState {
             Arc::new(c)
         };
         AppState {
-            spaces: SpacesState::new(core.clone()),
             firehose,
             crawlers,
             iroh: None,
