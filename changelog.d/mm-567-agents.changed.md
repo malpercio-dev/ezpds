@@ -1,0 +1,1 @@
+The auth.md agent surface (registration, the claim ceremony, sovereign child agents, provider events, and the owner's agent management API) now builds as its own `custos-agents` crate inside the Custos server; routes, responses, and the advertised capabilities are unchanged.

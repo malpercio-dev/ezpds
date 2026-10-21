@@ -106,8 +106,8 @@ pub(crate) async fn list_child_deletions_of_parent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
     use crate::db::accounts::insert_bare_account as seed_account;
+    use crate::test_support::test_state;
 
     #[tokio::test]
     async fn upsert_is_idempotent_and_lists_by_parent() {

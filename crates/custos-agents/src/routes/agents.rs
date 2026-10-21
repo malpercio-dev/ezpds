@@ -36,7 +36,6 @@ use common::{ApiError, ApiResultExt, ErrorCode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::app::AppState;
 use crate::auth::agent_assertion::parse_sqlite_datetime;
 use crate::auth::guards::authenticate_owner;
 use crate::auth::oauth_scopes::intersect_scope_tokens;
@@ -47,6 +46,7 @@ use crate::db::agent_auth::{
     get_agent_claim_attempt_by_user_code, get_agent_identity, list_agent_identities_for_did,
     revoke_agent_identity, AgentIdentityRow, AgentIdentityStatus,
 };
+use custos_core::CoreState;
 
 /// Default and maximum page sizes for the audit listing.
 const AUDIT_PAGE_DEFAULT: i64 = 50;
@@ -119,7 +119,7 @@ pub struct AuditQuery {
 /// arm a child's audit trail would be readable by no one). Unknown and foreign registrations
 /// are the same uniform 404 (no cross-account existence oracle).
 async fn owned_identity(
-    state: &AppState,
+    state: &CoreState,
     registration_id: &str,
     did: &str,
 ) -> Result<AgentIdentityRow, ApiError> {
@@ -142,7 +142,7 @@ fn rfc3339(sqlite: &str) -> String {
 // ── GET /v1/agents ──────────────────────────────────────────────────────────────
 
 pub async fn list_agents(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -169,7 +169,7 @@ pub async fn list_agents(
 // ── POST /v1/agents/{registration_id}/revoke ────────────────────────────────────
 
 pub async fn revoke_agent(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Path(registration_id): Path<String>,
     method: Method,
     uri: Uri,
@@ -210,7 +210,7 @@ pub async fn revoke_agent(
 // ── GET /v1/agents/{registration_id}/audit ──────────────────────────────────────
 
 pub async fn agent_audit_log(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Path(registration_id): Path<String>,
     Query(query): Query<AuditQuery>,
     method: Method,
@@ -296,7 +296,7 @@ pub struct ClaimPreviewResponse {
 /// is the same uniform 404, and the endpoint shares the confirm endpoint's per-IP rate-limit
 /// budget: it validates a guessable 6-digit code, so it is the same guessing surface.
 pub async fn claim_preview(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

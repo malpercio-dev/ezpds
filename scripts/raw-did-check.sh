@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail on a new raw-string DID parameter or field in the PDS's auth/ and routes/ trees (pds's,
-# custos-core's, custos-oauth's, and custos-spaces' auth/; pds's, custos-oauth's, and custos-spaces'
-# routes/, plus the modules that were auth/ and routes/ files before the crate split:
+# custos-core's, custos-oauth's, and custos-spaces' auth/; pds's, custos-agents', custos-oauth's, and
+# custos-spaces' routes/, plus the modules that were auth/ and routes/ files before the crate split:
 # custos-core's scope_display.rs, custos-oauth's oauth_*.rs support modules, and custos-spaces'
 # views.rs).
 #
@@ -44,6 +44,7 @@ count_file() {
 list_files() {
   git ls-files 'crates/pds/src/auth/*.rs' 'crates/custos-core/src/auth/*.rs' \
     'crates/pds/src/routes/*.rs' 'crates/pds/src/routes/**/*.rs' \
+    'crates/custos-agents/src/routes/*.rs' \
     'crates/custos-oauth/src/auth/*.rs' 'crates/custos-oauth/src/routes/*.rs' \
     'crates/custos-oauth/src/routes/**/*.rs' 'crates/custos-oauth/src/oauth_*.rs' \
     'crates/custos-spaces/src/auth/*.rs' 'crates/custos-spaces/src/routes/*.rs' \

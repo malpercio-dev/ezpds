@@ -16,7 +16,7 @@ common · crypto · repo-engine
             ▼
         custos-core      this crate
             ▼
-  feature crates         custos-oauth, custos-spaces (more to come)
+  feature crates         custos-agents, custos-oauth, custos-spaces (more to come)
             ▼
           pds            the binary: composes every feature, owns what is not yet extracted
 ```

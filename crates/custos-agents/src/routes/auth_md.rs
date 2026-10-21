@@ -17,13 +17,13 @@ use axum::{
 };
 use common::Config;
 
-use crate::app::AppState;
+use custos_core::CoreState;
 
 const AUTH_MD_TEMPLATE: &str = include_str!("../../assets/auth.md");
 
 /// `GET /auth.md` — the auth.md agent-registration discovery document. No auth: this is a
 /// discovery surface an unregistered agent reads before it has any credential.
-pub async fn serve_auth_md(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn serve_auth_md(State(state): State<CoreState>) -> impl IntoResponse {
     (
         [(
             header::CONTENT_TYPE,
@@ -50,10 +50,11 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::test_support::{test_app, test_state};
+    use custos_core::CoreState;
 
-    async fn get_auth_md(state: AppState) -> (StatusCode, String, Option<String>) {
-        let response = app(state)
+    async fn get_auth_md(state: CoreState) -> (StatusCode, String, Option<String>) {
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .uri("/auth.md")
@@ -113,11 +114,8 @@ mod tests {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.public_url = "https://pds.example.com/".to_string();
-        let state = AppState {
-            core: custos_core::CoreState {
-                config: std::sync::Arc::new(config),
-                ..base.core
-            },
+        let state = CoreState {
+            config: std::sync::Arc::new(config),
             ..base
         };
 
@@ -131,11 +129,8 @@ mod tests {
         let base = test_state().await;
         let mut config = (*base.config).clone();
         config.service_name = "Custos Relay".to_string();
-        let state = AppState {
-            core: custos_core::CoreState {
-                config: std::sync::Arc::new(config),
-                ..base.core
-            },
+        let state = CoreState {
+            config: std::sync::Arc::new(config),
             ..base
         };
 

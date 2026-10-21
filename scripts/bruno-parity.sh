@@ -23,6 +23,7 @@ cd "$(dirname "$0")/.."
 # the route set.
 ROUTER_FILES=(
   "crates/pds/src/app.rs"
+  "crates/custos-agents/src/router.rs"
   "crates/custos-oauth/src/router.rs"
   "crates/custos-spaces/src/router.rs"
 )

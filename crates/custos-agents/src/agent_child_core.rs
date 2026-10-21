@@ -16,7 +16,6 @@ use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
-use crate::app::AppState;
 use crate::auth::agent_assertion::{mint_identity_assertion, scopes_to_json};
 use crate::auth::password::hash_password;
 use crate::db::agent_auth::{
@@ -25,6 +24,7 @@ use crate::db::agent_auth::{
 };
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{get_reserved_repo_key_by_id, insert_did_signing_key, RepoSigningKey};
+use custos_core::CoreState;
 
 /// How the child's agent-registration row comes into being — the one thing that differs between
 /// this core's callers.
@@ -75,7 +75,7 @@ pub(crate) struct MintedChild {
 /// Re-running it with the same handle and operation resumes an interrupted mint instead of
 /// conflicting; a different parent or handle for an in-flight child DID is a conflict.
 pub(crate) async fn mint_child_account(
-    state: &AppState,
+    state: &CoreState,
     parent_did: &str,
     handle: &str,
     plc_op: &serde_json::Value,
@@ -227,7 +227,7 @@ struct PreparedChild {
 
 #[allow(clippy::too_many_arguments)]
 async fn prepare_child(
-    state: &AppState,
+    state: &CoreState,
     parent_did: &str,
     handle: &str,
     child_did: &str,
@@ -431,7 +431,7 @@ async fn prepare_child(
 }
 
 async fn publish_child_genesis(
-    state: &AppState,
+    state: &CoreState,
     prepared: &PreparedChild,
     expected_document: &serde_json::Value,
 ) -> Result<(), ApiError> {
@@ -456,7 +456,7 @@ async fn publish_child_genesis(
 }
 
 async fn finalize_child(
-    state: &AppState,
+    state: &CoreState,
     prepared: &PreparedChild,
     registration: ChildRegistration<'_>,
 ) -> Result<(), ApiError> {

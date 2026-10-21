@@ -50,7 +50,6 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agent_child_core::{mint_child_account, ChildRegistration};
-use crate::app::AppState;
 use crate::auth::agent_assertion::{
     mint_identity_assertion, parse_sqlite_datetime, scopes_to_json, start_claim_attempt,
     to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
@@ -62,6 +61,7 @@ use crate::db::agent_auth::{
     get_agent_identity, get_agent_identity_by_claim_token, latest_agent_claim_attempt_for_identity,
     AgentIdentityStatus, ClaimAttemptStatus,
 };
+use custos_core::CoreState;
 
 // ── POST /agent/identity/claim (initiate) ─────────────────────────────────────
 
@@ -94,7 +94,7 @@ struct ClaimInitiateResponse {
 /// `POST /agent/identity/claim` — start or resume a claim ceremony (no auth; the `claim_token` is
 /// the credential).
 pub async fn post_agent_claim(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     Json(req): Json<ClaimInitiateRequest>,
 ) -> Response {
     match initiate(&state, &req).await {
@@ -104,7 +104,7 @@ pub async fn post_agent_claim(
 }
 
 async fn initiate(
-    state: &AppState,
+    state: &CoreState,
     req: &ClaimInitiateRequest,
 ) -> Result<Response, AgentAuthError> {
     let claim_token = req
@@ -197,7 +197,7 @@ async fn initiate(
                     state
                         .notify_account(
                             did,
-                            crate::notifications::NotificationPayload::new(
+                            custos_core::notify::NotificationPayload::new(
                                 "agent_claim_pending",
                                 "Confirm agent access",
                                 "An agent is waiting for you to approve it.",
@@ -274,7 +274,7 @@ struct ConfirmedChild {
 
 /// `POST /agent/identity/claim/confirm` — the account owner confirms a claim (full-access authed).
 pub async fn post_agent_claim_confirm(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -290,7 +290,7 @@ async fn confirm(
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
-    state: &AppState,
+    state: &CoreState,
     req: &ClaimConfirmRequest,
 ) -> Result<Response, AgentAuthError> {
     // Only the account holder's own full-access credential may confirm — a wallet session token
@@ -512,7 +512,7 @@ async fn confirm(
 /// verification, the reserved-signing-key check, publication to plc.directory — happens strictly
 /// before the attempt is spent and leaves the registration claimable for a corrected retry.
 async fn confirm_with_child(
-    state: &AppState,
+    state: &CoreState,
     caller_did: &str,
     identity: &crate::db::agent_auth::AgentIdentityRow,
     claim_attempt_id: &str,
@@ -594,23 +594,20 @@ fn child_mint_error(err: common::ApiError) -> AgentAuthError {
 mod tests {
     use super::*;
 
-    use axum::body::Body;
-    use axum::http::Request;
     use common::AgentAuthConfig;
     use serde_json::{json, Value};
-    use tower::ServiceExt;
 
-    use crate::app::{app, AppState};
-    use crate::routes::test_utils::{
+    use crate::test_support::{
         insert_account_with_email as insert_account, post_json_with_bearer as post_json,
         state_with_agent_auth as state_with,
     };
+    use custos_core::CoreState;
 
     // ── harness ──────────────────────────────────────────────────────────────
 
     /// Mint a full-access HS256 access token for `did` (the shape the extractor accepts, mirroring
     /// `auth::mod` test helpers). `scope` selects full access vs app-pass.
-    fn access_token(state: &AppState, did: &str, scope: &str) -> String {
+    fn access_token(state: &CoreState, did: &str, scope: &str) -> String {
         #[derive(serde::Serialize)]
         struct Claims {
             sub: String,
@@ -633,7 +630,7 @@ mod tests {
         .unwrap()
     }
 
-    async fn register(state: AppState, body: Value) -> Value {
+    async fn register(state: CoreState, body: Value) -> Value {
         let (_status, json) = post_json(state, "/agent/identity", body, None).await;
         json
     }
@@ -805,7 +802,7 @@ mod tests {
     // ── confirm ──────────────────────────────────────────────────────────────
 
     /// Register anonymously, initiate the ceremony, and return `(user_code, registration_id)`.
-    async fn anonymous_ceremony(state: &AppState) -> (String, String) {
+    async fn anonymous_ceremony(state: &CoreState) -> (String, String) {
         let reg = register(state.clone(), json!({ "type": "anonymous" })).await;
         let claim_token = reg["claim_token"].as_str().unwrap().to_string();
         let registration_id = reg["registration_id"].as_str().unwrap().to_string();
@@ -853,46 +850,9 @@ mod tests {
         .unwrap();
         assert_eq!(row.0.as_deref(), Some(did));
         assert_eq!(row.1, "claimed");
-        let stored_assertion = row.2.expect("post-claim assertion stored");
-
-        // End-to-end: the stored post-claim assertion now exchanges at the token endpoint.
-        let (tstatus, tbody) = post_form(
-            state,
-            "/oauth/token",
-            &format!(
-                "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion={stored_assertion}"
-            ),
-        )
-        .await;
-        assert_eq!(
-            tstatus,
-            StatusCode::OK,
-            "post-claim assertion must exchange"
-        );
-        assert_eq!(tbody["token_type"], "Bearer");
-        assert!(tbody["access_token"].as_str().unwrap().split('.').count() == 3);
-    }
-
-    async fn post_form(state: AppState, uri: &str, body: &str) -> (StatusCode, Value) {
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        (
-            status,
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        )
+        assert!(row.2.is_some(), "post-claim assertion stored");
+        // That the stored assertion exchanges at `/oauth/token` (custos-oauth) is asserted
+        // end to end in `pds`'s `agent_auth_test.rs`.
     }
 
     #[tokio::test]

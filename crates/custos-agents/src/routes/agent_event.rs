@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: AppState (config, JWKS cache, DB), request headers + raw body
+// Gathers: CoreState (config, JWKS cache, DB), request headers + raw body
 // Processes: verify a provider Security Event Token → resolve the target registration → revoke it
 // Returns: `202 Accepted` (empty) on success; RFC 8935 `{ "err", "description" }` JSON on failure
 
@@ -43,12 +43,12 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
-use crate::app::AppState;
 use crate::auth::issuer_trust::{
     select_issuer, unverified_claim, verify_trusted_jwt, TrustedJwtError, REVOKED_EVENT_TYPE,
 };
 use crate::db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
 use crate::db::agent_auth::{get_agent_identity_by_issuer_subject, revoke_agent_identity};
+use custos_core::CoreState;
 
 /// The media type a SET is delivered as (RFC 8935 §2.1).
 const SECEVENT_CONTENT_TYPE: &str = "application/secevent+jwt";
@@ -74,7 +74,7 @@ struct SetClaims {
 
 /// `POST /agent/event/notify` — receive and process a provider SET.
 pub async fn post_agent_event(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -84,7 +84,7 @@ pub async fn post_agent_event(
     }
 }
 
-async fn process_set(state: &AppState, headers: &HeaderMap, body: &Bytes) -> Result<(), SetError> {
+async fn process_set(state: &CoreState, headers: &HeaderMap, body: &Bytes) -> Result<(), SetError> {
     // A SET is delivered as `application/secevent+jwt` (RFC 8935). Reject a present-but-wrong content
     // type; tolerate an absent one (the signature is the real security boundary).
     if let Some(ct) = headers.get(header::CONTENT_TYPE) {
@@ -171,7 +171,7 @@ async fn process_set(state: &AppState, headers: &HeaderMap, body: &Bytes) -> Res
 /// no-op with no duplicate audit event — the same pattern as `routes/agents.rs::revoke_agent`, with
 /// a `source` marker distinguishing the provider-initiated path from the account-owner one.
 async fn revoke_with_audit(
-    state: &AppState,
+    state: &CoreState,
     registration_id: &str,
     did: Option<&str>,
 ) -> Result<(), SetError> {
@@ -290,11 +290,12 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    use crate::app::{app, AppState};
-    use crate::routes::test_utils::{
+    use crate::test_support::test_app;
+    use crate::test_support::{
         es256_keys, insert_account_with_email as insert_account,
         state_with_agent_auth as state_with,
     };
+    use custos_core::CoreState;
 
     const PUBLIC_URL: &str = "https://test.example.com";
     const ISSUER: &str = "https://trusted.example";
@@ -380,8 +381,8 @@ mod tests {
         .unwrap();
     }
 
-    async fn post_set(state: AppState, body: &str) -> (StatusCode, Value) {
-        let response = app(state)
+    async fn post_set(state: CoreState, body: &str) -> (StatusCode, Value) {
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -598,7 +599,7 @@ mod tests {
         })
         .await;
         let set = make_set(&priv_pem, ISSUER, PUBLIC_URL, "sub-1", revoked_events());
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -673,7 +674,7 @@ mod tests {
             ..AgentAuthConfig::default()
         })
         .await;
-        let response = app(state)
+        let response = test_app(state)
             .oneshot(
                 Request::builder()
                     .method("POST")

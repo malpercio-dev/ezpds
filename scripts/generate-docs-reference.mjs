@@ -19,6 +19,7 @@ const esc = (value) => value.replaceAll('|', '\\|').replaceAll('\n', ' ');
 // step with ROUTER_FILES in scripts/bruno-parity.sh.
 const ROUTER_FILES = [
   'crates/pds/src/app.rs',
+  'crates/custos-agents/src/router.rs',
   'crates/custos-oauth/src/router.rs',
   'crates/custos-spaces/src/router.rs',
 ];
