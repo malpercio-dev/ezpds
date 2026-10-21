@@ -50,13 +50,13 @@ use serde::{Deserialize, Serialize};
 /// Global Keychain account holding the background-backup settings JSON. App-wide (not
 /// per-DID): the sweep is one `BGProcessingTask` covering every opted-in identity, so its
 /// power/network policy is a single shared setting.
-const SETTINGS_ACCOUNT: &str = "blob-backup-settings";
+pub(crate) const SETTINGS_ACCOUNT: &str = "blob-backup-settings";
 
 /// Global Keychain account holding the mirror that should lead the next background sweep.
 /// The task budget can expire between the two mirror passes, so this durable cross-fire turn
 /// makes that interruption fair over time.
 #[cfg(any(target_os = "ios", test))]
-const NEXT_MIRROR_ACCOUNT: &str = "background-backup-next-mirror";
+pub(crate) const NEXT_MIRROR_ACCOUNT: &str = "background-backup-next-mirror";
 
 #[cfg(any(target_os = "ios", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

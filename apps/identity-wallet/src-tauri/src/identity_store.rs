@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-const MANAGED_DIDS_ACCOUNT: &str = "managed-dids";
+pub(crate) const MANAGED_DIDS_ACCOUNT: &str = "managed-dids";
 
 /// Index of DIDs the user has deliberately unregistered from *this* device.
 ///
@@ -62,7 +62,7 @@ const MANAGED_DIDS_ACCOUNT: &str = "managed-dids";
 ///
 /// Holds no secret — only DIDs, which are public identifiers — and stays device-local:
 /// forgetting an identity here is a statement about this device, not about the Apple account.
-const FORGOTTEN_DIDS_ACCOUNT: &str = "forgotten-dids";
+pub(crate) const FORGOTTEN_DIDS_ACCOUNT: &str = "forgotten-dids";
 
 // ── Error types ────────────────────────────────────────────────────────────────
 
@@ -128,50 +128,50 @@ impl SovereignTokenRecord {
 // ── Per-DID account name helpers ───────────────────────────────────────────────
 
 /// Returns the Keychain account name for a DID's device key (private scalar).
-fn device_key_account(did: &str) -> String {
+pub(crate) fn device_key_account(did: &str) -> String {
     format!("{did}:device-key")
 }
 
 /// Returns the Keychain account name for a DID's device key public key.
-fn device_key_pub_account(did: &str) -> String {
+pub(crate) fn device_key_pub_account(did: &str) -> String {
     format!("{did}:device-key-pub")
 }
 
 /// Returns the Keychain account name for a DID's device key SE app label.
-fn device_key_app_label_account(did: &str) -> String {
+pub(crate) fn device_key_app_label_account(did: &str) -> String {
     format!("{did}:device-key-app-label")
 }
 
 /// Returns the Keychain account name for a DID's DID document.
-fn did_doc_account(did: &str) -> String {
+pub(crate) fn did_doc_account(did: &str) -> String {
     format!("{did}:did-doc")
 }
 
 /// Returns the Keychain account name for a DID's PLC audit log.
-fn plc_log_account(did: &str) -> String {
+pub(crate) fn plc_log_account(did: &str) -> String {
     format!("{did}:plc-log")
 }
 
 /// Returns the Keychain account name for a DID's OAuth tokens.
-fn oauth_tokens_account(did: &str) -> String {
+pub(crate) fn oauth_tokens_account(did: &str) -> String {
     format!("{did}:oauth-tokens")
 }
 
 /// Returns the Keychain account name for a DID's self-controlled disaster-recovery
 /// `atproto` signing key (raw P-256 scalar), enrolled by the sovereign
 /// disaster-recovery flow so the wallet can mint service-auth JWTs offline.
-fn recovery_signing_key_account(did: &str) -> String {
+pub(crate) fn recovery_signing_key_account(did: &str) -> String {
     format!("{did}:recovery-signing-key")
 }
 
 /// Returns the Keychain account name for a DID's delegation seed — the at-rest root
 /// from which every child (agent) account's rotation key is HD-derived.
-fn delegation_seed_account(did: &str) -> String {
+pub(crate) fn delegation_seed_account(did: &str) -> String {
     format!("{did}:delegation-seed")
 }
 
 /// Returns the Keychain account name for a DID's next child-account index.
-fn child_index_account(did: &str) -> String {
+pub(crate) fn child_index_account(did: &str) -> String {
     format!("{did}:child-index")
 }
 

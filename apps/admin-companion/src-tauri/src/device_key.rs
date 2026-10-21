@@ -20,7 +20,7 @@ pub use ios_device_key::{DeviceKeyError, DevicePublicKey};
 // account; the Secure Enclave path uses the pub + app-label metadata accounts (the SE private
 // key never leaves the enclave). Distinct from the wallet's names so the two apps never
 // collide on a shared device.
-const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
+pub(crate) const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
     private_scalar: "admin-device-key-priv",
     public_key: "admin-device-key-pub",
     application_label: "admin-device-key-app-label",

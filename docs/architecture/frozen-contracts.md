@@ -97,13 +97,13 @@ Both apps' bundle identifiers, each app's stable Keychain access group declared 
 
 Every Keychain account-name constant the wallet and console use to store device keys, tokens, ceremony records, and settings (for example `device-rotation-key-priv`, `oauth-access-token`, `relay-base-url`, and the per-DID `{did}:device-key` family in `apps/identity-wallet/src-tauri/src/keychain.rs`; `admin-device-key-priv` and `notification-key-priv` in the console). A renamed account is an unreachable key on an already-installed phone, with no error.
 
-- **Oracle:** **no oracle today.** The wallet's `deny_list_accounts_never_sync` test lists accounts but asserts sync policy, not name stability. The Keychain account-name pin test (MM-561) adds a golden list.
+- **Oracle:** `account_names_are_pinned` in each app's `keychain.rs` holds every account name, the per-DID templates, and the `SERVICE` string against a literal golden list (run by `just ios-pr-check` / `just admin-pr-check`); `ios-device-key`'s `stores_under_the_supplied_account_name_verbatim` (Linux gate) holds that the shared crate stores under exactly the name an app supplies.
 
 ### Synchronizable share-1 slot
 
 Recovery share 1 lives in the iCloud-synchronizable Keychain; nothing outside the Share 1 family is stored synchronizable.
 
-- **Oracle:** the wallet's `deny_list_accounts_never_sync` test (negative side). The positive side, that the share-1 slot name and attributes are stable, is covered by the same pin test (MM-561).
+- **Oracle:** the wallet's `deny_list_accounts_never_sync` test (negative side). The positive side, that `recovery-share-1:{did}` is the one name `syncs_to_icloud` admits, is the wallet's `account_names_are_pinned`, which asserts each golden entry's sync admission alongside its name.
 
 ### Non-exportable Secure Enclave keys
 
