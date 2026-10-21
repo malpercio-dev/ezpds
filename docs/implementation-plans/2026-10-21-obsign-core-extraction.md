@@ -28,7 +28,7 @@ M2 (MM-573) then builds `obsign-core` for wasm in CI, which turns the no-Apple-c
 
 ## A sixth trait
 
-ADR-0039 names five traits. Step 5 needed a sixth, `BackupStore`: the user-held mirrors live wherever the platform says (the iCloud Drive container on iOS, nothing on a device with iCloud Drive off), and a cloud folder can evict a file that restore must download first. Neither fits `KeyStore` (secrets, not files) or `Scheduler`. ADR-0039's "iCloud container" consequence already puts the implementation in the platform crate; the ADR's trait table should gain the row.
+ADR-0039 named five traits. Step 5 needed a sixth, `BackupStore`: the user-held mirrors live wherever the platform says (the iCloud Drive container on iOS, nothing on a device with iCloud Drive off), and a cloud folder can evict a file that restore must download first. Neither fits `KeyStore` (secrets, not files) or `Scheduler`. ADR-0039's "iCloud container" consequence already put the implementation in the platform crate, and the ADR's trait table now carries the row.
 
 ## Decisions taken in step 1
 
