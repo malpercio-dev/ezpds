@@ -36,13 +36,10 @@ async fn setup() -> SpacesState {
     let base = state_with_master_key().await;
     let mut config = (*base.config).clone();
     config.admin_token = Some(common::Sensitive(ADMIN.to_string()));
-    let state = SpacesState {
-        core: custos_core::CoreState {
-            config: std::sync::Arc::new(config),
-            ..base.core
-        },
-        ..base
-    };
+    let state = SpacesState::new(custos_core::CoreState {
+        config: std::sync::Arc::new(config),
+        ..base.core
+    });
     seed_account_with_repo(&state.db, DID).await;
     state
 }

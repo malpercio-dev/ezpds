@@ -1607,3 +1607,74 @@ async fn discovery_advertises_child_provisioning_and_documents_it() {
         "auth.md names the advertised capability"
     );
 }
+
+/// A jwt-bearer agent token is refused (403) on the account-lifecycle and app-password-management
+/// surface — via the agent-token guard (`createAppPassword`) and the granular scope check
+/// (`deactivateAccount`), respectively. Lives here rather than in `custos-oauth` because both
+/// refusals happen in `pds` routes.
+#[tokio::test]
+async fn agent_token_is_forbidden_on_account_and_app_password_routes() {
+    let state = state_with(AgentAuthConfig {
+        service_auth_enabled: true,
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner = "did:plc:agentbounded00000000";
+    insert_account(&state.db, owner, "bounded@example.com").await;
+    let registration_id =
+        register_and_confirm_service_auth(&state, owner, "bounded@example.com").await;
+    let assertion: String =
+        sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE id = ?")
+            .bind(&registration_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    let (xstatus, xbody) = exchange_assertion(state.clone(), &assertion).await;
+    assert_eq!(xstatus, StatusCode::OK, "confirmed identity must exchange");
+    let at = xbody["access_token"].as_str().unwrap().to_string();
+
+    let (status, _) = post_json(
+        state.clone(),
+        "/xrpc/com.atproto.server.createAppPassword",
+        json!({ "name": "botpass" }),
+        Some(&at),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an agent token must not create app passwords"
+    );
+
+    let (status, _) = post_json(
+        state,
+        "/xrpc/com.atproto.server.deactivateAccount",
+        json!({}),
+        Some(&at),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an agent token must not deactivate the account"
+    );
+}
+
+/// The pre-claim anonymous identity is `active`, not `claimed`, so the jwt-bearer grant refuses
+/// to exchange its assertion until a claim ceremony binds a DID.
+#[tokio::test]
+async fn anonymous_pre_claim_assertion_cannot_be_exchanged_yet() {
+    let state = state_with(anonymous_cfg()).await;
+    let (_status, body) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "anonymous" }),
+        None,
+    )
+    .await;
+    let assertion = body["identity_assertion"].as_str().unwrap().to_string();
+
+    let (status, json) = exchange_assertion(state, &assertion).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["error"], "invalid_grant");
+}

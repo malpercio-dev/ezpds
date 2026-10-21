@@ -185,4 +185,77 @@ mod tests {
         let stats = run_once(&sweep(), &state).await.unwrap();
         assert_eq!(stats, Pass::default());
     }
+
+    /// A parent's deleted sovereign child is purged once its grace window lapses: account, repo,
+    /// handle, and provisioning row gone, the parent's tombstone kept, and an `#account` deleted
+    /// frame emitted. Scheduling the deletion is `custos-agents`' half (`agent_child.rs`).
+    #[tokio::test]
+    async fn reaper_purges_a_deleted_child_and_keeps_the_tombstone() {
+        use crate::firehose::FirehoseEvent;
+        use custos_agents::test_support::{
+            access_jwt, child_request, mint_child_for, seed_account_with_repo, state_with_grace,
+            test_app,
+        };
+        use tower::ServiceExt;
+
+        // grace = 0 → the child is due the moment it is scheduled, so one reaper pass purges it.
+        let (core, _plc) = state_with_grace(0).await;
+        let parent = "did:plc:parentchilddelete1111";
+        seed_account_with_repo(&core.db, parent).await;
+        let token = access_jwt(&[0x42; 32], parent);
+        let child = mint_child_for(&core, "deletable-writer.example.com", &token).await;
+        let response = test_app(core.clone())
+            .oneshot(child_request(
+                "/agent/child/delete",
+                Some(&token),
+                serde_json::json!({"did": child}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let state = AppState::for_test(core).await;
+        // Subscribe *after* the delete so only the purge frame is observed.
+        let mut rx = state.firehose.subscribe();
+
+        // The reaper permanently purges the child (account/repo/handle gone) and emits #account
+        // deleted — the FK-ordered purge also drops the provisioning row without a constraint error.
+        let reaper = AccountReaper {
+            interval: std::time::Duration::from_secs(1),
+        };
+        let stats = run_once(&reaper, &state).await.unwrap();
+        assert_eq!(stats.swept, 1);
+        assert!(!crate::db::accounts::account_exists(&state.db, &child)
+            .await
+            .unwrap());
+        let provisioning: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_child_provisionings WHERE child_did = ?",
+        )
+        .bind(&child)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            provisioning, 0,
+            "the child's provisioning row must be purged"
+        );
+
+        // The deletion stays auditable after the fact: the tombstone outlives the purged child.
+        let tombstones: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_child_deletions WHERE parent_did = ?")
+                .bind(parent)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            tombstones, 1,
+            "the deletion tombstone must survive the child's purge"
+        );
+
+        let FirehoseEvent::Account(event) = rx.try_recv().unwrap() else {
+            panic!("expected an #account firehose event for the deletion");
+        };
+        assert_eq!(event.did, child);
+        assert!(!event.active);
+        assert_eq!(event.status.as_deref(), Some("deleted"));
+    }
 }

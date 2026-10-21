@@ -16,7 +16,7 @@ common · crypto · repo-engine
             ▼
         custos-core      this crate
             ▼
-  feature crates         custos-spaces (more to come)
+  feature crates         custos-agents, custos-blobs, custos-firehose, custos-oauth, custos-spaces
             ▼
           pds            the binary: composes every feature, owns what is not yet extracted
 ```
@@ -35,15 +35,19 @@ src/
   lib.rs           — module list; re-exports `CoreState`, `FailedLoginStore`, `apply_shared_layers`
   state.rs         — `CoreState`: every field a core module reads or more than one feature reads. A feature's own fields live in its state, which embeds this one (`pds`'s `AppState`) and implements `FromRef<_> for CoreState`
   layers.rs        — `apply_shared_layers(router, &CoreState)`: Trace → HTTP metrics → rate limiting, generic over the router's state; each route group applies it before its own CORS layer
-  auth/            — the verification core (table below); `pds` keeps the OAuth server's response mode and the auth.md agent machinery in its own `auth/`; the Spaces seam is `custos-spaces`'
+  auth/            — the verification core plus the auth.md agent machinery the token endpoint and the agents surface share (table below); the OAuth server's response mode is `custos-oauth`'s; the Spaces seam is `custos-spaces`'
   test_support.rs  — `test-support` feature only: the test state constructor and shared fixtures (see "Tests from other crates")
+  crawler.rs       — outbound `requestCrawl` notifier (`CoreState.crawlers`) — see section below
   capability.rs    — the `Capability` type (`Clone, Copy`): wire name, operator controls, summary, `enabled` predicate. `pds` owns the `CAPABILITIES` table and its order; a feature crate exports its entry as `CAPABILITY`
   blob_store.rs    — blob storage backend: durable filesystem I/O, CID computation, MIME detection; blobs at `{data_dir}/blobs/{cid[0:2]}/{cid}` — see module doc
+  firehose/        — the sequencer every writer emits through (`CoreState.firehose`); the `subscribeRepos` serving side is `custos-firehose`'s — see section below
   identity/        — everything "who is this handle/DID" (see section below)
   lexicon/         — vendored lexicon documents (`crates/custos-core/lexicons/`, pinned upstream — see its README) compiled into a registry, plus the reference-parity XRPC validation layers: input bodies (`LexiconInput<T>`), query params (`LexiconParams<T>`), repo-write records (`validate_record`), and served outputs (test-build drift detection). Strict schema parsing and byte-identical reference error messages, so Custos can't drift laxer than the reference. Start at `mod.rs`'s module doc — it maps the entry points and files
   metrics.rs       — OTel meter + Prometheus registry behind `GET /metrics`; `metrics::names` is the instrument source of truth (each constant documents what it measures and who records it) — see module doc
+  notify.rs        — the account-push seam: `NotificationPayload`, the `Notifier` trait `pds`'s `RelayNotifier` implements, and `CoreState::notify_account` (`0` when `[notifications] relay` is unset). Features push through it without seeing the relay client
   no_input.rs      — `NoInputBody` extractor: 400s any body on a no-input XRPC procedure with the reference PDS's exact message; extract it last — see module doc
   rate_limit.rs    — request rate-limiting middleware + shared limiter state — see section below
+  scope_display.rs — the user-legible text `/oauth/authorize` shows for `space:` grants: the space type declaration's `name` (localized), a named authority's bidirectionally-verified handle, the collections a bare grant resolves to, and the both-wildcards warning. Owns `SpaceTypeCache` (`CoreState.space_type_cache`), which the Spaces auth seam also reads for a bare grant's collection fallback. Degrades to the raw token instead of failing the page — see module doc
   request_host.rs  — `request_host` (Functional Core): resolve the client-addressed host and normalize default ports for the Host-keyed well-known routes — see module doc
   space_uri.rs     — space-ref syntax (`at://{authority}/space/{type}/{skey}`) and the wider space AT-URI family; deliberately separate from `repo_engine::AtUri`, whose callers resolve MST paths a space URI must never reach
   sweep.rs         — the `Sweep` trait (name, cadence, one `run` pass → `Pass`) and the one `Scheduler` (`spawn`/`shutdown`/`run_once`) that owns the interval loop, the skipped boot tick, per-pass jitter, graceful shutdown, and publishing each completed pass to `CoreState.sweeps`; a pass returning `Err` records nothing. Each periodic sweep is a `Sweep<St>` impl in the crate that owns it, generic over the state it reads
@@ -66,6 +70,28 @@ src/
   `HardenedClient::into_inner` is the one escape hatch.
 - **`SweepSnapshot` keeps every sweep's typed field**, including the two space sweeps: the
   `GET /v1/admin/health` JSON shape is what the Brass Console reads.
+
+### `firehose/`
+
+The persistent event pipeline behind `com.atproto.sync.subscribeRepos`: a durable monotonic
+sequencer (`repo_seq`, V028) plus a Tokio broadcast fan-out, shared as `CoreState.firehose`.
+Three files — `mod.rs` (sequencer, bare `emit_*` primitives, and the staged-transaction path
+`lock_emit`/`EmitGuard`/`Pending*`), `events.rs` (wire-facing event model + DAG-CBOR stored
+encoding), `replay.rs` (cursor replay over the durable log) — with every public type
+re-exported at `custos_core::firehose::*`. The invariants that make it subtle (persist-before-
+broadcast under one `emit_lock`, the lock-before-transaction deadlock rule on the
+single-connection pool, staging into a caller's transaction, cancellation recovery via
+`insert_at_frontier`, and the emission map of which routes emit which frames) are documented
+in `firehose/mod.rs`'s module and item docs — read those before touching any emit path.
+
+### `crawler.rs`
+
+Outbound `com.atproto.sync.requestCrawl` notifier (`CoreState.crawlers`). Fires on startup and on
+**every** firehose broadcast frame — lifecycle frames included, so a relay that silently dropped
+its subscription is re-invited even when the only news is a post-migration `#account`/`#sync`.
+Fire-and-forget, rate-limited to one notification per crawler per 30s, retried with backoff;
+configured via `[crawlers] urls` / `EZPDS_CRAWLERS` (default `["https://bsky.network"]`, empty
+disables). Mechanism and invariants: the module doc in `crawler.rs`.
 
 ### `identity/`
 
@@ -118,12 +144,13 @@ The family rosters, exemptions, and `RateLimit-*` header behavior: the module do
 | `jwt.rs` | Functional Core | JWT parsing, scope validation, access/refresh token verification, HS256 token issuance |
 | `oauth_client_resolution.rs` | Mixed (unavoidable) | the ATProto OAuth client resolver: client_id URL policy before any I/O, metadata fetch, bounded negative cache; also `validate_private_use_redirect` — see module doc |
 | `oauth_scopes.rs` | Functional Core | the granular ATProto OAuth scope grammar (proposal 0011, plus `space:` from the Spaces proposal 0016): parse, normalize, and canonicalize `resource[:positional][?param=value]` across the six resource types, and enforce it via the `require_*`/`allows_*` checks scoped routes call; `supported_scopes()` backs the discovery metadata. Ported for round-trip parity with `@atproto/oauth-scopes` — see module doc |
-| `permission_sets.rs` | Mixed (unavoidable) | resolves `include:<nsid>` scope references to Lexicon-published permission-set records and expands them into the grammar `oauth_scopes.rs` validates; owns the TTL'd `PermissionSetCache` and the shared `resolve_cached` helper `custos_spaces::consent` reuses. Does live DNS/HTTP, so not a pure core despite living in `auth/` — see module doc |
+| `permission_sets.rs` | Mixed (unavoidable) | resolves `include:<nsid>` scope references to Lexicon-published permission-set records and expands them into the grammar `oauth_scopes.rs` validates; owns the TTL'd `PermissionSetCache` and the shared `resolve_cached` helper `scope_display.rs` reuses. Does live DNS/HTTP, so not a pure core despite living in `auth/` — see module doc |
 | `password.rs` | Functional Core | `hash_password`, `verify_password` (argon2id) |
 | `rate_limit.rs` | Functional Core | sliding-window login-failure limiter + the generic `MultiWindowLimiter` used by the top-level `rate_limit.rs` middleware |
 | `service_auth.rs` | Imperative Shell | `require_service_auth(lxm)` — the inbound atproto service-auth guard, one lexicon method per call — plus the shared resolve-and-verify key machinery migration-`createAccount` reuses — see module doc |
 | `signed_proof.rs` | Functional Core | shared decoding for the device-key-signed proof envelopes three routes verify (`sovereign_session`, `oauth_consent`, `delete_account`): fixed lengths + canonical base64url — see module doc |
 | `signing_key.rs` | Imperative Shell | ES256 signing key load-or-create |
+| `agent_assertion.rs` | Mixed (unavoidable) | shared auth.md agent machinery the agents routes and the token endpoint's agent grants both need: assertion minting, claim-block helpers, `start_claim_attempt`, `AgentAuthError`, agent audit, and `ClaimPollTracker` (`CoreState.poll_tracker`) — see module doc |
 | `bearer.rs` | Functional Core | Authorization-header extraction: `extract_access_token` (Bearer + DPoP, RFC 9449) and Bearer-only `extract_bearer_token` — see module doc |
 | `validation.rs` | Functional Core | pure format/shape helpers shared across routes (`is_valid_did` re-export, device-public-key bounds, failed-login lock plumbing); each returns a bool or a message the caller maps to its own `ApiError` — see module doc |
 | `token` | Functional Core | re-export of `common::token`, the bearer/device token format (`generate_token`, `sha256_hex`, `hash_bearer_token`) shared with `custos-db` |
