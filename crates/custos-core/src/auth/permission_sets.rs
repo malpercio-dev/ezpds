@@ -551,7 +551,7 @@ pub(crate) async fn resolve_permission_set(
         .collect())
 }
 
-/// The mocked Lexicon authority, shared with `auth::space_consent`'s tests — both
+/// The mocked Lexicon authority, shared with `custos_spaces::consent`'s tests — both
 /// modules resolve through the same DNS-TXT-then-DID-document chain, so they mock the same one.
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests_support {

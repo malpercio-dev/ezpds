@@ -9,6 +9,7 @@ members = [
     "crates/custos-client",
     "crates/custos-db",
     "crates/custos-core",
+    "crates/custos-spaces",
     "apps/identity-wallet/src-tauri",
     "apps/admin-companion/src-tauri",
 ]
@@ -280,6 +281,8 @@ custos-client = { path = "crates/custos-client" }
 custos-db = { path = "crates/custos-db" }
 # CoreState, the auth verification seam, identity, lexicons, rate limiting, metrics, sweeps.
 custos-core = { path = "crates/custos-core" }
+# The Atproto Spaces feature crate: routes, space auth, queries, sweeps, capability entry.
+custos-spaces = { path = "crates/custos-spaces" }
 
 # ── Local patches ─────────────────────────────────────────────────────────────
 #

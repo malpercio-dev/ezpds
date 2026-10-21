@@ -1,0 +1,55 @@
+[package]
+name = "custos-spaces"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# custos-spaces: the Atproto Spaces feature crate — routes, the space auth seam, query modules,
+# sweeps, and the capability entry. Depends on custos-core and custos-db, never on `pds` or a
+# sibling feature (see AGENTS.md).
+
+[features]
+# `test_support`: `test_app`, the `SpacesState` constructors, and the space request builders, for
+# other crates' tests. Enable only under `[dev-dependencies]`.
+test-support = ["custos-core/test-support", "dep:tower"]
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true }
+common = { workspace = true, features = ["axum", "sqlx"] }
+custos-db = { workspace = true }
+custos-core = { workspace = true }
+crypto = { workspace = true }
+repo-engine = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+ipld-core = { workspace = true }
+jsonwebtoken = { workspace = true }
+p256 = { workspace = true }
+rand_core = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_ipld_dagcbor = { workspace = true }
+serde_bytes = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+urlencoding = { workspace = true }
+uuid = { workspace = true }
+# test-support only (see [features]).
+tower = { workspace = true, optional = true }
+
+[dev-dependencies]
+custos-db = { workspace = true, features = ["test-support"] }
+custos-core = { workspace = true, features = ["test-support"] }
+tower = { workspace = true }
+wiremock = { workspace = true }

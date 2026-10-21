@@ -1544,6 +1544,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "custos-spaces"
+version = "0.16.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.21.7",
+ "chrono",
+ "common",
+ "crypto",
+ "custos-core",
+ "custos-db",
+ "futures-util",
+ "ipld-core",
+ "jsonwebtoken",
+ "p256",
+ "rand_core 0.6.4",
+ "repo-engine",
+ "reqwest",
+ "serde",
+ "serde_bytes",
+ "serde_ipld_dagcbor",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5234,6 +5269,7 @@ dependencies = [
  "crypto",
  "custos-core",
  "custos-db",
+ "custos-spaces",
  "data-encoding",
  "futures-util",
  "hickory-resolver",

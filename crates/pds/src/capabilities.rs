@@ -32,31 +32,7 @@
 
 use common::Config;
 
-/// One advertised capability: its wire name, the operator controls that decide whether
-/// it is offered, a one-line summary, and the predicate that reads the live config.
-///
-/// `control` and `summary` are documentation surface rather than runtime inputs: the
-/// generated operator reference page renders them, and `just capability-docs-check` holds
-/// the hand-written operator page to them. They are deliberately declared here — beside
-/// the predicate they describe — so a change to how a capability is gated cannot land
-/// without the documentation moving in the same edit.
-#[allow(dead_code)]
-pub struct Capability {
-    /// The camelCase name that appears in `custos.capabilities`. Stable wire contract.
-    pub name: &'static str,
-    /// The configuration that decides whether this capability is offered, as a
-    /// space-separated list of config field paths — or `always` when the capability is
-    /// inherent to running Custos and has no operator switch. Documented per capability
-    /// on the operator capabilities page, which the drift gate holds to this list.
-    pub control: &'static str,
-    /// One-line description of what the capability lets a client do.
-    pub summary: &'static str,
-    /// Reads the live configuration. Must mirror the gate the routes themselves apply.
-    pub enabled: fn(&Config) -> bool,
-}
-
-/// Sentinel `control` value for a capability with no operator switch.
-pub const CONTROL_ALWAYS: &str = "always";
+pub use custos_core::capability::{Capability, CONTROL_ALWAYS};
 
 /// Every capability Custos knows how to advertise, in advertisement order.
 pub const CAPABILITIES: &[Capability] = &[
@@ -133,19 +109,8 @@ pub const CAPABILITIES: &[Capability] = &[
         // the preference routes honor the resulting token claim unconditionally (ADR-0033).
         enabled: |_| true,
     },
-    Capability {
-        name: "spaces",
-        control: "spaces.enabled signing_key_master_key",
-        summary: "The Atproto Spaces alpha surface: permissioned space repos with signature-bound space credentials, oplog/CAR sync, and simplespace management.",
-        // Two conditions, both required. `spaces.enabled` is the operator switch: off (the
-        // default while the protocol is pre-launch alpha), the routes are not registered at
-        // all. The master key is the gate on an enabled surface being *whole*: writes
-        // succeed without one, but every sync serving (`getLatestCommit`/`listRepoOps`/
-        // `getRepo`) mints a per-serving signed commit from the account's KEK-wrapped repo
-        // signing key and answers 503 without it. A deployment no syncer can sync from does
-        // not offer spaces.
-        enabled: |config| config.spaces.enabled && config.signing_key_master_key.is_some(),
-    },
+    // Defined beside the routes it describes; its slot here is its advertisement order.
+    custos_spaces::CAPABILITY,
     Capability {
         name: "waitlist",
         control: "waitlist.enabled",
@@ -302,6 +267,34 @@ mod tests {
             assert!(index >= previous, "advertised order diverged at {name}");
             previous = index;
         }
+    }
+
+    /// Golden: with a master key, spaces on, and every other switch on, `describeServer`
+    /// advertises the whole table in this order. A feature crate's entry keeps the slot its
+    /// predecessor held in this file (frozen contract: the `custos` extension's order).
+    #[tokio::test]
+    async fn fully_enabled_advertisement_is_the_whole_table_in_order() {
+        let mut config = with_master_key(base_config().await);
+        config.spaces.enabled = true;
+        config.agent_auth.anonymous_enabled = true;
+        config.accounts.password_optional = true;
+        config.waitlist.enabled = true;
+        assert_eq!(
+            advertised(&config),
+            [
+                "createCeremony",
+                "escrow",
+                "sovereignSessions",
+                "agents",
+                "walletConsent",
+                "optionalPassword",
+                "walletAccountDelete",
+                "didWebHosting",
+                "appPasswordPersonalDetails",
+                "spaces",
+                "waitlist",
+            ]
+        );
     }
 
     #[test]

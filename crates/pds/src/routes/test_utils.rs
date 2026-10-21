@@ -1,6 +1,6 @@
 //! `pds`'s test fixtures: everything in `custos_core::test_support` (re-exported below), with the
 //! state constructors returning a full `AppState` instead of a `CoreState`, plus the fixtures that
-//! need a `pds`-only type (the email sender, the space request signer, the `app()` router).
+//! need a `pds`-only type (the email sender, the `app()` router).
 
 use std::future::Future;
 use std::pin::Pin;
@@ -96,63 +96,6 @@ pub async fn state_with_failing_email() -> AppState {
     AppState {
         email: Arc::new(AlwaysErrEmail),
         ..base
-    }
-}
-
-/// A P-256 key a space client binds its credential to, plus the RFC 9421 `atproto-space`
-/// signatures it attaches: [`SpaceSigKey::delegation_headers`] for the `getSpaceCredential`
-/// exchange (whose `keyid` becomes the credential's `cnf.kid`), and
-/// [`SpaceSigKey::credential_headers`] for each credential-authed request. Both return the full
-/// header set, so a request builder takes them with `headers_mut().extend(..)`.
-pub(crate) struct SpaceSigKey {
-    signer: repo_engine::CommitSigner,
-    key_id: String,
-}
-
-impl SpaceSigKey {
-    pub(crate) fn generate() -> Self {
-        let kp = crypto::generate_p256_keypair().unwrap();
-        Self {
-            signer: repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap(),
-            key_id: kp.key_id.0,
-        }
-    }
-
-    /// The key's `did:key` — what a credential minted for it carries as `cnf.kid`.
-    pub(crate) fn key_id(&self) -> &str {
-        &self.key_id
-    }
-
-    fn signed(&self, authorization: &str, audience: Option<&str>) -> axum::http::HeaderMap {
-        use crate::auth::http_signature::{sign_space_request, AUDIENCE_HEADER};
-        let (input, signature) = sign_space_request(
-            |b| self.signer.sign(b),
-            &self.key_id,
-            authorization,
-            audience,
-        );
-        let mut h = axum::http::HeaderMap::new();
-        h.insert("authorization", authorization.parse().unwrap());
-        h.insert("signature-input", input.parse().unwrap());
-        h.insert("signature", signature.parse().unwrap());
-        if let Some(audience) = audience {
-            h.insert(AUDIENCE_HEADER, audience.parse().unwrap());
-        }
-        h
-    }
-
-    /// `Authorization: Bearer <delegation token>` signed for the credential exchange.
-    pub(crate) fn delegation_headers(&self, delegation_token: &str) -> axum::http::HeaderMap {
-        self.signed(&format!("Bearer {delegation_token}"), None)
-    }
-
-    /// `Authorization: Atproto-Space <credential>` addressed to `audience` and signed.
-    pub(crate) fn credential_headers(
-        &self,
-        credential: &str,
-        audience: &str,
-    ) -> axum::http::HeaderMap {
-        self.signed(&format!("Atproto-Space {credential}"), Some(audience))
     }
 }
 

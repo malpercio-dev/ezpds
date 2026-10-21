@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Verify route ⇄ Bruno-collection parity, both directions:
-#   1. Every route registered in crates/pds/src/app.rs has at least one request in
+#   1. Every route registered in a router file (ROUTER_FILES: `pds`'s app.rs plus each feature
+#      crate's router.rs) has at least one request in
 #      bruno/*.bru whose URL path matches it (the "Mandatory" rule in AGENTS.md).
 #   2. Every bruno/*.bru URL path matches some registered route, so a removed or
 #      renamed route can't leave a stale request behind.
@@ -9,13 +10,21 @@
 # (`:id`, `*path`) and a Bruno template segment (`{{did}}`) each match any single
 # segment, so `/v1/accounts/:id/usage` is covered by `/v1/accounts/{{did}}/usage`.
 #
+# `--list` prints the extracted route set and exits, for diffing the route table across a
+# refactor that moves routes between files.
+#
 # Portable bash + coreutils only (no perl/python) — runs identically in the Linux CI
 # gate (`just ci-pds`), the macOS `just ci`, and the Nix dev shell.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP_RS="crates/pds/src/app.rs"
+# Every file that registers routes. A missing file fails the gate rather than silently shrinking
+# the route set.
+ROUTER_FILES=(
+  "crates/pds/src/app.rs"
+  "crates/custos-spaces/src/router.rs"
+)
 BRUNO_DIR="bruno"
 
 # Routes that intentionally have no Bruno request. Keep this list short and justified.
@@ -25,17 +34,33 @@ EXCLUDED_ROUTES=(
   "/static/{*path}"
 )
 
-# --- extract route paths from app.rs -------------------------------------------------
-# .route( calls span lines, so collapse the file to one line, split on `.route(`, and
+# --- extract route paths from the router files ---------------------------------------
+# .route( calls span lines, so collapse each file to one line, split on `.route(`, and
 # take the first string literal of each call.
-routes="$(tr '\n' ' ' < "$APP_RS" \
-  | sed 's/\.route(/\n.route(/g' \
-  | sed -n 's/^\.route( *"\([^"]*\)".*/\1/p' \
-  | sort -u)"
+extract_routes() {
+  tr '\n' ' ' < "$1" \
+    | sed 's/\.route(/\n.route(/g' \
+    | sed -n 's/^\.route( *"\([^"]*\)".*/\1/p'
+}
 
-if [ -z "$routes" ]; then
-  echo "✗ no routes extracted from $APP_RS — has the router registration moved?" >&2
-  exit 1
+routes=""
+for file in "${ROUTER_FILES[@]}"; do
+  if [ ! -f "$file" ]; then
+    echo "✗ router file $file is missing — update ROUTER_FILES in $0" >&2
+    exit 1
+  fi
+  file_routes="$(extract_routes "$file")"
+  if [ -z "$file_routes" ]; then
+    echo "✗ no routes extracted from $file — has the router registration moved?" >&2
+    exit 1
+  fi
+  routes="$(printf '%s\n%s\n' "$routes" "$file_routes")"
+done
+routes="$(printf '%s\n' "$routes" | sed '/^$/d' | sort -u)"
+
+if [ "${1:-}" = "--list" ]; then
+  printf '%s\n' "$routes"
+  exit 0
 fi
 
 # --- extract request paths from the Bruno collection ---------------------------------
@@ -93,7 +118,7 @@ while IFS= read -r route; do
     if matches "$route" "$bru"; then covered=1; break; fi
   done <<< "$bru_paths"
   if [ "$covered" -eq 0 ]; then
-    echo "✗ route '$route' ($APP_RS) has no matching request in $BRUNO_DIR/ — add a .bru file (AGENTS.md: Bruno API Collection)" >&2
+    echo "✗ route '$route' has no matching request in $BRUNO_DIR/ — add a .bru file (AGENTS.md: Bruno API Collection)" >&2
     fail=1
   fi
 done <<< "$routes"
@@ -105,7 +130,7 @@ while IFS= read -r bru; do
     if matches "$route" "$bru"; then known=1; break; fi
   done <<< "$routes"
   if [ "$known" -eq 0 ]; then
-    echo "✗ Bruno request path '$bru' matches no registered route in $APP_RS — remove or update the stale .bru file" >&2
+    echo "✗ Bruno request path '$bru' matches no registered route in ${ROUTER_FILES[*]} — remove or update the stale .bru file" >&2
     fail=1
   fi
 done <<< "$bru_paths"

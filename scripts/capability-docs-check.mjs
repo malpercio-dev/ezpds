@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Guard the operator capability documentation against drift from the source of truth.
 //
-// `crates/pds/src/capabilities.rs` decides what `describeServer` advertises under the
+// `crates/pds/src/capabilities.rs` (with each feature crate's `crates/custos-*/src/capability.rs`
+// entry it lists) decides what `describeServer` advertises under the
 // `custos` extension and — through each entry's `control` field — which configuration
 // decides whether a capability is offered. That is what an operator needs to know and
 // what a client feature-gates on, so it must be documented; and a *stale* description of
@@ -28,19 +29,27 @@ const OPERATOR_PAGE = 'sites/docs/src/content/docs/operator/capabilities.md';
 const GENERATED_PAGE = 'sites/docs/src/content/docs/operator/reference/capabilities.md';
 const CONTROLLED_BY = '**Controlled by:**';
 
-/** Parse the `CAPABILITIES` table into `{ name, controls[] }` entries. */
+const ENTRY = /name:\s*"([^"]+)",\s*\n\s*control:\s*(?:CONTROL_ALWAYS|"([^"]*)"),/;
+
+/** Parse the `CAPABILITIES` table into `{ name, controls[] }` entries, in advertisement order. A
+ *  feature crate's `custos_x::CAPABILITY` slot is read from `crates/custos-x/src/capability.rs`. */
 function parseCapabilities(source) {
   const table = source.match(/pub const CAPABILITIES: &\[Capability\] = &\[([\s\S]*?)\n\];/);
   if (!table) throw new Error(`could not find the CAPABILITIES table in ${SOURCE}`);
-  const entries = [
-    ...table[1].matchAll(
-      /name:\s*"([^"]+)",\s*\n\s*control:\s*(?:CONTROL_ALWAYS|"([^"]*)"),/g,
-    ),
-  ].map(([, name, control]) => ({
-    name,
-    // CONTROL_ALWAYS (no string literal captured) is the "no operator switch" sentinel.
-    controls: (control ?? 'always').split(/\s+/).filter(Boolean),
-  }));
+  const slot = new RegExp(`${ENTRY.source}|\\b(custos_[a-z_]+)::CAPABILITY\\b`, 'g');
+  const entries = [...table[1].matchAll(slot)].map(([, name, control, crate]) => {
+    if (crate !== undefined) {
+      const path = `crates/${crate.replaceAll('_', '-')}/src/capability.rs`;
+      const entry = read(path).match(ENTRY);
+      if (!entry) throw new Error(`no capability entry found in ${path}`);
+      [, name, control] = entry;
+    }
+    return {
+      name,
+      // CONTROL_ALWAYS (no string literal captured) is the "no operator switch" sentinel.
+      controls: (control ?? 'always').split(/\s+/).filter(Boolean),
+    };
+  });
   if (entries.length === 0) throw new Error(`no capability entries parsed from ${SOURCE}`);
   return entries;
 }
