@@ -2,6 +2,9 @@ crates/custos-agents/src/routes/agent_child.rs 8
 crates/custos-agents/src/routes/agent_claim.rs 3
 crates/custos-agents/src/routes/agent_identity.rs 1
 crates/custos-agents/src/routes/agents.rs 1
+crates/custos-blobs/src/routes/get_blob.rs 1
+crates/custos-blobs/src/routes/list_blobs.rs 1
+crates/custos-blobs/src/routes/list_missing_blobs.rs 1
 crates/custos-core/src/auth/jwt.rs 2
 crates/custos-core/src/auth/oauth_scopes.rs 1
 crates/custos-core/src/auth/signing_key.rs 3
@@ -32,12 +35,9 @@ crates/pds/src/routes/describe_repo.rs 1
 crates/pds/src/routes/describe_server.rs 1
 crates/pds/src/routes/did_json.rs 1
 crates/pds/src/routes/did_web_hosting.rs 1
-crates/pds/src/routes/get_blob.rs 1
 crates/pds/src/routes/get_repo.rs 3
 crates/pds/src/routes/get_session.rs 1
 crates/pds/src/routes/get_subject_status.rs 1
-crates/pds/src/routes/list_blobs.rs 1
-crates/pds/src/routes/list_missing_blobs.rs 1
 crates/pds/src/routes/list_repos.rs 1
 crates/pds/src/routes/provisioning_session.rs 1
 crates/pds/src/routes/recovery_release.rs 8

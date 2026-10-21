@@ -1,9 +1,9 @@
 // pattern: Imperative Shell
 
-//! The account-notification seam features push through: [`NotificationPayload`] and the
-//! [`AccountNotifier`] trait. The sealing and relay transport live in `pds` (`notifications.rs`),
-//! which installs its notifier in `CoreState.account_notifier` when `[notifications] relay` is
-//! set. Features never see the relay client, so a feature crate can push without depending on
+//! The push seam features send through: [`NotificationPayload`] and the [`Notifier`] trait
+//! (account devices and the operator's admin devices). The sealing and relay transport live in
+//! `pds` (`notifications.rs`), which installs its notifier in `CoreState.notifier` when
+//! `[notifications] relay` is set. Features never see the relay client, so a feature crate can push without depending on
 //! `pds`.
 
 use std::future::Future;
@@ -51,10 +51,11 @@ impl NotificationPayload {
     }
 }
 
-/// Sends a notification to every device registered to an account.
+/// Sends a notification to every device registered to an account, or to every active admin
+/// device.
 ///
-/// Object-safe (`Pin<Box<dyn Future>>`) so it lives in `CoreState` as `Arc<dyn AccountNotifier>`.
-pub trait AccountNotifier: Send + Sync {
+/// Object-safe (`Pin<Box<dyn Future>>`) so it lives in `CoreState` as `Arc<dyn Notifier>`.
+pub trait Notifier: Send + Sync {
     /// Seal and enqueue `payload` once per device registered to `did`. Never fails: a missed
     /// banner is recovered the next time the app talks to Custos. Returns how many payloads were
     /// enqueued, which some triggers branch on (the consent page shows its match code only when a
@@ -64,15 +65,30 @@ pub trait AccountNotifier: Send + Sync {
         did: &'a str,
         payload: NotificationPayload,
     ) -> Pin<Box<dyn Future<Output = usize> + Send + 'a>>;
+
+    /// Seal and enqueue `payload` once per active admin-companion device: the operator alert
+    /// channel. Never fails, as above.
+    fn notify_admins(
+        &self,
+        payload: NotificationPayload,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
 impl CoreState {
     /// Push `payload` to every device registered to `did` through the installed
-    /// [`AccountNotifier`]; `0` when notifications are unconfigured.
+    /// [`Notifier`]; `0` when notifications are unconfigured.
     pub async fn notify_account(&self, did: &str, payload: NotificationPayload) -> usize {
-        match &self.account_notifier {
+        match &self.notifier {
             Some(notifier) => notifier.notify_account(did, payload).await,
             None => 0,
+        }
+    }
+
+    /// Push `payload` to every active admin device through the installed [`Notifier`]; a no-op
+    /// when notifications are unconfigured.
+    pub async fn notify_admins(&self, payload: NotificationPayload) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_admins(payload).await;
         }
     }
 }

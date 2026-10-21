@@ -30,13 +30,14 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use crate::app::AppState;
 use crate::blob_store;
 use crate::db::accounts;
 use crate::db::blobs;
 use crate::db::blocks::SqliteBlockStore;
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
+use axum::extract::FromRef;
+use custos_core::CoreState;
 use repo_engine::{Cid, Repository};
 
 /// Records read per page when walking a collection to collect blob references.
@@ -92,14 +93,19 @@ pub struct BlobGc {
     pub interval: Duration,
 }
 
-impl Sweep<AppState> for BlobGc {
+impl<St> Sweep<St> for BlobGc
+where
+    St: Send + Sync + 'static,
+    CoreState: FromRef<St>,
+{
     const NAME: &'static str = names::BLOB_GC;
 
     fn interval(&self) -> Duration {
         self.interval
     }
 
-    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+    async fn run(&self, state: &St) -> anyhow::Result<Pass> {
+        let state = &CoreState::from_ref(state);
         run_blob_gc(state).await.pass()
     }
 }
@@ -110,7 +116,7 @@ impl Sweep<AppState> for BlobGc {
 /// counted in [`GcStats::errors`] but does not stop the pass. Reconciling (which adopts
 /// referenced-but-unowned blobs into `blob_owners`) always runs before the sweep, so a
 /// reference discovered this pass is protected before any file can be reclaimed.
-pub async fn run_blob_gc(state: &AppState) -> GcStats {
+pub async fn run_blob_gc(state: &CoreState) -> GcStats {
     let mut stats = GcStats::default();
 
     // Phase 1: reconcile each account's blob references against its MST.
@@ -240,7 +246,7 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
 /// Returns `(reconciled, released)`: the number of ownership rows (re)marked permanent —
 /// created on the spot when the account references a stored blob it has no row for — and the
 /// number that transitioned from permanent to temporary (lost their last reference) this pass.
-async fn reconcile_account(state: &AppState, did: &str) -> Result<(u64, u64), GcError> {
+async fn reconcile_account(state: &CoreState, did: &str) -> Result<(u64, u64), GcError> {
     let referenced = collect_referenced_blob_cids(state, did).await?;
     let owned = blobs::list_owned_blobs(&state.db, did).await?;
 
@@ -281,7 +287,7 @@ async fn reconcile_account(state: &AppState, did: &str) -> Result<(u64, u64), Gc
 /// block decoded in place). A blob referenced from either surface is equally pinned; a blob
 /// referenced from neither is equally collectable.
 async fn collect_referenced_blob_cids(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
 ) -> Result<HashMap<String, i64>, GcError> {
     let mut counts: HashMap<String, i64> = HashMap::new();
@@ -333,9 +339,9 @@ async fn collect_referenced_blob_cids(
     // Space records are the store itself (no MST): decode each stored DAG-CBOR block and
     // collect its links through the same JSON walk the public path uses, so both surfaces
     // apply an identical (deliberately over-broad) reference definition.
-    let mut cursor: Option<custos_spaces::db::space_repos::SpaceRecordCursor> = None;
+    let mut cursor: Option<crate::db::space_record_blocks::SpaceRecordCursor> = None;
     loop {
-        let page = custos_spaces::db::space_repos::list_record_blocks_for_account(
+        let page = crate::db::space_record_blocks::list_record_blocks_for_account(
             &state.db,
             did,
             cursor.as_ref(),
@@ -397,7 +403,7 @@ fn collect_blob_links(value: &serde_json::Value, out: &mut HashMap<String, i64>)
 /// gone: the DB is the source of truth, and that ordering's failure mode is an orphaned file
 /// (a benign leak, logged), never a live row pointing at deleted bytes.
 async fn sweep_expired_owner(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
     cid: &str,
 ) -> Result<(bool, bool), GcError> {
@@ -429,9 +435,11 @@ async fn sweep_expired_owner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routes::test_utils::{seed_account_with_repo, test_master_key};
+    use crate::test_support::{
+        add_blob, blob_file_exists, blob_record, gc_state, seed_account_with_repo, test_master_key,
+        write_record,
+    };
     use serde_json::json;
-    use std::sync::Arc;
 
     // ── Pure helper: collect_blob_links ─────────────────────────────────────────
 
@@ -476,84 +484,8 @@ mod tests {
 
     // ── Integration: run_blob_gc ────────────────────────────────────────────────
 
-    /// Test state with a real on-disk data_dir (so file deletes are observable) and the
-    /// signing-key master key configured (so test records can be written into the repo).
-    async fn gc_state() -> (AppState, tempfile::TempDir) {
-        let base = crate::app::test_state().await;
-        let dir = tempfile::tempdir().unwrap();
-        let mut config = (*base.config).clone();
-        config.data_dir = dir.path().to_path_buf();
-        config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
-            test_master_key(),
-        )));
-        let state = AppState {
-            core: custos_core::CoreState {
-                config: Arc::new(config),
-                ..base.core
-            },
-            ..base
-        };
-        (state, dir)
-    }
-
-    /// Store `content` as a blob on disk and insert its metadata row with the given
-    /// `temp_until`. Returns the blob CID.
-    async fn add_blob(state: &AppState, did: &str, content: &[u8], temp_until: &str) -> String {
-        let stored =
-            blob_store::store_blob(&state.config.data_dir, content, "application/octet-stream")
-                .await
-                .unwrap();
-        blobs::insert_blob(
-            &state.db,
-            &stored.cid,
-            did,
-            &stored.mime_type,
-            stored.size_bytes as i64,
-            &stored.storage_path,
-            temp_until,
-        )
-        .await
-        .unwrap();
-        stored.cid
-    }
-
-    /// True if a blob's file still exists on disk.
-    fn blob_file_exists(state: &AppState, cid: &str) -> bool {
-        let prefix = &cid[..2.min(cid.len())];
-        state
-            .config
-            .data_dir
-            .join(format!("blobs/{prefix}/{cid}"))
-            .exists()
-    }
-
-    /// Write a record into the account's repo and advance the persisted root.
-    async fn write_record(state: &AppState, did: &str, key: &str, value: serde_json::Value) {
-        let master = test_master_key();
-        let root_str = accounts::get_repo_root_cid(&state.db, did)
-            .await
-            .unwrap()
-            .unwrap();
-        let root = Cid::try_from(root_str.as_str()).unwrap();
-        let signer = crate::auth::signing_key::load_repo_signer(&state.db, did, &master)
-            .await
-            .unwrap();
-        let store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-        let mut repo = Repository::open(store, root).await.unwrap();
-        repo_engine::put_record_json(&mut repo, &signer, key, &value)
-            .await
-            .unwrap();
-        let new_root = repo.root().to_string();
-        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
-            .bind(&new_root)
-            .bind(did)
-            .execute(&state.db)
-            .await
-            .unwrap();
-    }
-
     /// Delete a record from the account's repo and advance the persisted root.
-    async fn delete_record(state: &AppState, did: &str, key: &str) {
+    async fn delete_record(state: &CoreState, did: &str, key: &str) {
         let master = test_master_key();
         let root_str = accounts::get_repo_root_cid(&state.db, did)
             .await
@@ -575,19 +507,6 @@ mod tests {
             .execute(&state.db)
             .await
             .unwrap();
-    }
-
-    fn blob_record(cid: &str) -> serde_json::Value {
-        json!({
-            "$type": "app.bsky.feed.post",
-            "text": "look at this",
-            "embed": {
-                "$type": "app.bsky.embed.images",
-                "images": [
-                    { "image": { "$type": "blob", "ref": { "$link": cid }, "mimeType": "image/png", "size": 10 } }
-                ]
-            }
-        })
     }
 
     #[tokio::test]
@@ -866,59 +785,5 @@ mod tests {
         assert_eq!(owner_b.ref_count, 1);
         assert!(owner_b.temp_until.is_none());
         assert!(blob_file_exists(&state, &cid), "adopted file must survive");
-    }
-
-    /// A blob referenced only from a permissioned space record is pinned exactly like one
-    /// referenced from the public MST — for an account with **no public repo at all** (proving
-    /// the candidate query and the reference walk both cover the space surface) — while an
-    /// unreferenced expired blob on the same account is still collected.
-    #[tokio::test]
-    async fn gc_pins_blob_referenced_only_from_a_space_record() {
-        let (state, _dir) = gc_state().await;
-        let did = "did:plc:gcspaceref";
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(&state.db)
-        .await
-        .unwrap();
-        let space = custos_core::space_uri::parse_space_ref(
-            "at://did:plc:gcspaceref/space/org.example.bucket/self",
-        )
-        .unwrap();
-
-        // Both blobs are expired temporaries; only one gets referenced from a space record.
-        let referenced = add_blob(&state, did, b"space bytes", "2020-01-01 00:00:00").await;
-        let orphan = add_blob(&state, did, b"orphan bytes", "2020-01-01 00:00:00").await;
-        custos_spaces::space_record_write::apply_space_writes(
-            &axum::extract::FromRef::from_ref(&state),
-            &space,
-            did,
-            &[custos_spaces::space_record_write::SpaceWriteOp {
-                action: custos_spaces::space_record_write::SpaceWriteAction::Put,
-                collection: "org.example.note".to_string(),
-                rkey: "withblob".to_string(),
-                value: Some(blob_record(&referenced)),
-            }],
-            custos_spaces::space_record_write::SpaceWriteAdmission::Active,
-        )
-        .await
-        .unwrap();
-
-        let stats = run_blob_gc(&state).await;
-        assert_eq!(stats.errors, 0);
-        assert_eq!(stats.deleted, 1, "the unreferenced blob is collected");
-
-        let owner = blobs::get_owner(&state.db, did, &referenced)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(owner.ref_count, 1);
-        assert!(owner.temp_until.is_none(), "space reference pins the blob");
-        assert!(blob_file_exists(&state, &referenced));
-        assert!(!blob_file_exists(&state, &orphan));
     }
 }

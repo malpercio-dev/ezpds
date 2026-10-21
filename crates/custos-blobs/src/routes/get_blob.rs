@@ -23,10 +23,10 @@ use serde::Deserialize;
 
 use common::{ApiError, ErrorCode};
 
-use crate::app::AppState;
 use crate::blob_store;
 use crate::db::blobs;
 use crate::lexicon::LexiconParams;
+use custos_core::CoreState;
 
 // ── Query parameters ────────────────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ pub struct GetBlobParams {
 /// Serves blob content by CID. No authentication required.
 /// Validates that the blob belongs to the specified DID's repo.
 pub async fn get_blob(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     LexiconParams(params): LexiconParams<GetBlobParams>,
 ) -> Result<Response, ApiError> {
     // 1. Look up blob metadata by CID, scoped to the requested DID's ownership rows
@@ -126,14 +126,14 @@ pub async fn get_blob(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::test_state;
-    use crate::routes::test_utils::body_json;
+    use crate::test_support::body_json;
+    use crate::test_support::test_state;
     use atrium_repo::blockstore::{DAG_CBOR, SHA2_256};
     use axum::{body::Body, http::Request, routing::get, Router};
     use sha2::Digest;
     use tower::ServiceExt;
 
-    fn app_with_state(state: AppState) -> Router {
+    fn app_with_state(state: CoreState) -> Router {
         Router::new()
             .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
             .with_state(state)
@@ -152,7 +152,7 @@ mod tests {
     /// Helper: seed an account and a blob for testing. The CID is computed from `content`
     /// (the serve path now re-hashes the file against the row's CID), so each test should
     /// use distinct content — the shared `/tmp` data dir keys files by CID.
-    async fn seed_blob(state: &AppState, did: &str, content: &[u8], mime_type: &str) -> String {
+    async fn seed_blob(state: &CoreState, did: &str, content: &[u8], mime_type: &str) -> String {
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES (?, 'blob@example.com', NULL, datetime('now'), datetime('now'))",

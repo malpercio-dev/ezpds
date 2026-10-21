@@ -132,7 +132,7 @@ The well-known/DNS handle resolvers (`crates/custos-core/src/identity/well_known
 Litestream continuously replicates the SQLite WAL to object storage; blobs
 are replicated separately by the PDS's own blob mirror with restore-on-boot
 CID verification — both in [`docs/deploy.md`](../deploy.md#master-key-kek-backup-and-disaster-recovery).
-`crates/pds/src/blob_gc.rs` pins any blob still referenced (`temp_until`) so
+`crates/custos-blobs/src/blob_gc.rs` pins any blob still referenced (`temp_until`) so
 garbage collection cannot delete a blob a repo still points to — the fix for
 the 2026-07-25 incident this code's `temp_until`-gating enforces. Separately,
 atrium-repo 0.1.8's MST `split_subtree` bug silently dropped sibling subtrees

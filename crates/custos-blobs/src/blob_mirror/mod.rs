@@ -41,11 +41,12 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 
-use crate::app::AppState;
 use crate::blob_store;
 use crate::db::blobs::{self, PhysicalBlob};
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
+use axum::extract::FromRef;
+use custos_core::CoreState;
 
 /// A configured mirror target: the bucket client plus the object-key namespace it owns.
 pub struct BlobMirror {
@@ -156,14 +157,19 @@ pub struct BlobMirrorSweep {
     pub mirror: Arc<BlobMirror>,
 }
 
-impl Sweep<AppState> for BlobMirrorSweep {
+impl<St> Sweep<St> for BlobMirrorSweep
+where
+    St: Send + Sync + 'static,
+    CoreState: FromRef<St>,
+{
     const NAME: &'static str = names::BLOB_MIRROR;
 
     fn interval(&self) -> Duration {
         self.interval
     }
 
-    async fn run(&self, state: &AppState) -> anyhow::Result<Pass> {
+    async fn run(&self, state: &St) -> anyhow::Result<Pass> {
+        let state = &CoreState::from_ref(state);
         run_blob_mirror(state, &self.mirror).await.pass()
     }
 }
@@ -175,7 +181,7 @@ impl Sweep<AppState> for BlobMirrorSweep {
 /// never aborts the pass. A failure to enumerate either side (the DB rows or the bucket
 /// listing) skips the whole pass without recording, leaving the last-run timestamp stale —
 /// the operator's signal that mirroring is not completing.
-pub async fn run_blob_mirror(state: &AppState, mirror: &BlobMirror) -> MirrorStats {
+pub async fn run_blob_mirror(state: &CoreState, mirror: &BlobMirror) -> MirrorStats {
     let mut stats = MirrorStats::default();
 
     let rows = match blobs::list_all_blobs(&state.db).await {
@@ -275,7 +281,7 @@ pub async fn run_blob_mirror(state: &AppState, mirror: &BlobMirror) -> MirrorSta
 
 /// Read one blob's local file, verify it against its row, and upload it.
 async fn upload_verified(
-    state: &AppState,
+    state: &CoreState,
     mirror: &BlobMirror,
     row: &PhysicalBlob,
 ) -> Result<(), String> {

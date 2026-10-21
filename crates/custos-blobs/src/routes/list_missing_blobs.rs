@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Gathers: AuthenticatedUser (JWT extractor), query params (limit, cursor), DB pool via AppState
+// Gathers: AuthenticatedUser (JWT extractor), query params (limit, cursor), DB pool via CoreState
 // Processes: walk the account's repo MST → collect blob references from records → diff against
 //            the blobs the account has uploaded → paginate the missing set by CID
 // Returns: JSON { blobs: [{ cid, recordUri }], cursor? }
@@ -16,10 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
-use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::db::blocks::SqliteBlockStore;
 use crate::lexicon::LexiconParams;
+use custos_core::CoreState;
 use repo_engine::Repository;
 
 // ── Query parameters ──────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ pub struct ListMissingBlobsResponse {
 /// transfer (`getBlob` old → `uploadBlob` new) to completion. Missing blobs are returned ordered
 /// by CID with cursor pagination; each carries one referencing record's AT-URI.
 pub async fn list_missing_blobs(
-    State(state): State<AppState>,
+    State(state): State<CoreState>,
     user: AuthenticatedUser,
     LexiconParams(params): LexiconParams<ListMissingBlobsParams>,
 ) -> Result<Json<ListMissingBlobsResponse>, ApiError> {
@@ -133,7 +133,7 @@ pub async fn list_missing_blobs(
 /// read each record block directly from the block store (O(1) `SELECT BY cid`) rather than through
 /// `Repository::get_raw_cid` (which re-walks the whole MST per record).
 async fn collect_repo_blob_refs(
-    state: &AppState,
+    state: &CoreState,
     did: &str,
     head: &str,
 ) -> Result<Vec<(String, String)>, ApiError> {
@@ -211,8 +211,8 @@ mod tests {
     use axum::http::{self, Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{
-        access_jwt, body_json, put_record_request, seed_account_with_repo, state_with_master_key,
+    use crate::test_support::{
+        access_jwt, body_json, seed_account_with_repo, state_with_master_key, write_record,
     };
 
     const BLOB_CID_A: &str = "bafkreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454";
@@ -230,29 +230,26 @@ mod tests {
         (status, body_json(resp).await)
     }
 
-    /// Put a record that references a blob via a CID link.
-    async fn put_blob_post(app: &axum::Router, did: &str, token: &str, rkey: &str, blob_cid: &str) {
+    /// Write a post whose embed references `blob_cid` via a CID link.
+    async fn put_blob_post(state: &custos_core::CoreState, did: &str, rkey: &str, blob_cid: &str) {
         let record = serde_json::json!({
-            "record": {
-                "text": "with image",
-                "embed": {
-                    "images": [{
-                        "image": {
-                            "$type": "blob",
-                            "ref": { "$link": blob_cid },
-                            "mimeType": "image/png",
-                            "size": 100
-                        },
-                        "alt": "test"
-                    }]
-                }
+            "$type": "app.bsky.feed.post",
+            "text": "with image",
+            "createdAt": "2024-01-01T00:00:00Z",
+            "embed": {
+                "$type": "app.bsky.embed.images",
+                "images": [{
+                    "image": {
+                        "$type": "blob",
+                        "ref": { "$link": blob_cid },
+                        "mimeType": "image/png",
+                        "size": 100
+                    },
+                    "alt": "test"
+                }]
             }
         });
-        let req = put_record_request(did, "app.bsky.feed.post", rkey, record, Some(token));
-        assert_eq!(
-            app.clone().oneshot(req).await.unwrap().status(),
-            StatusCode::OK
-        );
+        write_record(state, did, &format!("app.bsky.feed.post/{rkey}"), record).await;
     }
 
     #[tokio::test]
@@ -261,7 +258,7 @@ mod tests {
         let did = "did:plc:missingempty";
         seed_account_with_repo(&state.db, did).await;
         let token = access_jwt(&state.jwt_secret, did);
-        let app = crate::app::app(state);
+        let app = crate::test_support::test_app(state.clone());
 
         let (status, body) = get(&app, "/xrpc/com.atproto.repo.listMissingBlobs", &token).await;
         assert_eq!(status, StatusCode::OK);
@@ -275,9 +272,9 @@ mod tests {
         let did = "did:plc:missingone";
         seed_account_with_repo(&state.db, did).await;
         let token = access_jwt(&state.jwt_secret, did);
-        let app = crate::app::app(state);
+        let app = crate::test_support::test_app(state.clone());
 
-        put_blob_post(&app, did, &token, "post1", BLOB_CID_A).await;
+        put_blob_post(&state, did, "post1", BLOB_CID_A).await;
 
         let (status, body) = get(&app, "/xrpc/com.atproto.repo.listMissingBlobs", &token).await;
         assert_eq!(status, StatusCode::OK);
@@ -310,8 +307,8 @@ mod tests {
         .await
         .unwrap();
 
-        let app = crate::app::app(state);
-        put_blob_post(&app, did, &token, "post1", BLOB_CID_A).await;
+        let app = crate::test_support::test_app(state.clone());
+        put_blob_post(&state, did, "post1", BLOB_CID_A).await;
 
         let (status, body) = get(&app, "/xrpc/com.atproto.repo.listMissingBlobs", &token).await;
         assert_eq!(status, StatusCode::OK);
@@ -328,11 +325,11 @@ mod tests {
         let did = "did:plc:missingpage";
         seed_account_with_repo(&state.db, did).await;
         let token = access_jwt(&state.jwt_secret, did);
-        let app = crate::app::app(state);
+        let app = crate::test_support::test_app(state.clone());
 
         // Two distinct missing blobs across two records.
-        put_blob_post(&app, did, &token, "post1", BLOB_CID_A).await;
-        put_blob_post(&app, did, &token, "post2", BLOB_CID_B).await;
+        put_blob_post(&state, did, "post1", BLOB_CID_A).await;
+        put_blob_post(&state, did, "post2", BLOB_CID_B).await;
 
         // Page 1: limit 1 → one blob + a cursor.
         let (status, body) = get(

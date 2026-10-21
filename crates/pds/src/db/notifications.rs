@@ -292,7 +292,7 @@ pub async fn upsert_admin_registration(
     Ok(())
 }
 
-/// Every *active* admin device's registration — the fan-out set for `notify_admin_devices`.
+/// Every *active* admin device's registration — the fan-out set for `Notifier::notify_admins`.
 ///
 /// The join against `admin_devices` is what makes revocation authoritative for pushes too: a
 /// revoked device stops receiving operational alerts the instant its tombstone is stamped,

@@ -24,18 +24,15 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; `[telemetry]` config incl. `log_format = "json"` — see module doc
   app.rs           — router construction (route table; the shared middleware is `custos_core::apply_shared_layers`); re-exports `AppState` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged. Each feature crate's `router`/`internal_router` merges in unconditionally before the layer stack; the feature gate lives inside the crate
-  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (built from `AppState.core`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.account_notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
+  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (built from `AppState.core`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
   rate_limit_test.rs — the rate-limit middleware tests that need the full `app()` router (CORS on a 429, the `getRepo` exemption, per-endpoint caps); the limiter's unit tests are in `custos_core::rate_limit`
   xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (`xrpc_handler` at `/xrpc/{method}`): upstream resolution for the three proxied namespaces + the read-after-write branch — see module doc
   firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier); the sequencer itself is `custos_core::firehose`
-  blob_gc.rs       — periodic blob GC over per-account ownership rows (`blob_owners`, V039); references union the public MST and stored space records (V065); fails closed on a failed reconcile (that account leaks disk until fixed) — see module doc
-  blob_mirror/     — off-volume blob replication to an S3-compatible bucket (`[blob_mirror]` / `EZPDS_BLOB_MIRROR_*`); boot restore runs before the listener binds; `s3.rs` is a hand-rolled SigV4 client — see module doc
-  blob_scrub.rs    — periodic blob-integrity scrub: re-hash every stored blob + walk both orphan directions; auto-heals from the mirror when configured — see module doc
   relay_status.rs  — inbound `com.atproto.sync.getHostStatus` client (total, never fatal) backing `GET /v1/admin/relay-status` — see section below
   email.rs         — pluggable outbound email (`Arc<dyn EmailSender>`: log default, SMTP, Mailtrap HTTPS) behind the token-delivery flows; `[email]` / `EZPDS_EMAIL_*` — see module doc
   iroh_tunnel.rs   — opt-in (`[iroh] enabled`) NAT-traversing QUIC endpoint devices dial by node id; v0.1 echo ALPN, IPv6 gate for v4-only hosts — see module doc
   notify_relay_client.rs — outbound iroh leg to the notification relay (`ezpds/notify/0`) + the fire-and-forget send worker; lazy cached connection, self-healing enrollment — see module doc
-  notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; `RelayNotifier` is the `custos_core::notify::AccountNotifier` features push through, `notify_admin_devices` the operator channel; inert when `[notifications] relay` is unset — see module doc
+  notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; `RelayNotifier` is the `custos_core::notify::Notifier` features push through, `notify_admin_devices` the operator channel; inert when `[notifications] relay` is unset — see module doc
   record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (one reachability walk per commit); every commit passes the MST integrity check (new head's key count vs the maintained `accounts.record_count` witness, V068) before the CAS — see module doc
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   account_delete.rs— shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, `#account` deleted frame), used by deleteAccount and the reaper — see module doc
@@ -187,18 +184,14 @@ the rest. The OAuth endpoints live in [`custos-oauth`](../custos-oauth/AGENTS.md
 | `transfer_complete.rs` | `POST /v1/transfer/complete` — finalize an accepted swap (source session or accepted target token); revokes superseded credentials, records the audit event |
 | `get_device_pds.rs` | `GET /v1/devices/:id/pds` |
 | `describe_server.rs` | `GET /xrpc/com.atproto.server.describeServer` — lexicon fields plus the off-lexicon `custos` capability extension — see module doc |
-| `upload_blob.rs` | `POST /xrpc/com.atproto.repo.uploadBlob` — blob store + metadata insert, dual auth (access token or method-scoped service-auth JWT, the video-service path) — see module doc |
-| `get_blob.rs` | `GET /xrpc/com.atproto.sync.getBlob` — ownership-scoped, re-hash-verified blob serving with immutable caching — see module doc |
 | `sync_get_blocks.rs` | `GET /xrpc/com.atproto.sync.getBlocks` — requested repo blocks as a rootless CAR; a foreign account's CID reads as `BlockNotFound` |
 | `sync_get_latest_commit.rs` | `GET /xrpc/com.atproto.sync.getLatestCommit` — current commit CID and rev |
 | `sync_get_record.rs` | `GET /xrpc/com.atproto.sync.getRecord` — a record with its MST proof as a CAR (200 inclusion or exclusion proof; only an unknown DID 404s) |
 | `get_repo.rs` | `GET /xrpc/com.atproto.sync.getRepo` — repository CAR export; optional `since` makes it incremental |
 | `sync_get_repo_status.rs` | `GET /xrpc/com.atproto.sync.getRepoStatus` — hosting status of a single repo |
-| `list_blobs.rs` | `GET /xrpc/com.atproto.sync.listBlobs` — paginated blob CIDs for a DID |
 | `list_repos.rs` | `GET /xrpc/com.atproto.sync.listRepos` — all hosted repositories, paginated |
 | `apply_writes.rs` | `POST /xrpc/com.atproto.repo.applyWrites` — a batch of record writes in one atomic commit |
 | `import_repo.rs` | `POST /xrpc/com.atproto.repo.importRepo` — migration CAR ingest, idempotent + CAS-guarded for return migration — see module doc |
-| `list_missing_blobs.rs` | `GET /xrpc/com.atproto.repo.listMissingBlobs` — MST-referenced blobs diffed against uploads, paginated |
 | `create_record.rs` | `POST /xrpc/com.atproto.repo.createRecord` |
 | `get_record.rs` | `GET /xrpc/com.atproto.repo.getRecord` |
 | `list_records.rs` | `GET /xrpc/com.atproto.repo.listRecords` |
