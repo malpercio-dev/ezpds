@@ -38,14 +38,15 @@ pub mod app_passwords;
 pub mod bg_backup;
 pub mod blob_backup;
 pub mod claim;
-pub mod device_key;
+pub use obsign_core::device_key;
 pub mod diagnostics;
 pub mod disaster_recovery;
+pub mod enclave_signer;
 pub mod endpoint_repair;
 pub mod handle_change;
 pub use obsign_core::http;
 pub mod identity_removal;
-pub mod identity_store;
+pub use obsign_core::identity_store;
 pub mod keychain;
 pub mod migrate;
 pub mod migration_orchestrator;
@@ -1763,6 +1764,11 @@ pub fn run() {
     // First, before anything touches storage. A second `run()` in one process would be refused
     // and keep the store already installed, which is the same Keychain.
     let _ = obsign_core::keystore::install(Box::new(keychain::AppleKeychain));
+    // Each identity's device key: the Secure Enclave on a real device, software elsewhere.
+    #[cfg(all(target_os = "ios", not(target_env = "sim")))]
+    let _ = obsign_core::signer::install(Box::new(enclave_signer::EnclaveSigner));
+    #[cfg(not(all(target_os = "ios", not(target_env = "sim"))))]
+    let _ = obsign_core::signer::install(Box::new(obsign_core::signer::SoftwareSigner));
 
     let builder = tauri::Builder::default()
         .manage(oauth::AppState::new())

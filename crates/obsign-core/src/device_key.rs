@@ -18,17 +18,17 @@ use ios_device_key::DeviceKeyAccounts;
 pub use ios_device_key::{DeviceKeyError, DevicePublicKey};
 
 /// Shared with `identity_store.rs`, which derives per-DID keys needing the same encoding.
-pub(crate) use ios_device_key::make_device_public_key;
+pub use ios_device_key::make_device_public_key;
 
 // ── Global device-key Keychain account names ────────────────────────────────
 //
 // Software path uses only the private-scalar account; the Secure Enclave path uses the pub +
 // app-label metadata accounts (the SE private key never leaves the enclave).
-pub(crate) const DEVICE_KEY_PRIV_ACCOUNT: &str = "device-rotation-key-priv";
-pub(crate) const DEVICE_KEY_PUB_ACCOUNT: &str = "device-rotation-key-pub";
-pub(crate) const DEVICE_KEY_APP_LABEL_ACCOUNT: &str = "device-rotation-key-app-label";
+pub const DEVICE_KEY_PRIV_ACCOUNT: &str = "device-rotation-key-priv";
+pub const DEVICE_KEY_PUB_ACCOUNT: &str = "device-rotation-key-pub";
+pub const DEVICE_KEY_APP_LABEL_ACCOUNT: &str = "device-rotation-key-app-label";
 
-pub(crate) const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
+pub const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
     private_scalar: DEVICE_KEY_PRIV_ACCOUNT,
     public_key: DEVICE_KEY_PUB_ACCOUNT,
     application_label: DEVICE_KEY_APP_LABEL_ACCOUNT,
@@ -36,7 +36,7 @@ pub(crate) const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
 };
 
 /// The installed `KeyStore` as `ios-device-key`'s store; `oauth.rs` reuses it for the DPoP key.
-pub(crate) use obsign_core::keystore::WalletKeychain;
+pub use crate::keystore::WalletKeychain;
 
 /// Return this device's key, generating one on first call.
 pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
@@ -57,7 +57,7 @@ mod tests {
     /// error shape are covered by `ios-device-key`'s own tests.
     #[test]
     fn the_key_round_trips_through_the_wallet_keychain() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
 
         let key = get_or_create().expect("get_or_create must succeed");
         assert!(key.key_id.starts_with("did:key:z"));
@@ -68,11 +68,11 @@ mod tests {
         );
 
         assert!(
-            obsign_core::keystore::get_item(DEVICE_KEY_PRIV_ACCOUNT).is_ok(),
+            crate::keystore::get_item(DEVICE_KEY_PRIV_ACCOUNT).is_ok(),
             "the software path must store the scalar under the pinned account name"
         );
 
-        obsign_core::keystore::delete_item(DEVICE_KEY_PRIV_ACCOUNT).expect("delete");
+        crate::keystore::delete_item(DEVICE_KEY_PRIV_ACCOUNT).expect("delete");
         assert!(matches!(sign(b"no key"), Err(DeviceKeyError::KeyNotFound)));
     }
 }
