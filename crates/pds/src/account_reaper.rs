@@ -9,8 +9,8 @@
 //! `deleteAccount` endpoint — full local-data removal plus an `#account` deleted firehose frame).
 //!
 //! Resilient by design, like the blob and firehose GCs: an error deleting one account is logged and
-//! counted but never aborts the pass, and the task runs for the life of the process (dropped on
-//! shutdown rather than joined). `deleteAfter` is only ever set alongside `deactivated_at` and is
+//! counted but never aborts the pass, and the scheduler runs it for the life of the process
+//! (stopped at shutdown). `deleteAfter` is only ever set alongside `deactivated_at` and is
 //! cleared on reactivation, so an account that reactivates before its window elapses is naturally
 //! spared — its row no longer matches the "due" query.
 

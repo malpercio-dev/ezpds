@@ -2,9 +2,10 @@
 
 //! The periodic-sweep scheduler.
 //!
-//! A sweep is a [`Sweep`] impl: its cadence plus one `run` pass. [`spawn`] owns everything
-//! else — the interval loop, the skipped boot tick (or an opt-in first pass at boot), missed-tick policy, the failure posture,
-//! and writing `AppState.sweeps` for `GET /v1/admin/health`.
+//! A sweep is a [`Sweep`] impl: its cadence plus one `run` pass. [`Scheduler`] owns everything
+//! else — the interval loop, the skipped boot tick (or an opt-in first pass at boot), jitter,
+//! missed-tick policy, shutdown, the failure posture, and writing `AppState.sweeps` for
+//! `GET /v1/admin/health`.
 //!
 //! Failure posture: a pass that returns `Err` is logged and records nothing, so a stale (or
 //! absent) status entry stays the operator's alarm. A pass that returns `Ok` records, even
@@ -14,6 +15,8 @@
 use std::future::Future;
 use std::time::Duration;
 
+use rand_core::{OsRng, RngCore};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::app::AppState;
@@ -43,6 +46,13 @@ pub trait Sweep: Send + Sync + 'static {
     const REPORTS_STATUS: bool = true;
 
     fn interval(&self) -> Duration;
+
+    /// Upper bound of the random delay added before each interval-driven pass, so sweeps that
+    /// share a cadence (or replicas started together) do not all hit the database on the same
+    /// tick. Defaults to a tenth of the interval; the boot pass is never delayed.
+    fn max_jitter(&self) -> Duration {
+        self.interval() / 10
+    }
 
     /// Run the first pass right after boot instead of one `interval` later. Only for a pass that
     /// merely rebuilds a cache the operator wants populated by the end of a deploy.
@@ -79,23 +89,74 @@ pub async fn run_once<S: Sweep>(sweep: &S, state: &AppState) -> Option<Pass> {
     }
 }
 
-/// Spawn the sweep: consume the first tick without running a pass (so nothing sweeps
-/// mid-boot), then run once per interval for the life of the process. The handle is meant to
-/// be dropped on shutdown rather than joined.
-pub fn spawn<S: Sweep>(sweep: S, state: AppState) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(sweep.interval());
-        if sweep.skip_missed_ticks() {
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+/// A uniformly random delay in `[0, max]`.
+fn jitter_delay(max: Duration) -> Duration {
+    let max_ms = max.as_millis() as u64;
+    if max_ms == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_millis(OsRng.next_u64() % (max_ms + 1))
+}
+
+/// Owns the running sweeps. Spawn each with [`Scheduler::spawn`]; at process shutdown call
+/// [`Scheduler::shutdown`], which stops every loop between passes and waits for any pass in
+/// flight (a half-finished GC pass is not something to abort).
+pub struct Scheduler {
+    state: AppState,
+    stop: watch::Sender<bool>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl Scheduler {
+    pub fn new(state: AppState) -> Self {
+        Self {
+            state,
+            stop: watch::channel(false).0,
+            handles: Vec::new(),
         }
-        if !sweep.first_pass_at_boot() {
-            ticker.tick().await;
+    }
+
+    /// Start the sweep's loop: consume the first tick without running a pass (so nothing sweeps
+    /// mid-boot) unless it asks for [`Sweep::first_pass_at_boot`], then run once per interval,
+    /// each pass after a random [`Sweep::max_jitter`] delay.
+    pub fn spawn<S: Sweep>(&mut self, sweep: S) {
+        let state = self.state.clone();
+        let mut stop = self.stop.subscribe();
+        self.handles.push(tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(sweep.interval());
+            if sweep.skip_missed_ticks() {
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            }
+            let mut at_boot = sweep.first_pass_at_boot();
+            if !at_boot {
+                ticker.tick().await;
+            }
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = stop.changed() => return,
+                }
+                if !std::mem::take(&mut at_boot) {
+                    tokio::select! {
+                        _ = tokio::time::sleep(jitter_delay(sweep.max_jitter())) => {}
+                        _ = stop.changed() => return,
+                    }
+                }
+                run_once(&sweep, &state).await;
+            }
+        }));
+    }
+
+    /// Stop every loop and wait up to `grace` for passes already running to finish.
+    pub async fn shutdown(self, grace: Duration) {
+        let _ = self.stop.send(true);
+        let deadline = tokio::time::Instant::now() + grace;
+        for handle in self.handles {
+            if tokio::time::timeout_at(deadline, handle).await.is_err() {
+                tracing::warn!("a sweep pass was still running at shutdown; abandoning it");
+            }
         }
-        loop {
-            ticker.tick().await;
-            run_once(&sweep, &state).await;
-        }
-    })
+    }
 }
 
 #[cfg(test)]
@@ -136,14 +197,12 @@ mod tests {
     async fn skips_the_first_tick_then_runs_on_later_intervals() {
         let state = test_state().await;
         let calls = Arc::new(AtomicUsize::new(0));
-        let handle = spawn(
-            Probe {
-                calls: calls.clone(),
-                fail: false,
-                at_boot: false,
-            },
-            state,
-        );
+        let mut scheduler = Scheduler::new(state);
+        scheduler.spawn(Probe {
+            calls: calls.clone(),
+            fail: false,
+            at_boot: false,
+        });
 
         // Well under one interval in: the first tick was consumed, not run.
         sleep(Duration::from_millis(5)).await;
@@ -153,7 +212,7 @@ mod tests {
         sleep(Duration::from_millis(80)).await;
         assert!(calls.load(Ordering::SeqCst) >= 1);
 
-        handle.abort();
+        scheduler.shutdown(Duration::from_secs(1)).await;
     }
 
     #[tokio::test]
@@ -183,16 +242,40 @@ mod tests {
     async fn a_first_pass_at_boot_runs_before_the_first_interval_elapses() {
         let state = test_state().await;
         let calls = Arc::new(AtomicUsize::new(0));
-        let handle = spawn(
-            Probe {
-                calls: calls.clone(),
-                fail: false,
-                at_boot: true,
-            },
-            state,
-        );
+        let mut scheduler = Scheduler::new(state);
+        scheduler.spawn(Probe {
+            calls: calls.clone(),
+            fail: false,
+            at_boot: true,
+        });
         sleep(Duration::from_millis(10)).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        handle.abort();
+        scheduler.shutdown(Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_the_loop() {
+        let state = test_state().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut scheduler = Scheduler::new(state);
+        scheduler.spawn(Probe {
+            calls: calls.clone(),
+            fail: false,
+            at_boot: true,
+        });
+        sleep(Duration::from_millis(10)).await;
+        scheduler.shutdown(Duration::from_secs(1)).await;
+        let after_shutdown = calls.load(Ordering::SeqCst);
+        sleep(Duration::from_millis(80)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), after_shutdown);
+    }
+
+    #[test]
+    fn jitter_stays_within_its_bound() {
+        assert_eq!(jitter_delay(Duration::ZERO), Duration::ZERO);
+        let max = Duration::from_millis(50);
+        for _ in 0..200 {
+            assert!(jitter_delay(max) <= max);
+        }
     }
 }

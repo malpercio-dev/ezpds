@@ -652,16 +652,15 @@ async fn run() -> anyhow::Result<()> {
 
     tracing::info!(address = %addr, "listening");
 
+    // Every periodic sweep runs under one scheduler, which stops them at shutdown.
+    let mut sweeps = sweep::Scheduler::new(state.clone());
+
     // Spawn the periodic blob garbage collector. It reclaims unreferenced and expired blobs;
-    // it is best-effort and runs for the life of the process, so the handle is dropped on
-    // shutdown rather than joined.
+    // it is best-effort and runs for the life of the process, and the scheduler stops it at shutdown.
     let gc_interval = std::time::Duration::from_secs(state.config.blobs.gc_interval_secs);
-    let _blob_gc = sweep::spawn(
-        blob_gc::BlobGc {
-            interval: gc_interval,
-        },
-        state.clone(),
-    );
+    sweeps.spawn(blob_gc::BlobGc {
+        interval: gc_interval,
+    });
     tracing::info!(
         interval_secs = state.config.blobs.gc_interval_secs,
         "blob garbage collector started"
@@ -670,17 +669,14 @@ async fn run() -> anyhow::Result<()> {
     // Spawn the periodic blob-mirror sweep when a bucket is configured. Each pass uploads
     // stored blobs the bucket is missing (verified against their CIDs first) and deletes
     // bucket objects whose rows are gone; like the GC tasks it is best-effort and runs for
-    // the life of the process, so the handle is dropped on shutdown rather than joined.
+    // the life of the process, and the scheduler stops it at shutdown.
     if let Some(mirror) = blob_mirror.clone() {
         let mirror_interval =
             std::time::Duration::from_secs(state.config.blob_mirror.sync_interval_secs);
-        let _blob_mirror_sweep = sweep::spawn(
-            blob_mirror::BlobMirrorSweep {
-                interval: mirror_interval,
-                mirror,
-            },
-            state.clone(),
-        );
+        sweeps.spawn(blob_mirror::BlobMirrorSweep {
+            interval: mirror_interval,
+            mirror,
+        });
         tracing::info!(
             interval_secs = state.config.blob_mirror.sync_interval_secs,
             bucket = state.config.blob_mirror.bucket.as_deref().unwrap_or(""),
@@ -693,15 +689,12 @@ async fn run() -> anyhow::Result<()> {
     // (rows whose file is missing, and files no row owns); when the mirror is configured and
     // `[blob_scrub] auto_heal` is on, a bad or missing file is repaired from the bucket's
     // verified copy. Like the GC tasks it is best-effort and runs for the life of the process,
-    // so the handle is dropped on shutdown rather than joined.
+    // and the scheduler stops it at shutdown.
     let scrub_interval = std::time::Duration::from_secs(state.config.blob_scrub.interval_secs);
-    let _blob_scrub = sweep::spawn(
-        blob_scrub::BlobScrub {
-            interval: scrub_interval,
-            mirror: blob_mirror,
-        },
-        state.clone(),
-    );
+    sweeps.spawn(blob_scrub::BlobScrub {
+        interval: scrub_interval,
+        mirror: blob_mirror,
+    });
     tracing::info!(
         interval_secs = state.config.blob_scrub.interval_secs,
         auto_heal = state.config.blob_scrub.auto_heal,
@@ -711,14 +704,11 @@ async fn run() -> anyhow::Result<()> {
     // Spawn the periodic `repo_seq` firehose event-log retention sweep. It prunes rows below the
     // configured age/count watermark so the durable log backing
     // `subscribeRepos` cursor replay does not grow without bound; it is best-effort and runs for
-    // the life of the process, so the handle is dropped on shutdown rather than joined.
+    // the life of the process, and the scheduler stops it at shutdown.
     let fh_gc_interval = std::time::Duration::from_secs(state.config.firehose.gc_interval_secs);
-    let _firehose_gc = sweep::spawn(
-        firehose_gc::FirehoseGc {
-            interval: fh_gc_interval,
-        },
-        state.clone(),
-    );
+    sweeps.spawn(firehose_gc::FirehoseGc {
+        interval: fh_gc_interval,
+    });
     tracing::info!(
         interval_secs = state.config.firehose.gc_interval_secs,
         retention_secs = state.config.firehose.log_retention_secs,
@@ -728,15 +718,12 @@ async fn run() -> anyhow::Result<()> {
 
     // Spawn the scheduled-deletion reaper. Each pass permanently deletes accounts whose
     // `deleteAfter` (set by deactivateAccount) has elapsed; like the GC tasks it is best-effort and
-    // runs for the life of the process, so the handle is dropped on shutdown rather than joined.
+    // runs for the life of the process, and the scheduler stops it at shutdown.
     let reaper_interval =
         std::time::Duration::from_secs(state.config.accounts.deletion_reaper_interval_secs);
-    let _account_reaper = sweep::spawn(
-        account_reaper::AccountReaper {
-            interval: reaper_interval,
-        },
-        state.clone(),
-    );
+    sweeps.spawn(account_reaper::AccountReaper {
+        interval: reaper_interval,
+    });
     tracing::info!(
         interval_secs = state.config.accounts.deletion_reaper_interval_secs,
         "scheduled account-deletion reaper started"
@@ -745,15 +732,12 @@ async fn run() -> anyhow::Result<()> {
     // Spawn the agent-claim-attempt expiry sweep. Each pass flips lapsed pending claim attempts to
     // `expired` and records a `claim_expired` audit event for each, so a wallet's per-agent history
     // reports how every ceremony ended; like the GC tasks it is best-effort and runs for the life
-    // of the process, so the handle is dropped on shutdown rather than joined.
+    // of the process, and the scheduler stops it at shutdown.
     let claim_sweep_interval =
         std::time::Duration::from_secs(state.config.agent_auth.claim_sweep_interval_secs);
-    let _agent_claim_sweep = sweep::spawn(
-        agent_claim_sweep::AgentClaimSweep {
-            interval: claim_sweep_interval,
-        },
-        state.clone(),
-    );
+    sweeps.spawn(agent_claim_sweep::AgentClaimSweep {
+        interval: claim_sweep_interval,
+    });
     tracing::info!(
         interval_secs = state.config.agent_auth.claim_sweep_interval_secs,
         "agent claim-attempt expiry sweep started"
@@ -763,19 +747,15 @@ async fn run() -> anyhow::Result<()> {
     // the configured max age; anti-replay is enforced by the `(device_id, nonce)` primary key
     // as long as the row survives the request's full replay-acceptance window, which config
     // validation guarantees `nonce_max_age_secs` exceeds — so this is pure storage reclamation.
-    // Like the GC tasks it is best-effort and runs for the life of the process, so the handle
-    // is dropped on shutdown rather than joined.
+    // Like the GC tasks it is best-effort and runs for the life of the process, and the scheduler stops it at shutdown.
     let nonce_sweep_interval =
         std::time::Duration::from_secs(state.config.admin_devices.nonce_sweep_interval_secs);
     let nonce_max_age_secs = i64::try_from(state.config.admin_devices.nonce_max_age_secs)
         .context("admin_devices.nonce_max_age_secs does not fit in i64")?;
-    let _admin_nonce_sweep = sweep::spawn(
-        admin_nonce_sweep::AdminNonceSweep {
-            interval: nonce_sweep_interval,
-            max_age_secs: nonce_max_age_secs,
-        },
-        state.clone(),
-    );
+    sweeps.spawn(admin_nonce_sweep::AdminNonceSweep {
+        interval: nonce_sweep_interval,
+        max_age_secs: nonce_max_age_secs,
+    });
     tracing::info!(
         interval_secs = state.config.admin_devices.nonce_sweep_interval_secs,
         max_age_secs = state.config.admin_devices.nonce_max_age_secs,
@@ -800,12 +780,9 @@ async fn run() -> anyhow::Result<()> {
     } else {
         let watch_interval =
             std::time::Duration::from_secs(state.config.labeler.poll_interval_secs);
-        let _labeler_watch = sweep::spawn(
-            labeler_watch::LabelerWatch {
-                interval: watch_interval,
-            },
-            state.clone(),
-        );
+        sweeps.spawn(labeler_watch::LabelerWatch {
+            interval: watch_interval,
+        });
         tracing::info!(
             watched = state.config.labeler.watched.len(),
             interval_secs = state.config.labeler.poll_interval_secs,
@@ -816,10 +793,7 @@ async fn run() -> anyhow::Result<()> {
     // Spawn the sovereign-session nonce retention sweep. The DID-scoped primary key enforces
     // anti-replay while the fixed retention window remains strictly longer than the signed
     // request's full replay-acceptance span; the sweep only bounds storage growth.
-    let _sovereign_session_nonce_sweep = sweep::spawn(
-        sovereign_session_nonce_sweep::SovereignSessionNonceSweep,
-        state.clone(),
-    );
+    sweeps.spawn(sovereign_session_nonce_sweep::SovereignSessionNonceSweep);
     tracing::info!(
         interval_secs = sovereign_session_nonce_sweep::SWEEP_INTERVAL.as_secs(),
         max_age_secs = sovereign_session_nonce_sweep::MAX_AGE_SECS,
@@ -830,11 +804,11 @@ async fn run() -> anyhow::Result<()> {
     // disabled, no route can write the tables they reclaim, and their `null` rows in the
     // health readout then read as "not configured", like the blob mirror's. Rows already
     // stored keep their data; only reclamation pauses with the surface.
-    let _space_sweeps = if state.config.spaces.enabled {
+    if state.config.spaces.enabled {
         // The jti retention sweep: the (scope, jti) primary key enforces anti-replay; each
         // row's expires_at carries its own token's acceptance horizon, so the sweep only
         // bounds storage growth.
-        let jti = sweep::spawn(space_jti_sweep::SpaceJtiSweep, state.clone());
+        sweeps.spawn(space_jti_sweep::SpaceJtiSweep);
         tracing::info!(
             interval_secs = space_jti_sweep::SWEEP_INTERVAL.as_secs(),
             "space jti retention sweep started"
@@ -842,16 +816,13 @@ async fn run() -> anyhow::Result<()> {
 
         // The permissioned-repo oplog compaction sweep. The oplog is droppable by spec;
         // this bounds it to a backfill window, and a syncer further behind heals via getRepo.
-        let oplog = sweep::spawn(space_oplog_sweep::SpaceOplogSweep, state.clone());
+        sweeps.spawn(space_oplog_sweep::SpaceOplogSweep);
         tracing::info!(
             interval_secs = space_oplog_sweep::SWEEP_INTERVAL.as_secs(),
             retention_secs = space_oplog_sweep::OPLOG_RETENTION_SECS,
             "space oplog compaction sweep started"
         );
-        Some((jti, oplog))
-    } else {
-        None
-    };
+    }
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached
     // and runs for the life of the endpoint; closing the endpoint at shutdown ends the loop.
@@ -877,7 +848,11 @@ async fn run() -> anyhow::Result<()> {
         anyhow::anyhow!("server error: {e}")
     })?;
 
-    // The HTTP server has stopped. Close the Iroh endpoint so in-flight connections drain and
+    // The HTTP server has stopped. Let any sweep pass in flight finish before the process
+    // exits; a long GC pass is abandoned after the grace period rather than blocking shutdown.
+    sweeps.shutdown(std::time::Duration::from_secs(10)).await;
+
+    // Close the Iroh endpoint so in-flight connections drain and
     // the accept loop exits cleanly (accept() yields None once the endpoint is closed).
     if let Some(iroh) = iroh_shutdown {
         iroh.endpoint.close().await;

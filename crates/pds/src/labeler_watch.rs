@@ -15,8 +15,8 @@
 //! moves endpoints is picked up whenever its cached document is refreshed.
 //!
 //! Resilient by design, like the other periodic passes: an error against one labeler is
-//! logged and counted but never aborts the pass for the rest, and the task runs for the
-//! life of the process (dropped on shutdown rather than joined). Unlike the reaper, the
+//! logged and counted but never aborts the pass for the rest, and the scheduler runs it for
+//! the life of the process (stopped at shutdown). Unlike the reaper, the
 //! first pass runs immediately at boot — a fresh deploy is exactly when the operator wants
 //! flags populated, and the pass only reconciles a rebuildable cache, so running mid-boot
 //! is safe.

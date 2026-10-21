@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use crate::app::AppState;
-use crate::db::sovereign_session_nonces::{sweep_stale_nonces, REPLAY_ACCEPTANCE_SPAN_SECS};
+use crate::db::sovereign_session_nonces::sweep_stale_nonces;
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
 
@@ -18,7 +18,10 @@ pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// Retain rows for one hour, well beyond the full sovereign-session replay-acceptance span.
 pub const MAX_AGE_SECS: i64 = 60 * 60;
 
-const _: () = assert!(MAX_AGE_SECS > REPLAY_ACCEPTANCE_SPAN_SECS);
+const _: () = assert!(common::retention_covers_replay(
+    MAX_AGE_SECS,
+    common::SOVEREIGN_TIMESTAMP_WINDOW_SECS
+));
 
 pub struct SovereignSessionNonceSweep;
 
