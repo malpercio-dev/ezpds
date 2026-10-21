@@ -22,8 +22,10 @@
 //! `identity::resolution`'s did:web and handle well-known fetches, the Lexicon-authority fetch
 //! behind `auth::permission_sets`/`auth::space_consent`, `labeler_watch`, the OAuth-client JWKS
 //! cache, `auth::client_attestation`'s client-metadata resolution, and `auth::space`'s outbound
-//! managing-app check. `git grep hardened_http_client` is the current roster; the invariant is
-//! that a fetch whose target a caller can influence uses this client and no other.
+//! managing-app check. The compiler holds the invariant that a fetch whose target a caller can
+//! influence uses this client and no other: such a target is a [`CallerUrl`], and only
+//! [`HardenedClient`] has a method that accepts one. The plain `reqwest::Client` cannot be handed
+//! a `CallerUrl`, and every resolver of a caller-named target takes a `&HardenedClient`.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -36,13 +38,58 @@ use crate::app::AppState;
 
 use super::resolution::resolve_did_document;
 
+/// A URL whose target a caller can influence: a handle's well-known endpoint, an OAuth
+/// `client_id`, an `atproto-proxy` target, a did:web document, or any endpoint read from a
+/// caller-named DID document. Only [`HardenedClient`] sends one. The string is private and has no
+/// accessor, so a `CallerUrl` can never reach the plain `reqwest::Client`.
+#[derive(Debug, Clone)]
+pub struct CallerUrl(String);
+
+impl CallerUrl {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self(url.into())
+    }
+
+    /// `self` (minus any trailing `/`) with `suffix` appended verbatim. The result is still
+    /// caller-influenced.
+    pub fn join(&self, suffix: &str) -> Self {
+        Self(format!("{}{suffix}", self.0.trim_end_matches('/')))
+    }
+}
+
+/// The SSRF-hardened client (see [`build_hardened_client`]). Its request methods take only a
+/// [`CallerUrl`], and a function that fetches a caller-named target takes `&HardenedClient`, so
+/// wiring the plain client into one does not compile.
+#[derive(Debug, Clone)]
+pub struct HardenedClient(reqwest::Client);
+
+impl HardenedClient {
+    pub fn get(&self, url: &CallerUrl) -> reqwest::RequestBuilder {
+        self.0.get(&url.0)
+    }
+
+    pub fn post(&self, url: &CallerUrl) -> reqwest::RequestBuilder {
+        self.0.post(&url.0)
+    }
+
+    pub fn request(&self, method: reqwest::Method, url: &CallerUrl) -> reqwest::RequestBuilder {
+        self.0.request(method, &url.0)
+    }
+
+    /// The underlying client, still SSRF-hardened, for a fetcher that also serves trusted URLs
+    /// (the JWKS fetcher, shared with operator-configured issuers).
+    pub fn into_inner(self) -> reqwest::Client {
+        self.0
+    }
+}
+
 /// A validated `atproto-proxy` target, ready to hand to `proxy_xrpc`.
 #[derive(Debug)]
 pub struct ProxyTarget {
     /// The service base URL: validated http(s) scheme, no userinfo/query/fragment, and — for an
     /// IP-literal host — a public (non-loopback/private/link-local/metadata) address. A domain
     /// host's addresses are validated at connect time by the hardened client's [`SsrfResolver`].
-    pub url: String,
+    pub url: CallerUrl,
     /// The original `atproto-proxy` header value, echoed back verbatim as the outbound header.
     pub header_value: String,
 }
@@ -138,13 +185,14 @@ impl reqwest::dns::Resolve for SsrfResolver {
 /// `false`.
 pub(crate) fn build_hardened_client(
     allow_loopback: bool,
-) -> Result<reqwest::Client, reqwest::Error> {
+) -> Result<HardenedClient, reqwest::Error> {
     reqwest::Client::builder()
         .timeout(HARDENED_CLIENT_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .dns_resolver(Arc::new(SsrfResolver { allow_loopback }))
         .build()
+        .map(HardenedClient)
 }
 
 /// Resolve an inbound `atproto-proxy` header (`<did>#<serviceId>`) to the upstream service it
@@ -200,7 +248,7 @@ pub async fn resolve_atproto_proxy_target(
     validate_proxy_endpoint(endpoint, state.allow_loopback_proxy_targets).await?;
 
     Ok(ProxyTarget {
-        url: endpoint.to_string(),
+        url: CallerUrl::new(endpoint.to_string()),
         header_value: header_value.to_string(),
     })
 }
@@ -398,7 +446,7 @@ mod tests {
         let target = resolve_atproto_proxy_target(&state, "did:plc:labeler123#atproto_labeler")
             .await
             .unwrap();
-        assert_eq!(target.url, "https://1.2.3.4:8443");
+        assert_eq!(target.url.0, "https://1.2.3.4:8443");
         assert_eq!(target.header_value, "did:plc:labeler123#atproto_labeler");
     }
 
@@ -422,7 +470,7 @@ mod tests {
         let target = resolve_atproto_proxy_target(&state, "did:plc:labeler123#atproto_labeler")
             .await
             .unwrap();
-        assert_eq!(target.url, "https://1.2.3.4:8443");
+        assert_eq!(target.url.0, "https://1.2.3.4:8443");
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@
 //! third fallback in resolveHandle (after the local DB and DNS TXT). `HttpWellKnownResolver` is
 //! the production implementation; tests inject mocks.
 
+use super::proxy::{CallerUrl, HardenedClient};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -55,11 +56,12 @@ pub trait WellKnownResolver: Send + Sync {
 
 /// Production [`WellKnownResolver`] that calls `https://<handle>/.well-known/atproto-did`.
 pub struct HttpWellKnownResolver {
-    client: reqwest::Client,
+    client: HardenedClient,
 }
 
 impl HttpWellKnownResolver {
-    pub fn new(client: reqwest::Client) -> Self {
+    /// The handle is caller-supplied, so this takes the SSRF-hardened client and no other.
+    pub fn new(client: HardenedClient) -> Self {
         Self { client }
     }
 }
@@ -69,7 +71,7 @@ impl WellKnownResolver for HttpWellKnownResolver {
         &'a self,
         handle: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, WellKnownError>> + Send + 'a>> {
-        let url = format!("https://{}/.well-known/atproto-did", handle);
+        let url = CallerUrl::new(format!("https://{handle}/.well-known/atproto-did"));
         Box::pin(async move {
             let mut resp = self
                 .client

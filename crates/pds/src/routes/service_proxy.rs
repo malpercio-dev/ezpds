@@ -34,6 +34,7 @@ use axum::{
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::identity::proxy::CallerUrl;
 
 /// Maximum buffered request body when proxying to an upstream service. `app.bsky.*` and
 /// `chat.bsky.*` procedures carry small JSON payloads (preferences, mutes, message sends);
@@ -101,7 +102,7 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
         .unwrap_or(false)
 }
 
-/// Which client an outbound proxy request goes out on, and why.
+/// Where an outbound proxy request goes, which also decides the client it goes out on.
 ///
 /// `CallerResolved` names a target that was resolved and SSRF-validated from a
 /// caller-supplied `atproto-proxy` header naming a caller-controlled DID document
@@ -115,19 +116,12 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
 ///
 /// `Configured` names the admin-configured default upstream (AppView or chat) and sends on
 /// the plain `state.http_client` — not caller-controlled, so neither concern applies.
-#[derive(Clone, Copy)]
+///
+/// Each variant carries its base URL (no trailing slash). A caller-resolved one is a
+/// [`CallerUrl`], which only the hardened client accepts, so the pairing cannot be crossed.
 pub(crate) enum Upstream {
-    Configured,
-    CallerResolved,
-}
-
-impl Upstream {
-    fn client(self, state: &AppState) -> &reqwest::Client {
-        match self {
-            Upstream::Configured => &state.http_client,
-            Upstream::CallerResolved => &state.hardened_http_client,
-        }
-    }
+    Configured(String),
+    CallerResolved(CallerUrl),
 }
 
 /// Build and send the upstream XRPC request (query passthrough, body buffering with the
@@ -136,11 +130,10 @@ impl Upstream {
 /// build on this so request construction never diverges.
 pub(crate) async fn proxy_request(
     state: &AppState,
-    upstream_url: &str,
+    upstream: &Upstream,
     proxy_did: &str,
     nsid: &str,
     did: &str,
-    target: Upstream,
     req: Request,
 ) -> Result<reqwest::Response, Response> {
     // Preserve the original query string verbatim so upstream query params survive the hop.
@@ -149,9 +142,7 @@ pub(crate) async fn proxy_request(
         .query()
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
-    let target_url = format!("{upstream_url}/xrpc/{nsid}{query}");
-
-    let client = target.client(state);
+    let path = format!("/xrpc/{nsid}{query}");
 
     let (parts, body) = req.into_parts();
 
@@ -188,7 +179,14 @@ pub(crate) async fn proxy_request(
 
     // reqwest 0.12 and axum 0.7 share the same `http` crate, so `Method` and `HeaderValue` are
     // identical types and move across the boundary without conversion.
-    let mut outbound = client.request(parts.method, &target_url);
+    let mut outbound = match upstream {
+        Upstream::Configured(base) => state
+            .http_client
+            .request(parts.method, format!("{base}{path}")),
+        Upstream::CallerResolved(base) => state
+            .hardened_http_client
+            .request(parts.method, &base.join(&path)),
+    };
 
     // Pass content-type and the client's content-negotiation preference through; the inbound
     // Authorization is intentionally DROPPED and replaced with the minted service-auth JWT. Host,
@@ -227,7 +225,7 @@ pub(crate) async fn proxy_request(
 /// Forward an XRPC request to an upstream atproto service (the AppView, the chat service, a
 /// labeler/moderation service, or any other service named by an `atproto-proxy` header).
 ///
-/// `upstream_url` is the service base URL (no trailing slash) and `proxy_did` is its service
+/// `upstream` is the service base URL (see [`Upstream`]) and `proxy_did` is its service
 /// DID, sent as the `atproto-proxy` header so the upstream knows the request arrives on the
 /// user's behalf via their PDS. `did` is the authenticated account DID. A fresh ES256
 /// service-auth JWT (signed by the account's `#atproto` repo key, `iss`=account DID,
@@ -235,17 +233,15 @@ pub(crate) async fn proxy_request(
 /// caller's own PDS session token is **not** forwarded (the AppView can't verify it). The
 /// upstream status, content type, and body are streamed straight back; a failure to reach the
 /// upstream maps to `503`, while upstream error *responses* (4xx/5xx) are passed through verbatim.
-pub async fn proxy_xrpc(
+pub(crate) async fn proxy_xrpc(
     state: &AppState,
-    upstream_url: &str,
+    upstream: &Upstream,
     proxy_did: &str,
     nsid: &str,
     did: &str,
-    target: Upstream,
     req: Request,
 ) -> Response {
-    let upstream = match proxy_request(state, upstream_url, proxy_did, nsid, did, target, req).await
-    {
+    let upstream = match proxy_request(state, upstream, proxy_did, nsid, did, req).await {
         Ok(resp) => resp,
         Err(resp) => return resp,
     };

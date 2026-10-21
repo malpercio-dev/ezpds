@@ -488,7 +488,10 @@ pub(crate) async fn resolve_web_did_document(
     // resolver re-checks any domain-name resolution against the allowlist at connect time.
     let authority = did_web_authority(&url)?;
     validate_proxy_endpoint(&authority, state.allow_loopback_proxy_targets).await?;
-    let response = state.hardened_http_client.get(&url).send().await.map_err(|e| {
+    let response = state
+        .hardened_http_client
+        .get(&super::proxy::CallerUrl::new(&url))
+        .send().await.map_err(|e| {
         tracing::error!(did = %did, error = %e, url = %url, "failed to resolve did:web document");
         ApiError::new(
             ErrorCode::PlcDirectoryError,
@@ -532,7 +535,10 @@ pub(crate) async fn resolve_web_did_document_bytes(
     let url = did_web_document_url(did)?;
     let authority = did_web_authority(&url)?;
     validate_proxy_endpoint(&authority, state.allow_loopback_proxy_targets).await?;
-    let response = state.hardened_http_client.get(&url).send().await.map_err(|e| {
+    let response = state
+        .hardened_http_client
+        .get(&super::proxy::CallerUrl::new(&url))
+        .send().await.map_err(|e| {
         tracing::error!(did = %did, error = %e, url = %url, "failed to resolve did:web document bytes");
         ApiError::new(
             ErrorCode::PlcDirectoryError,

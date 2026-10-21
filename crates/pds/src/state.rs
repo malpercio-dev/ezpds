@@ -35,7 +35,7 @@ pub struct AppState {
     /// resolver that re-applies the public-address allowlist to every domain resolution at connect
     /// time (see [`crate::identity::proxy::build_hardened_client`]). Distinct from `http_client`,
     /// which serves admin-configured, trusted upstreams (plc.directory, the default AppView/chat).
-    pub hardened_http_client: Client,
+    pub hardened_http_client: crate::identity::proxy::HardenedClient,
     /// Optional DNS provider for subdomain record creation on handle registration.
     /// `None` in v0.1 — operators manage DNS records manually.
     /// Populated by real provider implementations (Cloudflare, Route53) when configured.
@@ -270,7 +270,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         // reason as `jwks_cache`.
         oauth_client_jwks_cache: Arc::new(crate::auth::jwks::JwksCache::new(
             Arc::new(crate::auth::jwks::HttpJwksFetcher::new(
-                hardened_http_client.clone(),
+                hardened_http_client.clone().into_inner(),
             )),
             Duration::from_secs(3600),
             Duration::ZERO,
