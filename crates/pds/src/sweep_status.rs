@@ -40,11 +40,6 @@ pub struct SweepRun {
 }
 
 impl SweepRun {
-    /// A pass completing now, having swept `swept` items with no errors.
-    pub fn now(swept: u64) -> Self {
-        Self::now_with_errors(swept, 0)
-    }
-
     /// A pass completing now, having swept `swept` items and skipped `errors` on failures.
     pub fn now_with_errors(swept: u64, errors: u64) -> Self {
         Self {
