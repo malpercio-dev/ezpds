@@ -275,7 +275,7 @@ The PDS should sniff blob bytes to validate the declared MIME type and reject mi
 
 > **As-built (2026-08):** garbage collection is one reference-counted grace-clock
 > mechanism, not the two separate flows §7.1/§7.2 originally sketched. The shipped
-> model is below; the sweep is `crates/pds/src/blob_gc.rs` and the tunables are
+> model is below; the sweep is `crates/custos-blobs/src/blob_gc.rs` and the tunables are
 > `BlobsConfig` in `crates/common/src/config.rs`.
 
 ### 7.1 Temporary Blob Cleanup

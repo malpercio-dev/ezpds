@@ -17,7 +17,14 @@ const esc = (value) => value.replaceAll('|', '\\|').replaceAll('\n', ' ');
 
 // Every file that registers routes: `pds`'s app.rs plus each feature crate's router.rs. Kept in
 // step with ROUTER_FILES in scripts/bruno-parity.sh.
-const ROUTER_FILES = ['crates/pds/src/app.rs', 'crates/custos-spaces/src/router.rs'];
+const ROUTER_FILES = [
+  'crates/pds/src/app.rs',
+  'crates/custos-agents/src/router.rs',
+  'crates/custos-blobs/src/router.rs',
+  'crates/custos-firehose/src/router.rs',
+  'crates/custos-oauth/src/router.rs',
+  'crates/custos-spaces/src/router.rs',
+];
 
 function apiReference() {
   const routes = ROUTER_FILES.flatMap((file) => {

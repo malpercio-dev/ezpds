@@ -1,0 +1,1 @@
+Blob upload and serving (`uploadBlob`, `listMissingBlobs`, `sync.getBlob`, `sync.listBlobs`) and the blob GC, scrub, and mirror sweeps now build as their own `custos-blobs` crate inside the Custos server; routes, responses, sweep behavior, and the restore-on-boot mirror reconcile are unchanged.

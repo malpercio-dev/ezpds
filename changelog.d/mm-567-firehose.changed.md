@@ -1,0 +1,1 @@
+The firehose serving side (`com.atproto.sync.subscribeRepos`, the event-log retention sweep, and the operator's relay-status and request-crawl actions) now builds as its own `custos-firehose` crate inside the Custos server; the wire format, replay, cursors, and sweep behavior are unchanged.

@@ -9,25 +9,19 @@ mod account_delete;
 mod account_genesis;
 mod account_reaper;
 mod admin_nonce_sweep;
-mod agent_child_core;
-mod agent_claim_sweep;
 mod app;
 mod auth;
-mod blob_gc;
-mod blob_mirror;
-mod blob_scrub;
 mod capabilities;
-mod crawler;
 mod db;
 mod email;
-mod firehose;
-mod firehose_gc;
 mod iroh_tunnel;
 mod label_state;
 mod labeler_watch;
 mod notifications;
 // The cross-crate loopback e2e (pds ↔ notify-relay ↔ a stand-in Apple). Lives in the crate
 // rather than `tests/` because `pds` is a binary — an integration test cannot import it.
+#[cfg(test)]
+mod blob_gc_spaces_test;
 #[cfg(test)]
 mod notify_e2e_test;
 mod notify_relay_client;
@@ -37,7 +31,6 @@ mod rate_limit_test;
 mod read_after_write;
 mod record_write;
 mod recovery_share;
-mod relay_status;
 mod repo_rev;
 mod rewrap;
 mod routes;
@@ -53,8 +46,8 @@ use common::code_gen;
 // Modules that moved to custos-core, aliased at the crate root so `crate::identity::…` and its
 // siblings keep resolving.
 use custos_core::{
-    blob_store, identity, lexicon, metrics, no_input, rate_limit, request_host, sweep,
-    sweep_status, time, xrpc_error_shape,
+    blob_store, crawler, firehose, identity, lexicon, metrics, no_input, rate_limit, request_host,
+    sweep, sweep_status, time, xrpc_error_shape,
 };
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
@@ -604,43 +597,25 @@ async fn run() -> anyhow::Result<()> {
         metrics,
         sweeps: Arc::new(sweep_status::SweepStatus::default()),
         started_at,
-    };
-    let state = app::AppState {
-        spaces: custos_spaces::SpacesState::new(core.clone()),
-        core,
         poll_tracker: auth::new_claim_poll_tracker(),
+        notifier: None,
+        space_type_cache: custos_core::scope_display::new_space_type_cache(),
         firehose,
         crawlers,
+    };
+    let mut state = app::AppState {
+        core,
         iroh,
-        notify_sender,
+        notify_sender: None,
         email,
         repo_write_locks: Arc::new(record_write::RepoWriteLocks::new()),
     };
-
-    // Blob mirror: when a bucket is configured, reconcile the volume against it BEFORE the
-    // listener binds — a (Litestream-)restored database must never serve against a volume
-    // missing the files its rows point at when the mirror can heal them. Blobs recoverable
-    // from neither place are surfaced per-CID (and in the summary below) rather than
-    // aborting boot: their reads 404 exactly as they would have anyway, now with an
-    // operator signal.
-    let blob_mirror = blob_mirror::BlobMirror::from_config(&state.config.blob_mirror)
-        .with_context(|| "failed to build blob-mirror client")?
-        .map(std::sync::Arc::new);
-    if let Some(mirror) = &blob_mirror {
-        let restore = blob_mirror::restore_missing_blobs(&state.db, &state.config.data_dir, mirror)
-            .await
-            .with_context(|| "failed to reconcile blob files against the mirror bucket")?;
-        if restore.restored > 0 || restore.missing > 0 || restore.errors > 0 {
-            tracing::warn!(
-                restored = restore.restored,
-                missing = restore.missing,
-                errors = restore.errors,
-                "blob restore-on-boot complete; `missing` blobs are recoverable from neither the volume nor the bucket"
-            );
-        } else {
-            tracing::info!("blob restore-on-boot complete: volume and mirror bucket agree");
-        }
+    if let Some(sender) = notify_sender {
+        state.set_notify_sender(sender);
     }
+
+    // Mirror reconcile runs before the listener binds (see `custos_blobs::prepare_mirror`).
+    let blob_mirror = custos_blobs::prepare_mirror(&state).await?;
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -651,66 +626,9 @@ async fn run() -> anyhow::Result<()> {
     // Every periodic sweep runs under one scheduler, which stops them at shutdown.
     let mut sweeps = sweep::Scheduler::new(state.clone());
 
-    // Spawn the periodic blob garbage collector. It reclaims unreferenced and expired blobs;
-    // it is best-effort and runs for the life of the process, and the scheduler stops it at shutdown.
-    let gc_interval = std::time::Duration::from_secs(state.config.blobs.gc_interval_secs);
-    sweeps.spawn(blob_gc::BlobGc {
-        interval: gc_interval,
-    });
-    tracing::info!(
-        interval_secs = state.config.blobs.gc_interval_secs,
-        "blob garbage collector started"
-    );
+    custos_blobs::spawn_sweeps(&mut sweeps, &state.config, blob_mirror);
 
-    // Spawn the periodic blob-mirror sweep when a bucket is configured. Each pass uploads
-    // stored blobs the bucket is missing (verified against their CIDs first) and deletes
-    // bucket objects whose rows are gone; like the GC tasks it is best-effort and runs for
-    // the life of the process, and the scheduler stops it at shutdown.
-    if let Some(mirror) = blob_mirror.clone() {
-        let mirror_interval =
-            std::time::Duration::from_secs(state.config.blob_mirror.sync_interval_secs);
-        sweeps.spawn(blob_mirror::BlobMirrorSweep {
-            interval: mirror_interval,
-            mirror,
-        });
-        tracing::info!(
-            interval_secs = state.config.blob_mirror.sync_interval_secs,
-            bucket = state.config.blob_mirror.bucket.as_deref().unwrap_or(""),
-            "blob-mirror sweep started"
-        );
-    }
-
-    // Spawn the periodic blob-integrity scrub sweep. Each pass re-hashes every stored blob
-    // against its row and walks the blob directory for orphan files in both directions
-    // (rows whose file is missing, and files no row owns); when the mirror is configured and
-    // `[blob_scrub] auto_heal` is on, a bad or missing file is repaired from the bucket's
-    // verified copy. Like the GC tasks it is best-effort and runs for the life of the process,
-    // and the scheduler stops it at shutdown.
-    let scrub_interval = std::time::Duration::from_secs(state.config.blob_scrub.interval_secs);
-    sweeps.spawn(blob_scrub::BlobScrub {
-        interval: scrub_interval,
-        mirror: blob_mirror,
-    });
-    tracing::info!(
-        interval_secs = state.config.blob_scrub.interval_secs,
-        auto_heal = state.config.blob_scrub.auto_heal,
-        "blob integrity scrub sweep started"
-    );
-
-    // Spawn the periodic `repo_seq` firehose event-log retention sweep. It prunes rows below the
-    // configured age/count watermark so the durable log backing
-    // `subscribeRepos` cursor replay does not grow without bound; it is best-effort and runs for
-    // the life of the process, and the scheduler stops it at shutdown.
-    let fh_gc_interval = std::time::Duration::from_secs(state.config.firehose.gc_interval_secs);
-    sweeps.spawn(firehose_gc::FirehoseGc {
-        interval: fh_gc_interval,
-    });
-    tracing::info!(
-        interval_secs = state.config.firehose.gc_interval_secs,
-        retention_secs = state.config.firehose.log_retention_secs,
-        retention_count = state.config.firehose.log_retention_count,
-        "firehose repo_seq retention sweep started"
-    );
+    custos_firehose::spawn_sweeps(&mut sweeps, &state.config.firehose);
 
     // Spawn the scheduled-deletion reaper. Each pass permanently deletes accounts whose
     // `deleteAfter` (set by deactivateAccount) has elapsed; like the GC tasks it is best-effort and
@@ -725,19 +643,7 @@ async fn run() -> anyhow::Result<()> {
         "scheduled account-deletion reaper started"
     );
 
-    // Spawn the agent-claim-attempt expiry sweep. Each pass flips lapsed pending claim attempts to
-    // `expired` and records a `claim_expired` audit event for each, so a wallet's per-agent history
-    // reports how every ceremony ended; like the GC tasks it is best-effort and runs for the life
-    // of the process, and the scheduler stops it at shutdown.
-    let claim_sweep_interval =
-        std::time::Duration::from_secs(state.config.agent_auth.claim_sweep_interval_secs);
-    sweeps.spawn(agent_claim_sweep::AgentClaimSweep {
-        interval: claim_sweep_interval,
-    });
-    tracing::info!(
-        interval_secs = state.config.agent_auth.claim_sweep_interval_secs,
-        "agent claim-attempt expiry sweep started"
-    );
+    custos_agents::spawn_sweeps(&mut sweeps, &state.config.agent_auth);
 
     // Spawn the admin-nonce retention sweep. Each pass deletes `admin_nonces` rows older than
     // the configured max age; anti-replay is enforced by the `(device_id, nonce)` primary key

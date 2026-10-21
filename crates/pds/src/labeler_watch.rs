@@ -23,7 +23,7 @@
 //!
 //! Genuinely new flags also page the operator's admin devices: the diff's insert subset
 //! (`LabelDiff::new_flags` — never a `cts` refresh) is collected across every labeler and
-//! sent as ONE batched `notify_admin_devices` push per pass. A labeler's first completed
+//! sent as ONE batched `Notifier::notify_admins` push per pass. A labeler's first completed
 //! reconcile is its *seeding* pass — the backfill of labels that were in force before this
 //! instance started watching — and fires nothing; the `labels_seeded` marker (V072) is what
 //! makes that suppression survive restarts and follow the labeler out of the config.
@@ -39,7 +39,7 @@ use crate::db::account_labels::{
 };
 use crate::identity::proxy::resolve_atproto_proxy_target;
 use crate::label_state::{active_labels, diff_labels, ActiveLabel, LabelEvent};
-use crate::notifications::{notify_admin_devices, NotificationPayload};
+use crate::notifications::NotificationPayload;
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
 
@@ -169,11 +169,9 @@ pub async fn run_labeler_watch(state: &AppState) -> LabelerWatchStats {
         }
     }
     if !new_flags.is_empty() {
-        notify_admin_devices(
-            state,
-            flag_notification(&new_flags, &state.config.public_url),
-        )
-        .await;
+        state
+            .notify_admins(flag_notification(&new_flags, &state.config.public_url))
+            .await;
     }
 
     // The failed-to-start early return above skips this on purpose: a stale
@@ -534,7 +532,7 @@ mod tests {
         .unwrap();
 
         let (sender, rx) = NotifySender::capturing();
-        state.notify_sender = Some(sender);
+        state.set_notify_sender(sender);
         (state, rx)
     }
 

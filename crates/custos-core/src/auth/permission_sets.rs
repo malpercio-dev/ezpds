@@ -126,7 +126,7 @@ const MAX_INCLUDE_TOKENS_PER_REQUEST: usize = 5;
 /// Resolve every `include:<nsid>[?aud=...]` token in an already-normalized scope string to its
 /// constituent granular scopes, leaving every other token untouched, then re-normalize the
 /// whole result. This is the module's entry point, called from both the `GET` (render) and
-/// `POST` (authoritative) paths of `routes::oauth_authorize`.
+/// `POST` (authoritative) paths of `custos-oauth`'s `oauth_authorize`.
 ///
 /// Fails closed: any `include:` resolution failure rejects the whole expansion, the same as a
 /// malformed token would fail `normalize_scope_request` outright. Also fails closed — before
@@ -301,7 +301,7 @@ enum PermissionEntry {
 
 /// Accept either a bare value or an array of values during deserialization — permission-set
 /// records aren't fully consistent on cardinality for fields like `action`, and the
-/// urlencoded-form deserializer used by `routes::oauth_authorize::ConsentForm` represents a
+/// urlencoded-form deserializer used by `custos-oauth`'s `oauth_authorize::ConsentForm` represents a
 /// single repeated-key occurrence as a bare string rather than a one-element sequence. Shared
 /// by both, since the generic `Deserializer` bound makes it format-agnostic.
 pub fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>

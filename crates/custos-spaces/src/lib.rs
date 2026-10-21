@@ -6,8 +6,8 @@
 //!
 //! `pds` is the composition root and consumes only what this file exports: [`SpacesState`],
 //! [`router`] / [`internal_router`], [`spawn_sweeps`], [`CAPABILITY`], [`purge_account_rows`],
-//! the [`db`] query modules, the [`space_record_write`] choke point, the [`consent`] display
-//! resolver, and (behind `test-support`) [`test_support`]. See `AGENTS.md`.
+//! the [`db`] query modules, the [`space_record_write`] choke point, and (behind `test-support`)
+//! [`test_support`]. See `AGENTS.md`.
 
 use axum::extract::FromRef;
 use common::SpacesConfig;
@@ -23,7 +23,6 @@ use custos_core::{
 
 mod auth;
 mod capability;
-pub mod consent;
 pub mod db;
 mod router;
 mod routes;
