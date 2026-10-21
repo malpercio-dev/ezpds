@@ -144,6 +144,12 @@ px-check:
 ticket-ref-check:
     scripts/ticket-ref-check.sh
 
+# Fail on a new raw-string DID parameter/field (`did: &str` / `String`) in crates/pds/src/auth
+# or routes. Per-file ratchet against scripts/raw-did-baseline.txt while those trees migrate to
+# common::Did; `scripts/raw-did-check.sh --print-counts` regenerates it after a slice.
+raw-did-check:
+    scripts/raw-did-check.sh
+
 # Fail if an ADR-NNNN citation outside the ADR log itself points at a superseded ADR or an
 # ADR number with no file — a stale citation reads as still-governing rationale to the next
 # reader. Excludes docs/architecture/decisions/ and docs/archive/.
@@ -288,7 +294,7 @@ oauth-conformance-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
+checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check raw-did-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny

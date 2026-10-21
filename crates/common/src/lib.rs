@@ -1,6 +1,7 @@
 mod config;
 mod config_loader;
 mod error;
+mod ident;
 
 pub use config::{
     default_reserved_handles, parse_hex_32, AccountsConfig, AdminDevicesConfig, AgentAuthConfig,
@@ -15,3 +16,4 @@ pub use config_loader::{
     collect_ezpds_env, load_config, load_config_from_env_only, load_config_with_env,
 };
 pub use error::{ApiError, ApiErrorParts, ApiResultExt, ErrorCode};
+pub use ident::{is_valid_did, validate_handle_structure, Did, Handle, InvalidIdentifier};

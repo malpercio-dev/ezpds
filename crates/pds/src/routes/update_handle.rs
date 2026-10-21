@@ -70,8 +70,8 @@ pub async fn update_handle_handler(
     }
     oauth_scopes::require_identity(&user.scope_claim, "handle")?;
 
-    crate::identity::handle::validate_handle_structure(&payload.handle)
-        .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
+    let handle = common::Handle::parse(payload.handle.as_str())
+        .map_err(|e| ApiError::new(ErrorCode::InvalidHandle, e.0))?;
 
     // Checked before external resolution, so a caller updating to a handle they already
     // own never pays for an external resolver round trip.
@@ -88,41 +88,19 @@ pub async fn update_handle_handler(
         // Still proceed to emit #identity (idempotent).
     }
 
-    let is_served_domain = {
-        // Structural validation guarantees at least one dot.
-        #[allow(
-            clippy::expect_used,
-            reason = "structural validation guarantees at least one dot"
-        )]
-        let dot = payload
-            .handle
-            .find('.')
-            .expect("structure guarantees a dot");
-        let domain = &payload.handle[dot + 1..];
-        state
-            .config
-            .available_user_domains
-            .iter()
-            .any(|d| d == domain)
-    };
+    let is_served_domain = state
+        .config
+        .available_user_domains
+        .iter()
+        .any(|d| d == handle.domain());
 
     if is_served_domain {
         // PDS-served handle: the PDS is authoritative. The handle will resolve
         // once we insert it — skip external resolution. Because this branch skips
         // the resolution proof, the infrastructure-name reservation must gate here
         // (registration paths get it via validate_handle).
-        #[allow(
-            clippy::expect_used,
-            reason = "structural validation guarantees at least one dot"
-        )]
-        let dot = payload
-            .handle
-            .find('.')
-            .expect("structure guarantees a dot");
-        if crate::identity::handle::is_reserved_name(
-            &payload.handle[..dot],
-            &state.config.reserved_handles,
-        ) {
+        if crate::identity::handle::is_reserved_name(handle.name(), &state.config.reserved_handles)
+        {
             return Err(ApiError::new(
                 ErrorCode::InvalidHandle,
                 "this handle name is reserved",
@@ -239,7 +217,7 @@ pub async fn update_handle_handler(
 
     if let Err(e) = state
         .firehose
-        .emit_identity(did.clone(), Some(payload.handle.clone()))
+        .emit_identity(did.to_string(), Some(payload.handle.clone()))
         .await
     {
         tracing::warn!(

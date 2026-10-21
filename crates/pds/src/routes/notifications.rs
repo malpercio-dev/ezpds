@@ -116,7 +116,7 @@ pub async fn register_notifications(
     if let Some(sender) = state.notify_sender.as_ref() {
         sender.send(NotifyJob::RegisterHandle {
             owner: RegistrationOwner::Account {
-                did: user.did.clone(),
+                did: user.did.to_string(),
                 device_uuid: payload.device_uuid.clone(),
             },
             apns_token: payload.apns_token,

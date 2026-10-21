@@ -17,7 +17,7 @@ workspace = true
 [dependencies]
 axum = { workspace = true, features = ["ws"] }
 http-body-util = { workspace = true }
-common = { workspace = true, features = ["axum"] }
+common = { workspace = true, features = ["axum", "sqlx"] }
 clap = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

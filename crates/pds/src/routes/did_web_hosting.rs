@@ -145,7 +145,7 @@ pub async fn update_did_web_document_handler(
     // Announce the identity change so relays re-resolve the served document. `None` handle = "the
     // identity changed, re-resolve" without asserting a specific handle — the honest signal for a
     // direct document edit.
-    if let Err(e) = state.firehose.emit_identity(did.clone(), None).await {
+    if let Err(e) = state.firehose.emit_identity(did.to_string(), None).await {
         tracing::warn!(
             error = %e,
             did = %did,

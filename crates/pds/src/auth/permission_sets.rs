@@ -166,7 +166,7 @@ pub async fn expand_include_scopes(
 /// A Lexicon authority's validated, SSRF-checked PDS service endpoint, ready to fetch from.
 #[derive(Debug)]
 pub(crate) struct AuthorityEndpoint {
-    pub did: String,
+    pub did: common::Did,
     pub url: String,
 }
 
@@ -185,7 +185,7 @@ fn nsid_authority_domain(nsid: &str) -> Option<String> {
 
 /// Resolve a Lexicon authority domain to its publishing DID via `_lexicon.<domain>` DNS TXT,
 /// mirroring `resolution::resolve_handle_to_did`'s `_atproto.<handle>` lookup.
-async fn resolve_authority_did(state: &AppState, domain: &str) -> Result<String, String> {
+async fn resolve_authority_did(state: &AppState, domain: &str) -> Result<common::Did, String> {
     let resolver = state
         .txt_resolver
         .as_ref()
@@ -203,7 +203,11 @@ async fn resolve_authority_did(state: &AppState, domain: &str) -> Result<String,
 
     records
         .into_iter()
-        .find_map(|record| record.strip_prefix("did=").map(|did| did.to_string()))
+        .find_map(|record| {
+            record
+                .strip_prefix("did=")
+                .and_then(|did| common::Did::parse(did).ok())
+        })
         .ok_or_else(|| format!("no Lexicon authority is published for \"{domain}\""))
 }
 

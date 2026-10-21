@@ -43,7 +43,7 @@ pub struct PendingSessionInfo {
 /// Information about an authenticated promoted-account session.
 #[derive(Debug)]
 pub struct SessionInfo {
-    pub did: String,
+    pub did: common::Did,
 }
 
 /// Validate the admin Bearer token from request headers.
@@ -558,7 +558,7 @@ pub async fn require_session(
 
     let token_hash = hash_bearer_token(token)?;
 
-    let row: Option<(String,)> = sqlx::query_as(
+    let row: Option<(common::Did,)> = sqlx::query_as(
         "SELECT did FROM sessions WHERE token_hash = ? AND expires_at > datetime('now')",
     )
     .bind(&token_hash)
@@ -604,7 +604,7 @@ pub async fn authenticate_account_owner(
     method: &Method,
     uri: &Uri,
     state: &AppState,
-) -> Result<String, OwnerAuthError> {
+) -> Result<common::Did, OwnerAuthError> {
     if let Ok(session) = require_session(headers, &state.db).await {
         return Ok(session.did);
     }
@@ -629,7 +629,7 @@ pub async fn authenticate_owner(
     method: &Method,
     uri: &Uri,
     state: &AppState,
-) -> Result<String, ApiError> {
+) -> Result<common::Did, ApiError> {
     authenticate_account_owner(headers, method, uri, state)
         .await
         .map_err(|err| match err {

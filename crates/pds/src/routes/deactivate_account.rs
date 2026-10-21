@@ -87,7 +87,7 @@ pub async fn deactivate_account_handler(
             let pending = emit_guard
                 .stage_account(
                     &mut tx,
-                    user.did.clone(),
+                    user.did.to_string(),
                     false,
                     Some(STATUS_DEACTIVATED.to_string()),
                 )

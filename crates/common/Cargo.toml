@@ -11,6 +11,8 @@ license.workspace = true
 # Enable Axum integration: ApiError implements IntoResponse.
 # pds enables this; pure-logic crates (crypto, repo-engine) do not.
 axum = ["dep:axum", "dep:tracing"]
+# sqlx::Type/Encode/Decode (SQLite TEXT) for Did and Handle; pds enables this.
+sqlx = ["dep:sqlx"]
 
 [lints]
 workspace = true
@@ -19,6 +21,7 @@ workspace = true
 axum = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 serde = { workspace = true }
+sqlx = { workspace = true, optional = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }

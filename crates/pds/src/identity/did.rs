@@ -1,51 +1,9 @@
 // pattern: Functional Core
 
-//! General DID syntax validation for the ATProto identity layer.
+//! General DID syntax validation for the ATProto identity layer. The validator lives in
+//! `common` (it backs [`common::Did`]); the interop-fixture test stays here.
 
-/// Maximum DID length accepted by the ATProto syntax profile.
-const MAX_DID_LEN: usize = 2_048;
-
-/// Validate the general `did:` syntax used by ATProto.
-///
-/// Method-specific rules such as the shape of `did:plc` identifiers or the URL encoding in
-/// `did:web` remain the responsibility of those method implementations.
-pub fn is_valid_did(did: &str) -> bool {
-    if did.len() > MAX_DID_LEN {
-        return false;
-    }
-
-    let Some(rest) = did.strip_prefix("did:") else {
-        return false;
-    };
-    let Some((method, method_specific_id)) = rest.split_once(':') else {
-        return false;
-    };
-    if method.is_empty()
-        || !method.bytes().all(|byte| byte.is_ascii_lowercase())
-        || method_specific_id.is_empty()
-        || method_specific_id.ends_with(':')
-    {
-        return false;
-    }
-
-    let mut bytes = method_specific_id.bytes();
-    while let Some(byte) = bytes.next() {
-        match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b':' => {}
-            b'%' => {
-                let (Some(high), Some(low)) = (bytes.next(), bytes.next()) else {
-                    return false;
-                };
-                if !high.is_ascii_hexdigit() || !low.is_ascii_hexdigit() {
-                    return false;
-                }
-            }
-            _ => return false,
-        }
-    }
-
-    true
-}
+pub use common::is_valid_did;
 
 #[cfg(test)]
 mod tests {
