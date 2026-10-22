@@ -170,3 +170,17 @@ adding routes and DB queries.
 - Never edit: `flake.lock` by hand (managed by `nix flake update`)
 - Never edit: `devenv.local.nix` is gitignored for local overrides only
 - `flake.nix` is intentionally minimal: it exposes only the devenv `devShells.<system>.default` and `nixosModules.default` (no crane/rust-overlay inputs, no `packages.<system>.*` build outputs). The PDS binary is built via the root `Dockerfile` (`cargo build --release --locked -p pds`), not by Nix — deploy as an OCI image, not a Nix-built binary. See `docs/deploy.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Linear, team `MM`, project `ezpds` (via the Linear MCP connector; no `gh issue`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Four state labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`) plus the `Canceled` status for wontfix; categories are the existing `Bug` / `Feature` / `Improvement`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` at the root (lazily created), ADRs in `docs/architecture/decisions/`. See `docs/agents/domain.md`.
