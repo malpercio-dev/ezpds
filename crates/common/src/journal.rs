@@ -5,9 +5,9 @@
 //!
 //! A ceremony is resumable rather than atomic when one of its steps cannot join the transaction
 //! that records it (a plc.directory publish, a remote PDS call). The journal makes the rule
-//! explicit: each step's work runs only while the cursor is short of it, and the cursor advances
-//! only after the work succeeded. A crash between the two re-runs that step on resume, so step work
-//! must be idempotent; a crash anywhere else resumes at the recorded step.
+//! explicit: under `run`, each step's work runs only while the cursor is short of it, and the
+//! cursor advances only after the work succeeded. A crash between the two re-runs that step on
+//! resume, so step work must be idempotent; a crash anywhere else resumes at the recorded step.
 //!
 //! A step whose work commits its own cursor write in the same transaction (the strongest form)
 //! makes its store's `save` for that step a no-op. That is the store's business, not the
@@ -48,12 +48,10 @@ impl<S: Step, St: JournalStore<S>> Journal<S, St> {
         self.cursor.is_some_and(|cursor| cursor >= step)
     }
 
-    /// Record `step` as done. A step already reached is not re-recorded, and the cursor never
-    /// moves backwards.
+    /// Record `step` as done. Recording an earlier step than the cursor rewinds it: re-running a
+    /// step re-opens every step after it, so a ceremony that re-does a step must re-do (or
+    /// re-check) what followed. `run` is the form that skips a step already reached.
     pub async fn advance(&mut self, step: S) -> Result<(), St::Error> {
-        if self.reached(step) {
-            return Ok(());
-        }
         self.store.save(step).await?;
         self.cursor = Some(step);
         Ok(())
@@ -153,21 +151,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn advance_never_moves_backwards() {
+    async fn rerunning_an_earlier_step_reopens_the_steps_after_it() {
         let store = Memory::default();
         let mut journal = Journal::resume(&store)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
         journal
-            .advance(Demo::Two)
+            .advance(Demo::Three)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
         journal
             .advance(Demo::One)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(journal.cursor(), Some(Demo::Two));
-        assert!(journal.reached(Demo::One));
-        assert!(!journal.reached(Demo::Three));
+        assert_eq!(journal.cursor(), Some(Demo::One));
+        assert!(!journal.reached(Demo::Two));
+        // The rewind is durable: a fresh resume sees it too.
+        let resumed = Journal::resume(&store)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(resumed.cursor(), Some(Demo::One));
     }
 }
