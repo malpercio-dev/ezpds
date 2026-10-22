@@ -18,11 +18,15 @@ The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decis
 | `src/pds_capabilities.rs` | per-host cache of `describeServer`'s `custos` extension; absence is not an error, gates ask about features never vendors; `WalletDescribeServerObserver` warms it from every `describeServer` call — cache contract in the module doc |
 | `src/source_login.rs` | the one shared password `createSession` core (HTTPS + account-match + 2FA) behind the claim, migration, and password-unlock paths (ADR-0021) — see module doc |
 | `src/share_ceremony.rs` | client-side 2-of-3 share generation + the three fail-closed staging slots (create / re-key / self-held kit); staging contract and load-bearing teardown order in the module doc |
-| `src/platform.rs` | `Signer`, `EventSink`, `Scheduler`, `Clock`: declared, not yet wired (see the plan for which step wires each) |
+| `src/device_key.rs` | the global P-256 device key: this app's Keychain and account names bound to the shared `crates/ios-device-key` implementation (software-or-Secure-Enclave by `#[cfg]`; `get_or_create` idempotent, `sign` low-S-normalized r\|\|s) — see both module docs |
+| `src/identity_store.rs` | multi-identity Keychain lifecycle (`managed-dids` index + per-DID entries), per-DID device keys through the installed `Signer` (`per_did_sign_closure` is the one signing seam), the shared `SovereignTokenRecord` session record; removal semantics and the Share 1 exception in the module doc |
+| `src/signer.rs` | `Signer` (each identity's device key, by DID: get-or-create public key, two-phase signing, `is_hardware_bound`), `install`, and `SoftwareSigner`, the implementation for every target without hardware-bound keys |
+| `src/platform.rs` | `EventSink`, `Scheduler`, `Clock`: declared, not yet wired (see the plan for which step wires each) |
 
 ## Contracts
 
 - **The shell installs a `KeyStore` before anything touches storage.** Uninstalled calls return `NotInstalled`, never an empty store. The wallet's `run()` installs `keychain::AppleKeychain`.
+- **The shell installs a `Signer` too,** with the same fail-closed rule: production never falls back to a software key, which would mint keys the DID documents do not name. The wallet installs `EnclaveSigner` on a real device and `SoftwareSigner` elsewhere.
 - **The cloud-slot allowlist is enforced here,** before any `KeyStore` is reached, so no implementation can widen what leaves the device.
 - **`test-support` is for `[dev-dependencies]` only.** It selects a thread-local in-memory store when nothing is installed, and refuses to compile without `debug_assertions`.
 

@@ -526,9 +526,7 @@ async fn write_car(root: &Path, did: &str, bytes: &[u8]) -> Result<(), RepoBacku
 
 /// Per-DID Keychain account holding the opt-in flag (`"true"` / `"false"`).
 /// Referenced by `IdentityStore::remove_identity` for cleanup.
-pub(crate) fn backup_enabled_account(did: &str) -> String {
-    format!("{did}:repo-backup-enabled")
-}
+pub(crate) use obsign_core::identity_store::repo_backup_enabled_account as backup_enabled_account;
 
 fn load_enabled(did: &str) -> bool {
     obsign_core::keystore::get_item(&backup_enabled_account(did))

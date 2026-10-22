@@ -112,21 +112,20 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 `migrate.rs`, `handle_change.rs`, `rotate_repo_key.rs`, `disaster_recovery.rs`,
 `endpoint_repair.rs`, `self_held_kit.rs`.
 
-`lib.rs` re-exports the modules that moved into `crates/obsign-core` under their old names (`http`, `oauth_client`, `pds_capabilities`, `pds_client`, `share_ceremony`, `source_login`), so `crate::pds_client::…` still resolves here; their rows are in that crate's AGENTS.md.
+`lib.rs` re-exports the modules that moved into `crates/obsign-core` under their old names (`device_key`, `http`, `identity_store`, `oauth_client`, `pds_capabilities`, `pds_client`, `share_ceremony`, `source_login`), so `crate::pds_client::…` still resolves here; their rows are in that crate's AGENTS.md.
 
 | Module (src-tauri/src/) | What it is |
 |---|---|
 | `lib.rs` | crate root and app wiring: the cross-cutting IPC commands (account creation, both DID ceremonies, PDS config/capabilities, IdentityStore reads, appearance) plus `run()`'s startup sequence — see module doc |
 | `main.rs` | desktop entry point (calls `lib::run()`) |
 | `keychain.rs` | `AppleKeychain`, the iOS `KeyStore` that `run()` installs into `obsign_core::keystore` (whose module doc owns the two-store and protection-class semantics, the accessors every module calls, and the Share 1 cloud-slot allowlist); the access-group entitlement invariant; and the **canonical account inventory**: the module doc is the authority on every account name |
-| `device_key.rs` | the global P-256 device key: this app's Keychain and account names bound to the shared `crates/ios-device-key` implementation (software-or-Secure-Enclave by `#[cfg]`; `get_or_create` idempotent, `sign` low-S-normalized r\|\|s) — see both module docs |
-| `identity_store.rs` | multi-identity Keychain lifecycle (`managed-dids` index + per-DID entries), lazy per-DID device keys with the Secure-Enclave liveness probe, the shared `SovereignTokenRecord` session record; removal semantics and the Share 1 exception in the module doc |
 | `share_recovery.rs` | the "Recover existing identity" ceremony (9 IPC commands) and its resumable rotation epilogue — see module doc |
 | `rekey.rs` | additive-only re-key of pre-inversion `[device, PDS]` accounts onto the client-share model; owns the per-DID Share 1 slot (`recovery-share-1:{did}`) and its synced-store accessors — see module doc |
 | `sovereign_session.rs` | passwordless per-DID sovereign login: resolves the device key + signer from `IdentityStore`, delegates the network ceremony to `custos_client::sovereign_session::sovereign_login`, and persists a validated Bearer session to `{did}:oauth-tokens`; re-exports the crate's `bearer_jwt_claims`/`audience_matches_server` sub/aud binding helpers and its `fresh_nonce`/`unix_timestamp` (reused by several other device-key-signed flows, not just this one) — see module doc |
 | `session_provider.rs` | the per-DID session seam every authenticated operation goes through: restore / coalesced single-flight refresh / host-change discard, distinct terminal errors, and the `ensure_identity_session` pre-flight. The refresh network call + sub/aud re-validation is `custos_client::sovereign_session::refresh_bearer_session`; this module owns the decision ladder, the coalescing lock, and persisting/discarding the `IdentityStore` record — see module doc |
 | `password_unlock.rs` | the password origin for the shared session record on non-sovereign hosts: capability-driven route choice (unreached ⇒ SOVEREIGN) + `createSession` → bind → persist — see module doc |
 | `diagnostics.rs` | the Settings `export_diagnostics` command; the log itself is `obsign_core::diagnostics` |
+| `enclave_signer.rs` | `EnclaveSigner`, the Secure Enclave `obsign_core::signer::Signer` that `run()` installs on a real iOS device (software elsewhere), plus `classify_se_fast_path`, the host-tested decision behind its restore-safe fast path — see module doc |
 | `oauth.rs` | `AppState` (all flow-state slots); re-exports `custos_client::{DpopKeypair, OAuthSession, OAuthError}` plus the test-only DPoP `TokenPersister` adapter. The create-flow OAuth login (`prepare/complete_oauth_flow`) was removed once the create flow started ending at `home` with no OAuth round trip — slot inventory and the retirement rationale in the module doc |
 | `claim.rs` | the 5-command PLC claim pipeline (password source login per ADR-0021; a claim changes nothing but inserting the device key) — see module doc |
 | `migrate.rs` | self-signed migration identity leg (ADR-0002 path 1): build + device-key-sign + direct plc.directory submit; also the did:web document leg; `guard_migration_op`'s allowlist and the claim-guard inversion in the module doc |

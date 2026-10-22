@@ -1,4 +1,5 @@
-//! The four platform traits besides [`KeyStore`](crate::keystore::KeyStore).
+//! The platform traits not yet wired: [`EventSink`], [`Scheduler`], [`Clock`]. `KeyStore` and
+//! `Signer` live in `keystore` and `signer`.
 //!
 //! Each is declared ahead of the extraction step that wires it (the order lives in
 //! `docs/implementation-plans/2026-10-21-obsign-core-extraction.md`); a signature may still
@@ -11,20 +12,6 @@ use std::time::{Duration, SystemTime};
 #[error("{message}")]
 pub struct PlatformError {
     pub message: String,
-}
-
-/// A device-bound P-256 key, addressed by the Keychain account that names it (the global
-/// device key's, or an identity's `{did}:device-key`).
-pub trait Signer: Send + Sync {
-    /// The compressed SEC1 public point, minting the key on first use.
-    fn public_key(&self, key: &str) -> Result<Vec<u8>, PlatformError>;
-
-    /// A raw 64-byte `r||s` ECDSA signature, low-S normalized.
-    fn sign(&self, key: &str, data: &[u8]) -> Result<Vec<u8>, PlatformError>;
-
-    /// Whether the private key lives in hardware it cannot leave (Secure Enclave, StrongBox),
-    /// so the UI can say so truthfully.
-    fn is_hardware_bound(&self) -> bool;
 }
 
 /// Events from the core to the UI. Fire-and-forget: a UI that is not listening is not an

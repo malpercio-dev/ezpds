@@ -83,9 +83,7 @@ const ATPROTO_PDS_SERVICE_ID: &str = "atproto_pds";
 /// `escrow` can be offered — once, as an option — to deposit a share there. Without the marker
 /// the offer could not tell a self-held kit from an identity that never had a recovery key at
 /// all, and would be a nag rather than an upgrade.
-pub(crate) fn self_held_kit_account(did: &str) -> String {
-    format!("{did}:self-held-kit")
-}
+pub(crate) use obsign_core::identity_store::self_held_kit_account;
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
