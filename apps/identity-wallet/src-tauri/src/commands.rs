@@ -41,25 +41,25 @@ macro_rules! commands {
 }
 
 commands! {
-    [async state] create_account = crate::create_account(claim_code: String, email: String, handle: String) -> Result<crate::CreateAccountResult, crate::CreateAccountError>;
-    [async state] perform_did_ceremony = crate::perform_did_ceremony(handle: String, password: Option<String>) -> Result<crate::DIDCeremonyResult, crate::DIDCeremonyError>;
-    [sync] confirm_share_backup = crate::confirm_share_backup(did: String) -> Result<(), crate::ShareBackupError>;
-    [async state] prepare_did_web_ceremony = crate::prepare_did_web_ceremony() -> Result<crate::DidWebPreparation, crate::DIDCeremonyError>;
-    [async state] complete_did_web_ceremony = crate::complete_did_web_ceremony(document_text: String, password: Option<String>, enable_managed_hosting: bool) -> Result<crate::DIDCeremonyResult, crate::DIDCeremonyError>;
-    [async state] register_handle = crate::register_handle(handle: String) -> Result<crate::RegisterHandleResult, crate::RegisterHandleError>;
-    [async state] register_created_identity = crate::register_created_identity(did: String, handle: String) -> Result<(), crate::RegisterIdentityError>;
-    [async state] import_did_web_identity = crate::import_did_web_identity(input: String) -> Result<crate::ImportedDidWebIdentity, crate::ImportDidWebError>;
-    [async state] check_handle_resolution = crate::check_handle_resolution(handle: String, expected_did: String) -> Result<bool, String>;
-    [async state] get_available_user_domains = crate::get_available_user_domains() -> Result<Vec<String>, crate::AvailableDomainsError>;
-    [sync] list_identities = crate::list_identities() -> Result<Vec<String>, crate::identity_store::IdentityStoreError>;
-    [sync] get_stored_did_doc = crate::get_stored_did_doc(did: String) -> Result<Option<serde_json::Value>, crate::identity_store::IdentityStoreError>;
-    [async state] refresh_did_doc = crate::refresh_did_doc(did: String) -> Result<serde_json::Value, crate::RefreshDidDocError>;
-    [sync] get_device_key_id = crate::get_device_key_id(did: String) -> Result<String, crate::identity_store::IdentityStoreError>;
-    [sync] get_pds_url = crate::get_pds_url() -> Option<String>;
-    [async state] save_pds_url = crate::save_pds_url(url: String) -> Result<(), crate::PdsConfigError>;
-    [async state] get_pds_capabilities = crate::get_pds_capabilities(pds_url: Option<String>) -> Result<crate::pds_capabilities::ServerCapabilities, crate::PdsConfigError>;
-    [sync] get_appearance_preference = crate::get_appearance_preference() -> Option<String>;
-    [sync] set_appearance_preference = crate::set_appearance_preference(preference: String) -> Result<(), crate::AppearanceError>;
+    [async state] create_account = obsign_core::create_flow::create_account(claim_code: String, email: String, handle: String) -> Result<obsign_core::create_flow::CreateAccountResult, obsign_core::create_flow::CreateAccountError>;
+    [async state] perform_did_ceremony = obsign_core::create_flow::perform_did_ceremony(handle: String, password: Option<String>) -> Result<obsign_core::create_flow::DIDCeremonyResult, obsign_core::create_flow::DIDCeremonyError>;
+    [sync] confirm_share_backup = obsign_core::create_flow::confirm_share_backup(did: String) -> Result<(), obsign_core::share_recovery::ShareBackupError>;
+    [async state] prepare_did_web_ceremony = obsign_core::create_flow::prepare_did_web_ceremony() -> Result<obsign_core::create_flow::DidWebPreparation, obsign_core::create_flow::DIDCeremonyError>;
+    [async state] complete_did_web_ceremony = obsign_core::create_flow::complete_did_web_ceremony(document_text: String, password: Option<String>, enable_managed_hosting: bool) -> Result<obsign_core::create_flow::DIDCeremonyResult, obsign_core::create_flow::DIDCeremonyError>;
+    [async state] register_handle = obsign_core::create_flow::register_handle(handle: String) -> Result<obsign_core::create_flow::RegisterHandleResult, obsign_core::create_flow::RegisterHandleError>;
+    [async state] register_created_identity = obsign_core::create_flow::register_created_identity(did: String, handle: String) -> Result<(), obsign_core::create_flow::RegisterIdentityError>;
+    [async state] import_did_web_identity = obsign_core::import_did_web::import_did_web_identity(input: String) -> Result<obsign_core::import_did_web::ImportedDidWebIdentity, obsign_core::import_did_web::ImportDidWebError>;
+    [async state] check_handle_resolution = obsign_core::create_flow::check_handle_resolution(handle: String, expected_did: String) -> Result<bool, String>;
+    [async state] get_available_user_domains = obsign_core::create_flow::get_available_user_domains() -> Result<Vec<String>, obsign_core::create_flow::AvailableDomainsError>;
+    [sync] list_identities = obsign_core::identity_store::list_identities() -> Result<Vec<String>, obsign_core::identity_store::IdentityStoreError>;
+    [sync] get_stored_did_doc = obsign_core::identity_store::get_stored_did_doc(did: String) -> Result<Option<serde_json::Value>, obsign_core::identity_store::IdentityStoreError>;
+    [async state] refresh_did_doc = obsign_core::identity_store::refresh_did_doc(did: String) -> Result<serde_json::Value, obsign_core::identity_store::RefreshDidDocError>;
+    [sync] get_device_key_id = obsign_core::identity_store::get_device_key_id(did: String) -> Result<String, obsign_core::identity_store::IdentityStoreError>;
+    [sync] get_pds_url = obsign_core::pds_config::get_pds_url() -> Option<String>;
+    [async state] save_pds_url = obsign_core::pds_config::save_pds_url(url: String) -> Result<(), obsign_core::pds_config::PdsConfigError>;
+    [async state] get_pds_capabilities = obsign_core::pds_config::get_pds_capabilities(pds_url: Option<String>) -> Result<obsign_core::pds_capabilities::ServerCapabilities, obsign_core::pds_config::PdsConfigError>;
+    [sync] get_appearance_preference = obsign_core::preferences::get_appearance_preference() -> Option<String>;
+    [sync] set_appearance_preference = obsign_core::preferences::set_appearance_preference(preference: String) -> Result<(), obsign_core::preferences::AppearanceError>;
     [sync] export_diagnostics = crate::diagnostics::export_diagnostics() -> String;
     [async state] resolve_identity = crate::claim::resolve_identity(handle_or_did: String) -> Result<crate::claim::IdentityInfo, crate::claim::ResolveError>;
     [async state] authenticate_source_pds = crate::claim::authenticate_source_pds(did: String, identifier: String, password: String, auth_factor_token: Option<String>) -> Result<(), crate::claim::ClaimError>;
@@ -152,5 +152,5 @@ commands! {
     [async state] recover_identity = crate::share_recovery::recover_identity() -> Result<crate::share_recovery::RecoveryAnchor, crate::share_recovery::ShareRecoveryError>;
     [async state] run_recovery_epilogue = crate::share_recovery::run_recovery_epilogue(skip_escrow: Option<bool>) -> Result<crate::share_recovery::EpilogueResult, crate::share_recovery::ShareRecoveryError>;
     [sync] get_pending_recovery_epilogue = crate::share_recovery::get_pending_recovery_epilogue() -> Result<Option<crate::share_recovery::PendingEpilogue>, crate::share_recovery::ShareRecoveryError>;
-    [async state] confirm_recovery_backup = crate::share_recovery::confirm_recovery_backup() -> Result<(), crate::ShareBackupError>;
+    [async state] confirm_recovery_backup = crate::share_recovery::confirm_recovery_backup() -> Result<(), crate::share_recovery::ShareBackupError>;
 }

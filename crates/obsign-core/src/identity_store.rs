@@ -37,6 +37,9 @@
 //! reach every device under the Apple account and destroy a share the user may still
 //! need.
 //!
+//! The free functions at the end are the IPC reads over the store (`list_identities`,
+//! `get_stored_did_doc`, `get_device_key_id`, and `refresh_did_doc`, the cache self-heal).
+//!
 //! [`SovereignTokenRecord`] is the versioned full-access Bearer session stored in
 //! `{did}:oauth-tokens` — written by `sovereign_session::sovereign_login`,
 //! `password_unlock`, and the migration cutover, read by `session_provider`. That
@@ -900,6 +903,96 @@ pub fn per_did_sign_closure(
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
+
+// ── IPC reads over the store ────────────────────────────────────────────────
+
+/// Return the list of managed DIDs currently stored in the Keychain.
+///
+/// Returns an empty list if no identities have been claimed. Returns an error only if
+/// the Keychain entry exists but contains invalid data (data corruption).
+///
+/// The frontend calls this on mount to check for existing identities and decide whether
+/// to skip the mode selector.
+pub fn list_identities() -> Result<Vec<String>, IdentityStoreError> {
+    IdentityStore.list_identities()
+}
+
+/// Retrieve the stored DID document for a claimed identity.
+///
+/// Returns the DID document as parsed JSON, or None if the DID is not registered or
+/// the document has not been stored yet.
+///
+/// The frontend uses this to extract identity information (handle, PDS URL) for
+/// multi-identity card display in IdentityListHome.
+pub fn get_stored_did_doc(did: String) -> Result<Option<serde_json::Value>, IdentityStoreError> {
+    let store = IdentityStore;
+    match store.get_did_doc(&did)? {
+        Some(json_str) => {
+            let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+                IdentityStoreError::SerializationError {
+                    message: e.to_string(),
+                }
+            })?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Errors from [`refresh_did_doc`], serialized as `{ code: "SCREAMING_SNAKE_CASE" }`
+/// like every other IPC error enum so the frontend gets a branchable contract.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RefreshDidDocError {
+    /// plc.directory fetch failed (network, 404, or parse).
+    #[error("failed to fetch PLC data document: {message}")]
+    FetchFailed { message: String },
+    /// Serializing or persisting the refreshed document failed.
+    #[error("failed to store DID document: {message}")]
+    StorageFailed { message: String },
+}
+
+/// Re-fetch a claimed identity's PLC data document from plc.directory and re-store it
+/// in the per-identity cache, returning the fresh document.
+///
+/// The cache self-heal: earlier builds cached the W3C DID document (or a doc with
+/// empty `rotationKeys`) after claim/migration/recovery, which starves the home
+/// card's custody badge and hides the migrate entry. `IdentityListHome` calls this
+/// (best-effort) whenever a cached doc is missing or has no `rotationKeys`, so stale
+/// caches repair on the next home load without user action.
+pub async fn refresh_did_doc(
+    state: &crate::oauth::Core,
+    did: String,
+) -> Result<serde_json::Value, RefreshDidDocError> {
+    let did_doc = state
+        .pds_client()
+        .fetch_plc_data_document(&did)
+        .await
+        .map_err(|e| RefreshDidDocError::FetchFailed {
+            message: e.to_string(),
+        })?;
+    let json = serde_json::to_string(&did_doc).map_err(|e| RefreshDidDocError::StorageFailed {
+        message: format!("failed to serialize DID document: {e}"),
+    })?;
+    IdentityStore
+        .store_did_doc(&did, &json)
+        .map_err(|e| RefreshDidDocError::StorageFailed {
+            message: e.to_string(),
+        })?;
+    Ok(did_doc)
+}
+
+/// Retrieve the device key ID (did:key URI) for a claimed identity.
+///
+/// Returns the device key's did:key URI, which can be compared against rotation keys
+/// in the DID document to determine if the device key is the primary rotation key.
+///
+/// The frontend uses this in IdentityListHome to show rotation key status badges.
+pub fn get_device_key_id(did: String) -> Result<String, IdentityStoreError> {
+    let store = IdentityStore;
+    let device_key = store.get_or_create_device_key(&did)?;
+    Ok(device_key.key_id)
+}
 
 #[cfg(test)]
 mod tests {
