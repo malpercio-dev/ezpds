@@ -118,9 +118,10 @@ pub struct SpaceCommitOutcome {
 
 /// Apply a batch of record writes to one space repo as a single atomic commit.
 ///
-/// The space row and the repo are both created on first write (fresh TID rev, empty LtHash
-/// state) — a repo host records a space the first time its user writes into one, so a member
-/// can join a foreign authority's space without this host having been told about it in advance.
+/// The repo is created on first write (fresh TID rev, empty LtHash state) and deleted by the
+/// commit that empties it. A foreign authority's space row is recorded on first write too, so a
+/// member can join it without this host having been told in advance; a space anchored on `did`
+/// itself must already exist ([`ErrorCode::SpaceNotFound`] otherwise).
 /// Returns [`ErrorCode::Conflict`] when the rev CAS loses to a concurrent
 /// commit — nothing lands, the client retries against the new head.
 pub async fn apply_space_writes(
@@ -187,52 +188,67 @@ pub async fn apply_space_writes(
         ));
     }
 
-    // Record the space if this host has not seen it before. The reference does the same on
-    // every space write, and it is what makes a foreign authority's space usable: nothing else
-    // in the protocol tells a repo host that its user has joined one. The row carries no
-    // simplespace config — that belongs to the authority, and stays NULL unless this host is it.
+    // Record a foreign authority's space if this host has not seen it before. The reference does
+    // the same on every space write, and it is what makes a foreign authority's space usable:
+    // nothing else in the protocol tells a repo host that its user has joined one. The row
+    // carries no simplespace config — that belongs to the authority.
+    //
+    // A space anchored on the writer's own DID is never recorded here: the spec requires it to
+    // exist already, so it must have been made by `createSpace` (which is what writes the config).
     //
     // Divergence from the reference, which additionally *clears* `deleted_at` here: a tombstone
     // is only ever written for a space this host is the authority for, and resurrecting one on a
     // member's write would undo the deletion the operator performed. So a deleted space refuses
     // writes instead — its members' existing records stay put (spec deletion semantics), they
     // just stop changing.
-    crate::db::spaces::insert_space(
-        &mut *tx,
-        &crate::db::spaces::NewSpace {
-            uri: space_uri,
-            authority_did: &space.authority,
-            space_type: &space.space_type,
-            skey: &space.skey,
-            policy: None,
-            app_access: None,
-            app_allowed: None,
-            managing_app: None,
-            write_policy: None,
-            write_managing_app: None,
-        },
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, space = %space_uri, "failed to record space");
-        internal_error()
-    })?;
+    let own_space = space.authority == did;
+    if !own_space {
+        crate::db::spaces::insert_space(
+            &mut *tx,
+            &crate::db::spaces::NewSpace {
+                uri: space_uri,
+                authority_did: &space.authority,
+                space_type: &space.space_type,
+                skey: &space.skey,
+                policy: None,
+                app_access: None,
+                app_allowed: None,
+                managing_app: None,
+                write_policy: None,
+                write_managing_app: None,
+            },
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space_uri, "failed to record space");
+            internal_error()
+        })?;
+    }
     let row = crate::db::spaces::get_space(&mut *tx, space_uri)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, "failed to load space");
             internal_error()
         })?;
-    // Both refusals are read here rather than at the auth seam because the head CAS is on
+    // All three refusals are read here rather than at the auth seam because the head CAS is on
     // `space_repos`, not `spaces`: outside this transaction a concurrent deleteSpace or
     // operator takedown could land between check and commit. `SpaceNotFound` for the
     // takedown, never `SpaceDeleted` — see `auth::space::require_space_servable`.
-    if row.as_ref().is_none_or(|row| row.deleted_at.is_some()) {
+    if row.as_ref().is_some_and(|row| row.deleted_at.is_some()) {
         tx.rollback().await.ok();
         return Err(ApiError::new(
             ErrorCode::SpaceNotFound,
             "space has been deleted",
         ));
+    }
+    // An own space that was never created (no row, or a config-less row recorded before this
+    // rule) is refused rather than silently made.
+    if row
+        .as_ref()
+        .is_none_or(|row| own_space && row.policy.is_none())
+    {
+        tx.rollback().await.ok();
+        return Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"));
     }
     if row.is_some_and(|row| row.takendown_at.is_some()) {
         tx.rollback().await.ok();
@@ -457,10 +473,31 @@ pub async fn apply_space_writes(
             })?;
     }
 
+    // An empty repo and a nonexistent one are the same thing (spec "Repo lifecycle"): a commit
+    // that removes the last record deletes the repo — head, records and oplog — so every read
+    // keyed on the head answers `RepoNotFound` and the next write starts a fresh repo. The
+    // commit itself is still announced below with the empty-set hash, which is how the authority
+    // and its syncers learn the repo is gone.
+    let emptied = !crate::db::space_repos::repo_has_records(&mut *tx, space_uri, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to count space records");
+            internal_error()
+        })?;
+    if emptied {
+        crate::db::space_repos::delete_repo(&mut tx, space_uri, did)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, space = %space_uri, did = %did, "failed to delete emptied space repo");
+                internal_error()
+            })?;
+    }
+
     // Finalize the folded LtHash state. The rev was already advanced (and
     // CAS-guarded) before the fold; inside the same transaction this update
     // trivially matches its own rev.
-    let finalized = crate::db::space_repos::advance_repo_rev(
+    let finalized = emptied
+        || crate::db::space_repos::advance_repo_rev(
         &mut *tx,
         space_uri,
         did,

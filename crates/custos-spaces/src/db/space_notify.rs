@@ -151,20 +151,33 @@ pub async fn upsert_writer(
     }
     let space_rev = repo_engine::next_record_rev(prev.as_deref().unwrap_or(""))
         .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-    sqlx::query(
-        "INSERT INTO space_writers (space_uri, repo_did, rev, hash, space_rev, updated_at) \
-         VALUES (?, ?, ?, ?, ?, datetime('now')) \
-         ON CONFLICT (space_uri, repo_did) \
-         DO UPDATE SET rev = excluded.rev, hash = excluded.hash, \
-                       space_rev = excluded.space_rev, updated_at = excluded.updated_at",
-    )
-    .bind(space_uri)
-    .bind(repo_did)
-    .bind(rev)
-    .bind(hash)
-    .bind(&space_rev)
-    .execute(&mut *conn)
-    .await?;
+    // An empty repo is a nonexistent one, so a report carrying the empty-set hash takes the repo
+    // out of the writer set. It still uses up a space revision and is forwarded, which is how
+    // syncers learn the repo is gone.
+    // ponytail: once the row is gone, a reordered older report for the same repo re-adds it;
+    // keep a tombstone rev per repo if that window matters.
+    if hash == crypto::LtHash::new().digest() {
+        sqlx::query("DELETE FROM space_writers WHERE space_uri = ? AND repo_did = ?")
+            .bind(space_uri)
+            .bind(repo_did)
+            .execute(&mut *conn)
+            .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO space_writers (space_uri, repo_did, rev, hash, space_rev, updated_at) \
+             VALUES (?, ?, ?, ?, ?, datetime('now')) \
+             ON CONFLICT (space_uri, repo_did) \
+             DO UPDATE SET rev = excluded.rev, hash = excluded.hash, \
+                           space_rev = excluded.space_rev, updated_at = excluded.updated_at",
+        )
+        .bind(space_uri)
+        .bind(repo_did)
+        .bind(rev)
+        .bind(hash)
+        .bind(&space_rev)
+        .execute(&mut *conn)
+        .await?;
+    }
     sqlx::query("UPDATE spaces SET last_space_rev = ? WHERE uri = ?")
         .bind(&space_rev)
         .bind(space_uri)

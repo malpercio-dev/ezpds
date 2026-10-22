@@ -37,7 +37,7 @@ src/
   state.rs         — `SpacesState`; `FromRef<SpacesState> for CoreState`
   router.rs        — the route table and the `[spaces] enabled` gate (`scripts/bruno-parity.sh` reads its `.route(` literals)
   capability.rs    — `CAPABILITY`, the `spaces` entry of the `describeServer` table
-  space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append → writer-set row, all one transaction; blob refs are GC-derived, and the notification fan-out is spawned from here post-commit so no write path can skip it. `SpaceWriteAdmission` is the one knob on its account-lifecycle guard: `Import` admits the deactivated state migration runs in (and skips write-point charging), `Active` is everything else — see module doc
+  space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append → writer-set row, all one transaction; a write into the writer's own space needs that space created first, and a commit that empties a repo deletes it (empty ≡ nonexistent); blob refs are GC-derived, and the notification fan-out is spawned from here post-commit so no write path can skip it. `SpaceWriteAdmission` is the one knob on its account-lifecycle guard: `Import` admits the deactivated state migration runs in (and skips write-point charging), `Active` is everything else — see module doc
   space_notify.rs  — outbound Atproto Spaces write notifications: `report_write` (repo host → authority, one `notifyWrite`, no registration) and `forward_write` (authority → registered syncers, only for an update the writer set accepted); detached, retrying transient failures, bounded — see module doc
   space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon
   space_oplog_sweep.rs — hourly `space_repo_ops` compaction sweep (7-day retention): the oplog is droppable by spec, and a syncer whose `since` predates the window heals via `getRepo` — see module doc
@@ -98,7 +98,7 @@ read authenticates through `auth::space::authenticate_space_read`.
 | `simplespace_get_space.rs` | `GET /xrpc/com.atproto.simplespace.getSpace` — the one simplespace method a space credential reaches; OAuth callers are owner-only |
 | `simplespace_put_member.rs` / `simplespace_remove_member.rs` | `POST /xrpc/com.atproto.simplespace.{putMember,removeMember}` — the member list behind the `member-list` policies (`putMember` upserts the member's `read`/`write` bits, read at credential mint, write on `notifyWrite`); `manage=update`, owner only, idempotent |
 | `simplespace_list_members.rs` | `GET /xrpc/com.atproto.simplespace.listMembers` — OAuth `read_self`, owner only, DID-keyset paged |
-| `space_lifecycle_test.rs` | account-lifecycle + migration coverage for the space surface: which account states may touch a space repo, and the `getRepo` → `/v1/space/import-repo` round trip (asserted on the set hash, the digest syncers fold against) |
+| `space_lifecycle_test.rs` | account-lifecycle + migration coverage for the space surface: which account states may touch a space repo, the repo lifecycle (own space must exist; an emptied repo reads as absent everywhere until the next write), and the `getRepo` → `/v1/space/import-repo` round trip (asserted on the set hash, the digest syncers fold against) |
 
 ## Rules
 

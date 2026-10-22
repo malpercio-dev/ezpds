@@ -429,8 +429,27 @@ pub async fn sweep_old_repo_ops(pool: &SqlitePool, max_age_secs: u64) -> Result<
     Ok(result.rows_affected())
 }
 
+/// Whether one account's repo in a space holds any record.
+pub async fn repo_has_records<'e, E>(
+    executor: E,
+    space_uri: &str,
+    account_did: &str,
+) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM space_records WHERE space_uri = ? AND account_did = ?)",
+    )
+    .bind(space_uri)
+    .bind(account_did)
+    .fetch_one(executor)
+    .await
+}
+
 /// Delete one account's repo in a space outright — oplog, records, then the head (FK order).
-/// The space-host side of `deleteSpace`: the authority's own repo goes with its space. Takes a
+/// Two callers: the write path when a commit empties the repo (an empty repo *is* a nonexistent
+/// one), and `deleteSpace`, which takes the authority's own repo with its space. Takes a
 /// connection rather than a generic executor because it is three statements.
 pub async fn delete_repo(
     conn: &mut sqlx::SqliteConnection,

@@ -21,7 +21,9 @@
 //!
 //! **What it does not carry.** Blobs (transfer them with `uploadBlob`, enumerated on the source
 //! by `com.atproto.space.listBlobs`) and, when this host is to be the space's *authority*, the
-//! simplespace config and member list (recreate those with `createSpace`/`putMember`). A repo
+//! simplespace config and member list (recreate those with `createSpace`/`putMember` *before*
+//! importing: a write into a space anchored on the writer's own DID requires the space to exist
+//! already, and an import is such a write). A repo
 //! in a space whose authority lives elsewhere needs neither — the space row is recorded by the
 //! write itself, exactly as it would be by the account's first ordinary write.
 //!
