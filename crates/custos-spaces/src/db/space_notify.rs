@@ -3,14 +3,10 @@
 //! The space-host notification tables: write-notification registrations
 //! (`space_notify_registrations`, V065) and the writer set (`space_writers`, V067).
 //!
-//! One registration table serves both roles the notification flow gives a host, discriminated by
-//! `repo_did`:
-//!
-//! * **Space host** — `registerNotify` stores a whole-space row (`repo_did = ''`, the sentinel
-//!   the V065 primary key is built around): notify this subscriber about *any* repo in the space.
-//! * **Repo host** — a first write into a space whose authority lives elsewhere stores a per-repo
-//!   row naming the authority's `#atproto_space_host`, so the authority learns of the write. The
-//!   spec's auto-registration.
+//! Registrations are whole-space syncer subscriptions a space host stores for `registerNotify`
+//! (`repo_did = ''`, the sentinel the V065 primary key is built around). A repo host keeps no
+//! registration: it pushes `notifyWrite` straight to the authority (V074 removed the old
+//! per-repo auto-registration rows).
 //!
 //! `subscriber_did` holds the full **service identifier** the wire carries — a DID with an
 //! optional `#fragment` naming the DID-document entry to deliver to. The bare DID (the service
@@ -25,18 +21,14 @@ use sqlx::{Sqlite, SqlitePool};
 /// The `repo_did` sentinel for a registration covering every repo in a space. Empty rather than
 /// NULL so the primary key can span both shapes (NULLs never compare equal, so a nullable column
 /// would admit duplicate rows).
-pub const WHOLE_SPACE: &str = "";
+const WHOLE_SPACE: &str = "";
 
-/// Record (or renew) a write-notification registration, returning its new expiry.
-///
-/// Re-registering an existing `(space, service, repo)` replaces it and extends the expiry, which
-/// is what `registerNotify` promises and what makes the repo-host auto-registration self-healing:
-/// every write renews the authority's subscription rather than letting it lapse mid-conversation.
+/// Record (or renew) a whole-space registration, returning its new expiry. Re-registering an
+/// existing `(space, service)` extends the expiry, which is what `registerNotify` promises.
 pub async fn upsert_registration<'e, E>(
     executor: E,
     space_uri: &str,
     service: &str,
-    repo_did: &str,
     ttl_secs: i64,
 ) -> Result<String, sqlx::Error>
 where
@@ -52,7 +44,7 @@ where
     )
     .bind(space_uri)
     .bind(service)
-    .bind(repo_did)
+    .bind(WHOLE_SPACE)
     .bind(ttl_secs)
     .fetch_one(executor)
     .await
@@ -79,41 +71,21 @@ where
     Ok(())
 }
 
-/// The unexpired subscribers to notify about a write to `repo_did` in `space_uri`: the
-/// whole-space registrations plus the ones naming this repo. Ordered so a fan-out is
-/// deterministic; capped by `limit` so one space can never spawn an unbounded delivery burst.
-pub async fn subscribers_for_write(
-    pool: &SqlitePool,
-    space_uri: &str,
-    repo_did: &str,
-    limit: i64,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT subscriber_did FROM space_notify_registrations \
-         WHERE space_uri = ? AND (repo_did = ? OR repo_did = ?) AND expires_at > datetime('now') \
-         ORDER BY subscriber_did LIMIT ?",
-    )
-    .bind(space_uri)
-    .bind(WHOLE_SPACE)
-    .bind(repo_did)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-}
-
-/// Every unexpired subscriber to a space, whatever repo they registered for — the recipients of
-/// `notifySpaceDeleted`.
+/// Every unexpired subscriber to a space — the recipients of a forwarded `notifyWrite` and of
+/// `notifySpaceDeleted`. Ordered so a fan-out is deterministic; capped by `limit` so one space can
+/// never spawn an unbounded delivery burst.
 pub async fn subscribers_for_space(
     pool: &SqlitePool,
     space_uri: &str,
     limit: i64,
 ) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT DISTINCT subscriber_did FROM space_notify_registrations \
-         WHERE space_uri = ? AND expires_at > datetime('now') \
+        "SELECT subscriber_did FROM space_notify_registrations \
+         WHERE space_uri = ? AND repo_did = ? AND expires_at > datetime('now') \
          ORDER BY subscriber_did LIMIT ?",
     )
     .bind(space_uri)
+    .bind(WHOLE_SPACE)
     .bind(limit)
     .fetch_all(pool)
     .await
@@ -129,8 +101,9 @@ pub struct WriterRevs {
 
 /// Record (or advance) a repo in a space's writer set, assigning the update the next space
 /// revision. A no-op returning `None` unless this host is the space's authority
-/// (`spaces.policy IS NOT NULL`) — the guard shares the caller's connection, so inside the write
-/// transaction it is atomic with the write.
+/// (`spaces.policy IS NOT NULL`) and `rev` advances the repo's stored one — a replayed or
+/// reordered report must not move a writer backwards or burn a space revision. The guards share
+/// the caller's connection, so inside the write transaction they are atomic with the write.
 ///
 /// The space revision is a TID strictly greater than every one already assigned in the space
 /// (the maximum over the writer rows, since each update replaces its writer's row), which is
@@ -149,6 +122,16 @@ pub async fn upsert_writer(
             .fetch_optional(&mut *conn)
             .await?;
     if is_authority.is_none() {
+        return Ok(None);
+    }
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT rev FROM space_writers WHERE space_uri = ? AND repo_did = ?")
+            .bind(space_uri)
+            .bind(repo_did)
+            .fetch_optional(&mut *conn)
+            .await?;
+    // TIDs sort lexicographically in time order.
+    if stored.is_some_and(|stored| rev <= stored.as_str()) {
         return Ok(None);
     }
     let prev: Option<String> = sqlx::query_scalar(

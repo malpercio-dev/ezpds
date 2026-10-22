@@ -5,17 +5,17 @@
 //! Two directions ride one path, because a host is often both at once:
 //!
 //! * **Repo host → space host.** A user's write into a space whose authority lives elsewhere is
-//!   reported to that authority so it can maintain the writer set `listRepos` answers. The
-//!   subscription is created by the write itself (the spec's auto-registration): every commit
-//!   upserts a per-repo registration naming the authority's `#atproto_space_host`, which both
-//!   establishes it on the first write and renews it on every later one.
+//!   pushed as one `notifyWrite` to the authority's `#atproto_space_host`, signed by the repo's
+//!   own key, so the authority can maintain the writer set `listRepos` answers. No subscription
+//!   is involved: the authority needs none to hear about a write into its own space.
 //! * **Space host → registered syncers.** A write to any repo in a space we are the authority
 //!   for — our own account's, or one an inbound `notifyWrite` told us about — is forwarded to
-//!   every service that called `registerNotify`.
+//!   every service that called `registerNotify`, carrying the `spaceRev` the writer set assigned
+//!   it and the `prevSpaceRev` it follows, so a syncer that sees a gap knows it missed one.
 //!
 //! **Best-effort, by spec.** Nothing here blocks a commit: the durable write has already landed
-//! and returned before the fan-out task is spawned. Each delivery is retried with backoff and
-//! then dropped; a subscriber that missed one heals from the set hash on its next
+//! and returned before the fan-out task is spawned. Each delivery retries network failures and
+//! transient statuses (5xx, 408, 429) with backoff and stops on any other error; a subscriber that missed one heals from the set hash on its next
 //! `listRepoOps`, or from the periodic `listRepos` sweep. A permanent failure deliberately does
 //! **not** unregister the subscriber — a syncer that is briefly down or mid-deploy would
 //! silently lose its subscription — so registrations lapse only at their own expiry.
@@ -81,8 +81,10 @@ const NOTIFY_SPACE_DELETED: &str = "com.atproto.space.notifySpaceDeleted";
 
 /// Announce that `repo_did`'s repo in `space` advanced to `rev`/`hash`.
 ///
-/// Returns immediately: the registration upsert and every delivery happen on a detached task, so
-/// a write path calls this after its commit and never waits. `repo_did` is also the DID whose
+/// Returns immediately: every delivery happens on a detached task, so a write path calls this
+/// after its commit and never waits. `space_revs` is what the writer set assigned the update; the
+/// space host forwards only updates it accepted, so a caller holding `None` for a space this host
+/// is the authority for has nothing to forward. `repo_did` is also the DID whose
 /// host already knows about this write — the repo itself for our own commit, and likewise for an
 /// inbound `notifyWrite` we are forwarding — so it is skipped in the fan-out and a notification
 /// is never echoed back at its source.
@@ -100,6 +102,7 @@ pub fn fan_out_write(
     let state = state.clone();
     let space = space.clone();
     let repo_did = repo_did.to_string();
+    let accepted = space_revs.is_some();
     let mut body = serde_json::json!({
         "space": space.uri,
         "repo": repo_did,
@@ -116,8 +119,8 @@ pub fn fan_out_write(
         let _permit = fanout_permits().acquire().await;
 
         // Whether this host is the space's authority: a `spaces` row with simplespace config.
-        // Also picks the signer — as the authority we speak for the space, otherwise we speak
-        // for the account whose repo advanced. A deleted or operator-taken-down space fans out
+        // Also picks the direction and the signer — as the authority we forward and speak for the
+        // space, otherwise we report and speak for the account whose repo advanced. A deleted or operator-taken-down space fans out
         // nothing: local writes are already refused, but `notifyWrite` forwards a *foreign* repo
         // host's report, and a taken-down space must stop acting as space host entirely.
         let is_authority = match crate::db::spaces::get_space(&state.db, &space.uri).await {
@@ -131,32 +134,23 @@ pub fn fan_out_write(
             }
         };
 
-        // Repo host: (re-)subscribe the authority to this repo before looking for subscribers, so
-        // the very first write into a shared space already reaches it.
+        // Repo host: one push to the authority, signed by the repo whose head moved.
         if !is_authority {
             let service = crate::auth::space::space_host_aud(&space);
-            if let Err(error) = crate::db::space_notify::upsert_registration(
-                &state.db,
-                &space.uri,
-                &service,
-                &repo_did,
-                REGISTRATION_TTL_SECS,
-            )
-            .await
+            let (did, fragment) = split_service(&service);
+            if let Err(error) = deliver(&state, did, fragment, &repo_did, NOTIFY_WRITE, &body).await
             {
-                tracing::debug!(%error, space = %space.uri, "space notify: authority auto-registration failed");
+                tracing::debug!(%error, space = %space.uri, "space notify: report to authority failed");
             }
+            return;
+        }
+        if !accepted {
+            return;
         }
 
-        let signer_did = if is_authority {
-            space.authority.clone()
-        } else {
-            repo_did.clone()
-        };
-        let subscribers = match crate::db::space_notify::subscribers_for_write(
+        let subscribers = match crate::db::space_notify::subscribers_for_space(
             &state.db,
             &space.uri,
-            &repo_did,
             MAX_SUBSCRIBERS,
         )
         .await
@@ -172,7 +166,7 @@ pub fn fan_out_write(
             &state,
             subscribers,
             &repo_did,
-            &signer_did,
+            &space.authority,
             NOTIFY_WRITE,
             body,
         )
@@ -235,8 +229,9 @@ fn split_service(service: &str) -> (&str, Option<&str>) {
 }
 
 /// Resolve one subscriber, mint a service-auth token for the single method, and POST — retrying
-/// transport failures and 5xx with doubling backoff. A 4xx is permanent: retrying an argument
-/// the subscriber has already rejected only wastes its capacity.
+/// transport failures and transient statuses (5xx, 408 Request Timeout, 429 Too Many Requests)
+/// with doubling backoff. Any other 4xx is permanent: retrying an argument the subscriber has
+/// already rejected only wastes its capacity.
 async fn deliver(
     state: &SpacesState,
     did: &str,
@@ -283,7 +278,10 @@ async fn deliver(
             .await
         {
             Ok(response) if response.status().is_success() => return Ok(()),
-            Ok(response) if response.status().is_client_error() => {
+            Ok(response)
+                if response.status().is_client_error()
+                    && !matches!(response.status().as_u16(), 408 | 429) =>
+            {
                 return Err(format!("subscriber rejected: {}", response.status()));
             }
             Ok(response) => last = format!("subscriber returned {}", response.status()),
@@ -298,7 +296,7 @@ async fn deliver(
 }
 
 /// The URL to deliver to: the named entry of the subscriber's DID document. An identifier with
-/// no fragment — and the `#atproto_space_host` one a repo host auto-registers — fall back to
+/// no fragment — and the authority's `#atproto_space_host` a repo host reports to — fall back to
 /// `#atproto_pds`, which is where the alpha's own hosts answer (see
 /// `identity::resolution::space_host_endpoint`).
 async fn resolve_service_endpoint(
@@ -336,7 +334,7 @@ mod tests {
 
     use super::*;
     use crate::db::dids::seed_did_document;
-    use crate::db::space_notify::{upsert_registration, WHOLE_SPACE};
+    use crate::db::space_notify::upsert_registration;
     use crate::db::spaces::{insert_space, NewSpace};
     use crate::space_uri::parse_space_ref;
     use crate::test_support::{seed_account_with_repo, state_with_master_key};
@@ -347,6 +345,7 @@ mod tests {
     const AUTHORITY: &str = "did:plc:authoritynotifyaaaaaaaaa";
     const SYNCER: &str = "did:plc:syncernotifyaaaaaaaaaaaa";
     const WRITER: &str = "did:plc:writernotifyaaaaaaaaaaaa";
+    const THROTTLER: &str = "did:plc:throttlernotifyaaaaaaaaa";
     const SPACE: &str = "at://did:plc:authoritynotifyaaaaaaaaa/space/org.example.bucket/main";
 
     /// A host that is the space's authority, holding the repo signing key every
@@ -392,15 +391,9 @@ mod tests {
     }
 
     async fn register(state: &SpacesState, service: &str) {
-        upsert_registration(
-            &state.db,
-            SPACE,
-            service,
-            WHOLE_SPACE,
-            REGISTRATION_TTL_SECS,
-        )
-        .await
-        .unwrap();
+        upsert_registration(&state.db, SPACE, service, REGISTRATION_TTL_SECS)
+            .await
+            .unwrap();
     }
 
     fn notify_ok(lxm: &str) -> Mock {
@@ -488,30 +481,79 @@ mod tests {
         assert_eq!(claims["lxm"], NOTIFY_WRITE);
     }
 
-    /// The endpoint fallback that *is* the interop path: neither the reference implementation
-    /// nor the hosted alpha publishes an `#atproto_space_host` service, while the repo-host
-    /// auto-registration always names one. Both have to land on `#atproto_pds`.
+    /// The repo-host direction: a write into a space whose authority is elsewhere is one
+    /// `notifyWrite` to that authority, signed by the writer, with no registration row left
+    /// behind. The authority publishes only `#atproto_pds`, like the reference implementation and
+    /// the hosted alpha, so this also pins the `#atproto_space_host` → `#atproto_pds` fallback.
     #[tokio::test]
-    async fn the_auto_registered_space_host_fragment_falls_back_to_atproto_pds() {
+    async fn a_repo_host_reports_once_to_the_authority_without_registering() {
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, WRITER).await;
+        insert_space(
+            &state.db,
+            &NewSpace {
+                uri: SPACE,
+                authority_did: AUTHORITY,
+                space_type: "org.example.bucket",
+                skey: "main",
+                policy: None,
+                app_access: None,
+                app_allowed: None,
+                managing_app: None,
+                write_policy: None,
+                write_managing_app: None,
+            },
+        )
+        .await
+        .unwrap();
+        let server = MockServer::start().await;
+        notify_ok(NOTIFY_WRITE).mount(&server).await;
+        seed_host(&state, AUTHORITY, "atproto_pds", &server.uri()).await;
+
+        let space = parse_space_ref(SPACE).unwrap();
+        fan_out_write(&state, &space, WRITER, "3lzz", &[0xde, 0xad], None)
+            .await
+            .unwrap();
+
+        let requests = received(&server).await;
+        assert_eq!(requests.len(), 1, "exactly one report to the authority");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
+            serde_json::json!({
+                "space": SPACE,
+                "repo": WRITER,
+                "repoRev": "3lzz",
+                "hash": { "$bytes": "3q0=" },
+            }),
+            "a repo host assigns no spaceRev — that is the authority's job"
+        );
+        let claims = claims(&requests[0]);
+        assert_eq!(claims["iss"], WRITER, "the repo host speaks for its user");
+        assert_eq!(claims["aud"], AUTHORITY);
+        assert_eq!(claims["lxm"], NOTIFY_WRITE);
+
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM space_notify_registrations")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0, "reporting a write subscribes nobody");
+    }
+
+    /// The space host forwards only updates the writer set accepted: `None` (a stale `repoRev`)
+    /// reaches no syncer.
+    #[tokio::test]
+    async fn an_authority_forwards_nothing_it_did_not_accept() {
         let state = authority_state().await;
         let server = MockServer::start().await;
         notify_ok(NOTIFY_WRITE).mount(&server).await;
-
-        seed_host(&state, SYNCER, "atproto_pds", &server.uri()).await;
-        register(&state, &format!("{SYNCER}#atproto_space_host")).await;
+        seed_host(&state, SYNCER, "atproto_space_host", &server.uri()).await;
+        register(&state, SYNCER).await;
 
         let space = parse_space_ref(SPACE).unwrap();
         fan_out_write(&state, &space, WRITER, "3lzz", &[], None)
             .await
             .unwrap();
-
-        let requests = received(&server).await;
-        assert_eq!(
-            requests.len(),
-            1,
-            "a host with only #atproto_pds is reachable"
-        );
-        assert_eq!(claims(&requests[0])["aud"], SYNCER);
+        assert!(received(&server).await.is_empty());
     }
 
     /// `notifySpaceDeleted` names the space and nothing else, under its own method scope.
@@ -549,8 +591,8 @@ mod tests {
         assert_eq!(claims["lxm"], NOTIFY_SPACE_DELETED);
     }
 
-    /// The retry ladder. A 5xx is transient and spends every attempt; a 4xx is the subscriber
-    /// rejecting the argument, and re-sending it would only burn its capacity.
+    /// The retry ladder. A 5xx or 429 is transient and spends every attempt; any other 4xx is the
+    /// subscriber rejecting the argument, and re-sending it would only burn its capacity.
     #[tokio::test]
     async fn transient_failures_are_retried_and_rejections_are_not() {
         let state = authority_state().await;
@@ -567,6 +609,18 @@ mod tests {
             .expect_err("every attempt failed");
         assert!(error.contains("503"), "{error}");
         assert_eq!(received(&flaky).await.len(), MAX_ATTEMPTS as usize);
+
+        // 429 is a 4xx, but it is the subscriber asking for patience, not rejecting the argument.
+        let throttling = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&throttling)
+            .await;
+        seed_host(&state, THROTTLER, "atproto_space_host", &throttling.uri()).await;
+        deliver(&state, THROTTLER, None, AUTHORITY, NOTIFY_WRITE, &body)
+            .await
+            .expect_err("every attempt was throttled");
+        assert_eq!(received(&throttling).await.len(), MAX_ATTEMPTS as usize);
 
         let rejecting = MockServer::start().await;
         Mock::given(method("POST"))

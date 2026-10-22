@@ -37,6 +37,7 @@ docs {
   forwarding; anyone else is 401.
 
   A notification about a space this server is not the authority for is accepted and dropped, as
-  is one from a repo the space's write policy does not admit. Errors: 400 FutureRev when repoRev
+  is one from a repo the space's write policy does not admit, and one whose repoRev does not
+  advance the stored one (no writer-set change, nothing forwarded). Errors: 400 FutureRev when repoRev
   is more than five minutes ahead of this server's clock.
 }

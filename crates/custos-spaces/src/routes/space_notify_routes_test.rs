@@ -2,8 +2,8 @@
 //
 // End-to-end coverage of the space-host notification surface (listRepos, registerNotify,
 // unregisterNotify, notifyWrite) plus the two effects that hang off the write path: the writer
-// set a local commit records, and the authority auto-registration a write into a *foreign*
-// authority's space creates. Driven through the real router, so the lexicon layer, the space
+// set a local commit records, and the *absence* of any registration when a write lands in a
+// foreign authority's space (the repo host reports it directly; see `space_notify`'s tests). Driven through the real router, so the lexicon layer, the space
 // auth seam and the store are all in the path — cross-route journeys live here because routes
 // may not import one another (the `space_routes_test.rs` convention).
 //
@@ -226,7 +226,7 @@ async fn register_and_unregister_notify_round_trip() {
         "{body}"
     );
 
-    let subscribers = crate::db::space_notify::subscribers_for_write(&state.db, SPACE, ALICE, 10)
+    let subscribers = crate::db::space_notify::subscribers_for_space(&state.db, SPACE, 10)
         .await
         .unwrap();
     assert_eq!(subscribers, vec![service.clone()]);
@@ -244,7 +244,7 @@ async fn register_and_unregister_notify_round_trip() {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
     }
-    let subscribers = crate::db::space_notify::subscribers_for_write(&state.db, SPACE, ALICE, 10)
+    let subscribers = crate::db::space_notify::subscribers_for_space(&state.db, SPACE, 10)
         .await
         .unwrap();
     assert!(subscribers.is_empty());
@@ -271,7 +271,7 @@ async fn register_notify_refuses_an_unresolvable_service() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "ServiceNotResolvable");
     assert!(
-        crate::db::space_notify::subscribers_for_write(&state.db, SPACE, ALICE, 10)
+        crate::db::space_notify::subscribers_for_space(&state.db, SPACE, 10)
             .await
             .unwrap()
             .is_empty()
@@ -384,40 +384,29 @@ async fn seed_syncer_document(state: &SpacesState, kp: &crypto::P256Keypair) {
     .await;
 }
 
-// ── auto-registration ───────────────────────────────────────────────────────
+// ── repo-host reporting ─────────────────────────────────────────────────────
 
-/// The spec's auto-registration: a write into a space whose authority lives elsewhere subscribes
-/// that authority's `#atproto_space_host` to this repo, so the very first write reaches it. A
-/// write into a space *this* host is the authority for registers nothing — there is no one to
-/// tell but ourselves.
+/// A write into a space whose authority lives elsewhere leaves no registration row and no
+/// writer-set claim here: the repo host reports straight to the authority, and this host does not
+/// answer `listRepos` for a space it is not the authority of.
 #[tokio::test]
-async fn a_write_into_a_foreign_space_auto_registers_the_authority() {
+async fn a_write_into_a_foreign_space_registers_nothing() {
     let state = setup().await;
     let kp = crypto::generate_p256_keypair().unwrap();
     seed_undeliverable(&state, FOREIGN, &kp).await;
 
     write_one(&state, FOREIGN_SPACE, ALICE, "one").await;
-    let subscribers =
-        crate::db::space_notify::subscribers_for_write(&state.db, FOREIGN_SPACE, ALICE, 10)
-            .await
-            .unwrap();
-    assert_eq!(subscribers, vec![format!("{FOREIGN}#atproto_space_host")]);
-    // ...and the foreign space's writer set stays empty: this host does not answer `listRepos`
-    // for it, so it keeps no claim about it.
+    write_one(&state, SPACE, ALICE, "one").await;
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM space_notify_registrations")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
     assert!(
         crate::db::space_notify::list_writers(&state.db, FOREIGN_SPACE, None, 10)
             .await
             .unwrap()
             .is_empty()
-    );
-
-    write_one(&state, SPACE, ALICE, "one").await;
-    assert!(
-        crate::db::space_notify::subscribers_for_write(&state.db, SPACE, ALICE, 10)
-            .await
-            .unwrap()
-            .is_empty(),
-        "a write into our own space registers nobody"
     );
 }
 
@@ -445,6 +434,44 @@ async fn notify_write_records_a_foreign_repo_in_the_writer_set() {
     let (_, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
     assert_eq!(registrations(&body), vec![carol.clone()], "{body}");
     assert_eq!(body["repos"][0]["repoRev"], "3kabcdefghij2");
+}
+
+/// A report that does not advance the repo's stored `repoRev` is acknowledged and ignored: the
+/// writer row keeps the newer rev and the space revision does not move.
+#[tokio::test]
+async fn notify_write_ignores_a_non_increasing_rev() {
+    let state = setup().await;
+    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
+    let report = |rev: &'static str| {
+        post(
+            "com.atproto.space.notifyWrite",
+            &token,
+            notify_body(SPACE, &carol, rev),
+        )
+    };
+    let writer = || async {
+        let mut rows = crate::db::space_notify::list_writers(&state.db, SPACE, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        rows.remove(0)
+    };
+
+    let (status, body) = send(&state, report("3kabcdefghij3")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let accepted = writer().await;
+
+    // An older rev, then a replay of the current one.
+    for rev in ["3kabcdefghij2", "3kabcdefghij3"] {
+        let (status, body) = send(&state, report(rev)).await;
+        assert_eq!(status, StatusCode::OK, "{rev}: {body}");
+    }
+    let after = writer().await;
+    assert_eq!(after.rev, "3kabcdefghij3");
+    assert_eq!(
+        after.space_rev, accepted.space_rev,
+        "an ignored report assigns no space revision"
+    );
 }
 
 /// A `repoRev` ahead of the permitted clock skew is refused rather than pinned into the writer

@@ -44,7 +44,8 @@ pub struct NotifyWriteInput {
 /// dropped rather than refused, because a syncer forwarding into a space it merely holds a copy
 /// of has nothing to do with the report either way. A `repoRev` further ahead of this host's
 /// clock than [`MAX_REV_SKEW_SECS`] is refused (`FutureRev`) — such a revision would pin the
-/// repo's writer-set entry ahead of every honest update. When this host is the authority the
+/// repo's writer-set entry ahead of every honest update. One that does not advance the stored
+/// revision is acknowledged and ignored: no writer-set change, no `spaceRev`, nothing forwarded. When this host is the authority the
 /// repo must also pass the space's write policy; a repo it refuses is acknowledged and not
 /// tracked or forwarded.
 pub async fn space_notify_write(
@@ -107,15 +108,19 @@ pub async fn space_notify_write(
     .map_err(internal)?;
     drop(conn);
 
-    // Forward to the registered syncers, skipping the repo whose host just told us.
-    drop(crate::space_notify::fan_out_write(
-        &state,
-        &space,
-        &input.repo,
-        &input.repo_rev,
-        &hash,
-        revs,
-    ));
+    // Forward an accepted update to the registered syncers, skipping the repo whose host just
+    // told us. `None` is a stale `repoRev` or a space this host is not the authority for — the
+    // latter must not be re-reported to that authority on the repo's behalf.
+    if revs.is_some() {
+        drop(crate::space_notify::fan_out_write(
+            &state,
+            &space,
+            &input.repo,
+            &input.repo_rev,
+            &hash,
+            revs,
+        ));
+    }
 
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }
