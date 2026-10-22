@@ -121,14 +121,20 @@
     lib.rs's BACKUP_TASK_IDENTIFIER (bundle-id-prefixed by Apple convention). On fire the
     task runs an incremental, CID-verified backup pass for each opted-in identity, so a
     mirror stays topped up without the user opening the app.
+
+    Background PLC monitoring: the `fetch` mode lets the app register a BGAppRefreshTask
+    under plc-check (lib.rs's PLC_CHECK_TASK_IDENTIFIER), which sweeps every did:plc identity
+    for directory operations the device key did not sign while the app is closed.
   -->
   <key>UIBackgroundModes</key>
   <array>
+    <string>fetch</string>
     <string>processing</string>
   </array>
   <key>BGTaskSchedulerPermittedIdentifiers</key>
   <array>
     <string>dev.malpercio.identitywallet.blob-backup</string>
+    <string>dev.malpercio.identitywallet.plc-check</string>
   </array>
 </dict>
 </plist>

@@ -13,11 +13,11 @@ The iOS implementations of `obsign-core`'s platform traits ([ADR-0039](../../doc
 | `src/keychain.rs` | `AppleKeychain`, the `KeyStore`: generic-password items under the app's service name, the `kSecAttrSynchronizable` store as the cloud slot, delete-then-add for `AfterFirstUnlock` |
 | `src/enclave_signer.rs` | `EnclaveSigner`, the Secure Enclave `Signer` (real device only), and `classify_se_fast_path`, the host-tested decision behind its restore-safe fast path |
 | `src/icloud.rs` | `ICloudBackupStore`, the `BackupStore`: the iCloud Drive ubiquity container, no location on a device with iCloud Drive off, the shell's local folder off-device; and the evicted-placeholder download |
-| `src/scheduler.rs` | `IosScheduler`, the `Scheduler` (iOS only): each job a `BGProcessingTask` under an app-supplied identifier, re-armed as it fires, "unmetered only" checked at fire time, completed exactly once |
+| `src/scheduler.rs` | `IosScheduler`, the `Scheduler` (iOS only): each job a `BGProcessingTask` or a `BGAppRefreshTask` (`TaskKind`, chosen by the app) under an app-supplied identifier, re-armed as it fires, "unmetered only" checked at fire time, completed exactly once |
 
 ## Contracts
 
-- **Nothing here names an app.** The Keychain service, the `BGTaskScheduler` identifiers, and the off-device backup folder are constructor arguments. Each identifier must also be listed in the app's `Info.ios.plist` `BGTaskSchedulerPermittedIdentifiers`.
+- **Nothing here names an app.** The Keychain service, the `BGTaskScheduler` identifiers, and the off-device backup folder are constructor arguments. Each identifier must also be listed in the app's `Info.ios.plist` `BGTaskSchedulerPermittedIdentifiers`, with the `UIBackgroundModes` entry its kind needs (`processing`, or `fetch` for app refresh).
 - **`IosScheduler::register` runs before app launch completes** (the wallet calls it from Tauri's `setup`). It needs a `StartJob` from the shell, which owns the async runtime and the app's `Core`.
 
 ## Boundaries

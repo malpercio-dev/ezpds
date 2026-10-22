@@ -1731,6 +1731,11 @@ fn share1_backfill_dids() -> Vec<String> {
 #[cfg(target_os = "ios")]
 const BACKUP_TASK_IDENTIFIER: &str = "dev.malpercio.identitywallet.blob-backup";
 
+/// The `BGTaskScheduler` identifier for the background PLC sweep, an app-refresh task (short,
+/// and run through the day rather than overnight). Same plist rule as the backup identifier.
+#[cfg(target_os = "ios")]
+const PLC_CHECK_TASK_IDENTIFIER: &str = "dev.malpercio.identitywallet.plc-check";
+
 /// The UI end of `obsign_core::events`: each event goes to the webview as a Tauri event.
 struct TauriEvents(tauri::AppHandle);
 
@@ -1854,22 +1859,34 @@ pub fn run() {
                 });
             }
 
-            // Start PLC monitoring timer (15-minute interval)
+            // Start the PLC monitor's foreground timer (15-minute interval). It runs alongside
+            // the background PLC job requested below, which covers the app being closed.
             let monitor_handle = app.handle().clone();
             tauri::async_runtime::spawn(run_monitoring_loop(monitor_handle));
 
             // iOS only: register the background jobs with BGTaskScheduler (before app launch
             // completes, which `setup` does) and install the scheduler. Off-device nothing is
             // installed and background requests are dropped (scheduling is a device concern;
-            // the harness is untouched). Then submit the backup request the settings ask for.
+            // the harness is untouched). Then submit the backup request the settings ask for and
+            // the PLC sweep request.
             #[cfg(target_os = "ios")]
             {
+                use obsign_core::scheduler::BackgroundJob;
+                use obsign_platform_ios::scheduler::{IosScheduler, TaskKind};
                 let app_handle = app.handle().clone();
-                let scheduler = obsign_platform_ios::scheduler::IosScheduler::new(
-                    vec![(
-                        obsign_core::scheduler::BackgroundJob::BackupMirror,
-                        BACKUP_TASK_IDENTIFIER,
-                    )],
+                let scheduler = IosScheduler::new(
+                    vec![
+                        (
+                            BackgroundJob::BackupMirror,
+                            BACKUP_TASK_IDENTIFIER,
+                            TaskKind::Processing,
+                        ),
+                        (
+                            BackgroundJob::PlcCheck,
+                            PLC_CHECK_TASK_IDENTIFIER,
+                            TaskKind::AppRefresh,
+                        ),
+                    ],
                     std::sync::Arc::new(move |job, on_done| {
                         let app = app_handle.clone();
                         let worker = tauri::async_runtime::spawn(async move {
@@ -1883,6 +1900,7 @@ pub fn run() {
                 let _ = obsign_core::scheduler::install(Box::new(scheduler));
             }
             obsign_core::backup_policy::apply_schedule();
+            obsign_core::plc_monitor::schedule_background_check();
 
             // iOS only: install the APNs device-token callbacks and ask for notification
             // permission. Must run in `setup` — the delegate methods have to exist before iOS

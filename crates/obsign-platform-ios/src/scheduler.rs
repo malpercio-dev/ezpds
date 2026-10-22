@@ -1,9 +1,11 @@
-//! [`IosScheduler`], the iOS [`Scheduler`]: each [`BackgroundJob`] is a `BGProcessingTask`
-//! under an app-supplied identifier, via objc2 (`objc2-background-tasks` + `block2`).
+//! [`IosScheduler`], the iOS [`Scheduler`]: each [`BackgroundJob`] is a `BGProcessingTask` or a
+//! `BGAppRefreshTask` ([`TaskKind`]) under an app-supplied identifier, via objc2
+//! (`objc2-background-tasks` + `block2`).
 //!
 //! Each identifier must appear in the app's `Info.ios.plist` `BGTaskSchedulerPermittedIdentifiers`
-//! (with the `processing` `UIBackgroundModes` entry): iOS refuses to register or submit one it
-//! does not permit. [`IosScheduler::register`] must run before app launch completes.
+//! (with the `processing` or `fetch` `UIBackgroundModes` entry for its kind): iOS refuses to
+//! register or submit one it does not permit. [`IosScheduler::register`] must run before app
+//! launch completes.
 //!
 //! A request is periodic: it is kept in memory, re-submitted as the task begins (Apple's
 //! guidance), and dropped on `cancel`. "Unmetered only", which `BGProcessingTaskRequest` cannot
@@ -23,18 +25,30 @@ use obsign_core::scheduler::{skip_for_network, BackgroundJob, JobRequest, Schedu
 pub type StartJob =
     Arc<dyn Fn(BackgroundJob, Box<dyn FnOnce() + Send>) -> Box<dyn FnOnce() + Send> + Send + Sync>;
 
+/// Which `BGTaskRequest` a job is submitted as.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TaskKind {
+    /// `BGProcessingTaskRequest`: minutes of runtime, usually while the device is idle (often
+    /// overnight), and honours `requires_network` / `requires_external_power`.
+    Processing,
+    /// `BGAppRefreshTaskRequest`: about 30 seconds, run through the day as iOS learns how the
+    /// app is used. It takes no conditions, so `requires_network` and `requires_external_power`
+    /// are ignored; the job must tolerate running offline.
+    AppRefresh,
+}
+
 pub struct IosScheduler(Arc<Inner>);
 
 struct Inner {
-    identifiers: Vec<(BackgroundJob, &'static str)>,
+    identifiers: Vec<(BackgroundJob, &'static str, TaskKind)>,
     start: StartJob,
     requests: Mutex<HashMap<BackgroundJob, JobRequest>>,
 }
 
 impl IosScheduler {
     /// `identifiers` maps each job the app runs in the background to its permitted
-    /// `BGTaskScheduler` identifier.
-    pub fn new(identifiers: Vec<(BackgroundJob, &'static str)>, start: StartJob) -> Self {
+    /// `BGTaskScheduler` identifier and the kind of task it is submitted as.
+    pub fn new(identifiers: Vec<(BackgroundJob, &'static str, TaskKind)>, start: StartJob) -> Self {
         Self(Arc::new(Inner {
             identifiers,
             start,
@@ -51,7 +65,7 @@ impl IosScheduler {
         use std::ptr::NonNull;
 
         let scheduler = unsafe { BGTaskScheduler::sharedScheduler() };
-        for &(job, identifier) in &self.0.identifiers {
+        for &(job, identifier, _) in &self.0.identifiers {
             let inner = self.0.clone();
             // Escaping launch handler; iOS stores a copy for the process lifetime and calls it
             // on the main thread when it decides to run the task, handing us the live `BGTask`.
@@ -91,7 +105,7 @@ impl Scheduler for IosScheduler {
         use objc2_foundation::NSString;
 
         self.0.lock_requests().remove(&job);
-        if let Some(identifier) = self.0.identifier(job) {
+        if let Some((identifier, _)) = self.0.identifier(job) {
             let scheduler = unsafe { BGTaskScheduler::sharedScheduler() };
             unsafe { scheduler.cancelTaskRequestWithIdentifier(&NSString::from_str(identifier)) };
         }
@@ -99,11 +113,11 @@ impl Scheduler for IosScheduler {
 }
 
 impl Inner {
-    fn identifier(&self, job: BackgroundJob) -> Option<&'static str> {
+    fn identifier(&self, job: BackgroundJob) -> Option<(&'static str, TaskKind)> {
         self.identifiers
             .iter()
-            .find(|(j, _)| *j == job)
-            .map(|&(_, id)| id)
+            .find(|(j, _, _)| *j == job)
+            .map(|&(_, id, kind)| (id, kind))
     }
 
     fn lock_requests(&self) -> std::sync::MutexGuard<'_, HashMap<BackgroundJob, JobRequest>> {
@@ -112,34 +126,49 @@ impl Inner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Build and submit the `BGProcessingTaskRequest` for `request`. Failures (the simulator
-    /// has no `BGTaskScheduler`; an unpermitted identifier; too many pending requests) are
-    /// logged, never fatal.
+    /// Build and submit the `BGTaskRequest` of the job's [`TaskKind`] for `request`. Failures
+    /// (the simulator has no `BGTaskScheduler`; an unpermitted identifier; too many pending
+    /// requests) are logged, never fatal.
     fn submit(&self, request: &JobRequest) {
+        use objc2::rc::Retained;
         use objc2::AnyThread;
-        use objc2_background_tasks::{BGProcessingTaskRequest, BGTaskScheduler};
+        use objc2_background_tasks::{
+            BGAppRefreshTaskRequest, BGProcessingTaskRequest, BGTaskRequest, BGTaskScheduler,
+        };
         use objc2_foundation::{NSDate, NSString};
 
-        let Some(identifier) = self.identifier(request.job) else {
+        let Some((identifier, kind)) = self.identifier(request.job) else {
             tracing::warn!(job = ?request.job, "no BGTaskScheduler identifier for this job");
             return;
         };
-        let scheduler = unsafe { BGTaskScheduler::sharedScheduler() };
-        let task_request = unsafe {
-            BGProcessingTaskRequest::initWithIdentifier(
-                BGProcessingTaskRequest::alloc(),
-                &NSString::from_str(identifier),
-            )
+        let identifier = NSString::from_str(identifier);
+        let task_request: Retained<BGTaskRequest> = match kind {
+            TaskKind::Processing => {
+                let processing = unsafe {
+                    BGProcessingTaskRequest::initWithIdentifier(
+                        BGProcessingTaskRequest::alloc(),
+                        &identifier,
+                    )
+                };
+                unsafe {
+                    processing.setRequiresNetworkConnectivity(request.requires_network);
+                    processing.setRequiresExternalPower(request.requires_external_power);
+                }
+                Retained::into_super(processing)
+            }
+            TaskKind::AppRefresh => Retained::into_super(unsafe {
+                BGAppRefreshTaskRequest::initWithIdentifier(
+                    BGAppRefreshTaskRequest::alloc(),
+                    &identifier,
+                )
+            }),
         };
         unsafe {
-            task_request.setRequiresNetworkConnectivity(request.requires_network);
-            task_request.setRequiresExternalPower(request.requires_external_power);
             let earliest =
                 NSDate::dateWithTimeIntervalSinceNow(request.earliest_after.as_secs_f64());
             task_request.setEarliestBeginDate(Some(&earliest));
         }
-        // A `BGProcessingTaskRequest` is a `BGTaskRequest`; `submitTaskRequest_error` takes the
-        // superclass (deref coercion).
+        let scheduler = unsafe { BGTaskScheduler::sharedScheduler() };
         if let Err(e) = unsafe { scheduler.submitTaskRequest_error(&task_request) } {
             tracing::warn!(job = ?request.job, error = ?e, "failed to submit the background task request");
         }

@@ -17,6 +17,8 @@ use std::time::Duration;
 pub enum BackgroundJob {
     /// Top up the user-held media and repo mirrors for every opted-in identity.
     BackupMirror,
+    /// Sweep every did:plc identity for directory operations the device key did not sign.
+    PlcCheck,
 }
 
 /// One periodic request: what to run, and the conditions the platform must wait for.
@@ -76,6 +78,7 @@ pub fn skip_for_network(request: &JobRequest, on_metered: bool) -> bool {
 pub async fn run(job: BackgroundJob, core: &crate::oauth::Core) {
     match job {
         BackgroundJob::BackupMirror => crate::backup_policy::run_backup_sweep(core).await,
+        BackgroundJob::PlcCheck => crate::plc_monitor::run_monitoring_cycle_and_alert(core).await,
     }
 }
 
