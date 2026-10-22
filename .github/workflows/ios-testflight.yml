@@ -21,6 +21,7 @@ on:
       - "apps/admin-companion/vendor/tauri-plugin-sharesheet/**"
       - "crates/crypto/**"
       - "crates/custos-client/**"
+      - "crates/ceremony-journal/**"
       - "crates/obsign-core/**"
       - "crates/obsign-platform-ios/**"
       - "crates/ios-device-key/**"

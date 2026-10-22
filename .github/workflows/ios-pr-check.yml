@@ -28,6 +28,7 @@ on:
       - "apps/admin-companion/**"
       - "crates/crypto/**"
       - "crates/custos-client/**"
+      - "crates/ceremony-journal/**"
       - "crates/obsign-core/**"
       - "crates/obsign-platform-ios/**"
       - "crates/ios-device-key/**"

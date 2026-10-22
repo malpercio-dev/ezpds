@@ -87,6 +87,7 @@
 
 use crate::oauth_client::OAuthClient;
 use crate::pds_capabilities::ServerCapabilities;
+use ceremony_journal::JournalStore;
 use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
@@ -317,6 +318,72 @@ pub fn ensure_phase_did<'a>(
         });
     }
     Ok(s)
+}
+
+// ── Journal store ──────────────────────────────────────────────────────────
+
+impl ceremony_journal::Step for MigrationPhase {}
+
+/// The orchestration slot as the migration's journal store, bound to one DID. Each migration
+/// command is its own IPC call, so the cursor is `OutboundMigrationState.phase` and every command
+/// records its step here. Recording an earlier phase rewinds it (see `ceremony_journal`): a
+/// re-run step re-opens the steps after it, so a re-drained migration must verify again before
+/// it can finalize.
+///
+/// In-memory only, like the slot itself: an app kill restarts from `prepare_migration`.
+pub(crate) struct MigrationJournal<'a> {
+    state: &'a tokio::sync::Mutex<Option<OutboundMigrationState>>,
+    did: &'a str,
+}
+
+impl<'a> MigrationJournal<'a> {
+    pub(crate) fn new(
+        state: &'a tokio::sync::Mutex<Option<OutboundMigrationState>>,
+        did: &'a str,
+    ) -> Self {
+        Self { state, did }
+    }
+
+    /// Record `phase` together with the state its step produced, under one lock. Refused when the
+    /// active migration is gone, or is now for another DID (a concurrent `prepare_migration`
+    /// swapped it while the step was on the network).
+    pub(crate) async fn commit(
+        &self,
+        phase: MigrationPhase,
+        write: impl FnOnce(&mut OutboundMigrationState),
+    ) -> Result<(), MigrationError> {
+        let mut orchestration = self.state.lock().await;
+        let Some(mig) = orchestration.as_mut() else {
+            return Err(MigrationError::MigrationNotReady {
+                message: "orchestration state lost".into(),
+            });
+        };
+        if mig.did != self.did {
+            tracing::warn!(did = %self.did, ?phase, "orchestration state did mismatch");
+            return Err(MigrationError::MigrationNotReady {
+                message: "did mismatch with orchestration state".into(),
+            });
+        }
+        write(mig);
+        mig.phase = phase;
+        Ok(())
+    }
+}
+
+impl ceremony_journal::JournalStore<MigrationPhase> for MigrationJournal<'_> {
+    type Error = MigrationError;
+
+    async fn load(&self) -> Result<Option<MigrationPhase>, MigrationError> {
+        let orchestration = self.state.lock().await;
+        Ok(orchestration
+            .as_ref()
+            .filter(|mig| mig.did == self.did)
+            .map(|mig| mig.phase))
+    }
+
+    async fn save(&self, phase: MigrationPhase) -> Result<(), MigrationError> {
+        self.commit(phase, |_| {}).await
+    }
 }
 
 // ── Task 4: prepare_migration ──────────────────────────────────────────────
@@ -748,25 +815,11 @@ pub async fn create_destination_account(
     )
     .await?;
 
-    // Update orchestration state
-    let mut orchestration = state.orchestration_state.lock().await;
-    if let Some(ref mut mig) = orchestration.as_mut() {
-        // Defense-in-depth DID check
-        if mig.did != did {
-            drop(orchestration);
-            tracing::warn!("create_destination_account: orchestration state did mismatch");
-            return Err(MigrationError::MigrationNotReady {
-                message: "did mismatch with orchestration state".into(),
-            });
-        }
-        mig.dest_client = Some(dest_client);
-        mig.phase = MigrationPhase::DestCreated;
-    } else {
-        drop(orchestration);
-        return Err(MigrationError::MigrationNotReady {
-            message: "orchestration state lost".into(),
-        });
-    }
+    MigrationJournal::new(&state.orchestration_state, &did)
+        .commit(MigrationPhase::DestCreated, |mig| {
+            mig.dest_client = Some(dest_client)
+        })
+        .await?;
 
     tracing::info!(did = %did, "destination account created and stored");
     Ok(())
@@ -892,24 +945,9 @@ pub async fn transfer_repo(state: &crate::oauth::Core, did: String) -> Result<()
     )
     .await?;
 
-    // 3. Update orchestration state: advance phase to RepoTransferred
-    let mut orchestration = state.orchestration_state.lock().await;
-    if let Some(ref mut mig) = orchestration.as_mut() {
-        // Defense-in-depth DID check
-        if mig.did != did {
-            drop(orchestration);
-            tracing::warn!("transfer_repo: orchestration state did mismatch");
-            return Err(MigrationError::MigrationNotReady {
-                message: "did mismatch with orchestration state".into(),
-            });
-        }
-        mig.phase = MigrationPhase::RepoTransferred;
-    } else {
-        drop(orchestration);
-        return Err(MigrationError::MigrationNotReady {
-            message: "orchestration state lost".into(),
-        });
-    }
+    MigrationJournal::new(&state.orchestration_state, &did)
+        .save(MigrationPhase::RepoTransferred)
+        .await?;
 
     tracing::info!(did = %did, "repository transferred successfully");
     Ok(())
@@ -1233,27 +1271,14 @@ pub async fn transfer_blobs(
     }
 
     // Update orchestration state: record any accepted losses and advance to BlobsTransferred.
-    let mut orchestration = state.orchestration_state.lock().await;
-    if let Some(ref mut mig) = orchestration.as_mut() {
-        // Defense-in-depth DID check
-        if mig.did != did {
-            drop(orchestration);
-            tracing::warn!("transfer_blobs: orchestration state did mismatch");
-            return Err(MigrationError::MigrationNotReady {
-                message: "did mismatch with orchestration state".into(),
-            });
-        }
-        if !losses.is_empty() {
-            tracing::warn!(did = %did, accepted = losses.len(), "transfer_blobs: proceeding with an accepted blob-loss manifest");
-        }
-        mig.accepted_blob_loss = losses;
-        mig.phase = MigrationPhase::BlobsTransferred;
-    } else {
-        drop(orchestration);
-        return Err(MigrationError::MigrationNotReady {
-            message: "orchestration state lost".into(),
-        });
+    if !losses.is_empty() {
+        tracing::warn!(did = %did, accepted = losses.len(), "transfer_blobs: proceeding with an accepted blob-loss manifest");
     }
+    MigrationJournal::new(&state.orchestration_state, &did)
+        .commit(MigrationPhase::BlobsTransferred, |mig| {
+            mig.accepted_blob_loss = losses
+        })
+        .await?;
 
     tracing::info!(did = %did, "blobs transferred successfully");
     Ok(())
@@ -1323,18 +1348,9 @@ pub async fn transfer_preferences(
     // the flow proceeds.
     if recovery {
         tracing::info!(did = %did, "transfer_preferences: recovery session has no preferences source; skipping");
-        let mut orchestration = state.orchestration_state.lock().await;
-        match orchestration.as_mut() {
-            Some(mig) if mig.did == did => {
-                mig.phase = MigrationPhase::PreferencesTransferred;
-                return Ok(());
-            }
-            _ => {
-                return Err(MigrationError::MigrationNotReady {
-                    message: "orchestration state lost".into(),
-                })
-            }
-        }
+        return MigrationJournal::new(&state.orchestration_state, &did)
+            .save(MigrationPhase::PreferencesTransferred)
+            .await;
     }
 
     let Some(source_client) = source_client else {
@@ -1354,24 +1370,9 @@ pub async fn transfer_preferences(
     // Transfer preferences (pure core, unit-tested).
     transfer_preferences_impl(&source_client, &dest_client).await?;
 
-    // Update orchestration state: advance phase to PreferencesTransferred
-    let mut orchestration = state.orchestration_state.lock().await;
-    if let Some(ref mut mig) = orchestration.as_mut() {
-        // Defense-in-depth DID check
-        if mig.did != did {
-            drop(orchestration);
-            tracing::warn!("transfer_preferences: orchestration state did mismatch");
-            return Err(MigrationError::MigrationNotReady {
-                message: "did mismatch with orchestration state".into(),
-            });
-        }
-        mig.phase = MigrationPhase::PreferencesTransferred;
-    } else {
-        drop(orchestration);
-        return Err(MigrationError::MigrationNotReady {
-            message: "orchestration state lost".into(),
-        });
-    }
+    MigrationJournal::new(&state.orchestration_state, &did)
+        .save(MigrationPhase::PreferencesTransferred)
+        .await?;
 
     tracing::info!(did = %did, "preferences transferred successfully");
     Ok(())
@@ -1435,24 +1436,9 @@ pub async fn verify_import(
 
     // Gate: verify import is complete (blobs — imported or accepted-as-lost — plus repo)
     if import_reconciles_with_loss(&status, accepted_loss) {
-        // Advance phase and return the status
-        let mut orchestration = state.orchestration_state.lock().await;
-        if let Some(ref mut mig) = orchestration.as_mut() {
-            // Defense-in-depth DID check
-            if mig.did != did {
-                drop(orchestration);
-                tracing::warn!("verify_import: orchestration state did mismatch");
-                return Err(MigrationError::MigrationNotReady {
-                    message: "did mismatch with orchestration state".into(),
-                });
-            }
-            mig.phase = MigrationPhase::Verified;
-        } else {
-            drop(orchestration);
-            return Err(MigrationError::MigrationNotReady {
-                message: "orchestration state lost".into(),
-            });
-        }
+        MigrationJournal::new(&state.orchestration_state, &did)
+            .save(MigrationPhase::Verified)
+            .await?;
 
         tracing::info!(did = %did, "import verified successfully");
         Ok(status)
@@ -1521,19 +1507,9 @@ async fn arm_identity_leg_core(
         op_cid: None,
     });
 
-    // Advance orchestration phase to IdentityArmed (defense-in-depth DID re-check under the lock).
-    let mut orchestration = orchestration_state.lock().await;
-    let Some(mig) = orchestration.as_mut() else {
-        return Err(MigrationError::MigrationNotReady {
-            message: "orchestration state lost".into(),
-        });
-    };
-    if mig.did != did {
-        return Err(MigrationError::MigrationNotReady {
-            message: "did mismatch with orchestration state".into(),
-        });
-    }
-    mig.phase = MigrationPhase::IdentityArmed;
+    MigrationJournal::new(orchestration_state, did)
+        .save(MigrationPhase::IdentityArmed)
+        .await?;
 
     tracing::info!(did = %did, "identity leg armed successfully");
     Ok(())
@@ -1941,19 +1917,9 @@ where
         deactivate_source_account(source_client).await?;
     }
 
-    // Advance orchestration phase to Finalized (defense-in-depth DID re-check under the lock).
-    let mut orchestration = orchestration_state.lock().await;
-    let Some(mig) = orchestration.as_mut() else {
-        return Err(MigrationError::MigrationNotReady {
-            message: "orchestration state lost".into(),
-        });
-    };
-    if mig.did != did {
-        return Err(MigrationError::MigrationNotReady {
-            message: "did mismatch with orchestration state".into(),
-        });
-    }
-    mig.phase = MigrationPhase::Finalized;
+    MigrationJournal::new(orchestration_state, did)
+        .save(MigrationPhase::Finalized)
+        .await?;
 
     tracing::info!(did = %did, "migration finalized successfully");
     Ok(())
@@ -3574,6 +3540,43 @@ mod tests {
             accepted_blob_loss: Vec::new(),
             recovery: false,
         }
+    }
+
+    // Re-running an earlier step rewinds the phase, so a re-drained migration can't finalize
+    // without verifying again; and a swapped-in migration for another DID refuses the write.
+    #[tokio::test]
+    async fn migration_journal_rewinds_on_rerun_and_refuses_another_did() {
+        let did = "did:plc:abc123";
+        let orchestration = tokio::sync::Mutex::new(Some(verified_state(did)));
+        let journal = MigrationJournal::new(&orchestration, did);
+
+        journal
+            .commit(MigrationPhase::BlobsTransferred, |mig| {
+                mig.accepted_blob_loss = Vec::new()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            journal.load().await.unwrap(),
+            Some(MigrationPhase::BlobsTransferred)
+        );
+        assert!(ensure_phase_did(
+            &*orchestration.lock().await,
+            did,
+            MigrationPhase::IdentityArmed
+        )
+        .is_err());
+
+        let other = MigrationJournal::new(&orchestration, "did:plc:other");
+        assert_eq!(other.load().await.unwrap(), None);
+        assert!(matches!(
+            other.save(MigrationPhase::Finalized).await,
+            Err(MigrationError::MigrationNotReady { .. })
+        ));
+        assert_eq!(
+            journal.load().await.unwrap(),
+            Some(MigrationPhase::BlobsTransferred)
+        );
     }
 
     // The REAL arm_identity_leg_core parks a migrate::MigrationState AND advances the
