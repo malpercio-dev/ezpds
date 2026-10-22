@@ -9,8 +9,9 @@
 // The sequence is resumable rather than atomic, because publishing the genesis operation to
 // plc.directory is a network call that cannot join a SQLite transaction: `prepare_child` commits
 // the child deactivated with a provisioning row, the op is published, and `finalize_child` activates
-// it and sequences the repo. A crash or a plc outage between the two leaves a deactivated child that
-// the next identical mint resumes from its provisioning row.
+// it and sequences the repo. The steps run under a `common::journal::Journal` whose cursor is the
+// provisioning row (`ChildStep`), so a crash or a plc outage anywhere leaves a deactivated child that
+// the next identical mint resumes at the recorded step.
 
 use uuid::Uuid;
 
@@ -24,6 +25,7 @@ use crate::db::agent_auth::{
 };
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{get_reserved_repo_key_by_id, insert_did_signing_key, RepoSigningKey};
+use common::journal::{Journal, JournalStore, Step};
 use custos_core::CoreState;
 
 /// How the child's agent-registration row comes into being — the one thing that differs between
@@ -160,43 +162,46 @@ pub(crate) async fn mint_child_account(
     )
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to mint child capability"))?;
 
-    let prepared = prepare_child(
-        state,
-        parent_did,
-        handle,
-        &child_did,
-        &did_document,
-        &repo_key,
-        &registration_id,
-        &scopes_json,
-        &assertion.jwt,
-        &assertion.expires_sqlite,
-        &root_string,
-        &rev,
-        &blocks,
-        &signed_op,
-        &genesis_car,
-        &sync_car,
-    )
+    let mut journal = Journal::resume(ChildProvisioning {
+        db: &state.db,
+        child_did: &child_did,
+    })
     .await?;
-
-    if !prepared.plc_published {
-        publish_child_genesis(state, &prepared, &did_document).await?;
-        sqlx::query(
-            "UPDATE agent_child_provisionings SET plc_published_at = datetime('now'), \
-             updated_at = datetime('now') WHERE child_did = ?",
+    let prepared = if journal.cursor().is_none() {
+        let prepared = prepare_child(
+            state,
+            parent_did,
+            handle,
+            &child_did,
+            &did_document,
+            &repo_key,
+            &registration_id,
+            &scopes_json,
+            &assertion.jwt,
+            &assertion.expires_sqlite,
+            &root_string,
+            &rev,
+            &blocks,
+            &signed_op,
+            &genesis_car,
+            &sync_car,
         )
-        .bind(&child_did)
-        .execute(&state.db)
-        .await
-        .map_err(|_| {
-            ApiError::new(
-                ErrorCode::InternalError,
-                "child published; retry to finish local activation",
-            )
-        })?;
-    }
-    finalize_child(state, &prepared, registration).await?;
+        .await?;
+        journal.advance(ChildStep::Prepared).await?;
+        prepared
+    } else {
+        load_prepared_child(state, parent_did, handle, &child_did).await?
+    };
+    journal
+        .run(ChildStep::Published, || {
+            publish_child_genesis(state, &prepared, &did_document)
+        })
+        .await?;
+    journal
+        .run(ChildStep::Finalized, || {
+            finalize_child(state, &prepared, registration)
+        })
+        .await?;
 
     Ok(MintedChild {
         registration_id: prepared.registration_id,
@@ -206,6 +211,74 @@ pub(crate) async fn mint_child_account(
         assertion_expires: prepared.assertion_expires,
         scopes: serde_json::from_str(&prepared.scopes).unwrap_or(scopes),
     })
+}
+
+/// The mint's steps, in order. The cursor lives on the child's `agent_child_provisionings` row:
+/// the row's existence is `Prepared`, `plc_published_at` is `Published`, `finalized_at` is
+/// `Finalized`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ChildStep {
+    Prepared,
+    Published,
+    Finalized,
+}
+
+impl Step for ChildStep {}
+
+struct ChildProvisioning<'a> {
+    db: &'a sqlx::SqlitePool,
+    child_did: &'a str,
+}
+
+impl JournalStore<ChildStep> for ChildProvisioning<'_> {
+    type Error = ApiError;
+
+    async fn load(&self) -> Result<Option<ChildStep>, ApiError> {
+        let row: Option<(bool, bool)> = sqlx::query_as(
+            "SELECT plc_published_at IS NOT NULL, finalized_at IS NOT NULL \
+             FROM agent_child_provisionings WHERE child_did = ?",
+        )
+        .bind(self.child_did)
+        .fetch_optional(self.db)
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                ErrorCode::InternalError,
+                "failed to resume child provisioning",
+            )
+        })?;
+        Ok(
+            row.map(|(published, finalized)| match (published, finalized) {
+                (_, true) => ChildStep::Finalized,
+                (true, false) => ChildStep::Published,
+                (false, false) => ChildStep::Prepared,
+            }),
+        )
+    }
+
+    async fn save(&self, step: ChildStep) -> Result<(), ApiError> {
+        // `Prepared` and `Finalized` are recorded inside the transactions that do their work,
+        // because neither is idempotent on its own: a second prepare collides on the account row,
+        // and a second finalize would re-consume the claim attempt. Only the plc publish, which
+        // can't join a transaction, records after the fact.
+        if step != ChildStep::Published {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE agent_child_provisionings SET plc_published_at = datetime('now'), \
+             updated_at = datetime('now') WHERE child_did = ?",
+        )
+        .bind(self.child_did)
+        .execute(self.db)
+        .await
+        .map(drop)
+        .map_err(|_| {
+            ApiError::new(
+                ErrorCode::InternalError,
+                "child published; retry to finish local activation",
+            )
+        })
+    }
 }
 
 struct PreparedChild {
@@ -221,10 +294,82 @@ struct PreparedChild {
     rev: String,
     genesis_car: Vec<u8>,
     sync_car: Vec<u8>,
-    plc_published: bool,
-    finalized: bool,
 }
 
+/// Reload an interrupted mint's provisioning row. The same handle and parent resume it; anything
+/// else is a conflict over a child DID already in flight.
+async fn load_prepared_child(
+    state: &CoreState,
+    parent_did: &str,
+    handle: &str,
+    child_did: &str,
+) -> Result<PreparedChild, ApiError> {
+    type PendingRow = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Vec<u8>,
+        Vec<u8>,
+        String,
+        String,
+    );
+    let resume_failed = |_| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to resume child provisioning",
+        )
+    };
+    let (
+        stored_parent,
+        stored_handle,
+        registration_id,
+        scopes,
+        assertion,
+        assertion_expires,
+        signed_op,
+        genesis_car,
+        sync_car,
+        root,
+        rev,
+    ) = sqlx::query_as::<_, PendingRow>(
+        "SELECT p.parent_did, p.handle, p.registration_id, p.scopes, p.identity_assertion, \
+                p.assertion_expires_at, p.signed_op, p.genesis_car, p.sync_car, \
+                a.repo_root_cid, a.repo_rev \
+         FROM agent_child_provisionings p JOIN accounts a ON a.did = p.child_did \
+         WHERE p.child_did = ?",
+    )
+    .bind(child_did)
+    .fetch_one(&state.db)
+    .await
+    .map_err(resume_failed)?;
+    if stored_parent != parent_did || stored_handle != handle {
+        return Err(ApiError::new(
+            ErrorCode::DidAlreadyExists,
+            "child DID is already being provisioned",
+        ));
+    }
+    Ok(PreparedChild {
+        child_did: child_did.to_string(),
+        child_handle: stored_handle,
+        parent_did: stored_parent,
+        registration_id,
+        scopes,
+        assertion,
+        assertion_expires,
+        signed_op,
+        root,
+        rev,
+        genesis_car,
+        sync_car,
+    })
+}
+
+/// Commit the child deactivated, with its provisioning row — the journal's `Prepared` record — in
+/// the same transaction.
 #[allow(clippy::too_many_arguments)]
 async fn prepare_child(
     state: &CoreState,
@@ -244,83 +389,6 @@ async fn prepare_child(
     genesis_car: &[u8],
     sync_car: &[u8],
 ) -> Result<PreparedChild, ApiError> {
-    type PendingRow = (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        Vec<u8>,
-        Vec<u8>,
-        bool,
-        bool,
-    );
-    let existing = sqlx::query_as::<_, PendingRow>(
-        "SELECT p.parent_did, p.handle, p.registration_id, p.scopes, p.identity_assertion, \
-                p.assertion_expires_at, p.signed_op, p.genesis_car, p.sync_car, \
-                p.plc_published_at IS NOT NULL, p.finalized_at IS NOT NULL \
-         FROM agent_child_provisionings p WHERE p.child_did = ?",
-    )
-    .bind(child_did)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| {
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to resume child provisioning",
-        )
-    })?;
-    if let Some((
-        stored_parent,
-        stored_handle,
-        stored_registration,
-        stored_scopes,
-        stored_assertion,
-        stored_expiry,
-        stored_signed_op,
-        stored_genesis_car,
-        stored_sync_car,
-        plc_published,
-        finalized,
-    )) = existing
-    {
-        if stored_parent != parent_did || stored_handle != handle {
-            return Err(ApiError::new(
-                ErrorCode::DidAlreadyExists,
-                "child DID is already being provisioned",
-            ));
-        }
-        let (stored_root, stored_rev): (String, String) =
-            sqlx::query_as("SELECT repo_root_cid, repo_rev FROM accounts WHERE did = ?")
-                .bind(child_did)
-                .fetch_one(&state.db)
-                .await
-                .map_err(|_| {
-                    ApiError::new(
-                        ErrorCode::InternalError,
-                        "failed to resume child provisioning",
-                    )
-                })?;
-        return Ok(PreparedChild {
-            child_did: child_did.to_string(),
-            child_handle: stored_handle,
-            parent_did: stored_parent,
-            registration_id: stored_registration,
-            scopes: stored_scopes,
-            assertion: stored_assertion,
-            assertion_expires: stored_expiry,
-            signed_op: stored_signed_op,
-            root: stored_root,
-            rev: stored_rev,
-            genesis_car: stored_genesis_car,
-            sync_car: stored_sync_car,
-            plc_published,
-            finalized,
-        });
-    }
-
     let document = serde_json::to_string(did_document)
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store child DID"))?;
     let disabled_password = hash_password(&Uuid::new_v4().to_string())?;
@@ -425,8 +493,6 @@ async fn prepare_child(
         rev: rev.to_string(),
         genesis_car: genesis_car.to_vec(),
         sync_car: sync_car.to_vec(),
-        plc_published: false,
-        finalized: false,
     })
 }
 
@@ -460,9 +526,6 @@ async fn finalize_child(
     prepared: &PreparedChild,
     registration: ChildRegistration<'_>,
 ) -> Result<(), ApiError> {
-    if prepared.finalized {
-        return Ok(());
-    }
     let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state
         .db

@@ -5,6 +5,7 @@ mod email;
 mod error;
 pub mod html;
 mod ident;
+pub mod journal;
 pub mod token;
 
 pub use config::{
