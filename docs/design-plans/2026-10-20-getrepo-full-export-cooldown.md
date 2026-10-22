@@ -74,7 +74,7 @@ ignored).
 
 ## 3. Why the limiter lets this through
 
-`crates/pds/src/rate_limit.rs` exempts `getRepo` (and `subscribeRepos`, `_health`)
+`crates/custos-core/src/rate_limit.rs` exempts `getRepo` (and `subscribeRepos`, `_health`)
 from the global per-IP cap, mirroring the reference PDS, so relay backfill is never
 throttled. The exemption has no notion of "you already hold this rev". A client that
 re-downloads an unchanged repo every two minutes is indistinguishable from a relay

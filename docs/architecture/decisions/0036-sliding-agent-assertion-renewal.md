@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-29
 - **Deciders:** malpercio
-- **Related:** MM-544; ADR-0019 (auth.md agent authentication); `crates/pds/src/routes/oauth_token/jwt_bearer.rs`, `crates/common/src/config.rs` (`[agent_auth] claimed_assertion_ttl_secs`), `tools/mcp/src/auth.ts`
+- **Related:** MM-544; ADR-0019 (auth.md agent authentication); `crates/custos-oauth/src/routes/oauth_token/jwt_bearer.rs`, `crates/common/src/config.rs` (`[agent_auth] claimed_assertion_ttl_secs`), `tools/mcp/src/auth.ts`
 
 ## Context
 

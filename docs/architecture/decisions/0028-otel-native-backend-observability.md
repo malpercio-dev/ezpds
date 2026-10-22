@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-18
 - **Deciders:** malpercio
-- **Related:** `crates/pds/src/telemetry.rs`, `crates/pds/src/metrics.rs`, `docs/deploy.md` (Observability), `docs/operations/debug-kit.md`, MM-436 / MM-437 (mobile diagnostics export), `apps/identity-wallet/src-tauri/src/diagnostics.rs`
+- **Related:** `crates/pds/src/telemetry.rs`, `crates/custos-core/src/metrics.rs`, `docs/deploy.md` (Observability), `docs/operations/debug-kit.md`, MM-436 / MM-437 (mobile diagnostics export), `apps/identity-wallet/src-tauri/src/diagnostics.rs`
 
 ## Context
 
