@@ -1,0 +1,34 @@
+name: Setup just
+description: >
+  Install an exact just release from its fixed download URL and verify its checksum. Shared by
+  every job that runs a just recipe (ci.yml, ios-setup) so the version and checksums live in
+  one place. A direct download rather than extractions/setup-just, which lists every release
+  through the GitHub API on each run and fails the job whenever that call comes back empty.
+
+runs:
+  using: composite
+  steps:
+    - name: Install just
+      shell: bash
+      env:
+        # Keep in lockstep with the dev shell's just (`just --version` in `nix develop`). On a
+        # bump, copy both lines from the release's SHA256SUMS.
+        JUST_VERSION: 1.46.0
+        SHA256_LINUX_X64: 79966e6e353f535ee7d1c6221641bcc8e3381c55b0d0a6dc6e54b34f9db36eaa
+        SHA256_MACOS_ARM64: 438eaf6468a115aa7db93e501cc7e3272f453f6b7083be3863adfab546b23358
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64) target=x86_64-unknown-linux-musl; sha="$SHA256_LINUX_X64" ;;
+          macOS-ARM64) target=aarch64-apple-darwin; sha="$SHA256_MACOS_ARM64" ;;
+          *) echo "::error::no pinned just build for ${RUNNER_OS}-${RUNNER_ARCH}"; exit 1 ;;
+        esac
+        archive="just-${JUST_VERSION}-${target}.tar.gz"
+        dir="${RUNNER_TEMP}/just"
+        mkdir -p "$dir"
+        curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${archive}" \
+          "https://github.com/casey/just/releases/download/${JUST_VERSION}/${archive}"
+        echo "${sha}  ${RUNNER_TEMP}/${archive}" | shasum -a 256 -c -
+        tar -xzf "${RUNNER_TEMP}/${archive}" -C "$dir" just
+        echo "$dir" >> "$GITHUB_PATH"
+        "$dir/just" --version

@@ -48,8 +48,9 @@ on:
       - "ios/**"
       - "scripts/ios/**"
       # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim), and the
-      # pnpm+Node composite it (and this workflow's own `frontend` job) delegate to.
+      # just and pnpm+Node composites it (and this workflow's own `frontend` job) delegate to.
       - ".github/actions/ios-setup/**"
+      - ".github/actions/setup-just/**"
       - ".github/actions/setup-pnpm/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ios-pr-check.yml"

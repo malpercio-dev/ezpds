@@ -50,7 +50,7 @@ jobs:
           persist-credentials: false
 
       - name: Install just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+        uses: ./.github/actions/setup-just
 
       # rust-toolchain.toml pins the exact channel (1.96.0) + rustfmt/clippy, so a bare
       # `rustup toolchain install` provisions everything ci-pds needs. SQLite is bundled
@@ -147,7 +147,7 @@ jobs:
           persist-credentials: false
 
       - name: Install just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+        uses: ./.github/actions/setup-just
 
       # cargo (for `cargo metadata`) comes from the pinned toolchain; jq is preinstalled
       # on ubuntu-latest. No build cache needed — this only reads metadata.

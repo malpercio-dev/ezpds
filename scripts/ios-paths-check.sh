@@ -80,6 +80,7 @@ INFRA=(
   "just/ios.just"
   "scripts/ios/**"
   ".github/actions/ios-setup/**"
+  ".github/actions/setup-just/**"
   ".github/actions/setup-pnpm/**"
   "rust-toolchain.toml"
   "ios/**"
