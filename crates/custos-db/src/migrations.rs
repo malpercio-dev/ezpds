@@ -316,6 +316,6 @@ pub(super) static MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 74,
-        sql: include_str!("migrations/V074__drop_repo_host_notify_registrations.sql"),
+        sql: include_str!("migrations/V074__space_notify_topology.sql"),
     },
 ];

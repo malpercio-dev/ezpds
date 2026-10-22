@@ -14,11 +14,13 @@
 //!   it and the `prevSpaceRev` it follows, so a syncer that sees a gap knows it missed one.
 //!
 //! **Best-effort, by spec.** Nothing here blocks a commit: the durable write has already landed
-//! and returned before the fan-out task is spawned. Each delivery retries network failures and
-//! transient statuses (5xx, 408, 429) with backoff and stops on any other error; a subscriber that missed one heals from the set hash on its next
-//! `listRepoOps`, or from the periodic `listRepos` sweep. A permanent failure deliberately does
-//! **not** unregister the subscriber — a syncer that is briefly down or mid-deploy would
-//! silently lose its subscription — so registrations lapse only at their own expiry.
+//! and returned before the fan-out task is spawned. Each delivery retries network failures
+//! (including fetching the recipient's DID document) and transient statuses (5xx, 408, 429) with
+//! backoff, and stops on any other error. A subscriber that missed one heals from the set hash on
+//! its next `listRepoOps`, or from the periodic `listRepos` sweep. A permanent failure
+//! deliberately does **not** unregister the subscriber — a syncer that is briefly down or
+//! mid-deploy would silently lose its subscription — so registrations lapse only at their own
+//! expiry.
 //!
 //! **Bounded, twice.** One notification delivers to at most [`MAX_SUBSCRIBERS`] subscribers, in
 //! sequence — so a space with many syncers costs one connection at a time, not a spawn storm.
@@ -36,6 +38,7 @@ use serde_json::Value;
 use tokio::sync::Semaphore;
 
 use crate::auth::space::unix_now;
+use crate::db::space_notify::WriterRevs;
 use crate::identity::resolution::{resolve_did_document, service_endpoint, space_host_endpoint};
 use crate::space_uri::SpaceRef;
 use crate::SpacesState;
@@ -79,37 +82,61 @@ const SERVICE_AUTH_TTL_SECS: u64 = 60;
 const NOTIFY_WRITE: &str = "com.atproto.space.notifyWrite";
 const NOTIFY_SPACE_DELETED: &str = "com.atproto.space.notifySpaceDeleted";
 
-/// Announce that `repo_did`'s repo in `space` advanced to `rev`/`hash`.
+/// Repo host: report our own account's write into a space whose authority is elsewhere, as one
+/// `notifyWrite` to that authority signed by the repo.
 ///
-/// Returns immediately: every delivery happens on a detached task, so a write path calls this
-/// after its commit and never waits. `space_revs` is what the writer set assigned the update; the
-/// space host forwards only updates it accepted, so a caller holding `None` for a space this host
-/// is the authority for has nothing to forward. `repo_did` is also the DID whose
-/// host already knows about this write — the repo itself for our own commit, and likewise for an
-/// inbound `notifyWrite` we are forwarding — so it is skipped in the fan-out and a notification
-/// is never echoed back at its source.
+/// Only the local commit path calls this. An inbound `notifyWrite` is never reported onward: this
+/// host would be signing for a repo on someone else's say-so.
 ///
-/// The [`JoinHandle`](tokio::task::JoinHandle) is returned rather than dropped so a test can
-/// await the effects; production callers discard it, since a commit must never wait on delivery.
-pub fn fan_out_write(
+/// Returns immediately; delivery runs on a detached task. The
+/// [`JoinHandle`](tokio::task::JoinHandle) is returned so a test can await the effects;
+/// production callers discard it, since a commit must never wait on delivery.
+pub fn report_write(
     state: &SpacesState,
     space: &SpaceRef,
     repo_did: &str,
     repo_rev: &str,
     hash: &[u8],
-    space_revs: Option<crate::db::space_notify::WriterRevs>,
+) -> tokio::task::JoinHandle<()> {
+    spawn_write(state, space, repo_did, repo_rev, hash, None)
+}
+
+/// Space host: forward an update the writer set accepted to every registered syncer, with the
+/// `spaceRev`/`prevSpaceRev` it was assigned. `repo_did`'s own host already knows about the write,
+/// so it is skipped and a notification is never echoed back at its source.
+///
+/// Returns like [`report_write`].
+pub fn forward_write(
+    state: &SpacesState,
+    space: &SpaceRef,
+    repo_did: &str,
+    repo_rev: &str,
+    hash: &[u8],
+    revs: WriterRevs,
+) -> tokio::task::JoinHandle<()> {
+    spawn_write(state, space, repo_did, repo_rev, hash, Some(revs))
+}
+
+/// The task behind [`report_write`] (`revs: None`) and [`forward_write`].
+fn spawn_write(
+    state: &SpacesState,
+    space: &SpaceRef,
+    repo_did: &str,
+    repo_rev: &str,
+    hash: &[u8],
+    revs: Option<WriterRevs>,
 ) -> tokio::task::JoinHandle<()> {
     let state = state.clone();
     let space = space.clone();
     let repo_did = repo_did.to_string();
-    let accepted = space_revs.is_some();
+    let forwarding = revs.is_some();
     let mut body = serde_json::json!({
         "space": space.uri,
         "repo": repo_did,
         "repoRev": repo_rev,
         "hash": crate::views::lex_bytes(hash),
     });
-    if let Some(revs) = space_revs {
+    if let Some(revs) = revs {
         body["spaceRev"] = revs.space_rev.into();
         if let Some(prev) = revs.prev_space_rev {
             body["prevSpaceRev"] = prev.into();
@@ -118,11 +145,9 @@ pub fn fan_out_write(
     tokio::spawn(async move {
         let _permit = fanout_permits().acquire().await;
 
-        // Whether this host is the space's authority: a `spaces` row with simplespace config.
-        // Also picks the direction and the signer — as the authority we forward and speak for the
-        // space, otherwise we report and speak for the account whose repo advanced. A deleted or operator-taken-down space fans out
-        // nothing: local writes are already refused, but `notifyWrite` forwards a *foreign* repo
-        // host's report, and a taken-down space must stop acting as space host entirely.
+        // Whether this host is the space's authority: a `spaces` row with simplespace config. A
+        // forward needs it, a report needs the authority elsewhere. A deleted or taken-down space
+        // sends nothing: a taken-down space must stop acting as space host entirely.
         let is_authority = match crate::db::spaces::get_space(&state.db, &space.uri).await {
             Ok(Some(row)) if row.deleted_at.is_none() && row.takendown_at.is_none() => {
                 row.policy.is_some()
@@ -133,18 +158,17 @@ pub fn fan_out_write(
                 return;
             }
         };
+        if forwarding != is_authority {
+            return;
+        }
 
-        // Repo host: one push to the authority, signed by the repo whose head moved.
-        if !is_authority {
+        if !forwarding {
             let service = crate::auth::space::space_host_aud(&space);
             let (did, fragment) = split_service(&service);
             if let Err(error) = deliver(&state, did, fragment, &repo_did, NOTIFY_WRITE, &body).await
             {
                 tracing::debug!(%error, space = %space.uri, "space notify: report to authority failed");
             }
-            return;
-        }
-        if !accepted {
             return;
         }
 
@@ -161,7 +185,6 @@ pub fn fan_out_write(
                 return;
             }
         };
-
         deliver_all(
             &state,
             subscribers,
@@ -228,10 +251,11 @@ fn split_service(service: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Resolve one subscriber, mint a service-auth token for the single method, and POST — retrying
-/// transport failures and transient statuses (5xx, 408 Request Timeout, 429 Too Many Requests)
-/// with doubling backoff. Any other 4xx is permanent: retrying an argument the subscriber has
-/// already rejected only wastes its capacity.
+/// Mint a service-auth token for the single method, then resolve the recipient and POST,
+/// retrying with doubling backoff while the failure is transient: the DID document could not be
+/// fetched, the request did not complete, or the recipient answered 5xx, 408 Request Timeout or
+/// 429 Too Many Requests. A document with no matching service entry, or any other 4xx, is
+/// permanent: retrying an argument the recipient has already rejected only wastes its capacity.
 async fn deliver(
     state: &SpacesState,
     did: &str,
@@ -240,7 +264,6 @@ async fn deliver(
     lxm: &str,
     body: &Value,
 ) -> Result<(), String> {
-    let endpoint = resolve_service_endpoint(state, did, fragment).await?;
     let master_key: &[u8; 32] = state
         .config
         .signing_key_master_key
@@ -260,32 +283,14 @@ async fn deliver(
     .await
     .map_err(|e| e.to_string())?;
 
-    let url = crate::identity::proxy::CallerUrl::new(format!(
-        "{}/xrpc/{lxm}",
-        endpoint.trim_end_matches('/')
-    ));
+    let mut url = None;
     let mut backoff = BASE_BACKOFF;
     let mut last = String::new();
     for attempt in 1..=MAX_ATTEMPTS {
-        // The SSRF-hardened client: the endpoint comes from a DID document a caller named at
-        // registerNotify, so it is a caller-influenced target like every other one.
-        match state
-            .hardened_http_client
-            .post(&url)
-            .bearer_auth(&token)
-            .json(body)
-            .send()
-            .await
-        {
-            Ok(response) if response.status().is_success() => return Ok(()),
-            Ok(response)
-                if response.status().is_client_error()
-                    && !matches!(response.status().as_u16(), 408 | 429) =>
-            {
-                return Err(format!("subscriber rejected: {}", response.status()));
-            }
-            Ok(response) => last = format!("subscriber returned {}", response.status()),
-            Err(error) => last = error.to_string(),
+        match attempt_delivery(state, did, fragment, &mut url, &token, body, lxm).await {
+            Ok(()) => return Ok(()),
+            Err(Failure::Permanent(error)) => return Err(error),
+            Err(Failure::Transient(error)) => last = error,
         }
         if attempt < MAX_ATTEMPTS {
             tokio::time::sleep(backoff).await;
@@ -295,25 +300,73 @@ async fn deliver(
     Err(last)
 }
 
-/// The URL to deliver to: the named entry of the subscriber's DID document. An identifier with
-/// no fragment — and the authority's `#atproto_space_host` a repo host reports to — fall back to
-/// `#atproto_pds`, which is where the alpha's own hosts answer (see
-/// `identity::resolution::space_host_endpoint`).
-async fn resolve_service_endpoint(
+enum Failure {
+    Transient(String),
+    Permanent(String),
+}
+
+/// One delivery attempt. `url` caches the resolved endpoint across attempts, so a retry after a
+/// failed POST does not fetch the DID document again.
+async fn attempt_delivery(
     state: &SpacesState,
     did: &str,
     fragment: Option<&str>,
-) -> Result<String, String> {
-    let doc = resolve_did_document(state, did)
-        .await
-        .map_err(|e| e.to_string())?;
-    let endpoint = match fragment {
-        None | Some("atproto_space_host") => space_host_endpoint(&doc),
-        Some(fragment) => service_endpoint(&doc, fragment),
+    url: &mut Option<crate::identity::proxy::CallerUrl>,
+    token: &str,
+    body: &Value,
+    lxm: &str,
+) -> Result<(), Failure> {
+    if url.is_none() {
+        let doc = resolve_did_document(state, did)
+            .await
+            .map_err(|e| Failure::Transient(e.to_string()))?;
+        let endpoint = endpoint_in(&doc, fragment)
+            .ok_or_else(|| Failure::Permanent(format!("no service endpoint for {did}")))?;
+        *url = Some(crate::identity::proxy::CallerUrl::new(format!(
+            "{}/xrpc/{lxm}",
+            endpoint.trim_end_matches('/')
+        )));
+    }
+    let Some(url) = url.as_ref() else {
+        return Err(Failure::Permanent("endpoint not resolved".to_string()));
     };
-    endpoint
-        .map(str::to_string)
-        .ok_or_else(|| format!("no service endpoint for {did}"))
+    // The SSRF-hardened client: the endpoint comes from a DID document a caller named at
+    // registerNotify, so it is a caller-influenced target like every other one.
+    match state
+        .hardened_http_client
+        .post(url)
+        .bearer_auth(token)
+        .json(body)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => Ok(()),
+        Ok(response)
+            if response.status().is_client_error()
+                && !matches!(response.status().as_u16(), 408 | 429) =>
+        {
+            Err(Failure::Permanent(format!(
+                "subscriber rejected: {}",
+                response.status()
+            )))
+        }
+        Ok(response) => Err(Failure::Transient(format!(
+            "subscriber returned {}",
+            response.status()
+        ))),
+        Err(error) => Err(Failure::Transient(error.to_string())),
+    }
+}
+
+/// The delivery endpoint in `doc`: its entry named by `fragment`. No fragment, and the
+/// authority's `#atproto_space_host` a repo host reports to, fall back to `#atproto_pds`, which is
+/// where the alpha's own hosts answer (see `identity::resolution::space_host_endpoint`).
+fn endpoint_in(doc: &Value, fragment: Option<&str>) -> Option<String> {
+    match fragment {
+        None | Some("atproto_space_host") => space_host_endpoint(doc),
+        Some(fragment) => service_endpoint(doc, fragment),
+    }
+    .map(str::to_string)
 }
 
 /// Whether a subscriber's service identifier resolves to a DID document with a matching service
@@ -322,7 +375,18 @@ async fn resolve_service_endpoint(
 /// delivers.
 pub async fn service_is_resolvable(state: &SpacesState, service: &str) -> bool {
     let (did, fragment) = split_service(service);
-    resolve_service_endpoint(state, did, fragment).await.is_ok()
+    resolve_service_endpoint(state, did, fragment)
+        .await
+        .is_some()
+}
+
+async fn resolve_service_endpoint(
+    state: &SpacesState,
+    did: &str,
+    fragment: Option<&str>,
+) -> Option<String> {
+    let doc = resolve_did_document(state, did).await.ok()?;
+    endpoint_in(&doc, fragment)
 }
 
 #[cfg(test)]
@@ -346,6 +410,7 @@ mod tests {
     const SYNCER: &str = "did:plc:syncernotifyaaaaaaaaaaaa";
     const WRITER: &str = "did:plc:writernotifyaaaaaaaaaaaa";
     const THROTTLER: &str = "did:plc:throttlernotifyaaaaaaaaa";
+    const TIMED_OUT: &str = "did:plc:timedoutnotifyaaaaaaaaaa";
     const SPACE: &str = "at://did:plc:authoritynotifyaaaaaaaaa/space/org.example.bucket/main";
 
     /// A host that is the space's authority, holding the repo signing key every
@@ -353,6 +418,13 @@ mod tests {
     async fn authority_state() -> SpacesState {
         let state = state_with_master_key().await;
         seed_account_with_repo(&state.db, AUTHORITY).await;
+        seed_space(&state, Some("public")).await;
+        state
+    }
+
+    /// The space's row: with a policy this host is its authority, without one it only keeps
+    /// repos in it.
+    async fn seed_space(state: &SpacesState, policy: Option<&str>) {
         insert_space(
             &state.db,
             &NewSpace {
@@ -360,8 +432,8 @@ mod tests {
                 authority_did: AUTHORITY,
                 space_type: "org.example.bucket",
                 skey: "main",
-                policy: Some("public"),
-                app_access: Some("open"),
+                policy,
+                app_access: policy.map(|_| "open"),
                 app_allowed: None,
                 managing_app: None,
                 write_policy: None,
@@ -370,7 +442,6 @@ mod tests {
         )
         .await
         .unwrap();
-        state
     }
 
     /// A subscriber's DID document, publishing exactly one service entry.
@@ -440,16 +511,16 @@ mod tests {
         register(&state, WRITER).await;
 
         let space = parse_space_ref(SPACE).unwrap();
-        fan_out_write(
+        forward_write(
             &state,
             &space,
             WRITER,
             "3lzz",
             &[0xde, 0xad],
-            Some(crate::db::space_notify::WriterRevs {
+            WriterRevs {
                 space_rev: "3m22".to_string(),
                 prev_space_rev: Some("3m21".to_string()),
-            }),
+            },
         )
         .await
         .unwrap();
@@ -489,29 +560,13 @@ mod tests {
     async fn a_repo_host_reports_once_to_the_authority_without_registering() {
         let state = state_with_master_key().await;
         seed_account_with_repo(&state.db, WRITER).await;
-        insert_space(
-            &state.db,
-            &NewSpace {
-                uri: SPACE,
-                authority_did: AUTHORITY,
-                space_type: "org.example.bucket",
-                skey: "main",
-                policy: None,
-                app_access: None,
-                app_allowed: None,
-                managing_app: None,
-                write_policy: None,
-                write_managing_app: None,
-            },
-        )
-        .await
-        .unwrap();
+        seed_space(&state, None).await;
         let server = MockServer::start().await;
         notify_ok(NOTIFY_WRITE).mount(&server).await;
         seed_host(&state, AUTHORITY, "atproto_pds", &server.uri()).await;
 
         let space = parse_space_ref(SPACE).unwrap();
-        fan_out_write(&state, &space, WRITER, "3lzz", &[0xde, 0xad], None)
+        report_write(&state, &space, WRITER, "3lzz", &[0xde, 0xad])
             .await
             .unwrap();
 
@@ -539,18 +594,19 @@ mod tests {
         assert_eq!(rows, 0, "reporting a write subscribes nobody");
     }
 
-    /// The space host forwards only updates the writer set accepted: `None` (a stale `repoRev`)
-    /// reaches no syncer.
+    /// A report is only ever sent for a space whose authority is elsewhere: called for a space
+    /// this host is the authority for, it reaches nobody — no syncer, and not ourselves.
     #[tokio::test]
-    async fn an_authority_forwards_nothing_it_did_not_accept() {
+    async fn a_report_into_our_own_space_goes_nowhere() {
         let state = authority_state().await;
         let server = MockServer::start().await;
         notify_ok(NOTIFY_WRITE).mount(&server).await;
         seed_host(&state, SYNCER, "atproto_space_host", &server.uri()).await;
+        seed_host(&state, AUTHORITY, "atproto_space_host", &server.uri()).await;
         register(&state, SYNCER).await;
 
         let space = parse_space_ref(SPACE).unwrap();
-        fan_out_write(&state, &space, WRITER, "3lzz", &[], None)
+        report_write(&state, &space, WRITER, "3lzz", &[])
             .await
             .unwrap();
         assert!(received(&server).await.is_empty());
@@ -567,7 +623,7 @@ mod tests {
         let space = parse_space_ref(SPACE).unwrap();
         fan_out_space_deleted(&state, &space, vec![SYNCER.to_string()]);
 
-        // Detached with no handle to await, unlike `fan_out_write`.
+        // Detached with no handle to await, unlike `forward_write`.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let requests = loop {
             let requests = received(&server).await;
@@ -591,7 +647,7 @@ mod tests {
         assert_eq!(claims["lxm"], NOTIFY_SPACE_DELETED);
     }
 
-    /// The retry ladder. A 5xx or 429 is transient and spends every attempt; any other 4xx is the
+    /// The retry ladder. A 5xx, 408 or 429 is transient and spends every attempt; any other 4xx is the
     /// subscriber rejecting the argument, and re-sending it would only burn its capacity.
     #[tokio::test]
     async fn transient_failures_are_retried_and_rejections_are_not() {
@@ -610,17 +666,23 @@ mod tests {
         assert!(error.contains("503"), "{error}");
         assert_eq!(received(&flaky).await.len(), MAX_ATTEMPTS as usize);
 
-        // 429 is a 4xx, but it is the subscriber asking for patience, not rejecting the argument.
-        let throttling = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(429))
-            .mount(&throttling)
-            .await;
-        seed_host(&state, THROTTLER, "atproto_space_host", &throttling.uri()).await;
-        deliver(&state, THROTTLER, None, AUTHORITY, NOTIFY_WRITE, &body)
-            .await
-            .expect_err("every attempt was throttled");
-        assert_eq!(received(&throttling).await.len(), MAX_ATTEMPTS as usize);
+        // 408 and 429 are 4xx, but they ask for patience rather than rejecting the argument.
+        for (status, did) in [(408, THROTTLER), (429, TIMED_OUT)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            seed_host(&state, did, "atproto_space_host", &server.uri()).await;
+            deliver(&state, did, None, AUTHORITY, NOTIFY_WRITE, &body)
+                .await
+                .expect_err("every attempt failed");
+            assert_eq!(
+                received(&server).await.len(),
+                MAX_ATTEMPTS as usize,
+                "{status}"
+            );
+        }
 
         let rejecting = MockServer::start().await;
         Mock::given(method("POST"))
@@ -678,5 +740,47 @@ mod tests {
             !service_is_resolvable(&state, &format!("{SYNCER}#atproto_labeler")).await,
             "a fragment naming an entry the document lacks is not resolvable"
         );
+    }
+
+    /// A DID document that cannot be fetched is a network failure like any other and is retried;
+    /// one that is fetched but names no delivery endpoint is permanent and is not.
+    #[tokio::test]
+    async fn an_unfetchable_did_document_is_retried() {
+        let plc = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/did:plc:.+"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&plc)
+            .await;
+        let base = crate::test_support::test_state_with_plc_url(plc.uri()).await;
+        let mut config = (*base.config).clone();
+        config.signing_key_master_key = state_with_master_key()
+            .await
+            .config
+            .signing_key_master_key
+            .clone();
+        let state = SpacesState::new(custos_core::CoreState {
+            config: std::sync::Arc::new(config),
+            ..base.core.clone()
+        });
+        seed_account_with_repo(&state.db, AUTHORITY).await;
+        let body = serde_json::json!({ "space": SPACE });
+
+        deliver(&state, SYNCER, None, AUTHORITY, NOTIFY_WRITE, &body)
+            .await
+            .expect_err("the document never resolved");
+        assert_eq!(received(&plc).await.len(), MAX_ATTEMPTS as usize);
+
+        // Fetched, but with no service entry at all: one try.
+        seed_did_document(
+            &state.db,
+            WRITER,
+            serde_json::json!({ "id": WRITER, "service": [] }),
+        )
+        .await;
+        let error = deliver(&state, WRITER, None, AUTHORITY, NOTIFY_WRITE, &body)
+            .await
+            .expect_err("no endpoint");
+        assert!(error.contains("no service endpoint"), "{error}");
     }
 }

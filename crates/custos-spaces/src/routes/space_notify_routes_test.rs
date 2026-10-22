@@ -3,9 +3,10 @@
 // End-to-end coverage of the space-host notification surface (listRepos, registerNotify,
 // unregisterNotify, notifyWrite) plus the two effects that hang off the write path: the writer
 // set a local commit records, and the *absence* of any registration when a write lands in a
-// foreign authority's space (the repo host reports it directly; see `space_notify`'s tests). Driven through the real router, so the lexicon layer, the space
-// auth seam and the store are all in the path — cross-route journeys live here because routes
-// may not import one another (the `space_routes_test.rs` convention).
+// foreign authority's space (the repo host reports it directly; see `space_notify`'s tests).
+// Driven through the real router, so the lexicon layer, the space auth seam and the store are
+// all in the path — cross-route journeys live here because routes may not import one another
+// (the `space_routes_test.rs` convention).
 //
 // Delivery itself is never exercised, and cannot be by accident: `seed_undeliverable` seeds a
 // DID document with no service endpoint at all, and the one seed that does carry an endpoint
@@ -77,8 +78,8 @@ async fn seed_undeliverable(state: &SpacesState, did: &str, kp: &crypto::P256Key
     .await;
 }
 
-/// One committed write into `space` by `did`, awaiting the notification task it spawns so the
-/// test observes its effects rather than racing them.
+/// One committed write into `space` by `did`. The notification it spawns has no local effect
+/// to wait for: delivery is covered by `space_notify`'s tests.
 async fn write_one(state: &SpacesState, space_uri: &str, did: &str, rkey: &str) -> String {
     let space = parse_space_ref(space_uri).unwrap();
     let outcome = apply_space_writes(
@@ -95,9 +96,6 @@ async fn write_one(state: &SpacesState, space_uri: &str, did: &str, rkey: &str) 
     )
     .await
     .unwrap();
-    crate::space_notify::fan_out_write(state, &space, did, &outcome.rev, &outcome.hash, None)
-        .await
-        .unwrap();
     outcome.rev
 }
 
@@ -197,6 +195,40 @@ async fn list_repos_pages_on_the_space_rev() {
 
 fn list_repos_query(space: &str) -> String {
     format!("com.atproto.space.listRepos?space={space}")
+}
+
+/// A syncer pages the writer set with the `spaceRev` cursor and later resumes from the last one
+/// it saw, getting only what changed since.
+#[tokio::test]
+async fn list_repos_resumes_from_a_space_rev_cursor() {
+    let state = setup().await;
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    write_one(&state, SPACE, ALICE, "one").await;
+    write_one(&state, SPACE, BOB, "two").await;
+
+    let page = |cursor: Option<String>| {
+        let mut query = format!("{}&limit=1", list_repos_query(SPACE));
+        if let Some(cursor) = cursor {
+            query.push_str(&format!("&cursor={cursor}"));
+        }
+        get(&query, &alice)
+    };
+    let (_, first) = send(&state, page(None)).await;
+    assert_eq!(registrations(&first), vec![ALICE.to_string()], "{first}");
+    let (_, second) = send(&state, page(first["cursor"].as_str().map(str::to_string))).await;
+    assert_eq!(registrations(&second), vec![BOB.to_string()], "{second}");
+    let caught_up = second["cursor"].as_str().map(str::to_string);
+    let (_, empty) = send(&state, page(caught_up.clone())).await;
+    assert!(registrations(&empty).is_empty(), "{empty}");
+
+    // Alice writes again; resuming from where the syncer stopped yields her alone.
+    write_one(&state, SPACE, ALICE, "three").await;
+    let (_, resumed) = send(&state, page(caught_up)).await;
+    assert_eq!(
+        registrations(&resumed),
+        vec![ALICE.to_string()],
+        "{resumed}"
+    );
 }
 
 // ── registerNotify / unregisterNotify ───────────────────────────────────────
@@ -471,6 +503,34 @@ async fn notify_write_ignores_a_non_increasing_rev() {
     assert_eq!(
         after.space_rev, accepted.space_rev,
         "an ignored report assigns no space revision"
+    );
+}
+
+/// A taken-down space stops acting as space host: a report about it is acknowledged and not
+/// recorded.
+#[tokio::test]
+async fn notify_write_records_nothing_for_a_taken_down_space() {
+    let state = setup().await;
+    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
+    crate::db::spaces::set_space_takedown(&state.db, SPACE, true)
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.space.notifyWrite",
+            &token,
+            notify_body(SPACE, &carol, "3kabcdefghij2"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        crate::db::space_notify::list_writers(&state.db, SPACE, None, 10)
+            .await
+            .unwrap()
+            .is_empty()
     );
 }
 
