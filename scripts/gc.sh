@@ -19,6 +19,12 @@
 # Even a mistaken worktree removal only drops a regenerable target/ — the branch
 # ref and its commits survive (recoverable via `git worktree add`).
 #
+# KEPT worktrees (unmerged / dirty) still get their target/ cleared when it is
+# idle: carries CACHEDIR.TAG (proof it is a cargo cache, not source) and nothing
+# in its top levels was written in the last GC_IDLE_MINUTES (default 60), so a
+# concurrent build is never pulled out from under. target/ is gitignored and
+# regenerable — the cost is one cold rebuild in that worktree.
+#
 # Usage:
 #   scripts/gc.sh          # dry run (default): report what WOULD be removed
 #   scripts/gc.sh --apply  # actually remove the reported worktrees/branches
@@ -29,6 +35,8 @@ set -euo pipefail
 
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
+
+IDLE_MIN="${GC_IDLE_MINUTES:-60}"
 
 cd "$(git rev-parse --show-toplevel)"
 # The real main working tree — NOT the invoking worktree. `git rev-parse --show-toplevel`
@@ -107,6 +115,23 @@ is_merged() {
 # ---- Phase 1: worktrees --------------------------------------------------------
 # Parse `git worktree list --porcelain` into "path|branch-or-HEAD-sha" records.
 removed_wt=0
+cleared_cache=0
+# Clear an idle cargo target/ in a worktree we are otherwise keeping. Cargo adds
+# entries to target/<profile>/{deps,build,.fingerprint} on every build, bumping
+# those dirs' mtimes, so depth 3 is enough to see a live build.
+clear_idle_cache() {
+  local t="$1/target" tsize
+  [ -f "$t/CACHEDIR.TAG" ] || return 0
+  if [ -n "$(find "$t" -maxdepth 3 -mmin "-$IDLE_MIN" -print -quit 2>/dev/null)" ]; then
+    echo "        target/ written in the last ${IDLE_MIN}m — left alone"
+    return 0
+  fi
+  tsize="$(du -sh "$t" 2>/dev/null | cut -f1)"
+  echo "        CLEAR $tsize  target/ (idle ${IDLE_MIN}m+)"
+  if [ "$APPLY" -eq 1 ]; then
+    rm -rf "$t" && cleared_cache=$((cleared_cache+1))
+  fi
+}
 wt_path=""; wt_head=""; wt_branch=""
 flush_wt() {
   [ -z "$wt_path" ] && return
@@ -119,6 +144,7 @@ flush_wt() {
   size="$(du -sh "$wt_path" 2>/dev/null | cut -f1)"
   if [ -n "$dirty" ]; then
     echo "  KEEP  $size  $wt_path $label — uncommitted changes"
+    clear_idle_cache "$wt_path"
   elif is_merged "$ref"; then
     echo "  PRUNE $size  $wt_path $label — $merged_label"
     if [ "$APPLY" -eq 1 ]; then
@@ -126,6 +152,7 @@ flush_wt() {
     fi
   else
     echo "  KEEP  $size  $wt_path $label — NOT merged into main"
+    clear_idle_cache "$wt_path"
   fi
   wt_path=""
 }
@@ -168,5 +195,5 @@ while IFS= read -r b; do
   fi
 done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
 
-echo "== done: removed $removed_wt worktree(s), $removed_br branch(es) =="
-[ "$APPLY" -eq 0 ] && echo "   (dry run — re-run with 'just gc-apply' to remove the PRUNE/DELETE items)"
+echo "== done: removed $removed_wt worktree(s), $removed_br branch(es), cleared $cleared_cache idle target/ cache(s) =="
+[ "$APPLY" -eq 0 ] && echo "   (dry run — re-run with 'just gc-apply' to remove the PRUNE/DELETE/CLEAR items)"

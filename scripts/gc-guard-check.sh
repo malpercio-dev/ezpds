@@ -6,6 +6,9 @@
 # deletion). This drives gc.sh in dry-run from a throwaway secondary worktree and asserts the main
 # working tree is never in the prune set.
 #
+# It also proves the idle-cache rule for KEPT worktrees: an idle CACHEDIR.TAG'd target/ is
+# reported CLEAR, a freshly written one is left alone, and a dry run deletes neither.
+#
 # Portable bash + git + awk. Creates and cleans up one throwaway worktree/branch.
 set -euo pipefail
 
@@ -26,6 +29,12 @@ cleanup() {
 trap cleanup EXIT
 
 git worktree add -q -b "$branch" "$wt" HEAD
+# An untracked file makes the worktree dirty, so gc.sh KEEPs it whatever HEAD's merge state is.
+touch "$wt/gc-guard-untracked"
+# A fake cargo cache, back-dated so it reads as idle.
+mkdir -p "$wt/target/debug"
+touch "$wt/target/CACHEDIR.TAG"
+touch -t 200001010000 "$wt/target/debug" "$wt/target/CACHEDIR.TAG" "$wt/target"
 
 # Run gc.sh (dry-run — no --apply) FROM the secondary worktree; that is the buggy invocation.
 # Capture its exit status instead of discarding it: a crashed gc.sh (syntax error, etc.) would
@@ -62,3 +71,19 @@ if [ -n "$offender" ]; then
 fi
 
 echo "✓ gc.sh skips the main working tree when run from a secondary worktree"
+
+# Idle target/ in a KEPT worktree → CLEAR (the CLEAR line follows the worktree's KEEP line).
+if ! printf '%s\n' "$out" | grep -A1 -F "$wt " | grep -q 'CLEAR .* target/'; then
+  echo "✗ gc.sh did not offer to clear an idle target/ in a kept worktree" >&2
+  exit 1
+fi
+[ -d "$wt/target" ] || { echo "✗ gc.sh dry run deleted target/" >&2; exit 1; }
+
+# Freshly written target/ → left alone.
+touch "$wt/target/debug"
+out="$(cd "$wt" && bash "$gc_script" 2>/dev/null)"
+if printf '%s\n' "$out" | grep -A1 -F "$wt " | grep -q 'CLEAR'; then
+  echo "✗ gc.sh offered to clear a target/ that was just written to" >&2
+  exit 1
+fi
+echo "✓ gc.sh clears idle target/ caches in kept worktrees and leaves live ones alone"
