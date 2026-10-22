@@ -25,6 +25,8 @@ crypto = { workspace = true }
 # The software signer and the device key's public-point decoding.
 p256 = { workspace = true }
 custos-client = { workspace = true }
+# The migration orchestrator records its phases through `ceremony_journal::JournalStore`.
+ceremony-journal = { workspace = true }
 # Only for `KeychainStore`, the trait `keystore::WalletKeychain` adapts the installed store to.
 # custos-client already depends on it, so this adds no edge to the graph.
 ios-device-key = { workspace = true }

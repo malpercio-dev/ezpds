@@ -5169,6 +5169,7 @@ name = "obsign-core"
 version = "0.16.2"
 dependencies = [
  "base64 0.21.7",
+ "ceremony-journal",
  "chrono",
  "cid",
  "crypto",
