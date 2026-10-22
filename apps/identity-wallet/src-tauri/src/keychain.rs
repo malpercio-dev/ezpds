@@ -1,6 +1,6 @@
-//! The wallet's Keychain: its service name, access groups, every account name, and the small
-//! account helpers. `run()` installs `obsign_platform_ios::keychain::AppleKeychain` under
-//! [`SERVICE`] into `obsign_core::keystore`.
+//! The wallet's Keychain: its service name, access groups, every account name, and the
+//! legacy OAuth-client token helpers. `run()` installs
+//! `obsign_platform_ios::keychain::AppleKeychain` under [`SERVICE`] into `obsign_core::keystore`.
 //!
 //! The accessors every module calls (`store_item`, `get_item`, the `*_synced` family,
 //! `is_not_found`) and the cloud-slot allowlist live in `obsign_core::keystore`; that module
@@ -41,14 +41,14 @@
 //! naming in parentheses (that module's docs carry the account's contract). App-global,
 //! device-local unless noted:
 //!
-//! * `relay-base-url` — configured PDS base URL ([`store_pds_url`]/[`load_pds_url`]).
-//! * `appearance-preference` — `"system"`/`"light"`/`"dark"`; mirrored pre-paint in
-//!   localStorage under the same key.
+//! * `relay-base-url` (`pds_config`) — configured PDS base URL.
+//! * `appearance-preference` (`preferences`) — `"system"`/`"light"`/`"dark"`; mirrored
+//!   pre-paint in localStorage under the same key.
 //! * `device-rotation-key-priv` / `-pub` / `-app-label` (`device_key`) — the global
 //!   device key: priv on the software path, pub + app-label as Secure Enclave metadata.
-//! * `device-token` — the device token `create_account` receives alongside the session.
-//! * `session-token` — the pending (pre-DID) or upgraded (post-DID) session token.
-//! * `did` — the create flow's legacy primary-DID marker.
+//! * `device-token` / `session-token` / `did` (`create_flow`) — the create flow's
+//!   cross-step state: the device token, the pending-then-upgraded session token, and
+//!   the legacy primary-DID marker.
 //! * `ceremony-staging` (`share_ceremony::STAGING_ACCOUNT`) — the in-flight create
 //!   ceremony's share set; fail-closed.
 //! * `recovery-epilogue` (`share_recovery::EPILOGUE_ACCOUNT`) — the in-flight recovery
@@ -118,16 +118,6 @@ pub const LEGACY_ACCESS_GROUP: &str = "dev.malpercio.identitywallet";
 pub(crate) use obsign_core::oauth::DPOP_KEY_PRIV_ACCOUNT;
 const OAUTH_ACCESS_TOKEN_ACCOUNT: &str = "oauth-access-token";
 const OAUTH_REFRESH_TOKEN_ACCOUNT: &str = "oauth-refresh-token";
-const PDS_URL_ACCOUNT: &str = "relay-base-url";
-const APPEARANCE_ACCOUNT: &str = "appearance-preference";
-
-// ── Create-flow accounts (written by `lib.rs`) ─────────────────────────────────
-
-pub(crate) const DEVICE_TOKEN_ACCOUNT: &str = "device-token";
-pub(crate) const SESSION_TOKEN_ACCOUNT: &str = "session-token";
-/// The create flow's legacy primary-DID marker.
-pub(crate) const LEGACY_DID_ACCOUNT: &str = "did";
-
 /// Store the OAuth access token and refresh token in the Keychain.
 pub fn store_oauth_tokens(access_token: &str, refresh_token: &str) -> Result<(), KeyStoreError> {
     keystore::store_item(OAUTH_ACCESS_TOKEN_ACCOUNT, access_token.as_bytes())?;
@@ -168,72 +158,6 @@ pub fn load_oauth_tokens() -> Option<(String, String)> {
         }
     };
     Some((access, refresh))
-}
-
-/// Persist the user-configured PDS base URL to the Keychain.
-///
-/// Overwrites any previously stored URL.
-pub fn store_pds_url(url: &str) -> Result<(), KeyStoreError> {
-    keystore::store_item(PDS_URL_ACCOUNT, url.as_bytes())
-}
-
-/// Retrieve the user-configured PDS base URL from the Keychain.
-///
-/// Returns `None` if no URL has been saved yet (first run or after logout).
-pub fn load_pds_url() -> Option<String> {
-    match keystore::get_item(PDS_URL_ACCOUNT) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .map_err(|e| {
-                tracing::error!(error = ?e, "PDS URL in Keychain is not valid UTF-8; treating as absent");
-            })
-            .ok(),
-        Err(e) if keystore::is_not_found(&e) => None,
-        Err(e) => {
-            tracing::error!(error = ?e, "Keychain error loading PDS URL");
-            None
-        }
-    }
-}
-
-/// Remove the PDS URL from the Keychain. Test-only; used to reset state
-/// between tests that share the Keychain mock store.
-#[cfg(test)]
-pub fn delete_pds_url_test_only() {
-    let _ = keystore::delete_item(PDS_URL_ACCOUNT);
-}
-
-/// Persist the in-app appearance preference (`"system"`, `"light"`, or `"dark"`).
-///
-/// The Keychain is the durable source of truth; the frontend keeps a
-/// localStorage mirror purely so the preference can apply before first paint
-/// (an async IPC read would land after the WebView has already painted).
-pub fn store_appearance_preference(preference: &str) -> Result<(), KeyStoreError> {
-    keystore::store_item(APPEARANCE_ACCOUNT, preference.as_bytes())
-}
-
-/// Retrieve the stored appearance preference.
-///
-/// Returns `None` if no preference has been saved yet (follow the system).
-pub fn load_appearance_preference() -> Option<String> {
-    match keystore::get_item(APPEARANCE_ACCOUNT) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .map_err(|e| {
-                tracing::error!(error = ?e, "appearance preference in Keychain is not valid UTF-8; treating as absent");
-            })
-            .ok(),
-        Err(e) if keystore::is_not_found(&e) => None,
-        Err(e) => {
-            tracing::error!(error = ?e, "Keychain error loading appearance preference");
-            None
-        }
-    }
-}
-
-/// Remove the appearance preference from the Keychain. Test-only; used to
-/// reset state between tests that share the Keychain mock store.
-#[cfg(test)]
-pub fn delete_appearance_preference_test_only() {
-    let _ = keystore::delete_item(APPEARANCE_ACCOUNT);
 }
 
 #[cfg(test)]
@@ -313,6 +237,11 @@ mod tests {
             notifications, plc_monitor, rekey, repo_backup, self_held_kit, share_ceremony,
             share_recovery,
         };
+        use obsign_core::create_flow::{
+            DEVICE_TOKEN_ACCOUNT, LEGACY_DID_ACCOUNT, SESSION_TOKEN_ACCOUNT,
+        };
+        use obsign_core::pds_config::PDS_URL_ACCOUNT;
+        use obsign_core::preferences::APPEARANCE_ACCOUNT;
         let d = DID;
 
         assert_eq!(SERVICE, "ezpds-identity-wallet");
