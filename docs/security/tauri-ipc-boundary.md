@@ -55,10 +55,11 @@ and the Linux/host test suite.
 
 | Permission | Why it's present |
 | --- | --- |
+| `core:event:default` | The root layout calls `listen()` for the `notification_route` event the iOS tap handler emits when the operator taps a verified push alert (`apns.rs` → `notification_routes.rs`), so a warm-foreground tap deep-links into the right server's Accounts screen. The backend *emits* from Rust, which is not ACL-gated; the webview *listening* is. |
 | `log:default` | The `tauri_plugin_log` plugin is registered on all platforms. The frontend does not currently call the log plugin, but the grant is a single low-risk plugin permission and keeps webview logging available; it is retained rather than chased to an empty allowlist. |
 
-The admin frontend uses **no** core API — no events, no window control — so `core:*` is
-absent entirely.
+The admin frontend's only core use is that one event listener — no window control, no
+other core module — so the rest of `core:*` is absent.
 
 ### admin-companion — `capabilities/mobile.json`
 
@@ -75,7 +76,7 @@ build. Unchanged by the lockdown — already minimal.
 
 - **`core:default`** — removed from both apps. It bundles nine core permission sets (app,
   event, image, menu, path, resources, tray, webview, and `window`'s 40+ commands). Only
-  `core:event` is used (by the wallet); the rest was dead surface. Most importantly this
+  `core:event` is used (one listener per app); the rest was dead surface. Most importantly this
   removes all `core:window` control (position, sizing, decoration, dragging, close) from
   the reachable set.
 - **`withGlobalTauri`** — kept **off** (the v2 default) in both `tauri.conf.json`s, so the

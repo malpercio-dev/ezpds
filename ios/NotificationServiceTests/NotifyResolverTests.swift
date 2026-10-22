@@ -165,6 +165,28 @@ final class NotifyPayloadRouteTests: XCTestCase {
         XCTAssertNil(route["origin"])
     }
 
+    /// The operator alerts a Custos instance seals for the console (`accounts_flagged`,
+    /// `storage_cap_approaching`): `server` names the instance so a console paired with
+    /// several picks the right one, `screen` says where to land, `did` (storage only)
+    /// narrows to one account. `count` is banner material and never routes.
+    func testAnOperatorAlertYieldsAServerScopedRouteBlock() throws {
+        let flagged = try XCTUnwrap(decode(
+            #"{"type":"accounts_flagged","title":"Accounts flagged","body":"b","data":{"server":"https://pds.example","screen":"accounts","count":3},"pad":""}"#
+        ))
+        XCTAssertEqual(
+            NotifyRoute.userInfo(for: flagged),
+            ["type": "accounts_flagged", "server": "https://pds.example", "screen": "accounts"]
+        )
+
+        let storage = try XCTUnwrap(decode(
+            #"{"type":"storage_cap_approaching","title":"t","body":"b","data":{"server":"https://pds.example","screen":"accounts","did":"did:plc:abc"},"pad":""}"#
+        ))
+        XCTAssertEqual(
+            NotifyRoute.userInfo(for: storage),
+            ["type": "storage_cap_approaching", "server": "https://pds.example", "screen": "accounts", "did": "did:plc:abc"]
+        )
+    }
+
     /// A payload without routing data — every pre-Phase-C payload — still renders, and
     /// contributes no route block at all.
     func testAPayloadWithoutDataRendersWithNoRoute() throws {

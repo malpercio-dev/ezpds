@@ -15,6 +15,7 @@ mod apns;
 mod device_key;
 mod diagnostics;
 mod keychain;
+mod notification_routes;
 mod notifications;
 mod pairings;
 mod relay_client;
@@ -357,6 +358,15 @@ async fn refresh_notification_sender_keys(
     relay_client::refresh_sender_keys(&pairing_id).await
 }
 
+/// Take (and clear) the route a tapped operator alert parked — where the frontend should
+/// land. The iOS tap handler fills the slot and emits `notification_route`; the frontend
+/// drains it on mount (cold start) and on the event (warm foreground), and the take clears
+/// it so one tap never navigates twice. `null` when no tap is pending.
+#[tauri::command]
+fn take_pending_notification_route() -> Option<notification_routes::PendingNotificationRoute> {
+    notification_routes::take_pending_notification_route()
+}
+
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
 /// `true` on a fresh install — signing is gated until the operator opts out in Settings.
 /// Errors serialize through `RelayClientError::Keychain` (the app's one Serialize error).
@@ -422,6 +432,7 @@ pub fn run() {
             set_space_takedown,
             register_for_notifications,
             refresh_notification_sender_keys,
+            take_pending_notification_route,
             biometric_enabled,
             set_biometric_enabled,
             diagnostics::export_diagnostics

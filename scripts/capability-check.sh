@@ -133,11 +133,12 @@ ADMIN_CAPS="apps/admin-companion/src-tauri/capabilities"
 #                     in-app OAuth plugin. App commands need no entry.
 #   wallet mobile   — the three iOS/android plugins (biometric gate, share sheet, and the
 #                     barcode scanner for the OAuth consent scan path); platform-gated in-file.
-#   admin default   — log:default only. The frontend uses no core API.
+#   admin default   — core:event:default (listen for notification_route, the operator-alert
+#                     tap deep link) + log:default. App commands need no entry.
 #   admin mobile    — the three iOS/android plugins (already platform-gated in-file).
 check_caps "$WALLET_CAPS/default.json" core:event:default auth-session:default
 check_caps "$WALLET_CAPS/mobile.json" barcode-scanner:default biometric:default sharesheet:default
-check_caps "$ADMIN_CAPS/default.json" log:default
+check_caps "$ADMIN_CAPS/default.json" core:event:default log:default
 check_caps "$ADMIN_CAPS/mobile.json" barcode-scanner:default biometric:default sharesheet:default
 
 for f in "$WALLET_CAPS"/*.json "$ADMIN_CAPS"/*.json; do

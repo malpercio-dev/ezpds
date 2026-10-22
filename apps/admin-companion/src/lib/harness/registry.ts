@@ -80,6 +80,7 @@ export type CommandName =
   | 'issue_reset_token'
   | 'register_for_notifications'
   | 'refresh_notification_sender_keys'
+  | 'take_pending_notification_route'
   | 'biometric_enabled'
   | 'set_biometric_enabled'
   // biometric plugin gate (driven by $lib/biometric — resolves = allow)
@@ -380,6 +381,10 @@ export function buildRegistry(state: AdminState): Registry {
       // distinguishable keys.
       return [{ kid: 1, publicKey: `did:key:zharness${hashToken(relay.pairingId)}` }];
     },
+
+    // No notification tap is ever pending in the browser (the route logic itself is
+    // unit-tested in $lib/notification-route).
+    take_pending_notification_route: (): null => null,
 
     biometric_enabled: (): boolean => state.biometricEnabled,
     set_biometric_enabled: (args) => {

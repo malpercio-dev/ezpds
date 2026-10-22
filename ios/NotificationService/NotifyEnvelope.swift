@@ -97,16 +97,24 @@ struct NotifyRouteData: Equatable, Decodable {
     /// A pending OAuth consent request id (`login-approval`).
     let requestId: String?
     /// The account DID the notification concerns, so a multi-identity wallet opens the
-    /// right one.
+    /// right one (or the operator console opens that account's detail).
     let did: String?
+    /// The sealing instance's public URL, for the operator alerts (`accounts_flagged`,
+    /// `storage_cap_approaching`): the console pairs with several servers at once, and
+    /// this is how it picks the pairing the alert belongs to.
+    let server: String?
+    /// The console screen an operator alert points at (`accounts`).
+    let screen: String?
 
     private enum CodingKeys: String, CodingKey {
-        case requestId, did
+        case requestId, did, server, screen
     }
 
-    init(requestId: String?, did: String?) {
+    init(requestId: String?, did: String?, server: String? = nil, screen: String? = nil) {
         self.requestId = requestId
         self.did = did
+        self.server = server
+        self.screen = screen
     }
 
     init(from decoder: Decoder) throws {
@@ -114,8 +122,13 @@ struct NotifyRouteData: Equatable, Decodable {
         // unexpected types reads as absent fields, never a decode failure that would take
         // the whole (already authenticated) payload down with it.
         let container = try? decoder.container(keyedBy: CodingKeys.self)
-        requestId = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .requestId) } ?? nil
-        did = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .did) } ?? nil
+        func field(_ key: CodingKeys) -> String? {
+            container.flatMap { try? $0.decodeIfPresent(String.self, forKey: key) } ?? nil
+        }
+        requestId = field(.requestId)
+        did = field(.did)
+        server = field(.server)
+        screen = field(.screen)
     }
 }
 
@@ -134,6 +147,8 @@ enum NotifyRoute {
         var route: [String: String] = [:]
         if let requestId = payload.data?.requestId { route["requestId"] = requestId }
         if let did = payload.data?.did { route["did"] = did }
+        if let server = payload.data?.server { route["server"] = server }
+        if let screen = payload.data?.screen { route["screen"] = screen }
         guard !route.isEmpty else { return nil }
         route["type"] = payload.type
         return route
