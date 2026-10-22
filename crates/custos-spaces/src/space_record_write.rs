@@ -20,7 +20,7 @@
 //!   (`blob_gc::collect_referenced_blob_cids`), so a blob referenced from a
 //!   space record is pinned exactly like one referenced from the MST.
 //! * **Notification dispatch** — the network fan-out is
-//!   `space_notify::fan_out_write`, spawned detached *after* the commit, so
+//!   `space_notify::{forward_write, report_write}`, spawned detached *after* the commit, so
 //!   the store's blocking job still ends at the durable commit. It is
 //!   triggered from here rather than from each record route because a write
 //!   path that forgot to notify would look correct and silently strand every
@@ -484,7 +484,7 @@ pub async fn apply_space_writes(
     // the facts the authority reports. The query no-ops for a space whose authority is
     // elsewhere.
     let hash = lthash.digest();
-    let space_revs = crate::db::space_notify::upsert_writer(&mut tx, space_uri, did, &new_rev, &hash)
+    let update = crate::db::space_notify::upsert_writer(&mut tx, space_uri, did, &new_rev, &hash)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, did = %did, "failed to record space writer");
@@ -499,9 +499,17 @@ pub async fn apply_space_writes(
     // Best-effort, post-commit and non-blocking: tell the space host (or, when that is us, the
     // registered syncers) that this repo advanced. Placed here rather than in each record route
     // so no write path can be added that silently skips it.
-    drop(crate::space_notify::fan_out_write(
-        state, space, did, &new_rev, &hash, space_revs,
-    ));
+    use crate::db::space_notify::WriterUpdate;
+    match update {
+        WriterUpdate::Accepted(revs) => drop(crate::space_notify::forward_write(
+            state, space, did, &new_rev, &hash, revs,
+        )),
+        WriterUpdate::NotAuthority => drop(crate::space_notify::report_write(
+            state, space, did, &new_rev, &hash,
+        )),
+        // Our own commit's rev always advances; nothing to announce if it somehow did not.
+        WriterUpdate::Stale => {}
+    }
 
     Ok(SpaceCommitOutcome {
         rev: new_rev,

@@ -23,7 +23,7 @@ runs:
   using: composite
   steps:
     - name: Install just
-      uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      uses: ./.github/actions/setup-just
 
     - name: Setup pnpm + Node
       uses: ./.github/actions/setup-pnpm

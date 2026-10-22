@@ -40,13 +40,13 @@ pub struct NotifyWriteInput {
 /// entitled to speak about this write — the repo whose head moved (a repo host reporting its own
 /// user's commit) or the space's authority (a space host forwarding to a registered syncer).
 ///
-/// An authenticated notification about a space this host is not the authority for is accepted and
-/// dropped rather than refused, because a syncer forwarding into a space it merely holds a copy
-/// of has nothing to do with the report either way. A `repoRev` further ahead of this host's
-/// clock than [`MAX_REV_SKEW_SECS`] is refused (`FutureRev`) — such a revision would pin the
-/// repo's writer-set entry ahead of every honest update. When this host is the authority the
-/// repo must also pass the space's write policy; a repo it refuses is acknowledged and not
-/// tracked or forwarded.
+/// An authenticated notification is acknowledged without effect when this host is not the
+/// space's authority (a syncer forwarding into a space it merely holds a copy of has nothing to
+/// do with the report), when the space is deleted or taken down, when the space's write policy
+/// refuses the repo, or when `repoRev` is stale (see
+/// [`upsert_writer`](crate::db::space_notify::upsert_writer)). A `repoRev` further ahead of this
+/// host's clock than [`MAX_REV_SKEW_SECS`] is refused (`FutureRev`): such a revision would pin
+/// the repo's writer-set entry ahead of every honest update.
 pub async fn space_notify_write(
     State(state): State<SpacesState>,
     headers: HeaderMap,
@@ -80,23 +80,26 @@ pub async fn space_notify_write(
     let server_did = state.config.resolve_server_did();
     verify_service_auth_resolving_key(&state, token, &iss, &server_did, LXM, now).await?;
 
-    // The claim goes into the writer set only when this host is the space's authority — the
-    // query's own guard — and only for a space it already knows about; a notification about an
-    // unknown space is not a licence to create one.
+    // Recorded only when this host is the space's authority, and only for a space it already
+    // knows about and still serves; a notification about an unknown space is not a licence to
+    // create one.
     let internal = |e: sqlx::Error| {
         tracing::error!(error = %e, space = %space.uri, "failed to record space writer");
         ApiError::new(ErrorCode::InternalError, "internal server error")
     };
-    let row = crate::db::spaces::get_space(&state.db, &space.uri)
+    let ack = || Ok((StatusCode::OK, axum::Json(serde_json::json!({}))));
+    let Some(row) = crate::db::spaces::get_space(&state.db, &space.uri)
         .await
-        .map_err(internal)?;
-    if let Some(row) = row.filter(|r| r.deleted_at.is_none() && r.policy.is_some()) {
-        if !crate::auth::space::authorize_write_notification(&state, &row, &input.repo).await? {
-            return Ok((StatusCode::OK, axum::Json(serde_json::json!({}))));
-        }
+        .map_err(internal)?
+        .filter(|r| r.deleted_at.is_none() && r.takendown_at.is_none() && r.policy.is_some())
+    else {
+        return ack();
+    };
+    if !crate::auth::space::authorize_write_notification(&state, &row, &input.repo).await? {
+        return ack();
     }
     let mut conn = state.db.acquire().await.map_err(internal)?;
-    let revs = crate::db::space_notify::upsert_writer(
+    let update = crate::db::space_notify::upsert_writer(
         &mut conn,
         &space.uri,
         &input.repo,
@@ -107,17 +110,18 @@ pub async fn space_notify_write(
     .map_err(internal)?;
     drop(conn);
 
-    // Forward to the registered syncers, skipping the repo whose host just told us.
-    drop(crate::space_notify::fan_out_write(
-        &state,
-        &space,
-        &input.repo,
-        &input.repo_rev,
-        &hash,
-        revs,
-    ));
+    if let crate::db::space_notify::WriterUpdate::Accepted(revs) = update {
+        drop(crate::space_notify::forward_write(
+            &state,
+            &space,
+            &input.repo,
+            &input.repo_rev,
+            &hash,
+            revs,
+        ));
+    }
 
-    Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
+    ack()
 }
 
 /// The lexicon's `bytes` type on the wire is `{"$bytes": "<base64>"}`; a commit hash is a

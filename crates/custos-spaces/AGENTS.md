@@ -1,6 +1,6 @@
 # custos-spaces
 
-Last verified: 2026-10-21
+Last verified: 2026-10-22
 
 The Atproto Spaces feature crate: every `com.atproto.space.*` and `com.atproto.simplespace.*`
 route, `/v1/space/import-repo`, the operator's `/v1/admin/spaces` pair, the space authorization
@@ -38,7 +38,7 @@ src/
   router.rs        — the route table and the `[spaces] enabled` gate (`scripts/bruno-parity.sh` reads its `.route(` literals)
   capability.rs    — `CAPABILITY`, the `spaces` entry of the `describeServer` table
   space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append → writer-set row, all one transaction; blob refs are GC-derived, and the notification fan-out is spawned from here post-commit so no write path can skip it. `SpaceWriteAdmission` is the one knob on its account-lifecycle guard: `Import` admits the deactivated state migration runs in (and skips write-point charging), `Active` is everything else — see module doc
-  space_notify.rs  — outbound Atproto Spaces write notifications: the repo-host → space-host report (with the authority auto-registration that creates the subscription) and the space-host → registered-syncer fan-out; detached, retrying, bounded — see module doc
+  space_notify.rs  — outbound Atproto Spaces write notifications: `report_write` (repo host → authority, one `notifyWrite`, no registration) and `forward_write` (authority → registered syncers, only for an update the writer set accepted); detached, retrying transient failures, bounded — see module doc
   space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon
   space_oplog_sweep.rs — hourly `space_repo_ops` compaction sweep (7-day retention): the oplog is droppable by spec, and a syncer whose `since` predates the window heals via `getRepo` — see module doc
   views.rs         — shared handler-free support for the space + simplespace routes: space-ref parsing, the `validate`-flag record check, stored-block decoding, the write-result shape, repo-head load + per-serving commit signing (`load_repo`/`sign_current_commit`/`commit_json`), blob-reference derivation (`space_blob_cids`), and the simplespace config's lexicon-union ↔ column mapping
@@ -65,7 +65,7 @@ read authenticates through `auth::space::authenticate_space_read`.
 | File | Contents |
 |---|---|
 | `spaces.rs` | `spaces` rows (V065/V069/V070): every space this PDS interacts with, keyed by canonical URI, plus the `space_members` list and the `allowList` client-ID set (`app_allowed`, read through `SpaceRow::allowed_client_ids` — an absent or unparseable list reads as empty, which admits no app) — the `insert_space` (member write) vs `create_space` (simplespace create) distinction is in the module doc; the remaining notify queries land with the space-host surface. V070's `takendown_at` is the operator's refusal to serve, independent of the owner's `deleted_at` tombstone — `set_space_takedown` writes it, `list_hosted_spaces` is the operator listing |
-| `space_notify.rs` | the space-host notification tables: `space_notify_registrations` (V065, one table for both roles — `repo_did = ''` is a whole-space subscription on a space host, a named repo is the auto-registration a repo host writes for itself) and `space_writers` (V067, the `listRepos` set). Expiry is enforced by the read query, not a sweep — see module doc |
+| `space_notify.rs` | the space-host notification tables: `space_notify_registrations` (V065, whole-space `registerNotify` subscriptions) and `space_writers` (V067/V073/V074, the `listRepos` set; `upsert_writer` returns a `WriterUpdate` that decides which notification follows). Expiry is enforced by the read query, not a sweep — see module doc |
 | `space_repos.rs` | permissioned repo store queries (V065): repo heads (rev + LtHash state), record blocks, oplog; the write transaction lives in `space_record_write.rs` — see module doc |
 | `space_jti.rs` | spaces-token jti replay store (V065): scope-discriminated insert-if-absent + the expiry sweep — see module doc |
 

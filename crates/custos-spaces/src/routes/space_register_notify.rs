@@ -7,7 +7,6 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
-use crate::db::space_notify::WHOLE_SPACE;
 use crate::lexicon::LexiconInput;
 use crate::SpacesState;
 use common::{ApiError, ErrorCode};
@@ -51,7 +50,6 @@ pub async fn space_register_notify(
         &state.db,
         &space.uri,
         &input.service,
-        WHOLE_SPACE,
         crate::space_notify::REGISTRATION_TTL_SECS,
     )
     .await
