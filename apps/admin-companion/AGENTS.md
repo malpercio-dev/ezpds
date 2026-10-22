@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
-Last verified: 2026-08-28
-Last updated: 2026-07-26 (console renders the blob-integrity readouts: unowned blobs on Status, uploaded figures on Account detail, did:web hosting on the account row)
+Last verified: 2026-10-22
+Last updated: 2026-10-22 (operator-alert taps deep-link into the named server's Accounts screen: NSE forwards `server`/`screen`, `apns.rs` gains the tap callback, `notification_routes.rs` + `$lib/notification-route` route it)
 
 ## Purpose
 
@@ -36,7 +36,9 @@ criteria: [docs/archive/design-plans/2026-07-12-browser-harness.md](../../docs/a
 **`window.__harness` console API:** `.scenario(name)` (presets: `unpaired`, `single-relay`,
 `multi-relay`, `degraded-health`, `flagged-accounts`; `.scenarios` lists them), `.failNext(command, error)`
 (e.g. `window.__harness.failNext('generate_claim_code', { code: 'NOT_PAIRED' })`),
-`.emit(event, payload)` (kept for parity — this app subscribes to no Tauri events),
+`.emit(event, payload)` (the root layout's one listener is `notification_route`, a tapped
+operator alert; it re-reads the route via `take_pending_notification_route`, which the fake
+always answers `null`),
 `.state()` (read-only snapshot), `.mode`.
 
 **Biometric gate:** the plugin is allowed to resolve in the browser (`plugin:biometric|authenticate`),
@@ -187,6 +189,10 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   reports `REGISTERED` / `AWAITING_APNS_TOKEN` / `UNSUPPORTED`, all ordinary states) /
   `refresh_notification_sender_keys(pairing_id)` (re-pin that relay's sender keys + rebuild the
   NSE mirror; `null` from a relay predating notifications),
+  `take_pending_notification_route()` (take-and-clear the route a tapped operator alert
+  parked — `{kind, server, screen?, did?}` from the NSE's verified `ezpdsRoute` block, or
+  `null`; `src-tauri/src/notification_routes.rs` is the host-tested slot, `apns.rs` the iOS
+  tap callback that fills it and emits `notification_route`),
   `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`).
   `pairing_state` is gone — superseded by `list_pairings`.
 - **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
@@ -408,6 +414,14 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
     `commit` guard so a slow write can't land under a newer lookup). Moderation runs two
     independent instances (takedown + credential sweep), each treating the other's `writing` as a
     lock so two prompts never stack.
+  - `src/lib/notification-route.ts` (Functional Core, unit-tested) — `notificationHref(route,
+    pairings)`: the href a tapped operator alert opens, or `null`. `server` selects among the
+    pairings this device already holds (matched by normalized relay URL, the Rust pin store's
+    `host_key` rule), `screen` is matched against an allowlist (`accounts`), a `did` opens the
+    account detail — and the result is a `pinnedHref`, so the destination signs against that
+    relay exactly as a Home tap would pin it. The root layout (`src/routes/+layout.svelte`)
+    drains the route on mount (cold start) and on the `notification_route` event (warm),
+    always through `takePendingNotificationRoute()` so one tap never navigates twice.
 - SSR/prerender disabled globally (`src/routes/+layout.ts`); static SPA in `dist/`.
 - **Pairing QR payload** is JSON `{"relayUrl","pairingCode"}` (parsed by
   `parsePairingPayload` in `src/lib/pairing-payload.ts`); the operator's code-minting tool encodes
@@ -481,9 +495,11 @@ Host build / tests (no Xcode): `cargo build -p admin-companion`, `cargo test -p 
   `notificationSenderKeys` set (serde default — doc version stays 1 — and unknown fields now
   round-trip via flattened `extra` maps, so an older build can't strip a newer one's
   additions); `notifications.rs` mirrors all pairings' pins into the NSE-readable
-  `notification-sender-keys` item. `apns.rs` is the iOS-only token bridge (the wallet's
-  add-only delegate pattern, minus tap routing — that lands with the flagged-account alert
-  work). The shared template renders the NSE target for this app too, reading this app's
+  `notification-sender-keys` item. `apns.rs` is the iOS-only bridge (the wallet's add-only
+  delegate pattern): the token callbacks plus the notification-**tap** callback, which reads
+  the `ezpdsRoute` block the shared NSE writes only for an HPKE-verified payload (`type`,
+  `server`, `screen`, `did`) and parks it in `notification_routes.rs` for the frontend — the
+  deep link from an operator alert into the named server's Accounts screen. The shared template renders the NSE target for this app too, reading this app's
   keychain service via its Info.plist `EzpdsKeychainService`; the release lane needs the
   extension's own provisioning profile (`IOS_MOBILE_PROVISION_ADMIN_NSE`), and the relay must
   serve `dev.malpercio.admincompanion` as an APNs topic.

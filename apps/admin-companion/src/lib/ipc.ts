@@ -840,6 +840,35 @@ export function refreshNotificationSenderKeys(pairingId: string): Promise<Sender
   return invoke<SenderKey[] | null>('refresh_notification_sender_keys', { pairingId });
 }
 
+/**
+ * Where a tapped, NSE-verified operator alert wants the console to go. A pointer, never a
+ * claim: `server` only selects which *existing* pairing to open (by relay URL), `screen`
+ * is matched against `$lib/notification-route`'s allowlist, and the screen then fetches
+ * everything it shows through that pairing's signed requests as usual.
+ */
+export interface PendingNotificationRoute {
+  /** The payload type (`accounts_flagged`, `storage_cap_approaching`); unknown kinds are ignored. */
+  kind: string;
+  /** The sealing instance's public URL — which pairing the alert belongs to. */
+  server: string;
+  /** The console screen the alert points at (`accounts`). */
+  screen: string | null;
+  /** The account the alert concerns, when it concerns exactly one. */
+  did: string | null;
+}
+
+/** The Tauri event the warm-foreground tap emits; the route itself is read via `take`. */
+export const NOTIFICATION_ROUTE_EVENT = 'notification_route';
+
+/**
+ * Take (and clear) the pending notification route, if a tap parked one. The iOS tap
+ * handler fills the slot (cold start and warm foreground alike) and the take clears it,
+ * so the mount-time drain and the event handler can never both navigate on one tap.
+ */
+export function takePendingNotificationRoute(): Promise<PendingNotificationRoute | null> {
+  return invoke<PendingNotificationRoute | null>('take_pending_notification_route');
+}
+
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */
 export function biometricEnabled(): Promise<boolean> {
   return invoke<boolean>('biometric_enabled');

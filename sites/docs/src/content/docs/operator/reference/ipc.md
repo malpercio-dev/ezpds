@@ -164,5 +164,6 @@ Source: `apps/admin-companion/src/lib/ipc.ts`
 | `set_active_pairing` | App command |
 | `set_biometric_enabled` | App command |
 | `set_space_takedown` | App command |
+| `take_pending_notification_route` | App command |
 | `unpair` | App command |
 | `update_subject_status` | App command |
