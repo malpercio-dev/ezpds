@@ -5162,8 +5162,21 @@ dependencies = [
 name = "obsign-core"
 version = "0.16.2"
 dependencies = [
+ "base64 0.21.7",
+ "chrono",
+ "crypto",
+ "custos-client",
+ "httpmock",
+ "ios-device-key",
+ "rand_core 0.6.4",
+ "reqwest",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "zeroize",
 ]
 
 [[package]]

@@ -214,7 +214,21 @@ pub fn cached(pds_url: &str) -> Option<ServerCapabilities> {
 /// Drop every cached answer. Tests share one process (and httpmock reuses server ports across
 /// tests), so a verdict recorded for one test's mock host can otherwise be read by a later test
 /// that happens to be handed the same address.
-#[cfg(test)]
+/// Warms the per-host capability cache from every `PdsClient::describe_server` call, wherever
+/// it was made from (migration prepare, handle change, consent, sovereign login).
+pub struct WalletDescribeServerObserver;
+
+impl custos_client::DescribeServerObserver for WalletDescribeServerObserver {
+    fn record_custos_capabilities(
+        &self,
+        pds_url: &str,
+        custos: Option<&custos_client::pds_client::CustosExtension>,
+    ) {
+        record(pds_url, custos);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub fn clear_for_test() {
     if let Ok(mut cache) = cache().lock() {
         cache.clear();

@@ -13,7 +13,7 @@
 //! per-DID slots, for identities whose genesis op was signed with this global key before the
 //! DID existed.
 
-use ios_device_key::{DeviceKeyAccounts, KeychainStore};
+use ios_device_key::DeviceKeyAccounts;
 
 pub use ios_device_key::{DeviceKeyError, DevicePublicKey};
 
@@ -35,33 +35,8 @@ pub(crate) const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
     secure_enclave_label: "ezpds-device-rotation-key",
 };
 
-/// The wallet's device-local Keychain, as the shared implementation's store. The
-/// `#[cfg(test)]` in-memory redirection lives in `keychain.rs` and applies through this impl.
-///
-/// `pub(crate)` because `oauth.rs` reuses it for `custos_client::DpopKeypair::get_or_create`
-/// (a different account, same underlying Keychain) — the account-name parameter on
-/// `KeychainStore`'s associated functions is what makes one impl reusable across keys.
-pub(crate) struct WalletKeychain;
-
-impl KeychainStore for WalletKeychain {
-    type Error = obsign_core::keystore::KeyStoreError;
-
-    fn get(account: &str) -> Result<Vec<u8>, Self::Error> {
-        obsign_core::keystore::get_item(account)
-    }
-
-    fn store(account: &str, data: &[u8]) -> Result<(), Self::Error> {
-        obsign_core::keystore::store_item(account, data)
-    }
-
-    fn delete(account: &str) -> Result<(), Self::Error> {
-        obsign_core::keystore::delete_item(account)
-    }
-
-    fn is_not_found(error: &Self::Error) -> bool {
-        obsign_core::keystore::is_not_found(error)
-    }
-}
+/// The installed `KeyStore` as `ios-device-key`'s store; `oauth.rs` reuses it for the DPoP key.
+pub(crate) use obsign_core::keystore::WalletKeychain;
 
 /// Return this device's key, generating one on first call.
 pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {

@@ -9,5 +9,12 @@
 //! The wallet's logic moves in from `apps/identity-wallet/src-tauri` one step at a time; the
 //! order is `docs/implementation-plans/2026-10-21-obsign-core-extraction.md`.
 
+pub mod diagnostics;
+pub mod http;
 pub mod keystore;
+pub mod oauth_client;
+pub mod pds_capabilities;
+pub mod pds_client;
 pub mod platform;
+pub mod share_ceremony;
+pub mod source_login;

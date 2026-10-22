@@ -239,6 +239,32 @@ pub fn is_not_found(err: &KeyStoreError) -> bool {
     matches!(err, KeyStoreError::NotFound)
 }
 
+/// The installed store as `ios_device_key`'s [`KeychainStore`](ios_device_key::KeychainStore):
+/// the device key and the DPoP key (`custos_client::DpopKeypair`) are stored through it. The
+/// account-name parameter on that trait's associated functions is what lets one impl serve
+/// several keys.
+pub struct WalletKeychain;
+
+impl ios_device_key::KeychainStore for WalletKeychain {
+    type Error = KeyStoreError;
+
+    fn get(account: &str) -> Result<Vec<u8>, Self::Error> {
+        get_item(account)
+    }
+
+    fn store(account: &str, data: &[u8]) -> Result<(), Self::Error> {
+        store_item(account, data)
+    }
+
+    fn delete(account: &str) -> Result<(), Self::Error> {
+        delete_item(account)
+    }
+
+    fn is_not_found(error: &Self::Error) -> bool {
+        is_not_found(error)
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub use memory::{accessibility_of, clear_for_test};
 
