@@ -95,7 +95,7 @@ process that runs on a locked screen.
 
 - The Keychain account names and both JSON document shapes in `NotifyKeychain.swift` /
   `NotifyBreadcrumbs.swift` are **copies** of constants in each app's
-  `src-tauri/src/{keychain,notifications}.rs` (both apps spell the same account names; the
+  `keychain.rs` and `notifications.rs` (the wallet's `notifications.rs` is in `crates/obsign-core/src/`; both apps spell the same account names; the
   per-app *service* name arrives via `EzpdsKeychainService`). Separate bundles can only
   agree by both spelling the same strings; a rename on one side is silent on the other.
 - `PRODUCT_MODULE_NAME` is pinned to `NotificationService` in the template. It is half of

@@ -83,7 +83,7 @@ pub enum RecoveryError {
 /// Returns `(fork_point_entry, pre_unauthorized_state)` where:
 /// - `fork_point_entry` is the last legitimate AuditEntry (its CID becomes the `prev` for the counter-op)
 /// - `pre_unauthorized_state` is the VerifiedPlcOp representing the state to restore
-pub(crate) fn find_fork_point(
+pub fn find_fork_point(
     audit_log: &[AuditEntry],
     unauthorized_op_cid: &str,
     device_key: &DidKeyUri,
@@ -127,7 +127,7 @@ const RECOVERY_WINDOW_HOURS: i64 = 72;
 
 /// The rotation keys and services of a single PLC operation — the two parts of
 /// the state a recovery diff compares.
-pub(crate) struct OpState {
+pub struct OpState {
     pub rotation_keys: Vec<String>,
     pub services: BTreeMap<String, PlcService>,
 }
@@ -141,7 +141,7 @@ pub(crate) struct OpState {
 ///
 /// This is display-only (the signed op is built independently from the fork-point
 /// state), so malformed fields degrade to empty rather than failing the recovery.
-pub(crate) fn current_state_from_audit_log(audit_log: &[AuditEntry]) -> OpState {
+pub fn current_state_from_audit_log(audit_log: &[AuditEntry]) -> OpState {
     let Some(tip) = audit_log.iter().rev().find(|e| !e.nullified) else {
         return OpState {
             rotation_keys: vec![],
@@ -184,7 +184,7 @@ pub(crate) fn current_state_from_audit_log(audit_log: &[AuditEntry]) -> OpState 
 /// `current`: the current (unauthorized) state, from the tip of the audit log
 /// `fork_point_state`: the VerifiedPlcOp at the fork point (state to restore)
 /// `fork_point_cid`: the CID of the fork point operation (becomes `prev` in counter-op)
-pub(crate) fn build_op_diff(
+pub fn build_op_diff(
     current: &OpState,
     fork_point_state: &crypto::VerifiedPlcOp,
     fork_point_cid: &str,
@@ -251,7 +251,7 @@ pub(crate) fn build_op_diff(
 ///
 /// Returns `Ok(())` if recovery is still possible, or `Err(RecoveryWindowExpired)` if
 /// the 72-hour deadline has passed.
-pub(crate) fn check_recovery_window(unauthorized_op_created_at: &str) -> Result<(), RecoveryError> {
+pub fn check_recovery_window(unauthorized_op_created_at: &str) -> Result<(), RecoveryError> {
     let op_time = DateTime::parse_from_rfc3339(unauthorized_op_created_at)
         .map_err(|e| RecoveryError::SigningFailed {
             message: format!("Failed to parse operation timestamp: {e}"),
@@ -1006,11 +1006,10 @@ mod tests {
         let device_pub = store
             .get_or_create_device_key(did)
             .expect("device key generation failed");
-        let device_priv_bytes: [u8; 32] =
-            obsign_core::keystore::get_item(&format!("{did}:device-key"))
-                .expect("device key retrieval")
-                .try_into()
-                .expect("device key 32 bytes");
+        let device_priv_bytes: [u8; 32] = crate::keystore::get_item(&format!("{did}:device-key"))
+            .expect("device key retrieval")
+            .try_into()
+            .expect("device key 32 bytes");
 
         // Generate rotation key for genesis
         let rotation_key = crypto::generate_p256_keypair().expect("rotation key generation");
@@ -1184,8 +1183,8 @@ mod tests {
         let client = crate::pds_client::new_for_test(mock_server.base_url());
 
         // Generate a test genesis operation
-        let device_priv_bytes = obsign_core::keystore::get_item(&format!("{did}:device-key"))
-            .expect("device key retrieval");
+        let device_priv_bytes =
+            crate::keystore::get_item(&format!("{did}:device-key")).expect("device key retrieval");
         let device_priv_array: [u8; 32] =
             device_priv_bytes.try_into().expect("device key 32 bytes");
         let rotation_key = crypto::generate_p256_keypair().expect("rotation key generation");

@@ -31,12 +31,25 @@ ios-device-key = { workspace = true }
 # The share ceremony's seed generation and wiping.
 rand_core = { workspace = true }
 zeroize = { workspace = true }
+# The ceremony state slots in `Core` and the migration/backup I/O.
+tokio = { workspace = true }
+http = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+multibase = { workspace = true }
+urlencoding = { workspace = true }
+# Client-side CAR validation for the user-held repo backup (`repo_backup`): the same no_std
+# IPLD primitives repo-engine uses, not repo-engine itself.
+cid = { workspace = true }
+ipld-core = { workspace = true }
+serde_ipld_dagcbor = { workspace = true }
 
 [dev-dependencies]
-multibase = { workspace = true }
-tokio = { workspace = true }
 httpmock = { workspace = true }
-base64 = { workspace = true }
+tempfile = { workspace = true }
+# Tests build repo CARs by hand; the validator itself reads CIDs through `cid`.
+multihash = { workspace = true }
 
 [features]
 # The thread-local in-memory `KeyStore` and the fallback that selects it when no store is

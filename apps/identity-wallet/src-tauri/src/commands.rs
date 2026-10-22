@@ -5,8 +5,7 @@
 //!
 //! Each line is `[kind] ipc_name = path::to::function(ipc args) -> Ret;`. The kind says
 //! whether the command is `async` or `sync`, and whether its function takes the app's
-//! [`Core`](crate::oauth::Core) (`state`) and the Tauri `AppHandle` (`app`) ahead of its IPC
-//! arguments. The wrapper keeps the IPC name, argument names and types, and return type,
+//! [`Core`](crate::oauth::Core) (`state`) ahead of its IPC arguments. The wrapper keeps the IPC name, argument names and types, and return type,
 //! so the frontend's `invoke()` calls and `{ code }` error unions are unchanged.
 
 macro_rules! commands {
@@ -25,18 +24,11 @@ macro_rules! commands {
             $($seg)::+(&state, $($arg),*).await
         }
     };
-    (@one [async state app] $name:ident = $($seg:ident)::+ ($($arg:ident : $ty:ty),*) -> $ret:ty) => {
+    (@one [async] $name:ident = $($seg:ident)::+ ($($arg:ident : $ty:ty),*) -> $ret:ty) => {
         #[tauri::command]
         #[allow(clippy::too_many_arguments)]
-        pub async fn $name(state: tauri::State<'_, crate::oauth::Core>, app: tauri::AppHandle, $($arg: $ty),*) -> $ret {
-            $($seg)::+(&state, app, $($arg),*).await
-        }
-    };
-    (@one [async app] $name:ident = $($seg:ident)::+ ($($arg:ident : $ty:ty),*) -> $ret:ty) => {
-        #[tauri::command]
-        #[allow(clippy::too_many_arguments)]
-        pub async fn $name(app: tauri::AppHandle, $($arg: $ty),*) -> $ret {
-            $($seg)::+(app, $($arg),*).await
+        pub async fn $name($($arg: $ty),*) -> $ret {
+            $($seg)::+($($arg),*).await
         }
     };
     (@one [sync] $name:ident = $($seg:ident)::+ ($($arg:ident : $ty:ty),*) -> $ret:ty) => {
@@ -92,20 +84,20 @@ commands! {
     [async state] create_app_password = crate::app_passwords::create_app_password(did: String, name: String, privileged: bool, personal_details: bool) -> Result<crate::pds_client::AppPasswordCreated, crate::app_passwords::AppPasswordsError>;
     [async state] list_app_passwords = crate::app_passwords::list_app_passwords(did: String) -> Result<Vec<crate::pds_client::AppPasswordEntry>, crate::app_passwords::AppPasswordsError>;
     [async state] revoke_app_password = crate::app_passwords::revoke_app_password(did: String, name: String) -> Result<(), crate::app_passwords::AppPasswordsError>;
-    [async app] get_blob_backup_status = crate::blob_backup::get_blob_backup_status(did: String) -> Result<crate::blob_backup::BlobBackupStatus, crate::blob_backup::BlobBackupError>;
-    [async app] set_blob_backup_enabled = crate::blob_backup::set_blob_backup_enabled(did: String, enabled: bool) -> Result<crate::blob_backup::BlobBackupStatus, crate::blob_backup::BlobBackupError>;
-    [async app] run_blob_backup = crate::blob_backup::run_blob_backup(did: String) -> Result<crate::blob_backup::BlobBackupRunReport, crate::blob_backup::BlobBackupError>;
-    [async state app] restore_blob_backup = crate::blob_backup::restore_blob_backup(did: String) -> Result<crate::blob_backup::BlobRestoreReport, crate::blob_backup::BlobBackupError>;
-    [async app] get_repo_backup_status = crate::repo_backup::get_repo_backup_status(did: String) -> Result<crate::repo_backup::RepoBackupStatus, crate::repo_backup::RepoBackupError>;
-    [async app] set_repo_backup_enabled = crate::repo_backup::set_repo_backup_enabled(did: String, enabled: bool) -> Result<crate::repo_backup::RepoBackupStatus, crate::repo_backup::RepoBackupError>;
-    [async app] run_repo_backup = crate::repo_backup::run_repo_backup(did: String) -> Result<crate::repo_backup::RepoBackupRunReport, crate::repo_backup::RepoBackupError>;
+    [async] get_blob_backup_status = crate::blob_backup::get_blob_backup_status(did: String) -> Result<crate::blob_backup::BlobBackupStatus, crate::blob_backup::BlobBackupError>;
+    [async] set_blob_backup_enabled = crate::blob_backup::set_blob_backup_enabled(did: String, enabled: bool) -> Result<crate::blob_backup::BlobBackupStatus, crate::blob_backup::BlobBackupError>;
+    [async state] run_blob_backup = crate::blob_backup::run_blob_backup(did: String) -> Result<crate::blob_backup::BlobBackupRunReport, crate::blob_backup::BlobBackupError>;
+    [async state] restore_blob_backup = crate::blob_backup::restore_blob_backup(did: String) -> Result<crate::blob_backup::BlobRestoreReport, crate::blob_backup::BlobBackupError>;
+    [async] get_repo_backup_status = crate::repo_backup::get_repo_backup_status(did: String) -> Result<crate::repo_backup::RepoBackupStatus, crate::repo_backup::RepoBackupError>;
+    [async] set_repo_backup_enabled = crate::repo_backup::set_repo_backup_enabled(did: String, enabled: bool) -> Result<crate::repo_backup::RepoBackupStatus, crate::repo_backup::RepoBackupError>;
+    [async state] run_repo_backup = crate::repo_backup::run_repo_backup(did: String) -> Result<crate::repo_backup::RepoBackupRunReport, crate::repo_backup::RepoBackupError>;
     [sync] get_background_backup_settings = crate::bg_backup::get_background_backup_settings() -> crate::bg_backup::BackgroundBackupSettings;
     [sync] set_background_backup_settings = crate::bg_backup::set_background_backup_settings(settings: crate::bg_backup::BackgroundBackupSettings) -> Result<crate::bg_backup::BackgroundBackupSettings, crate::bg_backup::BackgroundBackupError>;
-    [async state app] register_for_notifications = crate::notifications::register_for_notifications(did: String) -> Result<crate::notifications::RegistrationOutcome, crate::notifications::NotificationsError>;
+    [async state] register_for_notifications = crate::notifications::register_for_notifications(did: String) -> Result<crate::notifications::RegistrationOutcome, crate::notifications::NotificationsError>;
     [sync] get_notification_diagnostics = crate::notifications::get_notification_diagnostics() -> crate::notifications::NotificationDiagnostics;
     [sync] clear_notification_failures = crate::notifications::clear_notification_failures() -> ();
     [sync] take_pending_notification_route = crate::notification_routes::take_pending_notification_route() -> Option<crate::notification_routes::PendingNotificationRoute>;
-    [async state app] check_identity_status = crate::plc_monitor::check_identity_status() -> Result<Vec<crate::plc_monitor::IdentityStatus>, crate::plc_monitor::MonitorError>;
+    [async state] check_identity_status = crate::plc_monitor::check_identity_status() -> Result<Vec<crate::plc_monitor::IdentityStatus>, crate::plc_monitor::MonitorError>;
     [sync] get_monitor_history = crate::plc_monitor::get_monitor_history() -> crate::plc_monitor::MonitorHistory;
     [async state] build_recovery_override_cmd = crate::recovery::build_recovery_override_cmd(did: String, operation_cid: String) -> Result<crate::recovery::SignedRecoveryOp, crate::recovery::RecoveryError>;
     [async state] build_repo_key_rotation_cmd = crate::rotate_repo_key::build_repo_key_rotation_cmd(did: String) -> Result<crate::rotate_repo_key::SignedRotationOp, crate::rotate_repo_key::RotationError>;
@@ -133,8 +125,8 @@ commands! {
     [async state] prepare_migration = crate::migration_orchestrator::prepare_migration(did: String, dest_pds_url: String) -> Result<crate::migration_orchestrator::PreparedMigration, crate::migration_orchestrator::MigrationError>;
     [async state] authenticate_migration_source = crate::migration_orchestrator::authenticate_migration_source(did: String, identifier: String, password: String, auth_factor_token: Option<String>) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] create_destination_account = crate::migration_orchestrator::create_destination_account(did: String, email: String, invite_code: Option<String>) -> Result<(), crate::migration_orchestrator::MigrationError>;
-    [async state app] transfer_repo = crate::migration_orchestrator::transfer_repo(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;
-    [async state app] transfer_blobs = crate::migration_orchestrator::transfer_blobs(did: String, accept_loss: bool) -> Result<(), crate::migration_orchestrator::MigrationError>;
+    [async state] transfer_repo = crate::migration_orchestrator::transfer_repo(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;
+    [async state] transfer_blobs = crate::migration_orchestrator::transfer_blobs(did: String, accept_loss: bool) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] transfer_preferences = crate::migration_orchestrator::transfer_preferences(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] verify_import = crate::migration_orchestrator::verify_import(did: String) -> Result<crate::pds_client::AccountStatus, crate::migration_orchestrator::MigrationError>;
     [async state] arm_identity_leg = crate::migration_orchestrator::arm_identity_leg(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;
@@ -143,7 +135,7 @@ commands! {
     [async state] enroll_recovery_signing_key = crate::disaster_recovery::enroll_recovery_signing_key(did: String) -> Result<crate::disaster_recovery::RecoveryEnrollment, crate::disaster_recovery::DisasterRecoveryError>;
     [async state] await_recovery_key_visibility = crate::disaster_recovery::await_recovery_key_visibility(did: String) -> Result<crate::disaster_recovery::RecoveryKeyStatus, crate::disaster_recovery::DisasterRecoveryError>;
     [async state] create_recovery_destination_account = crate::disaster_recovery::create_recovery_destination_account(did: String, email: String, invite_code: Option<String>) -> Result<(), crate::migration_orchestrator::MigrationError>;
-    [async state app] recovery_transfer_repo = crate::disaster_recovery::recovery_transfer_repo(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;
+    [async state] recovery_transfer_repo = crate::disaster_recovery::recovery_transfer_repo(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] sovereign_login = crate::sovereign_session::sovereign_login(did: String) -> Result<crate::sovereign_session::SovereignLoginResult, crate::sovereign_session::SovereignLoginError>;
     [async state] ensure_identity_session = crate::session_provider::ensure_identity_session(did: String) -> Result<crate::session_provider::SessionReady, crate::session_provider::SessionError>;
     [async state] get_identity_unlock_route = crate::password_unlock::get_identity_unlock_route(did: String) -> Result<crate::password_unlock::UnlockRoute, crate::password_unlock::UnlockError>;

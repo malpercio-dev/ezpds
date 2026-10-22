@@ -71,7 +71,7 @@ exist.
   what `KeychainStore`/`TransportObserver`/`TokenPersister` exist to keep out.
 - The wallet's own OAuth client identity (`CANONICAL_CLIENT_ID`, `REDIRECT_URI`,
   `client_id_for_pds`'s loopback exception, and the compile-time default PDS base URL) stays in
-  `identity-wallet/src-tauri/src/pds_client.rs`/`http.rs` — it names the app itself, not a thing
+  `crates/obsign-core/src/pds_client.rs`/`http.rs` — it names the app itself, not a thing
   two apps could share. `OAuthClient::new`/`refresh_token_dpop` and `CustosClient::par`/
   `token_exchange` all take `client_id`/`redirect_uri` as plain parameters instead of deriving
   them internally.

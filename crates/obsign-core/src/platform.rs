@@ -1,5 +1,5 @@
-//! The platform traits not yet wired: [`EventSink`], [`Scheduler`], [`Clock`]. `KeyStore` and
-//! `Signer` live in `keystore` and `signer`.
+//! The platform traits not yet wired: [`Scheduler`] and [`Clock`]. The wired ones live in
+//! their own modules: `keystore`, `signer`, `events`, `backup_store`.
 //!
 //! Each is declared ahead of the extraction step that wires it (the order lives in
 //! `docs/implementation-plans/2026-10-21-obsign-core-extraction.md`); a signature may still
@@ -12,12 +12,6 @@ use std::time::{Duration, SystemTime};
 #[error("{message}")]
 pub struct PlatformError {
     pub message: String,
-}
-
-/// Events from the core to the UI. Fire-and-forget: a UI that is not listening is not an
-/// error the core can act on.
-pub trait EventSink: Send + Sync {
-    fn emit(&self, event: &str, payload: serde_json::Value);
 }
 
 /// The background work the core asks the platform to run. The core says what and how often;

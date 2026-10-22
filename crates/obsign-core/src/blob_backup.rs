@@ -218,15 +218,7 @@ impl Manifest {
     }
 }
 
-/// Where the mirror lives, as reported to the UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BackupLocation {
-    /// The app's iCloud Drive ubiquity container (survives the device; Files-app visible).
-    Icloud,
-    /// A local app-data directory (dev/simulator/desktop fallback, or the env override).
-    Local,
-}
+pub use crate::backup_store::BackupLocation;
 
 /// The status readout backing the Media Backup screen.
 #[derive(Debug, Serialize)]
@@ -296,7 +288,7 @@ pub struct BlobRestoreReport {
 /// Compute the blob CID for `content`: CIDv1, raw codec, SHA-256 multihash, encoded
 /// as multibase base32-lower — byte-for-byte the encoding the PDS's
 /// `blob_store::build_cid` emits and `listBlobs`/blob refs carry (`bafk…`).
-pub(crate) fn blob_cid(content: &[u8]) -> String {
+pub fn blob_cid(content: &[u8]) -> String {
     let digest = Sha256::digest(content);
     let mut cid_bytes = Vec::with_capacity(36);
     // CIDv1, raw codec, multihash sha-256, length 32.
@@ -319,7 +311,7 @@ fn cid_is_safe_filename(cid: &str) -> bool {
 /// Render a DID as a filesystem-safe manifest file stem (`:` → `_`; any other
 /// non-portable byte likewise). `pub(crate)` so the sibling `repo_backup` mirror reuses the
 /// identical transform for its `{root}/repo/{sanitized-did}.car` layout.
-pub(crate) fn sanitize_did(did: &str) -> String {
+pub fn sanitize_did(did: &str) -> String {
     did.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
@@ -413,68 +405,26 @@ async fn write_blob(root: &Path, cid: &str, bytes: &[u8]) -> Result<(), BlobBack
 
 // ── Backup root resolution ───────────────────────────────────────────────────
 
-/// The app's iCloud Drive ubiquity container `Documents/` directory, if available.
-///
-/// `URLForUbiquityContainerIdentifier(nil)` resolves the app's default container
-/// (from the `com.apple.developer.ubiquity-container-identifiers` entitlement) and
-/// extends the sandbox to it; iOS syncs anything written there and the mirror is
-/// user-visible in the Files app. Returns `None` when the user has iCloud Drive off
-/// (or the entitlement is absent). Called off the main thread by construction —
-/// Tauri async commands run on a worker pool, and Apple documents the call as
-/// potentially slow.
-#[cfg(target_os = "ios")]
-fn ubiquity_documents_dir() -> Option<PathBuf> {
-    use objc2_foundation::NSFileManager;
-    let manager = NSFileManager::defaultManager();
-    let url = manager.URLForUbiquityContainerIdentifier(None)?;
-    let path = url.path()?;
-    Some(PathBuf::from(path.to_string()).join("Documents"))
-}
-
-#[cfg(not(target_os = "ios"))]
-fn ubiquity_documents_dir() -> Option<PathBuf> {
-    None
-}
-
-/// Resolve where the mirror lives, or `None` when no acceptable location exists.
-///
-/// Order: the env override (tests/dev) → the iCloud ubiquity container → on a real
-/// iOS device, **nothing** (a silent local fallback would tell the user they hold a
-/// device-loss-surviving copy when they don't) → elsewhere (macOS host, simulator),
-/// a local app-data directory so the whole surface stays exercisable off-device.
-#[cfg_attr(
-    all(target_os = "ios", not(target_env = "sim")),
-    allow(unused_variables)
-)]
-pub(crate) fn resolve_backup_root(app: &tauri::AppHandle) -> Option<(PathBuf, BackupLocation)> {
+/// Resolve where the mirror lives, or `None` when no acceptable location exists: the env
+/// override (tests/dev) first, then the installed `BackupStore` (see that module for the
+/// per-platform rules, including why a real device has no local fallback).
+pub fn resolve_backup_root() -> Option<(PathBuf, BackupLocation)> {
     if let Ok(dir) = std::env::var(BACKUP_DIR_ENV) {
         if !dir.is_empty() {
             return Some((PathBuf::from(dir), BackupLocation::Local));
         }
     }
-    if let Some(dir) = ubiquity_documents_dir() {
-        return Some((dir, BackupLocation::Icloud));
-    }
-    #[cfg(all(target_os = "ios", not(target_env = "sim")))]
-    {
-        None
-    }
-    #[cfg(not(all(target_os = "ios", not(target_env = "sim"))))]
-    {
-        use tauri::Manager;
-        let dir = app.path().app_data_dir().ok()?.join("blob-backup");
-        Some((dir, BackupLocation::Local))
-    }
+    crate::backup_store::root()
 }
 
 // ── Opt-in flag ──────────────────────────────────────────────────────────────
 
 /// Per-DID Keychain account holding the opt-in flag (`"true"` / `"false"`).
 /// Referenced by `IdentityStore::remove_identity` for cleanup.
-pub(crate) use obsign_core::identity_store::blob_backup_enabled_account as backup_enabled_account;
+pub use crate::identity_store::blob_backup_enabled_account as backup_enabled_account;
 
 fn load_enabled(did: &str) -> bool {
-    obsign_core::keystore::get_item(&backup_enabled_account(did))
+    crate::keystore::get_item(&backup_enabled_account(did))
         .map(|v| v == b"true")
         .unwrap_or(false)
 }
@@ -483,14 +433,13 @@ fn load_enabled(did: &str) -> bool {
 /// reads this to decide which identities to top up; a never-opted-in or Keychain-error
 /// read is `false` (never back up without an explicit opt-in). Only the iOS background
 /// sweep calls this; the foreground surface reads `load_enabled` via `status_core`.
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
-pub(crate) fn is_backup_enabled(did: &str) -> bool {
+pub fn is_backup_enabled(did: &str) -> bool {
     load_enabled(did)
 }
 
 fn store_enabled(did: &str, enabled: bool) -> Result<(), BlobBackupError> {
     let value: &[u8] = if enabled { b"true" } else { b"false" };
-    obsign_core::keystore::store_item(&backup_enabled_account(did), value).map_err(|e| {
+    crate::keystore::store_item(&backup_enabled_account(did), value).map_err(|e| {
         BlobBackupError::KeychainError {
             message: e.to_string(),
         }
@@ -543,7 +492,7 @@ fn mirror_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
 /// One incremental sync pass: list the account's blobs on its PDS, fetch what the
 /// mirror lacks, verify each against its CID, write, and record in the manifest.
 /// Idempotent by construction (content-addressed, immutable files); degrades per-blob.
-pub(crate) async fn run_backup_core(
+pub async fn run_backup_core(
     pds_client: &PdsClient,
     root: &Path,
     did: &str,
@@ -679,7 +628,7 @@ pub(crate) async fn run_backup_core(
 /// iOS download path stays isolated from the platform-agnostic, unit-tested restore
 /// core — and a test can drive every branch (download, genuinely-missing, timeout)
 /// without iCloud. Mirrors the file's existing split around `ubiquity_documents_dir`.
-pub(crate) trait PlaceholderMaterializer {
+pub trait PlaceholderMaterializer {
     /// Try to make the file at `path` locally readable.
     ///
     /// - `Ok(true)` — a placeholder existed and the file is now present (a download ran).
@@ -691,94 +640,15 @@ pub(crate) trait PlaceholderMaterializer {
     ) -> impl std::future::Future<Output = Result<bool, String>> + Send;
 }
 
-/// The production materializer: the real iOS download-and-await on device, an inert "no
-/// placeholder" everywhere else (desktop, the simulator, and the env-override dev root
-/// hold plain local files — a missing one is genuinely missing, never merely evicted).
-pub(crate) struct PlatformMaterializer;
+/// The production materializer: the installed `BackupStore`'s (the real iOS download-and-await
+/// on device; an inert "no placeholder" everywhere else, where a missing file is genuinely
+/// missing, never merely evicted).
+pub struct PlatformMaterializer;
 
 impl PlaceholderMaterializer for PlatformMaterializer {
     async fn materialize(&self, path: &Path) -> Result<bool, String> {
-        #[cfg(target_os = "ios")]
-        {
-            icloud_materialize(path).await
-        }
-        #[cfg(not(target_os = "ios"))]
-        {
-            let _ = path;
-            Ok(false)
-        }
+        crate::backup_store::materialize(path).await
     }
-}
-
-/// How long to wait for iOS to finish downloading an evicted placeholder before giving
-/// up on that blob (recorded as a per-blob failure). Bounded so restoring a large,
-/// mostly-evicted mirror can't wedge indefinitely on one slow or stalled download.
-#[cfg(target_os = "ios")]
-const MATERIALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
-/// How often to re-check whether the file has materialized while awaiting the download.
-#[cfg(target_os = "ios")]
-const MATERIALIZE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// iOS: if `path` has an evicted `.{name}.icloud` placeholder, ask iCloud to download it
-/// and poll (bounded) until the real file appears at `path`. Contract per
-/// [`PlaceholderMaterializer::materialize`].
-#[cfg(target_os = "ios")]
-async fn icloud_materialize(path: &Path) -> Result<bool, String> {
-    let Some(placeholder) = icloud_placeholder_path(path) else {
-        return Ok(false);
-    };
-    // No `.icloud` sibling → the file is genuinely gone, not merely evicted.
-    if !tokio::fs::try_exists(&placeholder).await.unwrap_or(false) {
-        return Ok(false);
-    }
-
-    // Kick off the download (this also extends our sandbox to the item). Confined to a
-    // synchronous helper so no non-`Send` Foundation object is held across an await.
-    start_downloading_ubiquitous_item(path)?;
-
-    let deadline = tokio::time::Instant::now() + MATERIALIZE_TIMEOUT;
-    loop {
-        // iOS replaces the placeholder with the real file at the original path once the
-        // download completes; a partial download never surfaces here (and if one somehow
-        // did, restore's own CID check would reject it before upload).
-        if tokio::fs::try_exists(path).await.unwrap_or(false) {
-            return Ok(true);
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "iCloud did not finish downloading within {}s",
-                MATERIALIZE_TIMEOUT.as_secs()
-            ));
-        }
-        tokio::time::sleep(MATERIALIZE_POLL_INTERVAL).await;
-    }
-}
-
-/// `…/blobs/{name}` → `…/blobs/.{name}.icloud`, iOS's evicted-placeholder naming.
-#[cfg(target_os = "ios")]
-fn icloud_placeholder_path(path: &Path) -> Option<PathBuf> {
-    let name = path.file_name()?.to_str()?;
-    Some(path.with_file_name(format!(".{name}.icloud")))
-}
-
-/// Ask `NSFileManager` to begin downloading the ubiquitous item at `path`. Synchronous
-/// and self-contained: every Foundation object is created and dropped here, so the
-/// caller's future stays `Send`.
-#[cfg(target_os = "ios")]
-fn start_downloading_ubiquitous_item(path: &Path) -> Result<(), String> {
-    use objc2_foundation::{NSFileManager, NSString, NSURL};
-
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| "blob path is not valid UTF-8".to_string())?;
-    let ns_path = NSString::from_str(path_str);
-    // objc2 exposes both of these as safe wrappers (same as the `NSFileManager` call in
-    // `ubiquity_documents_dir`); the returned `NSError` is formatted via its Debug impl.
-    let url = NSURL::fileURLWithPath(&ns_path);
-    let manager = NSFileManager::defaultManager();
-    manager
-        .startDownloadingUbiquitousItemAtURL_error(&url)
-        .map_err(|e| format!("failed to start iCloud download: {e:?}"))
 }
 
 /// Read a mirrored blob's bytes for restore, first materializing an evicted iCloud
@@ -819,7 +689,7 @@ async fn read_mirrored_blob<M: PlaceholderMaterializer>(
 /// (a corrupt file, or a file with no local copy and no placeholder to download, is a
 /// report entry with guidance, never an aborted run). Evicted iCloud placeholders are
 /// downloaded on demand via `materializer` before reading, and counted in the report.
-pub(crate) async fn restore_core<M: PlaceholderMaterializer>(
+pub async fn restore_core<M: PlaceholderMaterializer>(
     client: &OAuthClient,
     root: &Path,
     did: &str,
@@ -901,7 +771,7 @@ pub(crate) async fn restore_core<M: PlaceholderMaterializer>(
 /// take). An undownloaded iCloud placeholder reads as `NotFound` here and the drain records the
 /// loss rather than blocking: a migration drain has no room for a foreground iCloud download, so
 /// only the user-initiated restore path materializes placeholders on demand (see `restore_core`).
-pub(crate) async fn mirror_fallback_blob(root: &Path, did: &str, cid: &str) -> Option<Vec<u8>> {
+pub async fn mirror_fallback_blob(root: &Path, did: &str, cid: &str) -> Option<Vec<u8>> {
     let lock = mirror_lock(did);
     let _guard = lock.lock().await;
 
@@ -947,12 +817,7 @@ pub(crate) async fn mirror_fallback_blob(root: &Path, did: &str, cid: &str) -> O
 /// backup pass would leave it. Crate-visible so the migration-drain tests (a different module) can
 /// stand up a mirror to exercise the fallback. Returns the blob's CID.
 #[cfg(test)]
-pub(crate) async fn seed_mirror_blob_for_test(
-    root: &Path,
-    did: &str,
-    bytes: &[u8],
-    mime: &str,
-) -> String {
+pub async fn seed_mirror_blob_for_test(root: &Path, did: &str, bytes: &[u8], mime: &str) -> String {
     let cid = blob_cid(bytes);
     write_blob(root, &cid, bytes).await.unwrap();
     let mut manifest = load_manifest(root, did).await.unwrap();
@@ -994,11 +859,8 @@ async fn hosting_pds_url(pds_client: &PdsClient, did: &str) -> Result<String, Bl
 
 /// Tauri command: the Media Backup screen's status readout — mirror location (or its
 /// absence), the opt-in flag, and the mirror's size (shown before opting in).
-pub async fn get_blob_backup_status(
-    app: tauri::AppHandle,
-    did: String,
-) -> Result<BlobBackupStatus, BlobBackupError> {
-    match resolve_backup_root(&app) {
+pub async fn get_blob_backup_status(did: String) -> Result<BlobBackupStatus, BlobBackupError> {
+    match resolve_backup_root() {
         Some((root, location)) => status_core(Some(&root), Some(location), &did).await,
         None => status_core(None, None, &did).await,
     }
@@ -1006,26 +868,23 @@ pub async fn get_blob_backup_status(
 
 /// Tauri command: flip the explicit opt-in flag. Returns the refreshed status.
 pub async fn set_blob_backup_enabled(
-    app: tauri::AppHandle,
     did: String,
     enabled: bool,
 ) -> Result<BlobBackupStatus, BlobBackupError> {
     store_enabled(&did, enabled)?;
-    get_blob_backup_status(app, did).await
+    get_blob_backup_status(did).await
 }
 
 /// One incremental backup pass for `did`, resolving the mirror root, hosting PDS, and
-/// shared `PdsClient` from the app handle. The shared body of the `run_blob_backup`
+/// shared `PdsClient` from the app's `Core`. The shared body of the `run_blob_backup`
 /// Tauri command and the background sweep (`bg_backup::run_backup_sweep`): both need the
 /// identical "resolve root → discover PDS → run the CID-verified sync" sequence, and it
 /// reads only public sync endpoints (`listBlobs`/`getBlob`), so it needs no session.
-pub(crate) async fn run_backup_for_did(
-    app: &tauri::AppHandle,
+pub async fn run_backup_for_did(
+    state: &crate::oauth::Core,
     did: &str,
 ) -> Result<BlobBackupRunReport, BlobBackupError> {
-    use tauri::Manager;
-    let (root, _location) = resolve_backup_root(app).ok_or(BlobBackupError::BackupUnavailable)?;
-    let state = app.state::<crate::oauth::Core>();
+    let (root, _location) = resolve_backup_root().ok_or(BlobBackupError::BackupUnavailable)?;
     let pds_client = state.pds_client();
     let pds_url = hosting_pds_url(pds_client, did).await?;
     run_backup_core(pds_client, &root, did, &pds_url).await
@@ -1034,10 +893,10 @@ pub(crate) async fn run_backup_for_did(
 /// Tauri command: run one incremental backup sync pass for the identity. Reads only
 /// public sync endpoints (`listBlobs`/`getBlob`), so it needs no session.
 pub async fn run_blob_backup(
-    app: tauri::AppHandle,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<BlobBackupRunReport, BlobBackupError> {
-    run_backup_for_did(&app, &did).await
+    run_backup_for_did(state, &did).await
 }
 
 /// Tauri command: restore the mirrored blobs to the DID's current PDS. Requires a
@@ -1045,10 +904,9 @@ pub async fn run_blob_backup(
 /// to run the biometric `sovereignLogin(did)` and retry.
 pub async fn restore_blob_backup(
     state: &crate::oauth::Core,
-    app: tauri::AppHandle,
     did: String,
 ) -> Result<BlobRestoreReport, BlobBackupError> {
-    let (root, _location) = resolve_backup_root(&app).ok_or(BlobBackupError::BackupUnavailable)?;
+    let (root, _location) = resolve_backup_root().ok_or(BlobBackupError::BackupUnavailable)?;
     let session = full_access_session(state.pds_client(), &did).await?;
     restore_core(&session.client, &root, &did, &PlatformMaterializer).await
 }
@@ -1774,7 +1632,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_reports_manifest_totals_and_flag() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let dir = tempfile::tempdir().unwrap();
         let did = "did:plc:statustest";
 
@@ -1827,7 +1685,7 @@ mod tests {
 
     #[test]
     fn enabled_flag_roundtrip() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let did = "did:plc:flagtest";
         assert!(!load_enabled(did));
         store_enabled(did, true).unwrap();

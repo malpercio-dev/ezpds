@@ -275,9 +275,9 @@ root = pathlib.Path(sys.argv[1])
 # into BOTH apps' extensions, so each app's Rust constants must agree with the one Swift
 # declaration. The console reads no failure log yet, so only its pin document is contracted.
 contracts = [
-    ("wallet failure log", "apps/identity-wallet/src-tauri/src/notifications.rs",
+    ("wallet failure log", "crates/obsign-core/src/notifications.rs",
      "NotifyBreadcrumbs.swift", "NotifyFailureLog", "FAILURE_LOG_VERSION"),
-    ("wallet sender-key pin document", "apps/identity-wallet/src-tauri/src/notifications.rs",
+    ("wallet sender-key pin document", "crates/obsign-core/src/notifications.rs",
      "NotifyKeychain.swift", "PinnedSenderKeys", "PIN_DOCUMENT_VERSION"),
     ("console sender-key pin document", "apps/admin-companion/src-tauri/src/notifications.rs",
      "NotifyKeychain.swift", "PinnedSenderKeys", "PIN_DOCUMENT_VERSION"),

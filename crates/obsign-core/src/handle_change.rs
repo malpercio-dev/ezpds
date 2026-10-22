@@ -279,7 +279,7 @@ pub fn guard_handle_change(inputs: &HandleChangeInputs) -> Result<(), HandleChan
 /// complete `verificationMethods` and `services` maps, because the handle op must
 /// re-sign them BYTE-FOR-BYTE unchanged (and the guard proves it did).
 #[derive(Debug, Clone)]
-pub(crate) struct CurrentHandleState {
+pub struct CurrentHandleState {
     /// CID of the latest op — becomes the new op's `prev`.
     pub prev_cid: String,
     /// Current rotation keys (preserved; also the authorization set).
@@ -297,7 +297,7 @@ pub(crate) struct CurrentHandleState {
 /// newest entry's `operation` object is the current state. Every field is parsed
 /// strictly — a malformed or missing required field is an error, never a silently
 /// truncated value that would be re-signed.
-pub(crate) fn latest_full_state(
+pub fn latest_full_state(
     audit_log: &[AuditEntry],
 ) -> Result<CurrentHandleState, HandleChangeError> {
     let latest = audit_log
@@ -337,7 +337,7 @@ pub(crate) fn latest_full_state(
 /// own `*Error::InvalidAuditLog { message }` variant — `fetch_err` maps a transport/PLC
 /// failure (the caller's own rate-limit/XRPC/unauthorized classification), `invalid_audit_log`
 /// wraps a parse or shape failure.
-pub(crate) async fn fetch_current_state<E>(
+pub async fn fetch_current_state<E>(
     pds_client: &PdsClient,
     did: &str,
     fetch_err: impl FnOnce(PdsClientError) -> E,
@@ -436,7 +436,7 @@ fn services_field(
 /// Compute the new `alsoKnownAs` array for a handle change: the new `at://{handle}`
 /// becomes the primary (first) handle, every prior `at://` handle is dropped, and any
 /// non-handle aliases (e.g. a `did:web:` alias) are preserved after it. Pure.
-pub(crate) fn compute_new_also_known_as(current: &[String], new_handle: &str) -> Vec<String> {
+pub fn compute_new_also_known_as(current: &[String], new_handle: &str) -> Vec<String> {
     let mut result = vec![format!("{HANDLE_AKA_PREFIX}{new_handle}")];
     for alias in current {
         // Drop every existing at:// handle (there is exactly one primary now); keep
@@ -453,7 +453,7 @@ pub(crate) fn compute_new_also_known_as(current: &[String], new_handle: &str) ->
 /// Classify a non-success `com.atproto.identity.updateHandle` response by HTTP status
 /// and the atproto error envelope's `error` code. Pure, so the mapping is testable
 /// without a live PDS.
-pub(crate) fn classify_update_handle_error(
+pub fn classify_update_handle_error(
     status: u16,
     error_code: Option<&str>,
     message: String,

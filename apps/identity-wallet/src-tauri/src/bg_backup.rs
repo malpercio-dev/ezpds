@@ -311,9 +311,12 @@ async fn run_blob_sweep(app: &tauri::AppHandle, dids: &[String]) {
         |did| {
             let app = app.clone();
             async move {
-                blob_backup::run_backup_for_did(&app, &did)
-                    .await
-                    .map(|_| ())
+                blob_backup::run_backup_for_did(
+                    &tauri::Manager::state::<crate::oauth::Core>(&app),
+                    &did,
+                )
+                .await
+                .map(|_| ())
             }
         },
     )
@@ -335,9 +338,12 @@ async fn run_repo_sweep(app: &tauri::AppHandle, dids: &[String]) {
         |did| {
             let app = app.clone();
             async move {
-                repo_backup::run_backup_for_did(&app, &did)
-                    .await
-                    .map(|_| ())
+                repo_backup::run_backup_for_did(
+                    &tauri::Manager::state::<crate::oauth::Core>(&app),
+                    &did,
+                )
+                .await
+                .map(|_| ())
             }
         },
     )

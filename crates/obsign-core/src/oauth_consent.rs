@@ -214,7 +214,7 @@ pub async fn preview_oauth_consent_by_request_id(
 /// Shared preview core. `query_key` selects the server's lookup dimension (`user_code` for the typed
 /// path, `request_id` for the scan/handoff path); the server resolves the same pending request and
 /// returns the identical `ConsentRequestPreview` either way, so the wallet screen is unchanged.
-pub(crate) async fn preview_oauth_consent_impl(
+pub async fn preview_oauth_consent_impl(
     pds_client: &PdsClient,
     did: impl AsRef<str>,
     query_key: &str,
@@ -295,7 +295,7 @@ pub async fn confirm_oauth_consent(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn confirm_oauth_consent_impl(
+pub async fn confirm_oauth_consent_impl(
     pds_client: &PdsClient,
     store: &IdentityStore,
     did: &str,
@@ -442,7 +442,7 @@ mod tests {
     const TIMESTAMP: i64 = 1_720_000_000;
 
     fn reset_identity(did: &str) -> DevicePublicKey {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         IdentityStore.add_identity(did).unwrap();
         IdentityStore.get_or_create_device_key(did).unwrap()
     }

@@ -271,7 +271,7 @@ pub fn guard_recovery_enroll_op(
 /// Whether the enrolled signing key is visible as the DID's current `atproto`
 /// verification method in the (freshly fetched) audit log — the propagation gate
 /// `createAccount` waits behind.
-pub(crate) fn enrolled_key_visible(audit_log: &[AuditEntry], key_id: &str) -> bool {
+pub fn enrolled_key_visible(audit_log: &[AuditEntry], key_id: &str) -> bool {
     audit_log
         .iter()
         .rev()
@@ -307,7 +307,7 @@ fn did_key_for_scalar(scalar: &[u8; 32]) -> Result<String, DisasterRecoveryError
 /// Signing closure over the stored recovery signing key scalar: deterministic (RFC
 /// 6979) P-256 ECDSA, low-S normalized, raw 64-byte r‖s — the contract every crypto
 /// builder and the service-auth JWT verifier expect.
-pub(crate) fn recovery_sign_closure(
+pub fn recovery_sign_closure(
     scalar: zeroize::Zeroizing<[u8; 32]>,
 ) -> impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError> {
     move |data: &[u8]| {
@@ -762,7 +762,6 @@ pub async fn create_recovery_destination_account(
 /// imported.
 pub async fn recovery_transfer_repo(
     state: &crate::oauth::Core,
-    app: tauri::AppHandle,
     did: String,
 ) -> Result<(), MigrationError> {
     tracing::info!(did = %did, "recovery_transfer_repo: importing from the iCloud snapshot");
@@ -784,7 +783,7 @@ pub async fn recovery_transfer_repo(
         });
     };
 
-    let Some((root, _location)) = crate::blob_backup::resolve_backup_root(&app) else {
+    let Some((root, _location)) = crate::blob_backup::resolve_backup_root() else {
         return Err(MigrationError::BackupUnavailable {
             message: "no backup location is available on this device (is iCloud Drive enabled?)"
                 .into(),

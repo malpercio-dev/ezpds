@@ -36,7 +36,7 @@
 //!
 //! This module also owns the durable per-DID Share 1 slot: `recovery-share-1:{did}`
 //! ([`recovery_share1_account`] is the single source of the naming, and
-//! `obsign_core::keystore::is_recovery_share1_account` is the sole account family `syncs_to_icloud`
+//! `crate::keystore::is_recovery_share1_account` is the sole account family `syncs_to_icloud`
 //! admits to the iCloud-synchronizable store), with accessors [`store_share1`],
 //! [`load_share1`] (synced-first read, device-local fallback), and
 //! [`read_share1_synced`] (write read-back, deliberately no fallback). The slot holds
@@ -62,32 +62,27 @@ use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 use crypto::PlcService;
 
 /// The per-DID Share 1 account naming. It lives with the cloud-slot guard in
-/// `obsign_core::keystore`, which admits only this family; the account addresses two records, the
+/// `crate::keystore`, which admits only this family; the account addresses two records, the
 /// synchronizable one [`store_share1`] writes and [`load_share1`] prefers, and a device-local
 /// fallback for identities onboarded before the synchronizable path existed.
-pub(crate) use obsign_core::keystore::recovery_share1_account;
+pub use crate::keystore::recovery_share1_account;
 
 /// Write this identity's Share 1 to the **iCloud-synchronizable** slot.
 ///
 /// Additive with respect to the device-local slot: it neither reads nor removes it, so a
 /// legacy copy stays put as a fallback. A successful return proves only that the item carries
 /// `kSecAttrSynchronizable` — whether it reached the user's Apple account is not observable
-/// from the app (see `obsign_core::keystore::store_item_synced`).
-pub(crate) fn store_share1(
-    did: &str,
-    share1: &[u8],
-) -> Result<(), obsign_core::keystore::KeyStoreError> {
-    obsign_core::keystore::store_item_synced(&recovery_share1_account(did), share1)
+/// from the app (see `crate::keystore::store_item_synced`).
+pub fn store_share1(did: &str, share1: &[u8]) -> Result<(), crate::keystore::KeyStoreError> {
+    crate::keystore::store_item_synced(&recovery_share1_account(did), share1)
 }
 
 /// Read this identity's Share 1 from the **iCloud-synchronizable** slot only.
 ///
 /// Used for write read-back verification, where falling back to the device-local slot would
 /// let a stale legacy copy mask a synchronizable write that never landed.
-pub(crate) fn read_share1_synced(
-    did: &str,
-) -> Result<Vec<u8>, obsign_core::keystore::KeyStoreError> {
-    obsign_core::keystore::get_item_synced(&recovery_share1_account(did))
+pub fn read_share1_synced(did: &str) -> Result<Vec<u8>, crate::keystore::KeyStoreError> {
+    crate::keystore::get_item_synced(&recovery_share1_account(did))
 }
 
 /// Read this identity's Share 1, preferring the iCloud-synchronizable slot and falling back to
@@ -98,15 +93,15 @@ pub(crate) fn read_share1_synced(
 /// operational failure of the synchronizable read the device-local slot is still consulted —
 /// but if that is also unavailable the original error is returned, so a locked device is never
 /// reported as "the share was never saved".
-pub(crate) fn load_share1(did: &str) -> Result<Vec<u8>, obsign_core::keystore::KeyStoreError> {
+pub fn load_share1(did: &str) -> Result<Vec<u8>, crate::keystore::KeyStoreError> {
     let account = recovery_share1_account(did);
-    match obsign_core::keystore::get_item_synced(&account) {
+    match crate::keystore::get_item_synced(&account) {
         Ok(bytes) if !bytes.is_empty() => Ok(bytes),
-        Ok(empty) => match obsign_core::keystore::get_item(&account) {
+        Ok(empty) => match crate::keystore::get_item(&account) {
             Ok(bytes) if !bytes.is_empty() => Ok(bytes),
             _ => Ok(empty),
         },
-        Err(synced_err) => match obsign_core::keystore::get_item(&account) {
+        Err(synced_err) => match crate::keystore::get_item(&account) {
             Ok(bytes) => Ok(bytes),
             Err(_) => Err(synced_err),
         },
@@ -349,7 +344,7 @@ pub fn guard_rekey_op(inputs: &RekeyInputs) -> Result<(), RekeyError> {
 /// Compute the review-screen diff for a re-key: the recovery key enters, NOTHING leaves,
 /// services never change. Pure. The empty `removed_keys` is the calm, honest framing — a
 /// re-key adds a safety net without taking anything away.
-pub(crate) fn build_rekey_diff(recovery_key_id: &str, prev_cid: &str) -> OpDiff {
+pub fn build_rekey_diff(recovery_key_id: &str, prev_cid: &str) -> OpDiff {
     OpDiff {
         added_keys: vec![recovery_key_id.to_string()],
         removed_keys: Vec::new(),
@@ -472,7 +467,7 @@ async fn deposit_escrow_share(
 /// slot, so a stale legacy copy cannot stand in for a synchronizable write that failed.
 /// Shared by every escrow-less and escrow-backed path that installs a recovery key; the
 /// failure is a bare message so each flow can wrap it in its own `ShareStorageFailed`.
-pub(crate) fn store_and_verify_share1(did: &str, share1: &str) -> Result<(), String> {
+pub fn store_and_verify_share1(did: &str, share1: &str) -> Result<(), String> {
     store_share1(did, share1.as_bytes()).map_err(|e| format!("keychain write failed: {e}"))?;
     match read_share1_synced(did) {
         Ok(read_back) if read_back == share1.as_bytes() => Ok(()),
@@ -688,9 +683,7 @@ pub fn confirm_rekey(did: &str) -> Result<(), RekeyError> {
     match load_share1(did) {
         Ok(bytes) if !bytes.is_empty() => {}
         Ok(_) => return Err(RekeyError::ShareNotStored),
-        Err(ref e) if obsign_core::keystore::is_not_found(e) => {
-            return Err(RekeyError::ShareNotStored)
-        }
+        Err(ref e) if crate::keystore::is_not_found(e) => return Err(RekeyError::ShareNotStored),
         Err(e) => {
             return Err(RekeyError::ShareStorageFailed {
                 message: format!("keychain read failed: {e}"),
@@ -747,15 +740,15 @@ mod tests {
     /// recoverable on the device that holds it.
     #[test]
     fn load_share1_prefers_the_synchronizable_slot_and_falls_back_to_local() {
-        obsign_core::keystore::clear_for_test();
+        crate::keystore::clear_for_test();
         let account = recovery_share1_account(TEST_DID);
 
         // Nothing anywhere.
-        assert!(load_share1(TEST_DID).is_err_and(|e| obsign_core::keystore::is_not_found(&e)));
+        assert!(load_share1(TEST_DID).is_err_and(|e| crate::keystore::is_not_found(&e)));
 
         // Only the device-local slot: still readable, so a confirmation gate on a
         // pre-backfill install is not told the share was never saved.
-        obsign_core::keystore::store_item(&account, b"LOCAL").unwrap();
+        crate::keystore::store_item(&account, b"LOCAL").unwrap();
         assert_eq!(load_share1(TEST_DID).unwrap(), b"LOCAL");
 
         // Both present: the synchronizable slot wins.
@@ -764,7 +757,7 @@ mod tests {
 
         // The read-back helper never falls back — a stale local copy must not be able to
         // stand in for a synchronizable write that failed.
-        obsign_core::keystore::delete_item_synced(&account).unwrap();
+        crate::keystore::delete_item_synced(&account).unwrap();
         assert!(read_share1_synced(TEST_DID).is_err());
         assert_eq!(load_share1(TEST_DID).unwrap(), b"LOCAL");
     }

@@ -4,7 +4,7 @@ Last verified: 2026-10-21
 
 ## Purpose
 
-The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decisions/0039-obsign-core-bound-rust-core.md)). The wallet's logic moves in from `apps/identity-wallet/src-tauri` step by step; the order is [the extraction plan](../../docs/implementation-plans/2026-10-21-obsign-core-extraction.md). Today the crate holds the five platform traits, the Keychain accessors, and the wallet's network and share-generation leaf modules. `apps/identity-wallet/src-tauri/src/lib.rs` re-exports each moved module under its old name.
+The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decisions/0039-obsign-core-bound-rust-core.md)). The wallet's logic moves in from `apps/identity-wallet/src-tauri` step by step; the order is [the extraction plan](../../docs/implementation-plans/2026-10-21-obsign-core-extraction.md). It holds the wallet's logic: the identity store, every ceremony, the network clients, and `Core` (every ceremony's in-flight state). `apps/identity-wallet/src-tauri` is the shell: Tauri wiring plus the iOS implementations of the platform traits. Its `lib.rs` re-exports each module under its old name.
 
 ## Map
 
@@ -21,12 +21,40 @@ The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decis
 | `src/device_key.rs` | the global P-256 device key: this app's Keychain and account names bound to the shared `crates/ios-device-key` implementation (software-or-Secure-Enclave by `#[cfg]`; `get_or_create` idempotent, `sign` low-S-normalized r\|\|s) — see both module docs |
 | `src/identity_store.rs` | multi-identity Keychain lifecycle (`managed-dids` index + per-DID entries), per-DID device keys through the installed `Signer` (`per_did_sign_closure` is the one signing seam), the shared `SovereignTokenRecord` session record; removal semantics and the Share 1 exception in the module doc |
 | `src/signer.rs` | `Signer` (each identity's device key, by DID: get-or-create public key, two-phase signing, `is_hardware_bound`), `install`, and `SoftwareSigner`, the implementation for every target without hardware-bound keys |
-| `src/platform.rs` | `EventSink`, `Scheduler`, `Clock`: declared, not yet wired (see the plan for which step wires each) |
+| `src/agents.rs` | agent consent + audit plus the sovereign-child parent console: the per-identity "My agents" claim-ceremony and child-lifecycle commands over a self-healing per-DID session. The plain network cores are `custos_client::agents` typed methods; only minting a child account and post-recovery reconciliation stay here (they sign with the wallet's delegation seed) — see module doc |
+| `src/app_passwords.rs` | app-password mint/list/revoke over a per-DID full-access session (the "sign the Bluesky app into a passwordless account" surface) — see module doc |
+| `src/blob_backup.rs` | user-held media backup: CID-verified incremental iCloud mirror + per-blob-degrading restore; also feeds the migration blob drain (`mirror_fallback_blob`) and the background sweep — see module doc |
+| `src/claim.rs` | the 5-command PLC claim pipeline (password source login per ADR-0021; a claim changes nothing but inserting the device key) — see module doc |
+| `src/disaster_recovery.rs` | sovereign disaster recovery ("Rebuild from backup"): two guarded PLC ops around an offline-JWT `createAccount` + iCloud-CAR import; sequencing and the anti-lockout rule in the module doc |
+| `src/endpoint_repair.rs` | sovereign `atproto_pds`-endpoint repair (device-key-signed, direct to plc.directory; new host probed first); the endpoint-string-only guard and its no-op reconcile in the module doc |
+| `src/handle_change.rs` | sovereign change-handle: `updateHandle` first, device-key-signed alsoKnownAs op second, retry self-heals; also `check_custom_handle_dns`, the read-only DNS pre-flight for a handle on a user-owned domain (folds the hosting PDS's `resolveHandle` and the wallet's own TXT lookup, returning the exact `_atproto` record required); guard and error classifiers in the module doc |
+| `src/identity_removal.rs` | permanent removal: `deleteAccount` → (did:plc) tombstone → wipe-last, resumable via the pending-removals marker; password-vs-signed-proof resolution and the local-only forget hatch in the module doc |
+| `src/migrate.rs` | self-signed migration identity leg (ADR-0002 path 1): build + device-key-sign + direct plc.directory submit; also the did:web document leg; `guard_migration_op`'s allowlist and the claim-guard inversion in the module doc |
+| `src/migration_orchestrator.rs` | the outbound-migration state machine (prepare → … → finalize; also disaster recovery's transfer tail); cutover ordering, the capability-gated credential branch, blob-loss handling, and state-vs-session persistence in the module doc |
+| `src/notification_routes.rs` | the host-tested half of notification-tap routing: one newest-wins pending-route slot drained by `take_pending_notification_route`; pointer-not-claim discipline in the module doc |
+| `src/notifications.rs` | device half of the E2E-encrypted notification relay: device-global keypair/uuid, per-host pinned sender keys, register + re-pin, and the extension's `notification-failures` breadcrumb slot — design invariants in the module doc |
+| `src/oauth.rs` | `Core` (all flow-state slots and both clients; Tauri-managed, reached by commands through `commands.rs`); re-exports `custos_client::{DpopKeypair, OAuthSession, OAuthError}` plus the test-only DPoP `TokenPersister` adapter. The create-flow OAuth login (`prepare/complete_oauth_flow`) was removed once the create flow started ending at `home` with no OAuth round trip — slot inventory and the retirement rationale in the module doc |
+| `src/oauth_consent.rs` | wallet-confirmed OAuth consent client (preview by code / by QR `request_id`, device-key-signed approve); envelope contents and Phase C match-code rules in the module doc |
+| `src/password_unlock.rs` | the password origin for the shared session record on non-sovereign hosts: capability-driven route choice (unreached ⇒ SOVEREIGN) + `createSession` → bind → persist — see module doc |
+| `src/plc_monitor.rs` | background + foreground PLC sweeps over did:plc identities only (omission is not a verdict) and the fold-based sweep history behind the Protection surface — set rule, degradation contract, and fold rules in the module doc |
+| `src/recovery.rs` | the recovery override: fork-point counter-op signed by the device key, inside plc.directory's 72-hour window — see module doc |
+| `src/rekey.rs` | additive-only re-key of pre-inversion `[device, PDS]` accounts onto the client-share model; owns the per-DID Share 1 slot (`recovery-share-1:{did}`) and its synced-store accessors — see module doc |
+| `src/repo_backup.rs` | user-held posts backup, sibling of `blob_backup.rs`: client-validated full-CAR `getRepo` snapshot into the same iCloud container (no session); `mirror_repo_car` is the migration/disaster-recovery repo source — see module doc |
+| `src/rotate_repo_key.rs` | sovereign repo signing-key rotation (ADR-0025): PDS stages, wallet signs, PDS submits + cuts over under the repo write lock — see module doc |
+| `src/self_held_kit.rs` | escrow-less self-held Shamir kit for claimed identities: build/submit/confirm; share custody and the plc.directory-only posture in the module doc |
+| `src/session_provider.rs` | the per-DID session seam every authenticated operation goes through: restore / coalesced single-flight refresh / host-change discard, distinct terminal errors, and the `ensure_identity_session` pre-flight. The refresh network call + sub/aud re-validation is `custos_client::sovereign_session::refresh_bearer_session`; this module owns the decision ladder, the coalescing lock, and persisting/discarding the `IdentityStore` record — see module doc |
+| `src/share_recovery.rs` | the "Recover existing identity" ceremony (9 IPC commands) and its resumable rotation epilogue — see module doc |
+| `src/sovereign_session.rs` | passwordless per-DID sovereign login: resolves the device key + signer from `IdentityStore`, delegates the network ceremony to `custos_client::sovereign_session::sovereign_login`, and persists a validated Bearer session to `{did}:oauth-tokens`; re-exports the crate's `bearer_jwt_claims`/`audience_matches_server` sub/aud binding helpers and its `fresh_nonce`/`unix_timestamp` (reused by several other device-key-signed flows, not just this one) — see module doc |
+| `src/events.rs` | `EventSink` (core → UI events, fire-and-forget), `install`, `emit` |
+| `src/backup_store.rs` | `BackupStore` (where the user-held mirrors live, and downloading an evicted cloud file), `install`, `BackupLocation` |
+| `src/platform.rs` | `Scheduler`, `Clock`: declared, not yet wired (see the plan for which step wires each) |
 
 ## Contracts
 
 - **The shell installs a `KeyStore` before anything touches storage.** Uninstalled calls return `NotInstalled`, never an empty store. The wallet's `run()` installs `keychain::AppleKeychain`.
 - **The shell installs a `Signer` too,** with the same fail-closed rule: production never falls back to a software key, which would mint keys the DID documents do not name. The wallet installs `EnclaveSigner` on a real device and `SoftwareSigner` elsewhere.
+- **`EventSink` and `BackupStore` are installed the same way,** in the shell's `setup` (they need the app handle). Uninstalled, events are dropped and the backup location is `None`, so a backup surface reads "unavailable" rather than writing somewhere the user was not told about.
+- **Commands are not defined here.** Each command's body is a plain function taking `&Core`; the wallet's `commands.rs` generates the `#[tauri::command]` wrappers.
 - **The cloud-slot allowlist is enforced here,** before any `KeyStore` is reached, so no implementation can widen what leaves the device.
 - **`test-support` is for `[dev-dependencies]` only.** It selects a thread-local in-memory store when nothing is installed, and refuses to compile without `debug_assertions`.
 
