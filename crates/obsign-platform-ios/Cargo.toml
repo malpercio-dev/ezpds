@@ -1,0 +1,35 @@
+[package]
+name = "obsign-platform-ios"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# The iOS implementations of obsign-core's platform traits (ADR-0039). Everything here is
+# Apple-only: off Apple targets the crate compiles to nothing, so the Linux PDS gate can build
+# the workspace without the Apple toolchain.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+obsign-core = { workspace = true }
+tracing = { workspace = true }
+# The Keychain store and the Secure Enclave signer.
+security-framework = { workspace = true, features = ["OSX_10_12"] }
+# The enclave signer's DER → raw `r||s` signature decoding.
+p256 = { workspace = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# The iCloud Drive ubiquity container and the evicted-placeholder download (`icloud.rs`);
+# `NSDate` for the background request's earliest begin date (`scheduler.rs`).
+objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString", "NSError", "NSDate"] }
+# `BGTaskScheduler` (`scheduler.rs`): `objc2` for `Retained`/`AnyThread`, the bindings, and
+# `block2` for the launch and expiration handler blocks the scheduler stores.
+objc2 = { workspace = true }
+objc2-background-tasks = { workspace = true, features = ["BGTaskScheduler", "BGTask", "BGTaskRequest", "block2", "dispatch2"] }
+block2 = { workspace = true }
+# "Unmetered only": SCNetworkReachability's IS_WWAN flag, since a BGProcessingTaskRequest
+# can't require an unmetered link.
+system-configuration = { workspace = true }
+# Polling for an evicted file to come back.
+tokio = { workspace = true }

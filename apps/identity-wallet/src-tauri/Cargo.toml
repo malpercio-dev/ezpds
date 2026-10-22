@@ -37,7 +37,6 @@ reqwest = { workspace = true, features = ["form"] }
 # Rebuild a `reqwest::Response` from parts in `oauth_client.rs` after reading a DPoP 400 body
 # (nonce challenge vs. genuine error) — `reqwest::Response: From<http::Response<T>>`.
 http = { workspace = true }
-security-framework = { workspace = true, features = ["OSX_10_12"] }
 # The device key both iOS apps hold (Secure Enclave / software P-256). This app supplies its
 # own Keychain and account names; see crates/ios-device-key.
 ios-device-key = { workspace = true }
@@ -46,6 +45,9 @@ ios-device-key = { workspace = true }
 custos-client = { workspace = true }
 # The platform-free core (ADR-0039). `keychain.rs` is its iOS `KeyStore`, installed by `run()`.
 obsign-core = { workspace = true }
+# The iOS implementations of the core's platform traits: the Keychain, the Secure Enclave, iCloud,
+# BGTaskScheduler. The only direct link to Security.framework.
+obsign-platform-ios = { workspace = true }
 thiserror = { workspace = true }
 crypto = { workspace = true }
 p256 = { workspace = true }
@@ -85,17 +87,10 @@ tauri-plugin-barcode-scanner = { workspace = true }
 # Tauri API directly, avoiding the upstream's stale 0.0.1 guest package and API dependency.
 tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sharesheet" }
 
-# iCloud Drive ubiquity-container resolution for the blob backup (blob_backup.rs):
-# `NSFileManager.URLForUbiquityContainerIdentifier` has no Rust-crate binding in
-# security-framework, so it is reached through the objc2 Foundation bindings — the
-# same crate family the vendored auth-session plugin already uses (version in the
-# workspace table, so no duplicate majors enter the lockfile). iOS-only: every
-# other platform uses the local-directory fallback and never compiles this.
-# `NSError` is needed for `startDownloadingUbiquitousItemAtURL:error:` (the restore
-# path's on-demand download of an evicted placeholder), which returns `Result<(), NSError>`.
-# `NSDate` is needed for the background-backup task's `earliestBeginDate` (bg_backup.rs).
 [target.'cfg(target_os = "ios")'.dependencies]
-objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString", "NSError", "NSDate", "NSData", "NSDictionary", "NSEnumerator"] }
+# The APNs bridge (apns.rs): the token arrives as `NSData`, a tapped notification's route as an
+# `NSDictionary` of `NSString`s, and failures as `NSError`.
+objc2-foundation = { workspace = true, features = ["NSString", "NSError", "NSData", "NSDictionary", "NSEnumerator"] }
 # The APNs device-token bridge (apns.rs). iOS hands the token to two application-delegate
 # methods and exposes it nowhere else, so the token path needs `UIApplication` (register, and
 # reach the live delegate whose class the callbacks are installed on) and
@@ -104,18 +99,9 @@ objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NS
 # vendored auth-session plugin, so neither adds a major.
 objc2-ui-kit = { workspace = true, features = ["UIApplication", "UIResponder"] }
 objc2-user-notifications = { workspace = true, features = ["UNUserNotificationCenter", "UNNotificationResponse", "UNNotification", "UNNotificationRequest", "UNNotificationContent", "block2"] }
-# Background media-backup scheduling (bg_backup.rs): the iOS `BGProcessingTask` that keeps an
-# opted-in identity's iCloud mirror topped up without opening the app. `objc2` supplies
-# `Retained`/`AnyThread`; `objc2-background-tasks` the `BGTaskScheduler`/`BGProcessingTaskRequest`
-# bindings; `block2` the launch + expiration handler blocks the scheduler stores. Same objc2 0.6
-# family as objc2-foundation, so no duplicate major enters the lockfile. iOS-only — every other
-# platform leaves the scheduling surface inert.
+# `objc2` and `block2` for the APNs bridge's delegate methods and completion blocks (apns.rs).
 objc2 = { workspace = true }
-objc2-background-tasks = { workspace = true, features = ["BGTaskScheduler", "BGTask", "BGTaskRequest", "block2", "dispatch2"] }
 block2 = { workspace = true }
-# "Wi-Fi only" background-backup check: SCNetworkReachability's IS_WWAN flag, since a
-# BGProcessingTaskRequest can't require an unmetered link (bg_backup.rs).
-system-configuration = { workspace = true }
 
 [dev-dependencies]
 # Falls back to an in-memory, thread-local `KeyStore` when `run()` never installed one.

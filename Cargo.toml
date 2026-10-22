@@ -15,6 +15,7 @@ members = [
     "crates/custos-oauth",
     "crates/custos-spaces",
     "crates/obsign-core",
+    "crates/obsign-platform-ios",
     "apps/identity-wallet/src-tauri",
     "apps/admin-companion/src-tauri",
 ]
@@ -294,6 +295,8 @@ custos-oauth = { path = "crates/custos-oauth" }
 custos-spaces = { path = "crates/custos-spaces" }
 # The wallet's platform-free core (ADR-0039): the five platform traits and the logic behind them.
 obsign-core = { path = "crates/obsign-core" }
+# The iOS implementations of obsign-core's platform traits; Apple-only, empty elsewhere.
+obsign-platform-ios = { path = "crates/obsign-platform-ios" }
 
 # ── Local patches ─────────────────────────────────────────────────────────────
 #

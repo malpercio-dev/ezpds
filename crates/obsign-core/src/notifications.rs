@@ -473,8 +473,7 @@ fn stored_notification_scalar() -> Result<Option<Zeroizing<[u8; 32]>>, Notificat
 
 /// Record the APNs device token iOS handed us, reporting whether it actually changed.
 ///
-/// Gated to iOS and tests because the only production caller is `apns.rs`, which iOS alone
-/// compiles — the same shape `bg_backup.rs` uses for its scheduling payload.
+/// The only production caller is the wallet's `apns.rs`, which only iOS compiles.
 ///
 /// `false` means the token is the one already stored, which is the common case: iOS delivers a
 /// token on every launch, and re-registering every identity each time would spend a round trip

@@ -26,13 +26,13 @@
 //! MIME types for bytes the PDS has lost).
 //!
 //! The mirror root resolves (see `resolve_backup_root`): `EZPDS_BLOB_BACKUP_DIR` env override
-//! (tests/dev) → the iCloud ubiquity container's `Documents/` on iOS (`NSFileManager` via
-//! `objc2-foundation`, an iOS-only dep; user-visible in the Files app) → on a real device with
-//! iCloud off, `BACKUP_UNAVAILABLE`, never a silent local fallback → elsewhere (macOS host,
-//! simulator) a local app-data dir reported as `location: "local"`.
+//! (tests/dev) → the installed `BackupStore` (`crate::backup_store`; on iOS the iCloud ubiquity
+//! container's `Documents/`, user-visible in the Files app; on a real device with iCloud off,
+//! `BACKUP_UNAVAILABLE`, never a silent local fallback; elsewhere a local app-data dir reported
+//! as `location: "local"`).
 //!
 //! Shared seams: `run_backup_for_did` is the "resolve root → discover PDS → CID-verified
-//! sync" body the background sweep (`bg_backup`) reuses, gated on `is_backup_enabled`;
+//! sync" body the background sweep (`backup_policy`) reuses, gated on `is_backup_enabled`;
 //! `mirror_fallback_blob` backs the outbound-migration blob drain when the source PDS's
 //! `getBlob` fails (fail-closed re-verification; see its doc). Serialized types mirror
 //! `$lib/ipc` exactly: SCREAMING_SNAKE_CASE error codes, camelCase fields.
@@ -429,7 +429,7 @@ fn load_enabled(did: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether `did` has opted into the media backup. The background sweep (`bg_backup`)
+/// Whether `did` has opted into the media backup. The background sweep (`backup_policy`)
 /// reads this to decide which identities to top up; a never-opted-in or Keychain-error
 /// read is `false` (never back up without an explicit opt-in). Only the iOS background
 /// sweep calls this; the foreground surface reads `load_enabled` via `status_core`.

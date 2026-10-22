@@ -1,5 +1,6 @@
-//! The wallet's Keychain: the iOS [`KeyStore`] implementation `run()` installs into
-//! `obsign_core::keystore`, plus the app's account names and its small account helpers.
+//! The wallet's Keychain: its service name, access groups, every account name, and the small
+//! account helpers. `run()` installs `obsign_platform_ios::keychain::AppleKeychain` under
+//! [`SERVICE`] into `obsign_core::keystore`.
 //!
 //! The accessors every module calls (`store_item`, `get_item`, the `*_synced` family,
 //! `is_not_found`) and the cloud-slot allowlist live in `obsign_core::keystore`; that module
@@ -82,12 +83,7 @@
 //! stored items; `account_names_are_pinned` holds every name above against a literal.
 //!
 
-use obsign_core::keystore::{self, Accessibility, KeyStore, KeyStoreError};
-use security_framework::access_control::{ProtectionMode, SecAccessControl};
-use security_framework::passwords::{
-    delete_generic_password, delete_generic_password_options, generic_password,
-    get_generic_password, set_generic_password, set_generic_password_options, PasswordOptions,
-};
+use obsign_core::keystore::{self, KeyStoreError};
 
 pub const SERVICE: &str = "ezpds-identity-wallet";
 
@@ -109,85 +105,6 @@ pub const STABLE_ACCESS_GROUP: &str = "org.obsign.shared";
 /// any install may still hold items there, which is indefinitely: an install that never
 /// updates never migrates.
 pub const LEGACY_ACCESS_GROUP: &str = "dev.malpercio.identitywallet";
-
-/// `errSecItemNotFound` — the Security framework's "no such item" status.
-///
-/// Callers that hold a raw `security_framework` error rather than a `KeyStoreError`
-/// (a direct `ItemSearchOptions` query, for instance) compare against this instead of
-/// re-spelling the magic number.
-pub const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
-
-/// The real iOS/macOS Keychain. Every other module reaches it through
-/// `obsign_core::keystore`, after `run()` installs it.
-pub(crate) struct AppleKeychain;
-
-fn from_security(e: security_framework::base::Error) -> KeyStoreError {
-    if e.code() == ERR_SEC_ITEM_NOT_FOUND {
-        KeyStoreError::NotFound
-    } else {
-        KeyStoreError::Platform {
-            code: e.code(),
-            message: e.to_string(),
-        }
-    }
-}
-
-/// Query targeting the synchronizable store for `account`.
-///
-/// `Some(true)` (never `None`) so every operation addresses exactly one store: with `None`,
-/// a set would prefer the device-local store and a get could not say which store answered.
-fn synced_options(account: &str) -> PasswordOptions {
-    let mut options = PasswordOptions::new_generic_password(SERVICE, account);
-    options.set_access_synchronized(Some(true));
-    options
-}
-
-impl KeyStore for AppleKeychain {
-    fn get(&self, account: &str) -> Result<Vec<u8>, KeyStoreError> {
-        get_generic_password(SERVICE, account).map_err(from_security)
-    }
-
-    fn set(&self, account: &str, data: &[u8], class: Accessibility) -> Result<(), KeyStoreError> {
-        match class {
-            Accessibility::WhenUnlocked => {
-                set_generic_password(SERVICE, account, data).map_err(from_security)
-            }
-            // Delete-then-add rather than add-or-update: `SecItemUpdate` cannot change an
-            // existing item's protection class, and this write's whole contract is the class.
-            // The class is a `SecAccessControl` with the protection mode and no constraint
-            // flags, so the headless extension reads it with no user-presence check.
-            Accessibility::AfterFirstUnlock => {
-                // Not-found is the ordinary first-write case; any other failure surfaces on
-                // the add below.
-                let _ = delete_generic_password(SERVICE, account);
-                let control = SecAccessControl::create_with_protection(
-                    Some(ProtectionMode::AccessibleAfterFirstUnlock),
-                    0,
-                )
-                .map_err(from_security)?;
-                let mut options = PasswordOptions::new_generic_password(SERVICE, account);
-                options.set_access_control(control);
-                set_generic_password_options(data, options).map_err(from_security)
-            }
-        }
-    }
-
-    fn delete(&self, account: &str) -> Result<(), KeyStoreError> {
-        delete_generic_password(SERVICE, account).map_err(from_security)
-    }
-
-    fn get_synced(&self, account: &str) -> Result<Vec<u8>, KeyStoreError> {
-        generic_password(synced_options(account)).map_err(from_security)
-    }
-
-    fn set_synced(&self, account: &str, data: &[u8]) -> Result<(), KeyStoreError> {
-        set_generic_password_options(data, synced_options(account)).map_err(from_security)
-    }
-
-    fn delete_synced(&self, account: &str) -> Result<(), KeyStoreError> {
-        delete_generic_password_options(synced_options(account)).map_err(from_security)
-    }
-}
 
 // ── OAuth Keychain helpers ─────────────────────────────────────────────────────
 

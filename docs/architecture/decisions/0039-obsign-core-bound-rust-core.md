@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-20
 - **Deciders:** mal
-- **Related:** [ADR-0013](0013-native-swiftui-shell-over-rust-core.md) (the native shell, split out of the same record and still Deferred) · [ADR-0005](0005-functional-core-imperative-shell.md) · [ADR-0030](0030-stable-keychain-group-and-frozen-icloud-container.md) · [`docs/design-plans/2026-09-06-v2-in-place.md`](../../design-plans/2026-09-06-v2-in-place.md) §4 · [`crates/ios-device-key`](../../../crates/ios-device-key) · [`apps/identity-wallet/src-tauri/src/bg_backup.rs`](../../../apps/identity-wallet/src-tauri/src/bg_backup.rs)
+- **Related:** [ADR-0013](0013-native-swiftui-shell-over-rust-core.md) (the native shell, split out of the same record and still Deferred) · [ADR-0005](0005-functional-core-imperative-shell.md) · [ADR-0030](0030-stable-keychain-group-and-frozen-icloud-container.md) · [`docs/design-plans/2026-09-06-v2-in-place.md`](../../design-plans/2026-09-06-v2-in-place.md) §4 · [`crates/ios-device-key`](../../../crates/ios-device-key) · [`crates/obsign-platform-ios/src/scheduler.rs`](../../../crates/obsign-platform-ios/src/scheduler.rs)
 
 ## Context
 
@@ -30,13 +30,14 @@ shell binds to. The Tauri app is its first shell. A native shell, if ADR-0013's
 trigger fires, binds the same crate through **UniFFI** (proc-macro mode; a Swift
 package for iOS, an AAR for Android).
 
-The core reaches the platform only through five traits:
+The core reaches the platform only through six traits:
 
 | Trait | Covers | iOS today | Android |
 | --- | --- | --- | --- |
 | `KeyStore` | Keychain-class storage, including the synchronizable share-1 slot, which is **optional** | Keychain + iCloud Keychain | Keystore-backed storage; no cloud slot |
 | `Signer` | Device-key P-256 signing; reports whether the key is hardware-bound | Secure Enclave | Android Keystore / StrongBox |
 | `EventSink` | Events from core to UI | Tauri `emit` | the shell's own observer |
+| `BackupStore` | Where the user-held media and repo mirrors live, and downloading a file the cloud evicted | iCloud Drive container; no location with it off | app-specific storage or a user-chosen folder |
 | `Scheduler` | "Run this background job"; the core never knows how | `BGTaskScheduler` | WorkManager |
 | `Clock` | Wall time, so ceremonies and the PLC window are testable | system clock | system clock |
 
@@ -56,7 +57,15 @@ carries over from ADR-0013 unchanged.
   of its hand-written fake.
 - Background work moves onto `Scheduler`. `plc_monitor`'s foreground loop can run
   on the `BGTaskScheduler` bridge `bg_backup.rs` already drives from Rust,
-  without leaving Tauri.
+  without leaving Tauri. The extraction moved the backup sweep onto `Scheduler`;
+  the PLC monitor's background job is a follow-up of its own, because it needs a
+  second permitted task identifier and changes what the app does while closed.
+- `BackupStore` was added during the extraction (2026-10-21). The mirrors are
+  files, not secrets, so they fit neither `KeyStore` nor `Scheduler`, and the
+  iCloud container is platform code like the rest.
+- `Clock` is declared but not yet wired. Routing every wall-clock read in the
+  ceremonies and the PLC window through it lands with the wasm build, where
+  `SystemTime::now` panics.
 - The optional cloud slot is the one real design change Android forces. The
   share ceremony must handle "no cloud slot" by routing share 1 to the user or a
   second escrow.

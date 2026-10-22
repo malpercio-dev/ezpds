@@ -3,7 +3,7 @@
 //! The core reaches the platform only through traits a shell implements:
 //! [`KeyStore`](keystore::KeyStore), [`Signer`](signer::Signer),
 //! [`EventSink`](events::EventSink), [`BackupStore`](backup_store::BackupStore),
-//! [`Scheduler`](platform::Scheduler) and [`Clock`](platform::Clock). Nothing in this crate names Tauri, carries a
+//! [`Scheduler`](scheduler::Scheduler) and [`Clock`](platform::Clock). Nothing in this crate names Tauri, carries a
 //! `cfg(target_os)`, or depends on an Apple crate.
 //!
 //! The wallet's logic moves in from `apps/identity-wallet/src-tauri` one step at a time; the
@@ -11,6 +11,7 @@
 
 pub mod agents;
 pub mod app_passwords;
+pub mod backup_policy;
 pub mod backup_store;
 pub mod blob_backup;
 pub mod claim;
@@ -40,6 +41,7 @@ pub mod recovery;
 pub mod rekey;
 pub mod repo_backup;
 pub mod rotate_repo_key;
+pub mod scheduler;
 pub mod self_held_kit;
 pub mod session_provider;
 pub mod share_ceremony;

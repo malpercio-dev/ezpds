@@ -114,11 +114,11 @@
   </dict>
 
   <!--
-    Background media-backup scheduling (src-tauri/src/bg_backup.rs). The `processing`
+    Background media-backup scheduling (obsign-platform-ios's IosScheduler). The `processing`
     background mode lets the app register a BGProcessingTask, and every identifier the app
     submits to BGTaskScheduler must be pre-declared in BGTaskSchedulerPermittedIdentifiers
     or iOS refuses to register/submit it. The identifier string MUST stay in sync with
-    bg_backup::BACKUP_TASK_IDENTIFIER (bundle-id-prefixed by Apple convention). On fire the
+    lib.rs's BACKUP_TASK_IDENTIFIER (bundle-id-prefixed by Apple convention). On fire the
     task runs an incremental, CID-verified backup pass for each opted-in identity, so a
     mirror stays topped up without the user opening the app.
   -->

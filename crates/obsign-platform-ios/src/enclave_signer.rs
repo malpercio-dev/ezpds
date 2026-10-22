@@ -1,5 +1,5 @@
 //! The Secure Enclave [`Signer`]: on a real iOS device, each identity's device key is an
-//! enclave key that never leaves the hardware. `run()` installs [`EnclaveSigner`] there and
+//! enclave key that never leaves the hardware. The wallet installs [`EnclaveSigner`] there and
 //! `obsign_core::signer::SoftwareSigner` everywhere else (macOS, the Simulator).
 //!
 //! The Keychain holds only metadata: the compressed public point (`{did}:device-key-pub`) and
@@ -72,7 +72,7 @@ pub(crate) fn classify_se_fast_path(
 // ── The enclave signer (real iOS device only) ──────────────────────────────────
 
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
-pub(crate) use device::EnclaveSigner;
+pub use device::EnclaveSigner;
 
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
 mod device {
@@ -80,7 +80,7 @@ mod device {
     use obsign_core::identity_store::{device_key_app_label_account, device_key_pub_account};
     use obsign_core::keystore;
 
-    pub(crate) struct EnclaveSigner;
+    pub struct EnclaveSigner;
 
     /// Normalize a Keychain read into the `classify_se_fast_path` input.
     fn read_metadata(account: &str) -> MetadataItem {
@@ -189,7 +189,7 @@ mod device {
             opts.set_key_type(KeyType::ec())
                 .set_size_in_bits(256)
                 .set_token(Token::SecureEnclave)
-                .set_label(&format!("ezpds-device-key-{did}"))
+                .set_label(format!("ezpds-device-key-{did}"))
                 .set_location(Location::DataProtectionKeychain)
                 .set_access_control(access_control); // takes ownership (by value)
 

@@ -675,6 +675,10 @@ ios-build: ios-check
 # compiles none of that Swift (its adoption is where both move).
 ios-pr-check: ios-check _nse-typecheck (_icon-compile "apps/identity-wallet")
     just _pr-check apps/identity-wallet identity-wallet
+    # The wallet's iOS trait implementations live in their own crate (empty off Apple targets,
+    # so the Linux gate never runs these): the Secure Enclave fast-path classifier's tests.
+    cargo test --locked -p obsign-platform-ios
+    cargo clippy --locked -p obsign-platform-ios --all-targets -- -D warnings
 
 # Build a signed, App Store-method IPA (for TestFlight or the App Store). Assumes the
 # Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` once first

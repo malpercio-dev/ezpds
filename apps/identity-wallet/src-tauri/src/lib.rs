@@ -35,18 +35,18 @@ pub use obsign_core::agents;
 #[cfg(target_os = "ios")]
 pub mod apns;
 pub use obsign_core::app_passwords;
-pub mod bg_backup;
+/// The background-backup policy, under the name its Tauri commands and Keychain accounts have
+/// always had.
+pub use obsign_core::backup_policy as bg_backup;
 pub use obsign_core::blob_backup;
 pub use obsign_core::claim;
 mod commands;
 pub use obsign_core::device_key;
 pub mod diagnostics;
 pub use obsign_core::disaster_recovery;
-pub mod enclave_signer;
 pub use obsign_core::endpoint_repair;
 pub use obsign_core::handle_change;
 pub use obsign_core::http;
-pub mod icloud;
 pub use obsign_core::identity_removal;
 pub use obsign_core::identity_store;
 pub mod keychain;
@@ -1725,6 +1725,12 @@ fn share1_backfill_dids() -> Vec<String> {
     dids
 }
 
+/// The `BGTaskScheduler` identifier for the background backup job. MUST match the entry in
+/// `Info.ios.plist`'s `BGTaskSchedulerPermittedIdentifiers` (iOS refuses to register or submit an
+/// identifier the plist doesn't permit), and is bundle-id-prefixed by Apple convention.
+#[cfg(target_os = "ios")]
+const BACKUP_TASK_IDENTIFIER: &str = "dev.malpercio.identitywallet.blob-backup";
+
 /// The UI end of `obsign_core::events`: each event goes to the webview as a Tauri event.
 struct TauriEvents(tauri::AppHandle);
 
@@ -1757,10 +1763,13 @@ async fn run_monitoring_loop(app: tauri::AppHandle) {
 pub fn run() {
     // First, before anything touches storage. A second `run()` in one process would be refused
     // and keep the store already installed, which is the same Keychain.
-    let _ = obsign_core::keystore::install(Box::new(keychain::AppleKeychain));
+    let _ = obsign_core::keystore::install(Box::new(
+        obsign_platform_ios::keychain::AppleKeychain::new(keychain::SERVICE),
+    ));
     // Each identity's device key: the Secure Enclave on a real device, software elsewhere.
     #[cfg(all(target_os = "ios", not(target_env = "sim")))]
-    let _ = obsign_core::signer::install(Box::new(enclave_signer::EnclaveSigner));
+    let _ =
+        obsign_core::signer::install(Box::new(obsign_platform_ios::enclave_signer::EnclaveSigner));
     #[cfg(not(all(target_os = "ios", not(target_env = "sim"))))]
     let _ = obsign_core::signer::install(Box::new(obsign_core::signer::SoftwareSigner));
 
@@ -1792,9 +1801,14 @@ pub fn run() {
             // The platform seams that need the app handle: events to the UI, the backup
             // location, and the bundle identifier push registration uses as its topic.
             let _ = obsign_core::events::install(Box::new(TauriEvents(app.handle().clone())));
-            let _ = obsign_core::backup_store::install(Box::new(icloud::AppBackupStore {
-                app: app.handle().clone(),
-            }));
+            let _ = obsign_core::backup_store::install(Box::new(
+                obsign_platform_ios::icloud::ICloudBackupStore::new(
+                    app.path()
+                        .app_data_dir()
+                        .ok()
+                        .map(|dir| dir.join("blob-backup")),
+                ),
+            ));
             app.state::<oauth::Core>()
                 .set_app_identifier(app.config().identifier.clone());
 
@@ -1844,12 +1858,31 @@ pub fn run() {
             let monitor_handle = app.handle().clone();
             tauri::async_runtime::spawn(run_monitoring_loop(monitor_handle));
 
-            // iOS only: register the background media-backup task and submit the first
-            // request, so an opted-in identity's iCloud mirror stays topped up without the
-            // app being opened. Must run before app launch completes — `setup` does. A
-            // no-op off-device (scheduling is a device concern; the harness is untouched).
+            // iOS only: register the background jobs with BGTaskScheduler (before app launch
+            // completes, which `setup` does) and install the scheduler. Off-device nothing is
+            // installed and background requests are dropped (scheduling is a device concern;
+            // the harness is untouched). Then submit the backup request the settings ask for.
             #[cfg(target_os = "ios")]
-            bg_backup::register_and_schedule(app.handle());
+            {
+                let app_handle = app.handle().clone();
+                let scheduler = obsign_platform_ios::scheduler::IosScheduler::new(
+                    vec![(
+                        obsign_core::scheduler::BackgroundJob::BackupMirror,
+                        BACKUP_TASK_IDENTIFIER,
+                    )],
+                    std::sync::Arc::new(move |job, on_done| {
+                        let app = app_handle.clone();
+                        let worker = tauri::async_runtime::spawn(async move {
+                            obsign_core::scheduler::run(job, &app.state::<oauth::Core>()).await;
+                            on_done();
+                        });
+                        Box::new(move || worker.abort())
+                    }),
+                );
+                scheduler.register();
+                let _ = obsign_core::scheduler::install(Box::new(scheduler));
+            }
+            obsign_core::backup_policy::apply_schedule();
 
             // iOS only: install the APNs device-token callbacks and ask for notification
             // permission. Must run in `setup` — the delegate methods have to exist before iOS

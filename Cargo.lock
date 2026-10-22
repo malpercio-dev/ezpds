@@ -3547,20 +3547,18 @@ dependencies = [
  "multibase",
  "multihash",
  "objc2",
- "objc2-background-tasks",
  "objc2-foundation",
  "objc2-ui-kit",
  "objc2-user-notifications",
  "obsign-core",
+ "obsign-platform-ios",
  "p256",
  "rand_core 0.6.4",
  "reqwest",
- "security-framework",
  "serde",
  "serde_ipld_dagcbor",
  "serde_json",
  "sha2 0.10.9",
- "system-configuration",
  "tauri",
  "tauri-build",
  "tauri-plugin-auth-session",
@@ -5188,6 +5186,22 @@ dependencies = [
  "urlencoding",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "obsign-platform-ios"
+version = "0.16.2"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-background-tasks",
+ "objc2-foundation",
+ "obsign-core",
+ "p256",
+ "security-framework",
+ "system-configuration",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
