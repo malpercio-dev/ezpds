@@ -10,19 +10,10 @@ use custos_core::CoreState;
 
 pub use crate::blob_gc::run_blob_gc;
 
-/// The blob router over `state`, wrapped the way `pds` wraps its public group: lexicon output
-/// validation, the shared layer stack, the XRPC error dialect, and permissive CORS. The rest of
-/// the `pds` app is absent, so a path no blob route claims is a plain 404 here.
+/// The blob router over `state`, wrapped as `pds` wraps it (see
+/// [`custos_core::test_support::test_app`]).
 pub fn test_app(state: CoreState) -> Router {
-    let router = crate::router::<CoreState>().layer(axum::middleware::from_fn(
-        custos_core::lexicon::validate_xrpc_output,
-    ));
-    custos_core::apply_shared_layers(router, &state)
-        .layer(axum::middleware::from_fn(
-            custos_core::xrpc_error_shape::flatten_xrpc_errors,
-        ))
-        .layer(tower_http::cors::CorsLayer::permissive())
-        .with_state(state)
+    custos_core::test_support::test_app(crate::router(), Router::new(), state)
 }
 
 // ── Blob GC fixtures, shared with `pds`'s space-record GC test ─────────────────────────

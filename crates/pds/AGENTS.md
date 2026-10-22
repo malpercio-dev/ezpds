@@ -23,7 +23,7 @@ before opening it; mechanism and invariants live in the module's own `//!` doc.
 src/
   main.rs          — startup: open pool, run migrations, bind server
   telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; `[telemetry]` config incl. `log_format = "json"` — see module doc
-  app.rs           — router construction (route table; the shared middleware is `custos_core::apply_shared_layers`); re-exports `AppState` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged. Each feature crate's `router`/`internal_router` merges in unconditionally before the layer stack; the feature gate lives inside the crate
+  app.rs           — router construction (route table; each group is wrapped by `custos_core::public_surface` / `internal_surface`); re-exports `AppState` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged. Each feature crate's `router`/`internal_router` merges in unconditionally before the layer stack; the feature gate lives inside the crate
   state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (built from `AppState.core`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
   rate_limit_test.rs — the rate-limit middleware tests that need the full `app()` router (CORS on a 429, the `getRepo` exemption, per-endpoint caps); the limiter's unit tests are in `custos_core::rate_limit`
   xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (`xrpc_handler` at `/xrpc/{method}`): upstream resolution for the three proxied namespaces + the read-after-write branch — see module doc
@@ -271,7 +271,7 @@ accept `&SqlitePool` or `&mut SqliteTransaction`; they never open transactions t
 unless the operation is inherently single-table.
 
 **Authentication must never be cookie-based; permissive CORS on the public surface depends on it.**
-`app.rs` applies `CorsLayer::permissive()` to the public surface (landing, `.well-known`, OAuth,
+`custos_core::public_surface` applies permissive CORS to the public surface (landing, `.well-known`, OAuth,
 agent registration, all XRPC, static assets) but deliberately **not** to the admin/provisioning
 `/v1/*` surface (same-origin only). Permissive CORS is safe only because every auth path is
 Bearer/DPoP/signed-request — never an ambient cookie — so a hostile origin cannot ride a logged-in
