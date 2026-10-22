@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-09
 - **Deciders:** ezpds maintainers
-- **Related:** [ADR-0019](0019-authmd-agent-authentication.md) · [design plan](../../archive/design-plans/2026-07-09-agent-provider-revocation-set.md) · [test plan](../../archive/test-plans/2026-07-09-agent-provider-revocation-set.md) · MM-172 · PR #171 · `crates/pds/src/routes/agent_event.rs`
+- **Related:** [ADR-0019](0019-authmd-agent-authentication.md) · [design plan](../../archive/design-plans/2026-07-09-agent-provider-revocation-set.md) · [test plan](../../archive/test-plans/2026-07-09-agent-provider-revocation-set.md) · MM-172 · PR #171 · `crates/custos-agents/src/routes/agent_event.rs`
 
 ## Context
 

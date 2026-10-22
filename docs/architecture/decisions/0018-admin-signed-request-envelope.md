@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-06-28 (backfilled 2026-07-10)
 - **Deciders:** ezpds maintainers
-- **Related:** [design plan](../../archive/design-plans/2026-06-26-admin-companion-app.md) · [ADR-0017](0017-multi-relay-admin-pairings.md) (builds on this) · MM-188–MM-195 · `crates/pds/src/auth/guards.rs`
+- **Related:** [design plan](../../archive/design-plans/2026-06-26-admin-companion-app.md) · [ADR-0017](0017-multi-relay-admin-pairings.md) (builds on this) · MM-188–MM-195 · `crates/custos-core/src/auth/guards.rs`
 
 ## Context
 

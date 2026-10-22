@@ -5,7 +5,7 @@
 - **Deciders:** malpercio
 - **Related:** [docs/2026-08-03-oauth-interop-audit.md](../../2026-08-03-oauth-interop-audit.md)
   (gap 16 and the 2026-08-18 addendum), ADR-0031's sibling audit trail,
-  `crates/pds/src/auth/dpop.rs`
+  `crates/custos-core/src/auth/dpop.rs`
 
 ## Context
 

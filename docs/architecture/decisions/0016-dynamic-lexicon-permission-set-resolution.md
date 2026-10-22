@@ -7,7 +7,7 @@
 
 ## Context
 
-ezpds's granular OAuth scopes support (`crates/pds/src/auth/oauth_scopes.rs`, MM-235/MM-236) already parses and enforces individual `repo:`/`rpc:`/`blob:`/`account:`/`identity:` scopes. The remaining piece is `include:<nsid>` — a reference to a reusable "permission set" (e.g. `include:app.bsky.authFull`) published as a Lexicon record elsewhere on the network, per atproto proposal 0011 and the now-finalized `atproto.com/specs/permission`.
+ezpds's granular OAuth scopes support (`crates/custos-core/src/auth/oauth_scopes.rs`, MM-235/MM-236) already parses and enforces individual `repo:`/`rpc:`/`blob:`/`account:`/`identity:` scopes. The remaining piece is `include:<nsid>` — a reference to a reusable "permission set" (e.g. `include:app.bsky.authFull`) published as a Lexicon record elsewhere on the network, per atproto proposal 0011 and the now-finalized `atproto.com/specs/permission`.
 
 Two ways to support `include:` exist. A static table hardcodes a handful of known NSIDs to their expanded scopes as Rust constants: no network dependency, ships immediately, but only covers sets we anticipate in advance and needs a code change and redeploy for every new one an authority publishes. The alternative is to resolve `include:` references live, following the real Lexicon-publishing protocol (DNS TXT `_lexicon.<domain>` → DID → DID document → XRPC fetch of the schema record).
 

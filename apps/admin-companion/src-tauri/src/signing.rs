@@ -2,7 +2,7 @@
 //
 // The client side of the operator companion's per-device signed-request auth: the
 // two canonical envelopes a device signs, byte-for-byte identical to what the relay
-// reconstructs and verifies. The relay defines these in `crates/pds/src/routes/auth.rs`
+// reconstructs and verifies. The relay defines these in `crates/custos-core/src/auth/guards.rs`
 // (`device_registration_sign_string`, `admin_request_sign_string`); this module is the
 // single source of truth on the *client* side. The golden tests below pin both formats
 // to the same literals the relay's own tests pin, so the two stay in lockstep without a
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn registration_sign_string_matches_relay_golden() {
         // Identical literal to the relay's `sign_string_is_newline_separated` test
-        // (crates/pds/src/routes/auth.rs). If either side drifts, this breaks.
+        // (crates/custos-core/src/auth/guards.rs). If either side drifts, this breaks.
         assert_eq!(
             registration_sign_string("CODE", "did:key:zABC", 1700),
             "CODE\ndid:key:zABC\n1700"
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn admin_header_names_lowercase_to_relay_form() {
         // The relay matches headers case-insensitively but stores them lowercased
-        // (crates/pds/src/routes/auth.rs ADMIN_*_HEADER). Pin the canonical mapping.
+        // (crates/custos-core/src/auth/guards.rs ADMIN_*_HEADER). Pin the canonical mapping.
         assert_eq!(ADMIN_DEVICE_HEADER.to_ascii_lowercase(), "x-admin-device");
         assert_eq!(
             ADMIN_TIMESTAMP_HEADER.to_ascii_lowercase(),

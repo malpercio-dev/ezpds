@@ -66,7 +66,7 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `src-tauri/src/keychain.rs` (service `"ezpds-admin-companion"`).
 - **Canonical signing envelopes** — `src-tauri/src/signing.rs` (Functional Core): the
   registration and per-request `sign_string`s + `sha256_hex` + base64url-no-pad,
-  byte-for-byte matching the relay's `crates/pds/src/routes/auth.rs`. Golden tests pin
+  byte-for-byte matching the relay's `crates/custos-core/src/auth/guards.rs`. Golden tests pin
   both to the relay's own pinned literals (the `pds` crate is binary-only, so the
   contract is shared by value, not import).
 - **Relay client** — `src-tauri/src/relay_client.rs` (Imperative Shell, reqwest): `pair`
