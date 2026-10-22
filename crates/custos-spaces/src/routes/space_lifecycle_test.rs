@@ -48,6 +48,28 @@ fn create_body(rkey: &str, text: &str) -> serde_json::Value {
     space_record_body(SPACE, DID, COLLECTION, rkey, text)
 }
 
+/// `createSpace` for `at://{DID}/space/org.example.bucket/main`, open to everyone.
+async fn create_own_space(state: &SpacesState, token: &str) {
+    assert_eq!(
+        send(
+            state,
+            post(
+                "com.atproto.simplespace.createSpace",
+                token,
+                serde_json::json!({
+                    "spaceType": "org.example.bucket",
+                    "skey": "main",
+                    "readPolicy": {"$type": "com.atproto.simplespace.defs#publicPolicy"},
+                    "writePolicy": {"$type": "com.atproto.simplespace.defs#publicPolicy"},
+                    "appAccess": {"$type": "com.atproto.simplespace.defs#open"},
+                }),
+            ),
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
 /// Put `did` into one lifecycle state by setting the column that derives it.
 async fn set_lifecycle(state: &SpacesState, did: &str, column: &str) {
     sqlx::query(&format!(
@@ -209,24 +231,7 @@ async fn a_credential_stops_being_served_when_the_authority_is_not_active() {
     let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
     let own_space = format!("at://{DID}/space/org.example.bucket/main");
     let owner = access_jwt(&state.jwt_secret, DID);
-    assert_eq!(
-        send(
-            &state,
-            post(
-                "com.atproto.simplespace.createSpace",
-                &owner,
-                serde_json::json!({
-                    "spaceType": "org.example.bucket",
-                    "skey": "main",
-                    "readPolicy": {"$type": "com.atproto.simplespace.defs#publicPolicy"},
-                    "writePolicy": {"$type": "com.atproto.simplespace.defs#publicPolicy"},
-                    "appAccess": {"$type": "com.atproto.simplespace.defs#open"},
-                }),
-            ),
-        )
-        .await,
-        StatusCode::OK
-    );
+    create_own_space(&state, &owner).await;
 
     let key = SpaceSigKey::generate();
     let credential = mint_space_credential(
@@ -282,24 +287,7 @@ async fn credential_requests_are_rate_limited_per_bound_key() {
     let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
     let own_space = format!("at://{DID}/space/org.example.bucket/main");
     let owner = access_jwt(&state.jwt_secret, DID);
-    assert_eq!(
-        send(
-            &state,
-            post(
-                "com.atproto.simplespace.createSpace",
-                &owner,
-                serde_json::json!({
-                    "spaceType": "org.example.bucket",
-                    "skey": "main",
-                    "readPolicy": {"$type": "com.atproto.simplespace.defs#publicPolicy"},
-                    "writePolicy": {"$type": "com.atproto.simplespace.defs#publicPolicy"},
-                    "appAccess": {"$type": "com.atproto.simplespace.defs#open"},
-                }),
-            ),
-        )
-        .await,
-        StatusCode::OK
-    );
+    create_own_space(&state, &owner).await;
 
     let key = SpaceSigKey::generate();
     let request = |credential: &str| get_space_signed(&own_space, &key, credential);
@@ -593,4 +581,152 @@ async fn import_rejects_a_car_whose_blocks_contradict_its_index() {
             .is_none(),
         "a rejected CAR must leave no repo behind"
     );
+}
+
+// ── repo lifecycle ───────────────────────────────────────────────────────────
+
+/// A space anchored on the writer's own DID must already exist: a repo is created implicitly by
+/// its first write, but the space is not. Only `createSpace` makes it, after which the same
+/// write lands.
+#[tokio::test]
+async fn writing_into_an_uncreated_own_space_is_refused() {
+    let state = setup().await;
+    let token = access_jwt(&state.jwt_secret, DID);
+    let own_space = format!("at://{DID}/space/org.example.bucket/main");
+    let write = || {
+        post(
+            "com.atproto.space.createRecord",
+            &token,
+            space_record_body(&own_space, DID, COLLECTION, "a", "x"),
+        )
+    };
+
+    let (status, body) = crate::test_support::send(&state, write()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "SpaceNotFound");
+    assert!(
+        crate::db::spaces::get_space(&state.db, &own_space)
+            .await
+            .unwrap()
+            .is_none(),
+        "the refused write must not record the space"
+    );
+
+    create_own_space(&state, &token).await;
+    assert_eq!(send(&state, write()).await, StatusCode::OK);
+}
+
+/// Every repo read, for `space`/`DID`, paired with a label for failure messages.
+fn repo_reads(space: &str) -> Vec<(&'static str, String)> {
+    let q = format!("space={space}&repo={DID}");
+    vec![
+        ("getRepo", format!("com.atproto.space.getRepo?{q}")),
+        (
+            "getLatestCommit",
+            format!("com.atproto.space.getLatestCommit?{q}"),
+        ),
+        (
+            "listRecords",
+            format!("com.atproto.space.listRecords?{q}&collection={COLLECTION}"),
+        ),
+        ("listRepoOps", format!("com.atproto.space.listRepoOps?{q}")),
+    ]
+}
+
+/// An empty repo and a nonexistent one are the same thing: deleting the last record makes the
+/// repo read as absent on every surface — `RepoNotFound` from each repo read, gone from
+/// `listSpaces` — until the next write recreates it.
+#[tokio::test]
+async fn deleting_the_last_record_makes_the_repo_absent_until_the_next_write() {
+    let state = setup().await;
+    let token = access_jwt(&state.jwt_secret, DID);
+    let write = || {
+        post(
+            "com.atproto.space.createRecord",
+            &token,
+            create_body("a", "x"),
+        )
+    };
+    assert_eq!(send(&state, write()).await, StatusCode::OK);
+    assert_eq!(
+        send(
+            &state,
+            post(
+                "com.atproto.space.deleteRecord",
+                &token,
+                serde_json::json!({
+                    "space": SPACE, "repo": DID, "collection": COLLECTION, "rkey": "a",
+                }),
+            ),
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    for (label, uri) in repo_reads(SPACE) {
+        let (status, body) = crate::test_support::send(&state, get(&uri, &token)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {body}");
+        assert_eq!(body["error"], "RepoNotFound", "{label}");
+    }
+    let (status, body) =
+        crate::test_support::send(&state, get("com.atproto.space.listSpaces", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.to_string().contains(SPACE),
+        "an emptied repo's space must drop out of listSpaces: {body}"
+    );
+
+    // The next write recreates the repo, readable everywhere again.
+    assert_eq!(send(&state, write()).await, StatusCode::OK);
+    for (label, uri) in repo_reads(SPACE) {
+        // Status only: getRepo answers a CAR, not JSON.
+        let response = crate::test_support::test_app(state.clone())
+            .oneshot(get(&uri, &token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{label}");
+    }
+    let (_, body) =
+        crate::test_support::send(&state, get("com.atproto.space.listSpaces", &token)).await;
+    assert!(body.to_string().contains(SPACE), "{body}");
+}
+
+/// On the authority's side, an emptied repo leaves the writer set `listRepos` answers.
+#[tokio::test]
+async fn an_emptied_repo_leaves_the_authority_writer_set() {
+    let state = setup().await;
+    let token = access_jwt(&state.jwt_secret, DID);
+    let own_space = format!("at://{DID}/space/org.example.bucket/main");
+    create_own_space(&state, &token).await;
+    let writers = || crate::db::space_notify::list_writers(&state.db, &own_space, None, 10);
+
+    assert_eq!(
+        send(
+            &state,
+            post(
+                "com.atproto.space.createRecord",
+                &token,
+                space_record_body(&own_space, DID, COLLECTION, "a", "x"),
+            ),
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(writers().await.unwrap().len(), 1, "precondition");
+
+    assert_eq!(
+        send(
+            &state,
+            post(
+                "com.atproto.space.deleteRecord",
+                &token,
+                serde_json::json!({
+                    "space": own_space, "repo": DID, "collection": COLLECTION, "rkey": "a",
+                }),
+            ),
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert!(writers().await.unwrap().is_empty());
 }

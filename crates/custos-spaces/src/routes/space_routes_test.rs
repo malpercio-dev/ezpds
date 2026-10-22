@@ -365,6 +365,15 @@ async fn delete_record_is_idempotent_without_burning_a_revision() {
         ))
         .await
         .unwrap();
+    // A second record keeps the repo alive once `aaa` is gone: an emptied repo is deleted.
+    crate::test_support::test_app(state.clone())
+        .oneshot(post(
+            "com.atproto.space.createRecord",
+            &token,
+            create_body("bbb", "kept"),
+        ))
+        .await
+        .unwrap();
     let rev_before = crate::db::space_repos::get_repo(&state.db, SPACE, DID)
         .await
         .unwrap()

@@ -26,7 +26,7 @@ async fn gc_pins_blob_referenced_only_from_a_space_record() {
     .await
     .unwrap();
     let space = custos_core::space_uri::parse_space_ref(
-        "at://did:plc:gcspaceref/space/org.example.bucket/self",
+        "at://did:plc:gcspaceauthority/space/org.example.bucket/self",
     )
     .unwrap();
 
