@@ -9,7 +9,7 @@
 // The sequence is resumable rather than atomic, because publishing the genesis operation to
 // plc.directory is a network call that cannot join a SQLite transaction: `prepare_child` commits
 // the child deactivated with a provisioning row, the op is published, and `finalize_child` activates
-// it and sequences the repo. The steps run under a `common::journal::Journal` whose cursor is the
+// it and sequences the repo. The steps run under a `ceremony_journal::Journal` whose cursor is the
 // provisioning row (`ChildStep`), so a crash or a plc outage anywhere leaves a deactivated child that
 // the next identical mint resumes at the recorded step.
 
@@ -25,7 +25,7 @@ use crate::db::agent_auth::{
 };
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{get_reserved_repo_key_by_id, insert_did_signing_key, RepoSigningKey};
-use common::journal::{Journal, JournalStore, Step};
+use ceremony_journal::{Journal, JournalStore, Step};
 use custos_core::CoreState;
 
 /// How the child's agent-registration row comes into being — the one thing that differs between

@@ -22,6 +22,7 @@ workspace = true
 axum = { workspace = true }
 anyhow = { workspace = true }
 common = { workspace = true, features = ["axum", "sqlx"] }
+ceremony-journal = { workspace = true }
 custos-db = { workspace = true }
 custos-core = { workspace = true }
 crypto = { workspace = true }

@@ -5,6 +5,7 @@ members = [
     "crates/repo-engine",
     "crates/crypto",
     "crates/common",
+    "crates/ceremony-journal",
     "crates/ios-device-key",
     "crates/custos-client",
     "crates/custos-agents",
@@ -276,6 +277,8 @@ multihash = "0.19"
 
 # Intra-workspace
 common = { path = "crates/common" }
+# The Journal every resumable ceremony runs under, server and wallet alike.
+ceremony-journal = { path = "crates/ceremony-journal" }
 crypto = { path = "crates/crypto" }
 repo-engine = { path = "crates/repo-engine" }
 notify-relay = { path = "crates/notify-relay" }
