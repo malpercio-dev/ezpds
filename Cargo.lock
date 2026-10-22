@@ -851,6 +851,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ceremony-journal"
+version = "0.16.2"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "cesu8"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1459,6 +1466,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.21.7",
+ "ceremony-journal",
  "chrono",
  "common",
  "crypto",

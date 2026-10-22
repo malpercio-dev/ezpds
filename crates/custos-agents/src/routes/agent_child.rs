@@ -769,6 +769,56 @@ mod tests {
             .is_some());
     }
 
+    /// A crash after the plc publish was recorded but before local activation: the retry must
+    /// resume at finalize, never re-posting the genesis op to plc.directory.
+    #[tokio::test]
+    async fn retry_after_a_recorded_publish_resumes_at_finalize() {
+        let (state, plc) = state_with_plc().await;
+        plc.reset().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&plc)
+            .await;
+        let parent = "did:plc:parentchildresume1111";
+        seed_account_with_repo(&state.db, parent).await;
+        let repo_key = reserve(&state.db).await;
+        let handle = "alice-resume.example.com";
+        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let token = access_jwt(&[0x42; 32], parent);
+        let mint = || {
+            request(
+                "/agent/child",
+                Some(&token),
+                serde_json::json!({"handle": handle, "plcOp": op.clone()}),
+            )
+        };
+
+        let response = test_app(state.clone()).oneshot(mint()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        // Stand in for a publish that landed and was recorded just before the process died.
+        sqlx::query("UPDATE agent_child_provisionings SET plc_published_at = datetime('now')")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        plc.reset().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&plc)
+            .await;
+        let response = test_app(state.clone()).oneshot(mint()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let (finalized,): (Option<String>,) =
+            sqlx::query_as("SELECT finalized_at FROM agent_child_provisionings")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert!(finalized.is_some());
+        plc.verify().await;
+    }
+
     #[tokio::test]
     async fn parent_remints_an_active_childs_assertion() {
         let (state, _plc) = state_with_plc().await;

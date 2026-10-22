@@ -1,0 +1,15 @@
+[package]
+name = "ceremony-journal"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The typed-step, persisted-cursor shape every resumable ceremony shares. Dependency-free, so both
+# the PDS and the iOS apps' core can link it without widening either one's graph.
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
