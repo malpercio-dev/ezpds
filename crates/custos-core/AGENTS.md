@@ -32,9 +32,9 @@ split is archived:
 
 ```
 src/
-  lib.rs           — module list; re-exports `CoreState`, `FailedLoginStore`, `apply_shared_layers`
+  lib.rs           — module list; re-exports `CoreState`, `FailedLoginStore`, `public_surface`, `internal_surface`
   state.rs         — `CoreState`: every field a core module reads or more than one feature reads. A feature's own fields live in its state, which embeds this one (`pds`'s `AppState`) and implements `FromRef<_> for CoreState`
-  layers.rs        — `apply_shared_layers(router, &CoreState)`: Trace → HTTP metrics → rate limiting, generic over the router's state; each route group applies it before its own CORS layer
+  layers.rs        — the one middleware stack (Trace → HTTP metrics → rate limiting), applied only through `public_surface` (+ XRPC error dialect + permissive CORS) or `internal_surface` (stack alone); `pds::app` and every feature's `test_app` (via `test_support::test_app`, which adds lexicon output validation) call them
   auth/            — the verification core plus the auth.md agent machinery the token endpoint and the agents surface share (table below); the OAuth server's response mode is `custos-oauth`'s; the Spaces seam is `custos-spaces`'
   test_support.rs  — `test-support` feature only: the test state constructor and shared fixtures (see "Tests from other crates")
   crawler.rs       — outbound `requestCrawl` notifier (`CoreState.crawlers`) — see section below
@@ -60,8 +60,8 @@ src/
 - **State.** Core helpers take `&CoreState`. The `AuthenticatedUser` extractor works for any
   state `S` with `CoreState: FromRef<S>`, so a feature's handler can extract its own state and
   still authenticate; `Sweep<St>` / `Scheduler<St>` publish to `CoreState.sweeps` the same way.
-  The middleware runs on a `CoreState` clone, so `apply_shared_layers` takes a router over any
-  state.
+  The middleware runs on a `CoreState` clone, so `public_surface` / `internal_surface` take a router over
+  any state.
 - **The access-token seam is held by visibility.** `auth::jwt::verify_access_token` and
   `auth::dpop::validate_dpop` are `pub(super)`: nothing outside `auth` can verify an access
   token except through `auth::extractors::authenticate_access`. Never widen them.

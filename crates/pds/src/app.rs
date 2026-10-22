@@ -4,8 +4,6 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
-use custos_core::apply_shared_layers;
-use tower_http::cors::CorsLayer;
 
 use crate::routes::account_storage::account_storage;
 use crate::routes::account_usage::account_usage;
@@ -323,31 +321,14 @@ pub fn app(state: AppState) -> Router {
         .merge(custos_blobs::router())
         .merge(custos_firehose::router())
         .merge(custos_spaces::router(&state.config.spaces));
-    // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
-    // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
-    // never cookie-based (all Bearer/DPoP/signed-request), so a permissive policy cannot be abused
-    // to ride ambient cookie credentials — see the invariant in crates/pds/AGENTS.md.
-    // Test builds validate the bytes produced after each native handler has serialized its DTO.
-    // Keeping this at the router seam catches response drift without changing production behavior
-    // or exposing the binary-only crate's registry to the black-box test harness.
+    // Test builds validate the bytes produced after each native handler has serialized its DTO;
+    // feature crates get the same layer from `custos_core::test_support::test_app`.
     #[cfg(test)]
     let public = public.layer(axum::middleware::from_fn(
         crate::lexicon::validate_xrpc_output,
     ));
-    // The XRPC error-dialect boundary sits outside the shared layers (so a rate-limit 429 is
-    // re-shaped too) but inside CORS: `/xrpc/*` errors leave in the flat AT Protocol shape
-    // atproto clients dispatch on, while every other surface keeps the nested provisioning
-    // envelope. See crate::xrpc_error_shape.
-    let public = apply_shared_layers(public, &state)
-        .layer(axum::middleware::from_fn(
-            crate::xrpc_error_shape::flatten_xrpc_errors,
-        ))
-        .layer(CorsLayer::permissive());
+    let public = custos_core::public_surface(public, &state);
 
-    // Admin (`/v1/admin/*`) and provisioning (`/v1/*`) routes have no cross-origin use case — they
-    // are called same-origin by first-party native/mobile clients and operators, never a browser
-    // on another origin — so they get NO CORS layer, narrowing the browser-reachable surface. They
-    // still share the same trace/metrics/rate-limit stack as the public group.
     let internal = Router::new()
         .route("/v1/accounts", post(create_account))
         .route(
@@ -437,7 +418,7 @@ pub fn app(state: AppState) -> Router {
         .merge(custos_agents::internal_router())
         .merge(custos_firehose::internal_router())
         .merge(custos_spaces::internal_router(&state.config.spaces));
-    let internal = apply_shared_layers(internal, &state);
+    let internal = custos_core::internal_surface(internal, &state);
 
     let router = public.merge(internal);
 
@@ -565,12 +546,10 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limited_public_response_still_carries_cors_headers() {
-        // Regression guard co-located with `apply_shared_layers`: on the public surface CORS must
-        // stay OUTSIDE the rate limiter, so a request throttled *before* the handler runs still
-        // carries the Access-Control-Allow-Origin header a cross-origin client needs to read the
-        // 429. If the layering is ever reordered so CORS sits inside the limiter (e.g. the
-        // `.layer(CorsLayer::permissive())` call is moved ahead of `apply_shared_layers`), the
-        // throttled response loses its CORS header and this fails.
+        // Regression guard for `custos_core::public_surface`'s layer order: CORS must stay
+        // OUTSIDE the rate limiter, so a request throttled *before* the handler runs still carries
+        // the Access-Control-Allow-Origin header a cross-origin client needs to read the 429. If
+        // CORS is ever moved inside the shared stack, the throttled response loses it and this fails.
         let mut state = test_state().await;
         state.core.rate_limiter = Arc::new(crate::rate_limit::RateLimiterState::new(
             &common::RateLimitConfig {

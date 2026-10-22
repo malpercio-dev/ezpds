@@ -1299,3 +1299,22 @@ pub async fn post_json_with_bearer(
     let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, json)
 }
+
+/// A feature crate's routers wrapped the way `pds::app` wraps its two groups: `public` on
+/// [`crate::public_surface`] with lexicon output validation inside it (as `pds` does in test
+/// builds), `internal` on [`crate::internal_surface`] (`Router::new()` for a crate with none). The rest of the `pds` app is absent, so a
+/// path neither router claims is a plain 404, not the `/xrpc/{method}` catch-all's
+/// `MethodNotImplemented`.
+pub fn test_app<S>(public: axum::Router<S>, internal: axum::Router<S>, state: S) -> axum::Router
+where
+    S: Clone + Send + Sync + 'static,
+    CoreState: axum::extract::FromRef<S>,
+{
+    let core = <CoreState as axum::extract::FromRef<S>>::from_ref(&state);
+    let public = public.layer(axum::middleware::from_fn(
+        crate::lexicon::validate_xrpc_output,
+    ));
+    crate::public_surface(public, &core)
+        .merge(crate::internal_surface(internal, &core))
+        .with_state(state)
+}
