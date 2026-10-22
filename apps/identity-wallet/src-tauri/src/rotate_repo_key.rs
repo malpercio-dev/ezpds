@@ -18,7 +18,7 @@
 //!   compose the op — device key stays `rotationKeys[0]`, the staged key takes the
 //!   PDS slot + the `atproto` method, services/alsoKnownAs preserved — run the strict
 //!   guard, device-key-sign via `crypto::build_did_plc_rotation_op`, and park the op
-//!   in `AppState.rotation_state`.
+//!   in `Core.rotation_state`.
 //! - `submit_repo_key_rotation_cmd(did) -> ClaimResult` —
 //!   `POST /v1/repo-keys/rotation/complete` with the parked op. The wallet never
 //!   POSTs this op to plc.directory itself, unlike the recovery/migration legs: the
@@ -594,9 +594,8 @@ pub async fn submit_repo_key_rotation(
 /// Passwordless end to end. The frontend gates the subsequent submit behind
 /// `authenticateBiometric()` and, on a `SESSION_LOCKED` result, runs
 /// `sovereignLogin(did)` before retrying.
-#[tauri::command]
 pub async fn build_repo_key_rotation_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<SignedRotationOp, RotationError> {
     let built = build_repo_key_rotation(state.pds_client(), &did).await?;
@@ -609,9 +608,8 @@ pub async fn build_repo_key_rotation_cmd(
 }
 
 /// Tauri command: hand the pending rotation op to the PDS and refresh caches.
-#[tauri::command]
 pub async fn submit_repo_key_rotation_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<ClaimResult, RotationError> {
     let signed_op = {

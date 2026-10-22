@@ -32,7 +32,6 @@ use serde::Serialize;
 use crate::identity_store::{
     IdentityStore, IdentityStoreError, PerDidSignError, SovereignTokenRecord,
 };
-use crate::oauth::AppState;
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::PdsClient;
 
@@ -120,9 +119,8 @@ fn map_store_error(error: IdentityStoreError) -> SovereignLoginError {
 }
 
 /// Mint and persist a full-access session for one managed DID.
-#[tauri::command]
 pub async fn sovereign_login(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<SovereignLoginResult, SovereignLoginError> {
     let nonce = fresh_nonce();

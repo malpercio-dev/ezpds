@@ -823,9 +823,8 @@ async fn resolve_handle_via_pds(
 /// Passwordless end to end. The frontend gates this call behind
 /// `authenticateBiometric()` (the Secure-Enclave owner-proof for the PLC signing) and,
 /// on a `SESSION_LOCKED` result, runs `sovereignLogin(did)` before retrying.
-#[tauri::command]
 pub async fn change_handle_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     handle: String,
 ) -> Result<ClaimResult, HandleChangeError> {
@@ -837,9 +836,8 @@ pub async fn change_handle_cmd(
 /// `get_available_user_domains` (which queries the single configured Custos), this
 /// discovers the identity's actual host, so a claimed/migrated DID gets the right
 /// domain list.
-#[tauri::command]
 pub async fn get_identity_handle_domains(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<Vec<String>, HandleChangeError> {
     // Discovery reads plc.directory, so its throttle/verdict classification is preserved
@@ -865,9 +863,8 @@ pub async fn get_identity_handle_domains(
 ///
 /// The wallet-side DNS leg is best-effort diagnostics: its transport failure must not
 /// fail the check when the authoritative (hosting-PDS) leg already answered.
-#[tauri::command]
 pub async fn check_custom_handle_dns(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     handle: String,
 ) -> Result<CustomHandleDnsCheck, HandleChangeError> {

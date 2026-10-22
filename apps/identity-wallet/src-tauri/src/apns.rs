@@ -234,7 +234,7 @@ unsafe extern "C-unwind" fn did_register_with_token(
             };
             tauri::async_runtime::spawn(async move {
                 let topic = app.config().identifier.clone();
-                let state = app.state::<crate::oauth::AppState>();
+                let state = app.state::<crate::oauth::Core>();
                 crate::notifications::re_register_every_identity(&topic, state.pds_client()).await;
             });
         }

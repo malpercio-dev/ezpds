@@ -292,9 +292,8 @@ impl SessionProvider {
 /// the resolved client (an [`OAuthClient`] cannot cross the IPC boundary). The
 /// frontend calls this when showing an identity so a `NEEDS_UNLOCK` result can render
 /// the passwordless "Unlock identity" action before the user attempts an operation.
-#[tauri::command]
 pub async fn ensure_identity_session(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<SessionReady, SessionError> {
     let now =

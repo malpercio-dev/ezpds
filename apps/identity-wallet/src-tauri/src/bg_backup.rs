@@ -164,7 +164,6 @@ pub(crate) fn load_settings() -> BackgroundBackupSettings {
 }
 
 /// Tauri command: the current background-backup settings, for the Settings screen.
-#[tauri::command]
 pub fn get_background_backup_settings() -> BackgroundBackupSettings {
     load_settings()
 }
@@ -173,7 +172,6 @@ pub fn get_background_backup_settings() -> BackgroundBackupSettings {
 /// submit or cancel the `BGProcessingTask` to match `background_enabled` /
 /// `require_external_power`; `wifi_only` needs no reschedule — it is read at fire time).
 /// Returns the stored settings.
-#[tauri::command]
 pub fn set_background_backup_settings(
     settings: BackgroundBackupSettings,
 ) -> Result<BackgroundBackupSettings, BackgroundBackupError> {

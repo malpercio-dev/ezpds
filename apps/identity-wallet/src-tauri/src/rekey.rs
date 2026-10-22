@@ -705,25 +705,22 @@ pub fn confirm_rekey(did: &str) -> Result<(), RekeyError> {
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
 /// Tauri command: build the re-key preview (stage shares, prove eligibility, return the diff).
-#[tauri::command]
 pub async fn build_rekey_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<RekeyPreview, RekeyError> {
     build_rekey(state.pds_client(), &did).await
 }
 
 /// Tauri command: run the re-key (post op + escrow + Share 1 + refresh). Idempotent/resumable.
-#[tauri::command]
 pub async fn submit_rekey_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<RekeyResult, RekeyError> {
     submit_rekey(state.pds_client(), &did).await
 }
 
 /// Tauri command: confirm the new Share 3 is saved and tear down the staging slot.
-#[tauri::command]
 pub fn confirm_rekey_cmd(did: String) -> Result<(), RekeyError> {
     confirm_rekey(&did)
 }
@@ -733,7 +730,6 @@ pub fn confirm_rekey_cmd(did: String) -> Result<(), RekeyError> {
 /// The home surface prompts a re-key when the identity is old-model OR when a re-key is in
 /// progress — the latter resurfaces an interrupted upgrade whose PLC op already landed (so the
 /// identity reads as new-model) but whose escrow/Share 1/confirmation did not complete.
-#[tauri::command]
 pub fn rekey_in_progress_cmd(did: String) -> bool {
     crate::share_ceremony::rekey_staging_exists(&did)
 }

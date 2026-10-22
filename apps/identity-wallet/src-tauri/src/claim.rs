@@ -10,7 +10,7 @@
 //! plc.directory; stores — and on a re-call resets — `ClaimState`) →
 //! `authenticate_source_pds` → `request_claim_verification` (`requestPlcOperationSignature`
 //! on the old PDS, which emails a verification code) → `sign_and_verify_claim` →
-//! `submit_claim`. State persists across commands in `AppState.claim_state`
+//! `submit_claim`. State persists across commands in `Core.claim_state`
 //! (`tokio::sync::Mutex` — held across `.await`); each command validates its
 //! prerequisites, and the `_impl` helpers extract the core logic from Tauri's `State`
 //! wrapper for tests.
@@ -129,7 +129,7 @@ pub struct ClaimResult {
 
 // ── State persisted across the claim flow ──────────────────────────────────
 
-/// Claim flow state persisted in `AppState`.
+/// Claim flow state persisted in `Core`.
 ///
 /// This state is set by `resolve_identity` and used by subsequent
 /// `authenticate_source_pds`, `request_claim_verification`, `sign_and_verify_claim`,
@@ -248,11 +248,10 @@ pub enum ClaimError {
 /// 4. Extracts handle from `also_known_as` (format: `at://handle`)
 /// 5. Checks IdentityStore to determine if DID is registered
 /// 6. If registered: gets or creates device key and compares to rotation_keys[0]
-/// 7. Stores resolved state in AppState.claim_state
+/// 7. Stores resolved state in Core.claim_state
 /// 8. Returns IdentityInfo with all discovery data
-#[tauri::command]
 pub async fn resolve_identity(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     handle_or_did: String,
 ) -> Result<IdentityInfo, ResolveError> {
     tracing::info!("resolve_identity command: resolving {}", handle_or_did);
@@ -339,7 +338,7 @@ pub async fn resolve_identity(
         }
     };
 
-    // Store claim state in AppState
+    // Store claim state in Core
     let claim_state = ClaimState {
         did: did.clone(),
         pds_url: pds_url.clone(),
@@ -409,9 +408,8 @@ fn map_pds_error_to_resolve(err: PdsClientError) -> ResolveError {
 /// re-invokes with that code as `Some`.
 ///
 /// **Prerequisite:** `resolve_identity` must have run first to populate `ClaimState`.
-#[tauri::command]
 pub async fn authenticate_source_pds(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     identifier: String,
     password: String,
@@ -515,9 +513,8 @@ impl From<crate::source_login::SourceLoginError> for ClaimError {
 ///
 /// The core logic is extracted into `request_claim_verification_impl` to make it testable
 /// without Tauri's `State` wrapper.
-#[tauri::command]
 pub async fn request_claim_verification(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<(), ClaimError> {
     tracing::info!(
@@ -669,9 +666,8 @@ fn ensure_claim_device_key(did: &str) -> Result<crate::device_key::DevicePublicK
 ///
 /// **Prerequisites:** `authenticate_source_pds` must have completed successfully and populated
 /// `ClaimState.pds_oauth_client`.
-#[tauri::command]
 pub async fn sign_and_verify_claim(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     token: String,
 ) -> Result<VerifiedClaimOp, ClaimError> {
@@ -1098,10 +1094,9 @@ pub(crate) async fn submit_claim_impl(
 
 /// Tauri command wrapper for submit_claim.
 ///
-/// Delegates to `submit_claim_impl` to allow testing without AppState.
-#[tauri::command]
+/// Delegates to `submit_claim_impl` to allow testing without Core.
 pub async fn submit_claim(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<ClaimResult, ClaimError> {
     tracing::info!("submit_claim command: submitting claim for {}", did);

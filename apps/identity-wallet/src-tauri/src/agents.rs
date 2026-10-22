@@ -537,7 +537,6 @@ async fn map_child_confirm_error(status: u16, resp: reqwest::Response) -> Agents
 ///
 /// Local-only, so a Keychain failure reads as "unprovisioned": the honest answer for a
 /// gate, and the route it sends the user down re-checks rather than trusting it.
-#[tauri::command]
 pub fn agent_accounts_provisioned(did: String) -> bool {
     IdentityStore
         .is_delegation_provisioned(&did)
@@ -548,9 +547,8 @@ pub fn agent_accounts_provisioned(did: String) -> bool {
 }
 
 /// List the agent identities bound to this identity's account.
-#[tauri::command]
 pub async fn list_agents(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<Vec<AgentSummary>, AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
@@ -558,9 +556,8 @@ pub async fn list_agents(
 }
 
 /// Revoke an agent identity. Idempotent on the server; the next token exchange is refused.
-#[tauri::command]
 pub async fn revoke_agent(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     registration_id: String,
 ) -> Result<(), AgentsError> {
@@ -569,9 +566,8 @@ pub async fn revoke_agent(
 }
 
 /// Page an agent's audit trail, newest first. Pass the previous page's `cursor` to continue.
-#[tauri::command]
 pub async fn get_agent_audit(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     registration_id: String,
     cursor: Option<String>,
@@ -588,9 +584,8 @@ pub async fn get_agent_audit(
 
 /// Preview what confirming a claim-ceremony `user_code` would grant (shown before the
 /// biometric approval gate — consent must be informed).
-#[tauri::command]
 pub async fn preview_agent_claim(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     user_code: String,
 ) -> Result<AgentClaimPreview, AgentsError> {
@@ -600,9 +595,8 @@ pub async fn preview_agent_claim(
 
 /// Confirm a claim ceremony: the human gate that flips the agent identity `active → claimed`.
 /// The frontend gates this call behind biometric authentication.
-#[tauri::command]
 pub async fn confirm_agent_claim(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     user_code: String,
 ) -> Result<AgentClaimConfirmation, AgentsError> {
@@ -621,9 +615,8 @@ pub async fn confirm_agent_claim(
 /// The child's rotation key is derived at the identity's next unused index, and the index advances
 /// only after the server confirms the mint — so a rejected handle costs nothing and the retry
 /// re-derives the same key rather than burning an index per attempt.
-#[tauri::command]
 pub async fn mint_child_from_claim(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     user_code: String,
     handle: String,
@@ -668,9 +661,8 @@ pub async fn mint_child_from_claim(
 /// caller's DID, and a child's is bound to the child's). Its *audit trail* still reads through
 /// `get_agent_audit` — the `/v1/agents` routes accept the parent as owner of a child's
 /// registration precisely because the child's own tokens never pass the owner guard.
-#[tauri::command]
 pub async fn list_children(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<Vec<ChildSummary>, AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
@@ -681,9 +673,8 @@ pub async fn list_children(
 ///
 /// The lower rung of the custody ladder: the agent stops getting credentials, but the identity
 /// the user gave it still exists and its history is still readable. Idempotent on the server.
-#[tauri::command]
 pub async fn revoke_child(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     child_did: String,
 ) -> Result<(), AgentsError> {
@@ -696,9 +687,8 @@ pub async fn revoke_child(
 /// The returned `delete_after` is the whole point of surfacing this to the user — until it
 /// passes, the child's data is deactivated rather than gone. The did:plc identity is untouched
 /// either way; this server holds no rotation key for it.
-#[tauri::command]
 pub async fn delete_child(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     child_did: String,
 ) -> Result<ChildDeletion, AgentsError> {
@@ -712,9 +702,8 @@ pub async fn delete_child(
 /// dormant past a full assertion lifetime and can no longer bootstrap. The response carries a
 /// live credential; the caller shows it once for the user to hand back to the agent and keeps
 /// no copy. A revoked child is refused ([`AgentsError::AccessDenied`]).
-#[tauri::command]
 pub async fn remint_child_assertion(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     child_did: String,
 ) -> Result<ChildAssertion, AgentsError> {
@@ -734,9 +723,8 @@ pub async fn remint_child_assertion(
 /// Cheap and idempotent on a device that is not recovering: it short-circuits before any
 /// plc.directory traffic when the local index already covers the server's list, reporting
 /// `rebuilt: false` so the caller never mistakes that for a clean bill of health.
-#[tauri::command]
 pub async fn reconcile_children(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<ChildReconciliation, AgentsError> {
     let delegation_seed = IdentityStore

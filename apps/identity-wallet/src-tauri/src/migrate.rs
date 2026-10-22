@@ -39,7 +39,7 @@
 //!
 //! Types: `SignedMigrationOp { diff, signed_op }` (camelCase on the wire:
 //! `{ diff, signedOp }`), `MigrationState { did, dest_oauth_client, signed_op }`, and
-//! `MigrationInputs`. `MigrationState` sits in `AppState` behind a
+//! `MigrationInputs`. `MigrationState` sits in `Core` behind a
 //! `tokio::sync::Mutex` (commands hold the lock across `.await`) and is populated by
 //! the migration orchestrator, never by this module — the destination login is
 //! deliberately not owned here, keeping the identity leg a pure, independently
@@ -134,10 +134,9 @@ fn did_web_url(did: &str) -> Result<String, MigrateError> {
     ))
 }
 
-#[tauri::command]
 /// Compose the exact did:web document that the user must review and publish for migration.
 pub async fn build_did_web_migration_document_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<DidWebMigrationDocument, MigrateError> {
     let dest_client = {
@@ -229,10 +228,9 @@ pub async fn build_did_web_migration_document_cmd(
     })
 }
 
-#[tauri::command]
 /// Verify the reviewed bytes are authoritative, refresh the destination, and adopt the identity.
 pub async fn submit_did_web_migration_document_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     document_text: String,
     enable_managed_hosting: bool,
@@ -1152,18 +1150,16 @@ pub async fn submit_migration_op_reconciling(
 // not perform the destination login.
 
 /// Tauri command: decide whether to use self-signed migration or PDS-signed interop.
-#[tauri::command]
 pub async fn detect_migration_path_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<MigrationPathDecision, MigrateError> {
     Ok(detect_migration_path(state.pds_client(), &did).await)
 }
 
 /// Tauri command: build + sign the migration op, parking it in `MigrationState`.
-#[tauri::command]
 pub async fn build_migration_op_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<SignedMigrationOp, MigrateError> {
     let dest_client = {
@@ -1218,9 +1214,8 @@ pub async fn build_migration_op_cmd(
 /// confirmed landed. Re-submitting the same non-idempotent op is prevented by that
 /// reconcile-first check and by PLC `prev`-chaining (a stale re-POST is rejected), so
 /// the old `.take()` anti-double-post guard is no longer needed.
-#[tauri::command]
 pub async fn submit_migration_op_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<ClaimResult, MigrateError> {
     let (signed_op, op_cid) = {

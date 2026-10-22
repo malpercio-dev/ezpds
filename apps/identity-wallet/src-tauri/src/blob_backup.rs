@@ -994,7 +994,6 @@ async fn hosting_pds_url(pds_client: &PdsClient, did: &str) -> Result<String, Bl
 
 /// Tauri command: the Media Backup screen's status readout — mirror location (or its
 /// absence), the opt-in flag, and the mirror's size (shown before opting in).
-#[tauri::command]
 pub async fn get_blob_backup_status(
     app: tauri::AppHandle,
     did: String,
@@ -1006,7 +1005,6 @@ pub async fn get_blob_backup_status(
 }
 
 /// Tauri command: flip the explicit opt-in flag. Returns the refreshed status.
-#[tauri::command]
 pub async fn set_blob_backup_enabled(
     app: tauri::AppHandle,
     did: String,
@@ -1027,7 +1025,7 @@ pub(crate) async fn run_backup_for_did(
 ) -> Result<BlobBackupRunReport, BlobBackupError> {
     use tauri::Manager;
     let (root, _location) = resolve_backup_root(app).ok_or(BlobBackupError::BackupUnavailable)?;
-    let state = app.state::<crate::oauth::AppState>();
+    let state = app.state::<crate::oauth::Core>();
     let pds_client = state.pds_client();
     let pds_url = hosting_pds_url(pds_client, did).await?;
     run_backup_core(pds_client, &root, did, &pds_url).await
@@ -1035,7 +1033,6 @@ pub(crate) async fn run_backup_for_did(
 
 /// Tauri command: run one incremental backup sync pass for the identity. Reads only
 /// public sync endpoints (`listBlobs`/`getBlob`), so it needs no session.
-#[tauri::command]
 pub async fn run_blob_backup(
     app: tauri::AppHandle,
     did: String,
@@ -1046,10 +1043,9 @@ pub async fn run_blob_backup(
 /// Tauri command: restore the mirrored blobs to the DID's current PDS. Requires a
 /// full-access session (`uploadBlob`); a `SESSION_LOCKED` result cues the frontend
 /// to run the biometric `sovereignLogin(did)` and retry.
-#[tauri::command]
 pub async fn restore_blob_backup(
+    state: &crate::oauth::Core,
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<BlobRestoreReport, BlobBackupError> {
     let (root, _location) = resolve_backup_root(&app).ok_or(BlobBackupError::BackupUnavailable)?;

@@ -44,7 +44,7 @@
 //! and `confirm_recovery_backup` is the teardown gate, destroying it only after the
 //! NEW Share 1 is verified durable in the per-DID slot.
 //!
-//! Pre-anchor session state (`AppState.share_recovery_state`) is in-memory by design:
+//! Pre-anchor session state (`Core.share_recovery_state`) is in-memory by design:
 //! that phase restarts from the entry screen, and only the epilogue persists.
 //! `ShareRecoveryError` serializes as `{ code: "SCREAMING_SNAKE_CASE" }` with
 //! camelCase fields.
@@ -57,7 +57,6 @@ use zeroize::Zeroizing;
 
 use crate::handle_change::CurrentHandleState;
 use crate::identity_store::{IdentityStore, IdentityStoreError, PerDidSignError};
-use crate::oauth::AppState;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::sovereign_session;
 
@@ -236,7 +235,7 @@ fn map_store_error(e: IdentityStoreError) -> ShareRecoveryError {
     }
 }
 
-// ── Session state (in-memory, AppState) ──────────────────────────────────────
+// ── Session state (in-memory, Core) ──────────────────────────────────────
 
 /// One collected share envelope, held encoded so the raw payload is only
 /// materialized at combine time.
@@ -363,9 +362,8 @@ type StateSlot = tokio::sync::Mutex<Option<ShareRecoveryState>>;
 /// Begin a recovery ceremony for a handle or did:plc. Resolves the identifier,
 /// reads the authoritative current state from plc.directory, and auto-loads Share 1
 /// from the first Keychain slot holding a valid v2 envelope (see `auto_load_share1`).
-#[tauri::command]
 pub async fn start_share_recovery(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
     identifier: String,
 ) -> Result<RecoveryTarget, ShareRecoveryError> {
     start_impl(state.pds_client(), &state.share_recovery_state, &identifier).await
@@ -445,9 +443,8 @@ pub(crate) async fn start_impl(
 /// Add a manually entered share — base32 envelope or the Share 3 word phrase.
 /// Surfaces checksum corruption and cross-set mixing as distinct errors BEFORE any
 /// combine is attempted.
-#[tauri::command]
 pub async fn add_recovery_share(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
     share: String,
 ) -> Result<CollectedShare, ShareRecoveryError> {
     add_share_impl(&state.share_recovery_state, &share).await
@@ -503,10 +500,7 @@ pub(crate) async fn add_share_impl(
 
 /// Ask the account's PDS to email a release OTP. Always succeeds server-side for any
 /// identifier (no enumeration), so success here only means "the request was sent".
-#[tauri::command]
-pub async fn initiate_escrow_release(
-    state: tauri::State<'_, AppState>,
-) -> Result<(), ShareRecoveryError> {
+pub async fn initiate_escrow_release(state: &crate::oauth::Core) -> Result<(), ShareRecoveryError> {
     initiate_impl(state.pds_client(), &state.share_recovery_state).await
 }
 
@@ -538,9 +532,8 @@ pub(crate) async fn initiate_impl(
 /// carries the server's `availableAt`; a released result decodes, validates, and
 /// collects the Share 2 envelope. The server's uniform 401 — wrong/expired OTP,
 /// cancelled release, unknown account — maps to `ReleaseUnauthorized`.
-#[tauri::command]
 pub async fn request_escrow_release(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
     otp: Option<String>,
 ) -> Result<EscrowReleaseStatus, ShareRecoveryError> {
     release_impl(state.pds_client(), &state.share_recovery_state, otp).await
@@ -673,9 +666,8 @@ fn rate_limited(response: &reqwest::Response) -> ShareRecoveryError {
 /// Combine the two collected shares, derive the recovery keypair, and verify the
 /// derived public key against the DID's authoritative current `rotationKeys` from
 /// plc.directory. Nothing is signed before this check passes.
-#[tauri::command]
 pub async fn verify_recovery_shares(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
 ) -> Result<RecoveredIdentity, ShareRecoveryError> {
     verify_impl(state.pds_client(), &state.share_recovery_state).await
 }
@@ -762,9 +754,8 @@ pub(crate) async fn verify_impl(
 /// This command talks only to plc.directory — the sovereign-session bootstrap against
 /// the PDS happens in the epilogue's re-escrow step, keeping the fully-sovereign path
 /// free of PDS contact until then.
-#[tauri::command]
 pub async fn recover_identity(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
 ) -> Result<RecoveryAnchor, ShareRecoveryError> {
     recover_impl(state.pds_client(), &state.share_recovery_state).await
 }
@@ -1051,7 +1042,6 @@ fn load_epilogue() -> Result<Option<EpilogueRecord>, ShareRecoveryError> {
 
 /// Report a pending (interrupted) rotation epilogue, if any — the launch-time resume
 /// hook. A corrupt record errors (and stays put) rather than reading as absent.
-#[tauri::command]
 pub fn get_pending_recovery_epilogue() -> Result<Option<PendingEpilogue>, ShareRecoveryError> {
     Ok(load_epilogue()?.map(|record| PendingEpilogue {
         did: record.did.clone(),
@@ -1068,9 +1058,8 @@ pub fn get_pending_recovery_epilogue() -> Result<Option<PendingEpilogue>, ShareR
 /// durably as it completes, so this command can be re-invoked after any failure or
 /// an app restart. `skip_escrow` records an explicit opt-out of the re-escrow step
 /// (the fully-sovereign posture when the PDS is gone or untrusted).
-#[tauri::command]
 pub async fn run_recovery_epilogue(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
     skip_escrow: Option<bool>,
 ) -> Result<EpilogueResult, ShareRecoveryError> {
     epilogue_impl(state.pds_client(), skip_escrow.unwrap_or(false)).await
@@ -1275,9 +1264,8 @@ async fn deposit_escrow_share(
 /// Teardown gate for the recovered wallet's backup: verifies the NEW Share 1 is
 /// durably in its slot, then destroys the epilogue record (the new seed material's
 /// last transient home) and the in-memory ceremony session. Idempotent.
-#[tauri::command]
 pub async fn confirm_recovery_backup(
-    state: tauri::State<'_, AppState>,
+    state: &crate::oauth::Core,
 ) -> Result<(), crate::ShareBackupError> {
     confirm_backup_core(&state.share_recovery_state).await
 }

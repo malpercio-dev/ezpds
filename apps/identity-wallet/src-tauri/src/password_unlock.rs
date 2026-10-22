@@ -292,9 +292,8 @@ pub async fn unlock_with_password(
 }
 
 /// Tauri command: which unlock should this identity's screen offer?
-#[tauri::command]
 pub async fn get_identity_unlock_route(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<UnlockRoute, UnlockError> {
     unlock_route(state.pds_client(), &IdentityStore, &did).await
@@ -306,9 +305,8 @@ pub async fn get_identity_unlock_route(
 /// presence proof, and this signs nothing with the device key. The irreversible operations
 /// downstream (mint an app password, change a handle, remove an identity, restore blobs) keep
 /// their own gates, exactly as they do after a sovereign unlock.
-#[tauri::command]
 pub async fn unlock_identity_with_password(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     identifier: String,
     password: String,

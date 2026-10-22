@@ -124,7 +124,6 @@ pub fn route_from_handoff_url(raw: &str) -> Option<PendingNotificationRoute> {
 
 /// Take (and clear) the pending route. Clearing is what keeps the cold-start drain and the
 /// warm-event handler from both navigating on one tap.
-#[tauri::command]
 pub fn take_pending_notification_route() -> Option<PendingNotificationRoute> {
     slot().lock().unwrap_or_else(|e| e.into_inner()).take()
 }

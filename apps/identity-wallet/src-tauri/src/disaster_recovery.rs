@@ -366,9 +366,8 @@ pub struct RecoveryKeyStatus {
 /// current state comes from the plc.directory audit log alone. `handle_override` is the
 /// escape hatch for the offline-handle-domain edge case: when the old PDS served the
 /// handle's domain, the caller falls back to a destination-served handle.
-#[tauri::command]
 pub async fn prepare_disaster_recovery(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     dest_pds_url: String,
     handle_override: Option<String>,
@@ -440,9 +439,8 @@ pub async fn prepare_disaster_recovery(
 /// Idempotent across retries: a persisted-but-not-yet-enrolled key is reused (the same
 /// key across attempts, like the ceremony staging slot), and a key that already IS the
 /// DID's `atproto` method reconciles to success without signing anything.
-#[tauri::command]
 pub async fn enroll_recovery_signing_key(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<RecoveryEnrollment, DisasterRecoveryError> {
     tracing::info!(did = %did, "enroll_recovery_signing_key");
@@ -579,9 +577,8 @@ async fn enroll_recovery_signing_key_impl(
 /// method yet? On the first visible poll, advances the recovery session past the
 /// (sourceless) auth phase so `create_recovery_destination_account`'s gate opens —
 /// `createAccount` cannot run before op #1 has propagated.
-#[tauri::command]
 pub async fn await_recovery_key_visibility(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
 ) -> Result<RecoveryKeyStatus, DisasterRecoveryError> {
     let store = IdentityStore;
@@ -657,9 +654,8 @@ fn mint_offline_service_auth(
 /// JWT — the sourceless twin of `create_destination_account`. Re-verifies that op #1 is
 /// visible on plc.directory before minting (defense in depth behind the poll's phase
 /// gate), then runs the shared reserve-key → createAccount → Bearer-session core.
-#[tauri::command]
 pub async fn create_recovery_destination_account(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     email: String,
     invite_code: Option<String>,
@@ -764,10 +760,9 @@ pub async fn create_recovery_destination_account(
 /// sourceless twin of `transfer_repo`. The snapshot is re-validated on read
 /// (`repo_backup::mirror_repo_car` is fail-closed), so a rotten file can never be
 /// imported.
-#[tauri::command]
 pub async fn recovery_transfer_repo(
+    state: &crate::oauth::Core,
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<(), MigrationError> {
     tracing::info!(did = %did, "recovery_transfer_repo: importing from the iCloud snapshot");

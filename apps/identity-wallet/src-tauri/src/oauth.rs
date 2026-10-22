@@ -1,13 +1,13 @@
 // pattern: Mixed (unavoidable)
 
-//! `AppState` (the app-wide Tauri-managed state) plus the wallet's OAuth DPoP client
-//! machinery. The types (`AppState`, `OAuthSession`) are Functional Core.
+//! `Core` (the app-wide Tauri-managed state) plus the wallet's OAuth DPoP client
+//! machinery. The types (`Core`, `OAuthSession`) are Functional Core.
 //!
-//! **`AppState` slots.** `oauth_session` (`std::sync::Mutex<Option<_>>`, cleanly empty
+//! **`Core` slots.** `oauth_session` (`std::sync::Mutex<Option<_>>`, cleanly empty
 //! outside a flow — restored from Keychain-persisted tokens on startup; the create-flow login
 //! that used to populate it live was retired, see below); `custos_client` (`OnceLock`, set
 //! once from the Keychain URL or first-launch config, compile-time default otherwise);
-//! `pds_client` (eager — cheap and stateless; exposed via [`AppState::pds_client`] for the
+//! `pds_client` (eager — cheap and stateless; exposed via [`Core::pds_client`] for the
 //! claim-flow commands); and the per-flow `tokio::sync::Mutex<Option<_>>` slots
 //! (`claim_state`, `recovery_state`, `rotation_state`, `migration_state`,
 //! `orchestration_state`, `share_recovery_state`) — tokio mutexes because those commands hold
@@ -50,7 +50,7 @@ pub use custos_client::{DpopKeypair, OAuthError, OAuthSession};
 ///
 /// Option-wrapped so the state is cleanly empty before any OAuth flow starts and after a
 /// flow completes.
-pub struct AppState {
+pub struct Core {
     /// The active authenticated session after a successful token exchange.
     /// Restored from the Keychain on startup; read by `OAuthClient` for every request.
     pub oauth_session: Mutex<Option<OAuthSession>>,
@@ -92,7 +92,7 @@ pub struct AppState {
     pub share_recovery_state: tokio::sync::Mutex<Option<crate::share_recovery::ShareRecoveryState>>,
 }
 
-impl AppState {
+impl Core {
     pub fn new() -> Self {
         Self {
             oauth_session: Mutex::new(None),
@@ -132,7 +132,7 @@ impl AppState {
     }
 }
 
-impl Default for AppState {
+impl Default for Core {
     fn default() -> Self {
         Self::new()
     }

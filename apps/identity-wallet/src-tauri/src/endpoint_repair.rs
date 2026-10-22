@@ -438,9 +438,8 @@ async fn repair_hosting_endpoint_impl(
 /// Repoint the DID document's `atproto_pds` endpoint to the hosting server's new
 /// public URL: device-key-signed, submitted directly to plc.directory. The biometric
 /// gate lives in the frontend, in front of the Secure-Enclave signing.
-#[tauri::command]
 pub async fn repair_hosting_endpoint(
-    state: tauri::State<'_, crate::oauth::AppState>,
+    state: &crate::oauth::Core,
     did: String,
     new_endpoint: String,
 ) -> Result<EndpointRepairResult, EndpointRepairError> {
