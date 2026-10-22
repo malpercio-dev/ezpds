@@ -139,6 +139,27 @@ async fn create_get_update_members_delete_round_trip() {
     assert!(authorize_credential_request(&state, &row, BOB, None)
         .await
         .is_ok());
+
+    // putMember is an upsert, and the two bits round-trip independently.
+    let (status, _) = send(
+        &state,
+        post(
+            "putMember",
+            &alice,
+            serde_json::json!({ "space": SPACE, "did": BOB, "read": false, "write": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(&state, get(&format!("listMembers?space={SPACE}"), &alice)).await;
+    assert_eq!(
+        body["members"],
+        serde_json::json!([{ "did": BOB, "read": false, "write": true }])
+    );
+    assert!(authorize_credential_request(&state, &row, BOB, None)
+        .await
+        .is_err());
+
     let (status, _) = send(
         &state,
         post(

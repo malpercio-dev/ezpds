@@ -468,6 +468,55 @@ async fn notify_write_records_a_foreign_repo_in_the_writer_set() {
     assert_eq!(body["repos"][0]["repoRev"], "3kabcdefghij2");
 }
 
+/// Under a `member-list` write policy, a non-member's report is acknowledged but never tracked;
+/// granting the member's `write` bit is what admits it.
+#[tokio::test]
+async fn notify_write_from_a_non_member_is_ignored_under_a_member_list_write_policy() {
+    let state = setup().await;
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.simplespace.updateSpace",
+            &alice,
+            serde_json::json!({
+                "space": SPACE,
+                "writePolicy": { "$type": "com.atproto.simplespace.defs#memberListPolicy" },
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
+    let notify = || {
+        post(
+            "com.atproto.space.notifyWrite",
+            &token,
+            notify_body(SPACE, &carol, "3kabcdefghij2"),
+        )
+    };
+
+    let (status, body) = send(&state, notify()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
+    assert!(registrations(&body).is_empty(), "{body}");
+
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.simplespace.putMember",
+            &alice,
+            serde_json::json!({ "space": SPACE, "did": carol, "read": false, "write": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(&state, notify()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
+    assert_eq!(registrations(&body), vec![carol], "{body}");
+}
+
 /// A report that does not advance the repo's stored `repoRev` is acknowledged and ignored: the
 /// writer row keeps the newer rev and the space revision does not move.
 #[tokio::test]
