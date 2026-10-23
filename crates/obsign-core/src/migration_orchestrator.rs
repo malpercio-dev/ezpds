@@ -74,7 +74,10 @@
 //! restarts from `prepare_migration`, but the destination session persisted via
 //! `{did}:oauth-tokens` survives — a restarted wallet reconstructs the destination
 //! client from that record (`sovereign_session::stored_bearer_client`), never from
-//! `OutboundMigrationState`. The orchestrator never POSTs plc.directory — the single
+//! `OutboundMigrationState`. Those phases advance under `ceremony_journal::Journal`:
+//! `MigrationJournal` (below) makes `OutboundMigrationState.phase` the cursor, so
+//! re-invoking a per-step command skips the work it already recorded, and re-running an
+//! earlier step rewinds (see that store's doc). The orchestrator never POSTs plc.directory — the single
 //! PLC write is `migrate::submit_migration_op_cmd`. `MigrationError`
 //! (MIGRATION_NOT_READY, DESTINATION_UNREACHABLE, SOURCE_AUTH_FAILED,
 //! TWO_FACTOR_REQUIRED, ACCOUNT_MISMATCH, INSECURE_SOURCE_URL, RATE_LIMITED,
