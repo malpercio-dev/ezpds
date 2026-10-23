@@ -95,6 +95,11 @@ pub const SPACE_CREDENTIAL_MAX_TTL_SECS: u64 = 60 * 60;
 /// Clock skew tolerated on an inbound credential's `iat` (the reference's).
 const CLOCK_SKEW_SECS: u64 = 5;
 
+/// How long a `notifyCredentialRevoked` revocation is kept: past the last instant any credential
+/// carrying the jti could verify (issued up to the skew ahead, living at most the maximum TTL).
+pub const CREDENTIAL_REVOCATION_RETENTION_SECS: u64 =
+    SPACE_CREDENTIAL_MAX_TTL_SECS + CLOCK_SKEW_SECS;
+
 /// The delegation-token audience for `space`: its authority's space-host service reference.
 pub fn space_host_aud(space: &SpaceRef) -> String {
     format!("{}#atproto_space_host", space.authority)
@@ -669,8 +674,8 @@ pub struct VerifiedCredential {
 /// Verify a space credential as a repo host: `typ`; the signature against the authority's key
 /// named by `kid` (cache-first, force-refreshed and retried once on a mismatch — a foreign
 /// authority may be ES256K, which the shared core accepts); `sub` a space anchored on `iss`;
-/// `exp` in the future, `iat` not, and `exp − iat` within [`SPACE_CREDENTIAL_MAX_TTL_SECS`]; and
-/// a `cnf.kid`.
+/// `exp` in the future, `iat` not, and `exp − iat` within [`SPACE_CREDENTIAL_MAX_TTL_SECS`]; a
+/// `cnf.kid`; and a `jti` its authority has not revoked through `notifyCredentialRevoked`.
 ///
 /// `kid` selects the key the way the proposal's key separation intends: `#atproto_space`
 /// resolves the dedicated space key, falling back to `#atproto` only when the authority
@@ -753,6 +758,20 @@ async fn verify_space_credential(
         .filter(|k| k.starts_with("did:key:"))
         .ok_or_else(|| invalid("space credential has no cnf.kid binding"))?
         .to_string();
+    let jti = claims
+        .get("jti")
+        .and_then(Value::as_str)
+        .filter(|j| !j.is_empty())
+        .ok_or_else(|| invalid("space credential has no jti"))?;
+    let revoked = crate::db::space_jti::is_credential_revoked(&state.db, &space.uri, jti)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space.uri, "failed to read credential revocations");
+            ApiError::new(ErrorCode::InternalError, "internal server error")
+        })?;
+    if revoked {
+        return Err(invalid("space credential has been revoked"));
+    }
 
     Ok(VerifiedCredential { space, kid })
 }
@@ -1515,6 +1534,41 @@ mod tests {
                 .code(),
             ErrorCode::TokenExpired
         );
+    }
+
+    #[tokio::test]
+    async fn space_credential_needs_an_unrevoked_jti() {
+        let state = state_with_master_key().await;
+        let authority = seed_identity(&state, AUTHORITY, true).await;
+        let key = SpaceSigKey::generate();
+        let now = unix_now().unwrap();
+        let header = serde_json::json!({ "typ": SPACE_CREDENTIAL_TYP, "alg": "ES256", "kid": "#atproto_space" });
+        let with = |jti: Option<&str>| {
+            let mut claims = serde_json::json!({
+                "iss": AUTHORITY, "sub": SPACE, "cnf": { "kid": key.key_id() },
+                "iat": now, "exp": now + 60,
+            });
+            if let Some(jti) = jti {
+                claims["jti"] = jti.into();
+            }
+            sign_jwt(|b| authority.sign(b), &header, &claims)
+        };
+
+        assert!(verify_space_credential(&state, &with(Some("live")), now)
+            .await
+            .is_ok());
+        crate::db::space_jti::revoke_credentials(&state.db, SPACE, &["live".into()], 60)
+            .await
+            .unwrap();
+        for cred in [with(Some("live")), with(None)] {
+            assert_eq!(
+                *verify_space_credential(&state, &cred, now)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                ErrorCode::InvalidToken
+            );
+        }
     }
 
     #[tokio::test]
