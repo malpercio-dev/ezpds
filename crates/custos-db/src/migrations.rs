@@ -318,4 +318,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 74,
         sql: include_str!("migrations/V074__space_notify_topology.sql"),
     },
+    Migration {
+        version: 75,
+        sql: include_str!("migrations/V075__space_revoked_credentials.sql"),
+    },
 ];

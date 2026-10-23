@@ -90,12 +90,22 @@ pub fn peek_jwt_typ(token: &str) -> Option<String> {
 /// the signature is verified against the resolved `#atproto` key; it only decides which auth path a
 /// route takes.
 pub fn peek_jwt_iss(token: &str) -> Option<String> {
+    peek_jwt_claim(token, "iss")
+}
+
+/// Peek at the JWT payload's `aud` claim without verifying the signature. Untrusted until the
+/// signature verifies; it only picks which audience the verifier is asked to accept.
+pub fn peek_jwt_aud(token: &str) -> Option<String> {
+    peek_jwt_claim(token, "aud")
+}
+
+fn peek_jwt_claim(token: &str, claim: &str) -> Option<String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
     let payload_b64 = token.split('.').nth(1)?;
     let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
     let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
-    payload["iss"].as_str().map(str::to_string)
+    payload[claim].as_str().map(str::to_string)
 }
 
 /// Dispatch to the correct verification function based on token type.
