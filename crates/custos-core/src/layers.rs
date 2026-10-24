@@ -1,11 +1,12 @@
 // pattern: Imperative Shell
 
 //! The middleware stack every route group shares: tracing (joined to an incoming W3C trace
-//! context), HTTP metrics, and rate limiting.
+//! context), HTTP metrics, and rate limiting. [`public_surface`] and [`internal_surface`] are the
+//! only ways to apply it, so `pds::app` and every feature crate's `test_app` run one stack.
 
 use axum::{http::Request, Router};
 use opentelemetry::propagation::Extractor;
-use tower_http::trace::TraceLayer;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::CoreState;
@@ -66,16 +67,38 @@ impl<B> tower_http::trace::MakeSpan<B> for OtelMakeSpan {
     }
 }
 
-/// Apply the middleware every route group shares, in the order axum layers them (outermost →
-/// inner): Trace, then HTTP metrics, then rate limiting. Applied to each group *before* that
-/// group's own (optional) CORS layer, so CORS — where present — stays the outermost layer:
-/// preflight `OPTIONS` are answered before throttling, and a 429 still carries the CORS headers a
-/// cross-origin client needs to read it. Trace stays outside the rate limiter so throttled
-/// requests are still traced; the metrics counter sits outside the rate limiter so a 429 still
-/// lands in `http_requests_total`, but inside CORS so short-circuited preflights don't pollute the
-/// series. `from_fn_with_state` needs its own state clone; the middleware reads only `CoreState`,
-/// so a router over any state that embeds it takes the same stack.
-pub fn apply_shared_layers<S>(router: Router<S>, state: &CoreState) -> Router<S>
+/// The public surface (landing, `.well-known`, OAuth, agent registration, all XRPC, static
+/// assets): the shared stack, then the XRPC error dialect, then permissive CORS outermost.
+///
+/// The error-dialect boundary sits outside the shared layers, so a rate-limit 429 is re-shaped
+/// too, but inside CORS: `/xrpc/*` errors leave in the flat AT Protocol shape atproto clients
+/// dispatch on, while every other path keeps the nested provisioning envelope (see
+/// [`crate::xrpc_error_shape`]). Permissive CORS is safe ONLY because authentication is never
+/// cookie-based (all Bearer/DPoP/signed-request); see the invariant in `crates/pds/AGENTS.md`.
+pub fn public_surface<S>(router: Router<S>, state: &CoreState) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    internal_surface(router, state)
+        .layer(axum::middleware::from_fn(
+            crate::xrpc_error_shape::flatten_xrpc_errors,
+        ))
+        .layer(CorsLayer::permissive())
+}
+
+/// The admin (`/v1/admin/*`) and provisioning (`/v1/*`) surface, and the stack every surface
+/// shares, in the order axum layers them (outermost → inner): Trace, then HTTP metrics, then rate
+/// limiting. These routes are called same-origin by first-party native clients and operators,
+/// never by a browser on another origin, so they get no CORS layer.
+///
+/// [`public_surface`] wraps this stack in CORS, so preflight `OPTIONS` are answered before
+/// throttling and a 429 still carries the CORS headers a cross-origin client needs to read it.
+/// Trace stays outside the rate limiter so throttled requests are still traced; the metrics
+/// counter sits outside the rate limiter so a 429 still lands in `http_requests_total`, but
+/// inside CORS so short-circuited preflights don't pollute the series. `from_fn_with_state`
+/// needs its own state clone; the middleware reads only `CoreState`, so a router over any state
+/// that embeds it takes the same stack.
+pub fn internal_surface<S>(router: Router<S>, state: &CoreState) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
@@ -135,5 +158,89 @@ mod header_carrier_tests {
         assert!(keys.contains(&"traceparent"));
         assert!(keys.contains(&"tracestate"));
         assert_eq!(keys.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+    use axum::{body::Body, routing::get};
+    use common::{ApiError, ErrorCode};
+    use tower::ServiceExt;
+
+    async fn failing() -> Result<&'static str, ApiError> {
+        Err(ApiError::new(ErrorCode::TokenExpired, "token has expired"))
+    }
+
+    async fn call(router: Router, method: &str, path: &str) -> axum::response::Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn json(response: axum::response::Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn surface(
+        wrap: fn(Router<CoreState>, &CoreState) -> Router<CoreState>,
+        state: CoreState,
+    ) -> Router {
+        let routes = Router::new().route("/xrpc/com.example.method", get(failing));
+        wrap(routes, &state).with_state(state)
+    }
+
+    #[tokio::test]
+    async fn public_surface_flattens_xrpc_errors_and_answers_cors() {
+        let state = crate::test_support::test_state().await;
+        let app = surface(public_surface, state);
+
+        let preflight = call(app.clone(), "OPTIONS", "/xrpc/com.example.method").await;
+        assert!(preflight
+            .headers()
+            .contains_key("access-control-allow-origin"));
+
+        let body = json(call(app, "GET", "/xrpc/com.example.method").await).await;
+        assert_eq!(body["error"], "ExpiredToken", "flat XRPC shape");
+    }
+
+    /// Feature suites get lexicon output validation from `test_support::test_app`: a registered
+    /// XRPC output missing its required fields panics the route test.
+    #[tokio::test]
+    #[should_panic(expected = "Output must have the property \"accessJwt\"")]
+    async fn test_app_validates_xrpc_output() {
+        async fn drifted() -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({}))
+        }
+        let state = crate::test_support::test_state().await;
+        let routes = Router::new().route("/xrpc/com.atproto.server.createSession", get(drifted));
+        let app = crate::test_support::test_app(routes, Router::new(), state);
+        call(app, "GET", "/xrpc/com.atproto.server.createSession").await;
+    }
+
+    #[tokio::test]
+    async fn internal_surface_has_no_cors_and_keeps_nested_errors() {
+        let state = crate::test_support::test_state().await;
+        let app = surface(internal_surface, state);
+
+        let preflight = call(app.clone(), "OPTIONS", "/xrpc/com.example.method").await;
+        assert!(!preflight
+            .headers()
+            .contains_key("access-control-allow-origin"));
+
+        let body = json(call(app, "GET", "/xrpc/com.example.method").await).await;
+        assert_eq!(body["error"]["code"], "TOKEN_EXPIRED", "nested envelope");
     }
 }
