@@ -28,5 +28,5 @@ pub mod xrpc_error_shape;
 #[allow(clippy::unwrap_used, clippy::expect_used)] // fixtures: a failed seed panics the test
 pub mod test_support;
 
-pub use layers::apply_shared_layers;
+pub use layers::{internal_surface, public_surface};
 pub use state::{CoreState, FailedLoginStore};

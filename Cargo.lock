@@ -1423,9 +1423,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.2"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
 dependencies = [
  "cmov",
 ]
@@ -1484,7 +1484,6 @@ dependencies = [
  "subtle",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
  "url",
  "urlencoding",
@@ -1520,7 +1519,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
  "url",
  "urlencoding",
@@ -1645,7 +1643,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tower",
- "tower-http",
  "tracing",
  "wiremock",
 ]
@@ -1672,7 +1669,6 @@ dependencies = [
  "subtle",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
  "url",
  "urlencoding",
@@ -1707,7 +1703,6 @@ dependencies = [
  "sqlx",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
  "url",
  "urlencoding",
@@ -5494,7 +5489,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tower",
- "tower-http",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

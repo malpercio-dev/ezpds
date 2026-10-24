@@ -154,13 +154,14 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/space/listRepoOps.json"),
     include_str!("../../lexicons/com/atproto/space/listRepos.json"),
     include_str!("../../lexicons/com/atproto/space/listSpaces.json"),
+    include_str!("../../lexicons/com/atproto/space/notifyCredentialRevoked.json"),
     include_str!("../../lexicons/com/atproto/space/notifyWrite.json"),
     include_str!("../../lexicons/com/atproto/space/putRecord.json"),
     include_str!("../../lexicons/com/atproto/space/registerNotify.json"),
     include_str!("../../lexicons/com/atproto/space/unregisterNotify.json"),
     // The PDS-required simplespace management surface (`com.atproto.simplespace.*`), same
-    // branch. `checkUserAccess`, `notifyCredentialRevoked` and `notifySpaceDeleted` are vendored
-    // for byte-parity but not registered: this server only sends them or a managing app serves them.
+    // branch. `checkUserAccess` and `notifySpaceDeleted` are vendored for byte-parity but not
+    // registered: this server only sends them or a managing app serves them.
     include_str!("../../lexicons/com/atproto/simplespace/createSpace.json"),
     include_str!("../../lexicons/com/atproto/simplespace/defs.json"),
     include_str!("../../lexicons/com/atproto/simplespace/deleteSpace.json"),

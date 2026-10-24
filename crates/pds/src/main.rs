@@ -47,7 +47,7 @@ use common::code_gen;
 // siblings keep resolving.
 use custos_core::{
     blob_store, crawler, firehose, identity, lexicon, metrics, no_input, rate_limit, request_host,
-    sweep, sweep_status, time, xrpc_error_shape,
+    sweep, sweep_status, time,
 };
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
