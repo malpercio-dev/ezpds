@@ -72,7 +72,12 @@ where
         .route("/xrpc/com.atproto.space.listRepos", get(space_list_repos))
         .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
         .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
-        // The space-host notification surface: syncers subscribe here, repo hosts report here.
+        // The notification surface: syncers subscribe here, repo hosts report here, and authorities
+        // revoke credentials here.
+        .route(
+            "/xrpc/com.atproto.space.notifyCredentialRevoked",
+            post(space_notify_credential_revoked),
+        )
         .route(
             "/xrpc/com.atproto.space.notifyWrite",
             post(space_notify_write),

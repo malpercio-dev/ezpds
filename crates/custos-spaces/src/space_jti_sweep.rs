@@ -1,16 +1,19 @@
 // pattern: Imperative Shell
 
-//! Periodic retention sweep for spent spaces-token jtis (`space_jti_replay`).
+//! Periodic retention sweep for spent spaces-token jtis (`space_jti_replay`) and revoked
+//! space credentials (`space_revoked_credentials`).
 //!
 //! The `(scope, jti)` primary key is the replay defense; each row's
 //! `expires_at` was stamped by its writer with the token's own acceptance
 //! horizon, so this best-effort task only reclaims rows no token could still
 //! ride. Delegation tokens turn over at credential-renewal rate (one per
-//! ten-minute credential per syncer), hence the shorter-than-hourly cadence.
+//! ten-minute credential per syncer), hence the shorter-than-hourly cadence. A revocation row is
+//! stamped past the longest life any credential carrying its jti could have, so reclaiming it
+//! can never readmit a live credential.
 
 use std::time::Duration;
 
-use crate::db::space_jti::sweep_expired_jtis;
+use crate::db::space_jti::{sweep_expired_jtis, sweep_expired_revocations};
 use crate::sweep::{Pass, Sweep};
 use crate::sweep_status::names;
 use axum::extract::FromRef;
@@ -42,7 +45,7 @@ where
 
     async fn run(&self, state: &St) -> anyhow::Result<Pass> {
         let db = CoreState::from_ref(state).db;
-        let swept = sweep_expired_jtis(&db).await?;
+        let swept = sweep_expired_jtis(&db).await? + sweep_expired_revocations(&db).await?;
         if swept > 0 {
             tracing::debug!(swept, "space jti sweep pass complete");
         } else {

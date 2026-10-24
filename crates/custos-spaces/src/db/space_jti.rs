@@ -10,6 +10,11 @@
 //! against one audience is allowed until expiry, by spec. The periodic sweep
 //! (`space_jti_sweep.rs`) is storage reclamation only — a row is deleted only
 //! once no token carrying its jti could still be accepted.
+//!
+//! The same module owns `space_revoked_credentials` (V075): credential `jti`s an authority revoked
+//! through `notifyCredentialRevoked`, keyed `(space_uri, jti)` so one authority can never revoke
+//! another space's credential. Each row is retained past the longest life any credential carrying
+//! it could have, then reclaimed by the same sweep.
 
 use sqlx::{Sqlite, SqlitePool};
 
@@ -68,6 +73,55 @@ pub async fn sweep_expired_jtis(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
     Ok(result.rows_affected())
 }
 
+/// Record revoked credential `jti`s for `space_uri`, each retained for `ttl_secs`. Idempotent: a
+/// jti already revoked keeps its first row, whose horizon already outlives the credential.
+pub async fn revoke_credentials(
+    pool: &SqlitePool,
+    space_uri: &str,
+    jtis: &[String],
+    ttl_secs: u64,
+) -> Result<(), sqlx::Error> {
+    let modifier = format!("+{ttl_secs} seconds");
+    let mut tx = pool.begin().await?;
+    for jti in jtis {
+        sqlx::query(
+            "INSERT INTO space_revoked_credentials (space_uri, jti, expires_at) \
+             VALUES (?, ?, datetime('now', ?)) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(space_uri)
+        .bind(jti)
+        .bind(&modifier)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+/// Whether the authority of `space_uri` revoked the credential `jti`.
+pub async fn is_credential_revoked(
+    pool: &SqlitePool,
+    space_uri: &str,
+    jti: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM space_revoked_credentials WHERE space_uri = ? AND jti = ?)",
+    )
+    .bind(space_uri)
+    .bind(jti)
+    .fetch_one(pool)
+    .await
+}
+
+/// Delete revocations no credential could still outlive.
+pub async fn sweep_expired_revocations(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+    let result =
+        sqlx::query("DELETE FROM space_revoked_credentials WHERE expires_at <= datetime('now')")
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +163,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining, 2);
+    }
+
+    #[tokio::test]
+    async fn revocation_is_per_space_idempotent_and_swept_after_its_horizon() {
+        let pool = test_pool().await;
+        let jtis = vec!["c-1".to_string()];
+
+        revoke_credentials(&pool, "at://a/space/x/main", &jtis, 60)
+            .await
+            .unwrap();
+        revoke_credentials(&pool, "at://a/space/x/main", &jtis, 60)
+            .await
+            .unwrap();
+        assert!(is_credential_revoked(&pool, "at://a/space/x/main", "c-1")
+            .await
+            .unwrap());
+        assert!(
+            !is_credential_revoked(&pool, "at://b/space/x/main", "c-1")
+                .await
+                .unwrap(),
+            "a revocation names one space; another space's credential is untouched"
+        );
+
+        assert_eq!(sweep_expired_revocations(&pool).await.unwrap(), 0);
+        revoke_credentials(&pool, "at://a/space/x/main", &["stale".to_string()], 0)
+            .await
+            .unwrap();
+        assert_eq!(sweep_expired_revocations(&pool).await.unwrap(), 1);
+        assert!(is_credential_revoked(&pool, "at://a/space/x/main", "c-1")
+            .await
+            .unwrap());
     }
 }

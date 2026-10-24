@@ -715,3 +715,164 @@ async fn deleting_a_space_drops_its_writer_set() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "SpaceNotFound");
 }
+
+// ── notifyCredentialRevoked ─────────────────────────────────────────────────
+
+/// A foreign authority with a resolvable key, a space of its own Alice has written into (so the
+/// space is known here), and a credential it issued for that space.
+async fn foreign_space_credential(
+    state: &SpacesState,
+) -> (repo_engine::CommitSigner, SpaceSigKey, String) {
+    let foreign_kp = crypto::generate_p256_keypair().unwrap();
+    seed_undeliverable(state, FOREIGN, &foreign_kp).await;
+    write_one(state, FOREIGN_SPACE, ALICE, "one").await;
+    let signer = repo_engine::CommitSigner::from_bytes(&foreign_kp.private_key_bytes).unwrap();
+    let key = SpaceSigKey::generate();
+    let credential = mint_space_credential(
+        |b| signer.sign(b),
+        FOREIGN,
+        &parse_space_ref(FOREIGN_SPACE).unwrap(),
+        key.key_id(),
+        unix_now().unwrap(),
+    );
+    (signer, key, credential)
+}
+
+fn credential_jti(credential: &str) -> String {
+    use base64::Engine as _;
+    let payload = credential.split('.').nth(1).unwrap();
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .unwrap();
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    claims["jti"].as_str().unwrap().to_string()
+}
+
+fn revoke_token(signer: &repo_engine::CommitSigner, iss: &str, aud: &str) -> String {
+    let now = unix_now().unwrap();
+    crate::auth::jwt::mint_service_auth_jwt(
+        |b| signer.sign(b),
+        iss,
+        aud,
+        Some("com.atproto.space.notifyCredentialRevoked"),
+        now,
+        now + 60,
+    )
+}
+
+fn read_alice(credential: &str, key: &SpaceSigKey) -> Request<Body> {
+    let mut b = Request::builder().method(http::Method::GET).uri(format!(
+        "/xrpc/com.atproto.space.listRecords?space={FOREIGN_SPACE}&repo={ALICE}&collection={COLLECTION}"
+    ));
+    b.headers_mut()
+        .unwrap()
+        .extend(key.credential_headers(credential, ALICE));
+    b.body(Body::empty()).unwrap()
+}
+
+/// The authority revokes a credential that was reading fine; the same credential is refused from
+/// then on, and the revocation is kept past the credential's own life. Repeating it is a no-op.
+#[tokio::test]
+async fn a_revoked_credential_is_refused_on_read() {
+    let state = setup().await;
+    let (signer, key, credential) = foreign_space_credential(&state).await;
+    let (status, body) = send(&state, read_alice(&credential, &key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Addressed to the repo DID, as the lexicon describes.
+    let token = revoke_token(&signer, FOREIGN, ALICE);
+    let body =
+        serde_json::json!({ "space": FOREIGN_SPACE, "credentials": [credential_jti(&credential)] });
+    for _ in 0..2 {
+        let (status, resp) = send(
+            &state,
+            post(
+                "com.atproto.space.notifyCredentialRevoked",
+                &token,
+                body.clone(),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{resp}");
+    }
+
+    let (status, body) = send(&state, read_alice(&credential, &key)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+
+    let outlives: bool = sqlx::query_scalar(
+        "SELECT expires_at >= datetime('now', '+3600 seconds') FROM space_revoked_credentials",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert!(
+        outlives,
+        "the revocation must outlive the longest-lived credential"
+    );
+}
+
+/// Only the space's authority may revoke its credentials.
+#[tokio::test]
+async fn notify_credential_revoked_refuses_a_non_authority_issuer() {
+    let state = setup().await;
+    let (_, key, credential) = foreign_space_credential(&state).await;
+    let bob_kp = crypto::generate_p256_keypair().unwrap();
+    seed_undeliverable(&state, BOB, &bob_kp).await;
+    let bob = repo_engine::CommitSigner::from_bytes(&bob_kp.private_key_bytes).unwrap();
+
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.space.notifyCredentialRevoked",
+            &revoke_token(&bob, BOB, ALICE),
+            serde_json::json!({ "space": FOREIGN_SPACE, "credentials": [credential_jti(&credential)] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, body) = send(&state, read_alice(&credential, &key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The audience must be this server or an account it hosts; a token addressed elsewhere is
+/// refused before any key is resolved.
+#[tokio::test]
+async fn notify_credential_revoked_refuses_a_foreign_audience() {
+    let state = setup().await;
+    let (signer, _, credential) = foreign_space_credential(&state).await;
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.space.notifyCredentialRevoked",
+            &revoke_token(&signer, FOREIGN, SYNCER),
+            serde_json::json!({ "space": FOREIGN_SPACE, "credentials": [credential_jti(&credential)] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+}
+
+/// A revocation for a space this host holds nothing of is acknowledged and stores nothing.
+#[tokio::test]
+async fn notify_credential_revoked_for_an_unknown_space_stores_nothing() {
+    let state = setup().await;
+    let foreign_kp = crypto::generate_p256_keypair().unwrap();
+    seed_undeliverable(&state, FOREIGN, &foreign_kp).await;
+    let signer = repo_engine::CommitSigner::from_bytes(&foreign_kp.private_key_bytes).unwrap();
+
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.space.notifyCredentialRevoked",
+            &revoke_token(&signer, FOREIGN, &state.config.resolve_server_did()),
+            serde_json::json!({ "space": FOREIGN_SPACE, "credentials": ["anything"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM space_revoked_credentials")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}
