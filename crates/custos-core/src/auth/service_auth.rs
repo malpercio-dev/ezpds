@@ -478,7 +478,7 @@ mod tests {
     /// ecosystem's `#atproto` signing keys have. Mirrors the helper in `jwt.rs`'s tests.
     fn k256_test_key() -> (k256::ecdsa::SigningKey, crypto::DidKeyUri) {
         let signing_key = k256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
-        let point = signing_key.verifying_key().to_encoded_point(true);
+        let point = signing_key.verifying_key().to_sec1_point(true);
         // secp256k1 multicodec varint prefix (0xe7 0x01) + compressed SEC1 point.
         let mut multikey = vec![0xe7, 0x01];
         multikey.extend_from_slice(point.as_bytes());
@@ -508,7 +508,7 @@ mod tests {
         let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
         let signing_input = format!("{header_b64}.{payload_b64}");
         let sig: k256::ecdsa::Signature = signing_key.sign(signing_input.as_bytes());
-        let sig = sig.normalize_s().unwrap_or(sig);
+        let sig = sig.normalize_s();
         let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes());
         format!("{signing_input}.{sig_b64}")
     }

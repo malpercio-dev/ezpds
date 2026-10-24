@@ -335,17 +335,17 @@ fn select_key(set: &JwkSet, kid: Option<&str>) -> Option<DecodingKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p256::elliptic_curve::Generate as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use p256::ecdsa::SigningKey;
-    use rand_core::OsRng;
     use serde_json::json;
 
     /// A single-key P-256 JWK set carrying `kid`, valid for `DecodingKey::from_jwk`.
     fn jwks_with_kid(kid: &str) -> JwkSet {
-        let sk = SigningKey::random(&mut OsRng);
-        let point = sk.verifying_key().to_encoded_point(false);
+        let sk = SigningKey::generate();
+        let point = sk.verifying_key().to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
         serde_json::from_value(json!({

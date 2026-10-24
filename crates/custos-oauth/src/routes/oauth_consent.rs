@@ -591,8 +591,7 @@ mod tests {
 
     fn p256_key() -> TestKey {
         let generated = crypto::generate_p256_keypair().unwrap();
-        let signing_key =
-            SigningKey::from_bytes(generated.private_key_bytes.as_slice().into()).unwrap();
+        let signing_key = SigningKey::from_bytes((&*generated.private_key_bytes).into()).unwrap();
         TestKey {
             did: generated.key_id.0,
             signing_key,
@@ -601,7 +600,7 @@ mod tests {
 
     fn sign(key: &TestKey, message: &[u8]) -> String {
         let sig: P256Signature = key.signing_key.sign(message);
-        URL_SAFE_NO_PAD.encode(sig.normalize_s().unwrap_or(sig).to_bytes())
+        URL_SAFE_NO_PAD.encode(sig.normalize_s().to_bytes())
     }
 
     async fn setup(plc: &MockServer) -> CoreState {

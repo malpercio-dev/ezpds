@@ -15,6 +15,7 @@
 // (register `identity_assertion` → confirm → exchange → provider SET → re-exchange refused) is
 // exercised in `identity_assertion_provider_set_revokes_and_blocks_reexchange` below.
 
+use p256::elliptic_curve::Generate as _;
 use std::sync::Arc;
 
 use axum::{
@@ -25,7 +26,6 @@ use chrono::Utc;
 use common::AgentAuthConfig;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use p256::pkcs8::{spki::EncodePublicKey, EncodePrivateKey};
-use rand_core::OsRng;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -65,7 +65,7 @@ fn owner_token(state: &AppState, did: &str) -> String {
 
 /// A fresh ES256 keypair as (PKCS#8 private PEM, SPKI public PEM), via p256's built-in PEM encoders.
 fn es256_keys() -> (String, String) {
-    let sk = p256::SecretKey::random(&mut OsRng);
+    let sk = p256::SecretKey::generate();
     let priv_pem = sk.to_pkcs8_pem(Default::default()).unwrap().to_string();
     let pub_pem = sk
         .public_key()

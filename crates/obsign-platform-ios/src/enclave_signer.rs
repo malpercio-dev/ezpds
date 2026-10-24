@@ -288,7 +288,7 @@ mod device {
 
                 let sig = Signature::from_der(&der_sig)
                     .map_err(|e| signing(format!("DER decode failed: {e}")))?;
-                let sig = sig.normalize_s().unwrap_or(sig);
+                let sig = sig.normalize_s();
                 Ok(sig.to_bytes().to_vec())
             }))
         }

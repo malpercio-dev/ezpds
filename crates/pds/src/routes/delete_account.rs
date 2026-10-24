@@ -447,16 +447,14 @@ mod tests {
                 let generated = crypto::generate_p256_keypair().unwrap();
                 Self {
                     did: generated.key_id.0,
-                    signing_key: SigningKey::from_bytes(
-                        generated.private_key_bytes.as_slice().into(),
-                    )
-                    .expect("valid P-256 scalar"),
+                    signing_key: SigningKey::from_bytes((&*generated.private_key_bytes).into())
+                        .expect("valid P-256 scalar"),
                 }
             }
 
             fn sign(&self, message: &[u8]) -> String {
                 let signature: P256Signature = self.signing_key.sign(message);
-                URL_SAFE_NO_PAD.encode(signature.normalize_s().unwrap_or(signature).to_bytes())
+                URL_SAFE_NO_PAD.encode(signature.normalize_s().to_bytes())
             }
         }
 

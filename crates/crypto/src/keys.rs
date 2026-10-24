@@ -4,7 +4,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use hkdf::Hkdf;
 use multibase::Base;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate as _;
 use p256::SecretKey;
 use rand_core::OsRng;
 use sha2::Sha256;
@@ -50,7 +51,7 @@ pub struct P256Keypair {
 
 /// Generate a fresh P-256 keypair and derive its `did:key` identifier.
 pub fn generate_p256_keypair() -> Result<P256Keypair, CryptoError> {
-    Ok(keypair_from_secret_key(&SecretKey::random(&mut OsRng)))
+    Ok(keypair_from_secret_key(&SecretKey::generate()))
 }
 
 /// Rebuild a [`P256Keypair`] from a stored 32-byte private scalar.
@@ -92,7 +93,7 @@ pub fn p256_public_key_from_did_key(did_key: &str) -> Result<Vec<u8>, CryptoErro
     // A validating decode, not a reformat: `p256` rejects off-curve and identity points.
     let public_key =
         p256::PublicKey::from_sec1_bytes(key_bytes).map_err(|_| invalid("not a curve point"))?;
-    Ok(public_key.to_encoded_point(true).as_bytes().to_vec())
+    Ok(public_key.to_sec1_point(true).as_bytes().to_vec())
 }
 
 /// Build the public [`P256Keypair`] representation (did:key URI, multibase public key, and
@@ -102,7 +103,7 @@ fn keypair_from_secret_key(secret_key: &SecretKey) -> P256Keypair {
     let public_key = secret_key.public_key();
 
     // Compressed point: 0x02/0x03 prefix byte + 32-byte x-coordinate = 33 bytes.
-    let compressed = public_key.to_encoded_point(true);
+    let compressed = public_key.to_sec1_point(true);
     let compressed_bytes = compressed.as_bytes();
 
     // did:key multikey: P-256 multicodec varint + compressed public key bytes.
@@ -711,10 +712,10 @@ mod tests {
         let message = b"recovery ceremony proof";
         let sig: Signature = signing_key.sign(message);
         // atproto requires low-S; normalize like the crate's other signers do.
-        let sig = sig.normalize_s().unwrap_or(sig);
-        // A low-S signature has no high-S twin — normalize_s() returns None once already canonical.
+        let sig = sig.normalize_s();
+        // A low-S signature is a fixed point of normalize_s().
         assert!(
-            sig.normalize_s().is_none(),
+            sig.normalize_s() == sig,
             "signature must be low-S canonical"
         );
 

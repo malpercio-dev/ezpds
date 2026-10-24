@@ -612,7 +612,7 @@ async fn genesis_commit_signature_verifies() {
     assert_eq!(commit.sig().len(), 64, "P-256 sig must be 64 bytes (r‖s)");
     let signature = Signature::from_slice(commit.sig()).expect("sig must parse as P-256 r‖s");
     assert!(
-        signature.normalize_s().is_none(),
+        signature.normalize_s() == signature,
         "commit signature must be canonical low-S",
     );
     verifying_key

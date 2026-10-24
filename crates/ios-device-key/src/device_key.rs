@@ -49,7 +49,7 @@ pub fn get_or_create<K: KeychainStore>(
         SigningKey::from_slice(&private_bytes).map_err(|_| DeviceKeyError::KeychainError {
             message: "invalid stored key bytes".into(),
         })?;
-    let encoded = signing_key.verifying_key().to_encoded_point(true);
+    let encoded = signing_key.verifying_key().to_sec1_point(true);
 
     Ok(make_device_public_key(encoded.as_bytes()))
 }
@@ -79,7 +79,7 @@ pub fn sign<K: KeychainStore>(
     // Normalize to low-S. The verifiers on the other end reject high-S, and RFC 6979 fixes
     // only the nonce — without this roughly half of all signatures would be rejected even
     // though they are mathematically valid.
-    let signature = signature.normalize_s().unwrap_or(signature);
+    let signature = signature.normalize_s();
 
     Ok(signature.to_bytes().to_vec())
 }
@@ -209,7 +209,7 @@ pub fn sign<K: KeychainStore>(
     // from_der() is a pure parser — it does NOT normalize low-S, and Apple's SE may return
     // high-S signatures, so normalize explicitly.
     let sig = Signature::from_der(&der_sig).map_err(|_| DeviceKeyError::InvalidSignature)?;
-    let sig = sig.normalize_s().unwrap_or(sig);
+    let sig = sig.normalize_s();
     Ok(sig.to_bytes().to_vec())
 }
 
@@ -393,7 +393,7 @@ mod tests {
         let verifying_key = VerifyingKey::from_sec1_bytes(&compressed).expect("must parse");
         let data = b"verification test";
         let sig_bytes = sign::<TestStore>(&ACCOUNTS, data).expect("sign must succeed");
-        let sig = Signature::from_bytes(sig_bytes.as_slice().into()).expect("must parse sig");
+        let sig = Signature::from_slice(&sig_bytes).expect("must parse sig");
         verifying_key
             .verify(data, &sig)
             .expect("signature must verify");
@@ -410,16 +410,16 @@ mod tests {
     }
 
     /// Signatures must be in low-S form; the verifiers on the other end reject high-S.
-    /// `normalize_s()` returns None when the signature is already low-S.
+    /// A low-S signature is a fixed point of `normalize_s()`.
     #[test]
     fn sign_produces_low_s_signature() {
         reset();
         use p256::ecdsa::Signature;
         create();
         let sig_bytes = sign::<TestStore>(&ACCOUNTS, b"low-s test").expect("sign must succeed");
-        let sig = Signature::from_bytes(sig_bytes.as_slice().into()).expect("must parse sig");
+        let sig = Signature::from_slice(&sig_bytes).expect("must parse sig");
         assert!(
-            sig.normalize_s().is_none(),
+            sig.normalize_s() == sig,
             "signature must already be in low-S form"
         );
     }

@@ -709,7 +709,7 @@ mod tests {
     fn service_auth_jwt_is_es256_with_required_claims_and_verifies() {
         let key_bytes = [0x11u8; 32];
         let signer = repo_engine::CommitSigner::from_bytes(&key_bytes).unwrap();
-        let signing_key = SigningKey::from_bytes(p256::FieldBytes::from_slice(&key_bytes)).unwrap();
+        let signing_key = SigningKey::from_bytes((&key_bytes).into()).unwrap();
         let verifying_key = VerifyingKey::from(&signing_key);
 
         let jwt = mint_service_auth_jwt(
@@ -750,7 +750,7 @@ mod tests {
             "ES256 signature must verify against the signing key"
         );
         assert!(
-            sig.normalize_s().is_none(),
+            sig.normalize_s() == sig,
             "signature must be canonical low-S (atproto verifiers reject high-S)"
         );
     }
@@ -824,7 +824,7 @@ mod tests {
         let parts: Vec<&str> = token.split('.').collect();
         let raw = URL_SAFE_NO_PAD.decode(parts[2]).unwrap();
         let low = Signature::from_slice(&raw).unwrap();
-        let low = low.normalize_s().unwrap_or(low);
+        let low = low.normalize_s();
         let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes()).unwrap();
         let high_token = format!(
             "{}.{}.{}",
@@ -845,7 +845,7 @@ mod tests {
     /// bsky.social's `#atproto` signing keys have.
     fn k256_test_key() -> (k256::ecdsa::SigningKey, crypto::DidKeyUri) {
         let signing_key = k256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
-        let point = signing_key.verifying_key().to_encoded_point(true);
+        let point = signing_key.verifying_key().to_sec1_point(true);
         // secp256k1 multicodec varint prefix (0xe7 0x01) + compressed SEC1 point.
         let mut multikey = vec![0xe7, 0x01];
         multikey.extend_from_slice(point.as_bytes());
@@ -877,7 +877,7 @@ mod tests {
     fn k256_sign_low_s(key: &k256::ecdsa::SigningKey, message: &[u8]) -> Vec<u8> {
         use k256::ecdsa::signature::Signer;
         let sig: k256::ecdsa::Signature = key.sign(message);
-        let sig = sig.normalize_s().unwrap_or(sig);
+        let sig = sig.normalize_s();
         sig.to_bytes().to_vec()
     }
 
@@ -913,7 +913,7 @@ mod tests {
         let high_s_sign = |b: &[u8]| {
             use k256::ecdsa::signature::Signer;
             let sig: k256::ecdsa::Signature = signing_key.sign(b);
-            let low = sig.normalize_s().unwrap_or(sig);
+            let low = sig.normalize_s();
             let high =
                 k256::ecdsa::Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
                     .unwrap();

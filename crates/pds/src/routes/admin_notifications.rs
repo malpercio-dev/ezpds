@@ -204,7 +204,7 @@ mod tests {
         // for P-256, and the verifier rejects the high-S twin (ECDSA malleability: every
         // signature has one, and accepting both would let one signature yield two valid
         // requests). Omitting this makes the test a ~50/50 coin flip, not a clean failure.
-        let signature = signature.normalize_s().unwrap_or(signature);
+        let signature = signature.normalize_s();
         let signature = data_encoding::BASE64URL_NOPAD.encode(&signature.to_bytes());
 
         let mut builder = Request::builder()

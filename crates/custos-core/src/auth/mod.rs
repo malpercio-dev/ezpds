@@ -54,8 +54,8 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use p256::ecdsa::{signature::Signer, Signature};
+    use p256::elliptic_curve::Generate as _;
     use p256::pkcs8::EncodePrivateKey;
-    use rand_core::OsRng;
     use serde::Serialize;
     use tower::ServiceExt;
 
@@ -832,7 +832,7 @@ mod tests {
         // pass ES256 verification even if the typ header claims "at+jwt".
         let state = test_state().await;
 
-        let attacker_key = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let attacker_key = p256::ecdsa::SigningKey::generate();
         let attacker_pkcs8 = attacker_key.to_pkcs8_der().unwrap();
 
         #[derive(Serialize)]
