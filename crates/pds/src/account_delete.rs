@@ -954,8 +954,7 @@ mod tests {
         }
         assert!(
             fks.len() >= 25,
-            "sanity: expected to find the schema's account FKs, found {}",
-            fks.len()
+            "sanity: expected at least 25 account FKs in the schema"
         );
     }
 
