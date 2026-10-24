@@ -7,7 +7,8 @@
 //! (`auth::agent_assertion`) and `custos-db`'s (`agent_auth`, `agent_audit`).
 //!
 //! `pds` is the composition root and consumes only what this file exports: [`router`] /
-//! [`internal_router`], [`spawn_sweeps`], [`CAPABILITY`], and (behind `test-support`)
+//! [`internal_router`], [`spawn_sweeps`], [`CAPABILITY`], the account-purge step
+//! ([`purge_account_rows`], [`child_dids`], [`PURGE_ACCOUNT_SQL`]), and (behind `test-support`)
 //! [`test_support`]. Handlers extract `State<CoreState>`. See `AGENTS.md`.
 
 use axum::extract::FromRef;
@@ -22,6 +23,7 @@ mod agent_child_core;
 mod agent_claim_sweep;
 mod capability;
 mod db;
+mod purge;
 mod router;
 mod routes;
 #[cfg(any(test, feature = "test-support"))]
@@ -29,6 +31,7 @@ mod routes;
 pub mod test_support;
 
 pub use capability::CAPABILITY;
+pub use purge::{child_dids, purge_account_rows, PURGE_ACCOUNT_SQL};
 pub use router::{internal_router, router};
 
 /// Register the claim-attempt expiry sweep on `pds`'s scheduler. Each pass flips lapsed pending

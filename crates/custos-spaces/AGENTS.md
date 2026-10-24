@@ -25,8 +25,8 @@ This file is a map; mechanism and invariants live in each module's `//!` doc.
 | `router` / `internal_router` | merged unconditionally in `app.rs` before the layer stack. `router` is empty unless `[spaces] enabled`; `internal_router` always carries `/v1/admin/spaces{,/takedown}` (the operator's takedown governs data already stored, ADR-0035) and adds `/v1/space/import-repo` only when enabled |
 | `spawn_sweeps(&mut Scheduler, &SpacesConfig)` | `main.rs`; registers both sweeps on `pds`'s scheduler only when enabled, so graceful shutdown covers them |
 | `CAPABILITY` | listed in `pds`'s `CAPABILITIES` between `appPasswordPersonalDetails` and `waitlist`; `enabled` must mirror the router gate plus the master key |
-| `purge_account_rows` / `PURGE_ACCOUNT_SQL` | `account_delete::purge_account` runs it inside its transaction; the schema-walking FK test reads `PURGE_ACCOUNT_SQL` |
-| `space_record_write` | `pds` tests that seed space records |
+| `purge_account_rows` / `PURGE_ACCOUNT_SQL` | `account_delete::purge_account` runs it inside its transaction; its schema-walking FK test reads `PURGE_ACCOUNT_SQL`. Which rows go (and that `spaces` survives) is tested here, beside a walk of the `space*` tables' account FKs |
+| `space_record_write` | `pds`'s blob-GC test, which seeds a space record |
 | `test_support` (`test-support` feature) | `test_app(state)`, the `SpacesState` constructors, `SpaceSigKey`, request builders |
 
 ## Module Map

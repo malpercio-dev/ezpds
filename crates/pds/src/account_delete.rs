@@ -45,24 +45,17 @@ pub enum PurgeOutcome {
 /// explicitly; the ordering below follows the inter-child FKs (e.g. `refresh_tokens` before
 /// `sessions`).
 ///
-/// Non-obvious scoping the SQL alone can't show:
+/// Only core rows appear here: each feature crate that owns account-keyed tables exports its own
+/// purge step (`custos_agents::purge_account_rows`, `custos_spaces::purge_account_rows`), which
+/// `purge_account` runs in the same transaction.
 ///
-/// * `agent_audit_events` rows carrying this DID on a *foreign* account's registration are
-///   unlinked (`did = NULL`), not deleted — they belong to that account's audit trail.
-/// * The sovereign-child tables (V047/V049) are scoped by *both* DID columns: a purged parent
-///   takes its children's registration/provisioning rows with it (the child *accounts* are
-///   cascade-scheduled onto the reaper by `purge_account`, ADR-0023), and a purged child's own
-///   provisioning row must go before its `accounts` row. `agent_child_deletions` is deleted
-///   `WHERE parent_did = ?` only, never by `child_did` (the table's key, see V049) — the
-///   tombstone must survive its child's purge to keep the parent's audit view alive.
-/// * `repo_seq` is deliberately excluded: it is a shared, densely-sequenced log, and per-DID
-///   holes would break cursor replay for every other account. History there ages out via the
-///   retention sweep; the `#account` (deleted) frame is how subscribers learn the account is
-///   gone.
+/// `repo_seq` is deliberately excluded: it is a shared, densely-sequenced log, and per-DID
+/// holes would break cursor replay for every other account. History there ages out via the
+/// retention sweep; the `#account` (deleted) frame is how subscribers learn the account is gone.
 ///
 /// Coverage is enforced by `purge_covers_every_account_foreign_key_in_the_schema`, which walks
-/// the live schema's FK graph and fails if a migration adds an account-keyed table this list
-/// doesn't reach.
+/// the live schema's FK graph and fails if a migration adds an account-keyed table no purge
+/// statement reaches; each feature crate runs the same walk over its own tables.
 const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM account_labels WHERE did = ?",
     "DELETE FROM operator_account_audit_events WHERE did = ?",
@@ -83,16 +76,6 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM recovery_audit_events WHERE did = ?",
     "DELETE FROM recovery_escrow WHERE did = ?",
     "DELETE FROM notification_registrations WHERE did = ?",
-    "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE did = ?)",
-    "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE parent_did = ?)",
-    "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE did = ?)",
-    "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE parent_did = ?)",
-    "DELETE FROM agent_identities WHERE did = ?",
-    "DELETE FROM agent_identities WHERE parent_did = ?",
-    "UPDATE agent_audit_events SET did = NULL WHERE did = ?",
-    "DELETE FROM agent_child_provisionings WHERE child_did = ?",
-    "DELETE FROM agent_child_provisionings WHERE parent_did = ?",
-    "DELETE FROM agent_child_deletions WHERE parent_did = ?",
     "DELETE FROM transfer_audit_events WHERE did = ?",
     "DELETE FROM transfers WHERE did = ?",
     "DELETE FROM transfer_devices WHERE did = ?",
@@ -149,19 +132,11 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
     // Cascade: a purged parent's sovereign children lose the account their recovery authority
     // chains to (ADR-0023), so each child is scheduled for the same deactivate → `delete_after`
     // → reaper pipeline a parent-driven `POST /agent/child/delete` uses. The children's
-    // registration/provisioning rows are removed by the parent-keyed `DELETE_BY_DID` entries;
-    // the child *accounts* stay behind, deactivated, until the reaper purges them. Collected
-    // from both child tables so a mid-provisioning child (row in only one) is still caught.
-    let child_dids: Vec<String> = sqlx::query_scalar(
-        "SELECT did FROM agent_identities WHERE parent_did = ? AND did IS NOT NULL \
-         UNION \
-         SELECT child_did FROM agent_child_provisionings WHERE parent_did = ?",
-    )
-    .bind(did)
-    .bind(did)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(map_err)?;
+    // registration/provisioning rows go with the agents purge step below; the child *accounts*
+    // stay behind, deactivated, until the reaper purges them.
+    let child_dids = custos_agents::child_dids(&mut tx, did)
+        .await
+        .map_err(map_err)?;
     let mut deactivated_children = Vec::new();
     if !child_dids.is_empty() {
         let grace =
@@ -199,7 +174,10 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
             .await
             .map_err(map_err)?;
     }
-    // The account's permissioned space repos; custos-spaces owns the statements and their order.
+    // Each feature crate owns its tables' statements and their order.
+    custos_agents::purge_account_rows(&mut tx, did)
+        .await
+        .map_err(map_err)?;
     custos_spaces::purge_account_rows(&mut tx, did)
         .await
         .map_err(map_err)?;
@@ -705,51 +683,18 @@ mod tests {
         assert_eq!(row_count(&state.db, "email_tokens", "did", did).await, 0);
     }
 
-    /// Purge removes every space-table row the account owns or is party to — its repos (ops →
-    /// records → head, FK order), its memberships, its notify registrations, and its rows in any
-    /// locally-hosted space's writer set (`listRepos` must stop advertising it) — while the
-    /// `spaces` row it is authority for survives as the tombstone that makes the space
-    /// unanswerable (members' own records are theirs; the space simply stops answering).
+    /// `purge_account` runs the Spaces purge step inside its transaction. Which rows that step
+    /// takes (and which it leaves) is `custos-spaces`' own test; here one membership row stands
+    /// in for the step being wired at all.
     #[tokio::test]
-    async fn purge_removes_space_rows_and_keeps_authority_space_tombstone() {
+    async fn purge_runs_the_spaces_step() {
         let (state, _dir) = purge_state().await;
         let did = "did:plc:purgespaces";
         seed_account_with_repo(&state.db, did).await;
         let space = "at://did:plc:purgespaces/space/org.example.bucket/self";
-        custos_spaces::db::spaces::insert_space(
-            &state.db,
-            &custos_spaces::db::spaces::NewSpace {
-                uri: space,
-                authority_did: did,
-                space_type: "org.example.bucket",
-                skey: "self",
-                policy: Some("member-list"),
-                app_access: Some("open"),
-                app_allowed: None,
-                managing_app: None,
-                write_policy: None,
-                write_managing_app: None,
-            },
-        )
-        .await
-        .unwrap();
-        custos_spaces::space_record_write::apply_space_writes(
-            &axum::extract::FromRef::from_ref(&state),
-            &custos_core::space_uri::parse_space_ref(space).unwrap(),
-            did,
-            &[custos_spaces::space_record_write::SpaceWriteOp {
-                action: custos_spaces::space_record_write::SpaceWriteAction::Put,
-                collection: "org.example.note".to_string(),
-                rkey: "one".to_string(),
-                value: Some(serde_json::json!({"text": "purge me"})),
-            }],
-            custos_spaces::space_record_write::SpaceWriteAdmission::Active,
-        )
-        .await
-        .unwrap();
         sqlx::query(
-            "INSERT INTO space_members (space_uri, member_did, added_at) \
-             VALUES (?, ?, datetime('now'))",
+            "INSERT INTO spaces (uri, authority_did, space_type, skey, created_at) \
+             VALUES (?, ?, 'org.example.bucket', 'self', datetime('now'))",
         )
         .bind(space)
         .bind(did)
@@ -757,9 +702,8 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO space_notify_registrations \
-             (space_uri, subscriber_did, repo_did, created_at, expires_at) \
-             VALUES (?, ?, '', datetime('now'), datetime('now', '+1 hour'))",
+            "INSERT INTO space_members (space_uri, member_did, added_at) \
+             VALUES (?, ?, datetime('now'))",
         )
         .bind(space)
         .bind(did)
@@ -772,39 +716,8 @@ mod tests {
             PurgeOutcome::Deleted
         );
         assert_eq!(
-            row_count(&state.db, "space_repo_ops", "account_did", did).await,
-            0
-        );
-        assert_eq!(
-            row_count(&state.db, "space_records", "account_did", did).await,
-            0
-        );
-        assert_eq!(
-            row_count(&state.db, "space_repos", "account_did", did).await,
-            0
-        );
-        assert_eq!(
             row_count(&state.db, "space_members", "member_did", did).await,
             0
-        );
-        assert_eq!(
-            row_count(
-                &state.db,
-                "space_notify_registrations",
-                "subscriber_did",
-                did
-            )
-            .await,
-            0
-        );
-        assert_eq!(
-            row_count(&state.db, "space_writers", "repo_did", did).await,
-            0
-        );
-        assert_eq!(
-            row_count(&state.db, "spaces", "uri", space).await,
-            1,
-            "the authority's space row survives as the unanswerable-space tombstone"
         );
     }
 
@@ -981,15 +894,19 @@ mod tests {
     }
 
     /// Tripwire: every foreign key referencing `accounts(did)` in the LIVE schema must be
-    /// covered by the purge — by a `DELETE_BY_DID`/`DELETE_BLOCKS` statement scoping that
-    /// exact column, or by one of the named non-list mechanisms. A new migration that adds
-    /// an account-keyed table without extending the purge fails here instead of FK-failing
-    /// the reaper in production.
+    /// covered by the purge — by a core statement, a feature crate's purge step, or one of the
+    /// named non-list mechanisms. A new migration that adds an account-keyed table without
+    /// extending the purge fails here (and, for a feature's table, in that crate's own walk)
+    /// instead of FK-failing the reaper in production. `DELETE_BY_DID` itself names no feature
+    /// table: those statements belong to the owning crate.
     #[tokio::test]
     async fn purge_covers_every_account_foreign_key_in_the_schema() {
-        use sqlx::Row;
-
-        // Covered outside DELETE_BY_DID; each entry names its mechanism.
+        // Table-name prefixes each feature crate owns, paired with its purge step's statements.
+        const FEATURES: &[(&str, &[&str])] = &[
+            ("agent_", custos_agents::PURGE_ACCOUNT_SQL),
+            ("space", custos_spaces::PURGE_ACCOUNT_SQL),
+        ];
+        // Covered outside the statement lists; each entry names its mechanism.
         const COVERED_ELSEWHERE: &[(&str, &str, &str)] = &[
             (
                 "block_owners",
@@ -1003,54 +920,42 @@ mod tests {
             ),
         ];
 
-        let state = crate::app::test_state().await;
-        let tables: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-        )
-        .fetch_all(&state.db)
-        .await
-        .unwrap();
-
-        let mut checked = 0;
-        for table in &tables {
-            let fks = sqlx::query(&format!("PRAGMA foreign_key_list({table})"))
-                .fetch_all(&state.db)
-                .await
-                .unwrap();
-            for fk in fks {
-                let target: String = fk.get("table");
-                if target != "accounts" {
-                    continue;
-                }
-                let column: String = fk.get("from");
-                checked += 1;
-                if COVERED_ELSEWHERE
-                    .iter()
-                    .any(|(t, c, _)| t == table && *c == column)
-                {
-                    continue;
-                }
-                let covered = DELETE_BY_DID
-                    .iter()
-                    .chain(custos_spaces::PURGE_ACCOUNT_SQL)
-                    .chain([&DELETE_BLOCKS])
-                    .any(|sql| {
-                        (sql.contains(&format!("FROM {table} "))
-                            || sql.contains(&format!("UPDATE {table} ")))
-                            && (sql.contains(&format!("{column} = ?"))
-                                || sql.contains(&format!("{column} IN (")))
-                    });
+        for sql in DELETE_BY_DID {
+            for (prefix, _) in FEATURES {
                 assert!(
-                    covered,
-                    "{table}.{column} FK-references accounts(did) but no purge statement \
-                     scopes it — a purge of an account with a row here fails the FK check. \
-                     Add a DELETE_BY_DID entry (a Spaces table: custos_spaces::PURGE_ACCOUNT_SQL), or register a mechanism in COVERED_ELSEWHERE."
+                    !sql.contains(&format!("FROM {prefix}"))
+                        && !sql.contains(&format!("UPDATE {prefix}")),
+                    "DELETE_BY_DID names a `{prefix}*` table, which its feature crate owns: {sql}"
                 );
             }
         }
+
+        let state = crate::app::test_state().await;
+        let fks = custos_db::purge_coverage::account_foreign_keys(&state.db).await;
+        for (table, column) in &fks {
+            if COVERED_ELSEWHERE
+                .iter()
+                .any(|(t, c, _)| t == table && c == column)
+            {
+                continue;
+            }
+            let covered = DELETE_BY_DID
+                .iter()
+                .chain(FEATURES.iter().flat_map(|(_, sql)| sql.iter()))
+                .chain([&DELETE_BLOCKS])
+                .any(|sql| custos_db::purge_coverage::statement_scopes(sql, table, column));
+            assert!(
+                covered,
+                "{table}.{column} FK-references accounts(did) but no purge statement \
+                 scopes it — a purge of an account with a row here fails the FK check. \
+                 Add a DELETE_BY_DID entry (a feature's table: that crate's PURGE_ACCOUNT_SQL), \
+                 or register a mechanism in COVERED_ELSEWHERE."
+            );
+        }
         assert!(
-            checked >= 25,
-            "sanity: expected to find the schema's account FKs, found {checked}"
+            fks.len() >= 25,
+            "sanity: expected to find the schema's account FKs, found {}",
+            fks.len()
         );
     }
 

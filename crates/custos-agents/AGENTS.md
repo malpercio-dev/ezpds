@@ -24,10 +24,12 @@ This file is a map; mechanism and invariants live in each module's `//!` doc.
 | `router()` / `internal_router()` | merged into `app.rs`'s public (CORS'd) and `/v1/*` (no-CORS) groups before the layer stack. No router gate: each registration flow checks its own `[agent_auth]` switch |
 | `spawn_sweeps(&mut Scheduler, &AgentAuthConfig)` | `main.rs`; registers the claim-attempt expiry sweep on `pds`'s scheduler |
 | `CAPABILITY` | `agents`, listed in `pds`'s `CAPABILITIES` in its original slot |
+| `purge_account_rows` / `PURGE_ACCOUNT_SQL` / `child_dids` | `account_delete::purge_account` reads `child_dids` to cascade-schedule a parent's children, then runs `purge_account_rows` inside its transaction; its schema-walking FK test reads `PURGE_ACCOUNT_SQL` |
 | `test_support` (`test-support` feature) | `test_app(state)`, `post_json_with_bearer`, the sovereign-child fixtures (`state_with_plc`, `state_with_grace`, `mint_child_for`, `child_request`) `pds`'s account-reaper test uses, plus `custos_core::test_support` re-exported |
 
-Account purge stays `pds`'s: `account_delete::purge_account` deletes this crate's
-`agent_child_deletions` rows by parent DID, and the account reaper purges a deleted child.
+`purge.rs` owns which `agent_*` rows an account purge removes; `pds` owns the ordering and the
+child cascade. Its test walks the schema's account FKs on `agent_*` tables, so a new agent table
+without a purge statement fails here.
 
 ## Module Map
 
@@ -37,6 +39,7 @@ src/
   router.rs         — both route tables (`scripts/bruno-parity.sh` and `scripts/generate-docs-reference.mjs` read its `.route(` literals)
   capability.rs     — `CAPABILITY`, the `agents` entry of the `describeServer` table
   agent_child_core.rs  — the verify → provision → publish → finalize core behind sovereign child accounts, shared by every route that provisions one; resumable rather than atomic, because the plc.directory publish can't join a SQLite transaction; its steps run under `ceremony_journal::Journal`, with the provisioning row as the cursor — see module doc
+  purge.rs          — this crate's account-purge step (`PURGE_ACCOUNT_SQL`, `purge_account_rows`, `child_dids`) — see module doc
   agent_claim_sweep.rs — periodic sweep flipping lapsed agent claim attempts to `expired` — see module doc
   db/               — `agent_child_deletions.rs` (below); `custos_db` is re-exported crate-privately
   routes/           — one file per surface (table below); private, only handler functions leave it
@@ -45,7 +48,7 @@ src/
 
 ### `db/`
 
-- `agent_child_deletions.rs` - Query functions for V049 (see "Latest Updates"): `upsert_child_deletion` (record a parent's child-deletion tombstone, generic over the executor so it writes inside the schedule transaction; `INSERT … ON CONFLICT(child_did)` makes a re-delete idempotent) and `list_child_deletions_of_parent` (newest-first, for the parent's durable audit view). The tombstone deliberately survives the child's purge; `account_delete::purge_account` reclaims it only when the parent is deleted.
+- `agent_child_deletions.rs` - Query functions for V049 (see "Latest Updates"): `upsert_child_deletion` (record a parent's child-deletion tombstone, generic over the executor so it writes inside the schedule transaction; `INSERT … ON CONFLICT(child_did)` makes a re-delete idempotent) and `list_child_deletions_of_parent` (newest-first, for the parent's durable audit view). The tombstone deliberately survives the child's purge; the purge step reclaims it only when the parent is deleted.
 
 ### `routes/`
 
