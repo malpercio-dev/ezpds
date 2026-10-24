@@ -87,10 +87,10 @@ mod tests {
 
     fn sign_with(scalar: &[u8; 32]) -> impl FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError> + '_ {
         move |data: &[u8]| {
-            let sk = SigningKey::from_bytes(scalar.as_slice().into())
+            let sk = SigningKey::from_bytes(scalar.into())
                 .map_err(|e| CryptoError::PlcOperation(e.to_string()))?;
             let sig: Signature = sk.sign(data);
-            let sig = sig.normalize_s().unwrap_or(sig);
+            let sig = sig.normalize_s();
             Ok(sig.to_bytes().to_vec())
         }
     }

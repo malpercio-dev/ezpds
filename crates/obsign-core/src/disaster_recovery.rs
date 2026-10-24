@@ -288,13 +288,13 @@ pub fn enrolled_key_visible(audit_log: &[AuditEntry], key_id: &str) -> bool {
 /// Derive the `did:key:z...` URI for a stored P-256 recovery signing key scalar. The
 /// same multicodec (`[0x80, 0x24]`) + base58btc encoding as every other wallet key.
 fn did_key_for_scalar(scalar: &[u8; 32]) -> Result<String, DisasterRecoveryError> {
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
-    let secret = p256::SecretKey::from_bytes(scalar.as_slice().into()).map_err(|e| {
+    use p256::elliptic_curve::sec1::ToSec1Point;
+    let secret = p256::SecretKey::from_bytes(scalar.into()).map_err(|e| {
         DisasterRecoveryError::SigningFailed {
             message: format!("stored recovery signing key is not a valid P-256 scalar: {e}"),
         }
     })?;
-    let compressed = secret.public_key().to_encoded_point(true);
+    let compressed = secret.public_key().to_sec1_point(true);
     let mut multikey = Vec::with_capacity(2 + compressed.as_bytes().len());
     multikey.extend_from_slice(&[0x80, 0x24]);
     multikey.extend_from_slice(compressed.as_bytes());
@@ -312,10 +312,10 @@ pub fn recovery_sign_closure(
 ) -> impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError> {
     move |data: &[u8]| {
         use p256::ecdsa::signature::Signer;
-        let sk = p256::ecdsa::SigningKey::from_bytes(scalar.as_slice().into())
+        let sk = p256::ecdsa::SigningKey::from_bytes((&*scalar).into())
             .map_err(|e| crypto::CryptoError::PlcOperation(format!("invalid signing key: {e}")))?;
         let sig: p256::ecdsa::Signature = sk.sign(data);
-        let sig = sig.normalize_s().unwrap_or(sig);
+        let sig = sig.normalize_s();
         Ok(sig.to_bytes().to_vec())
     }
 }

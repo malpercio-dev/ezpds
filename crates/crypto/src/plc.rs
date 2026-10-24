@@ -392,7 +392,7 @@ pub fn build_did_plc_genesis_op_multi_rotation(
         service_endpoint,
         |data| {
             let sig: Signature = Signer::sign(&sk, data);
-            let sig = sig.normalize_s().unwrap_or(sig);
+            let sig = sig.normalize_s();
             Ok(sig.to_bytes().to_vec())
         },
     )
@@ -525,8 +525,7 @@ pub fn build_did_plc_genesis_op(
             let sig: Signature = Signer::sign(&sk, data);
             // atproto requires canonical low-S signatures; ~half of raw P-256
             // signatures are high-S and would be rejected by plc.directory.
-            // normalize_s() returns Some only when the signature was high-S.
-            let sig = sig.normalize_s().unwrap_or(sig);
+            let sig = sig.normalize_s();
             Ok(sig.to_bytes().to_vec())
         },
     )
@@ -949,7 +948,7 @@ pub(crate) fn ensure_low_s_callback_signature(sig_bytes: &[u8]) -> Result<(), Cr
             "signing callback returned invalid signature bytes: {e}"
         ))
     })?;
-    if sig.normalize_s().is_some() {
+    if sig.normalize_s() != sig {
         return Err(CryptoError::PlcOperation(
             "signing callback returned a non-canonical high-S signature (atproto requires low-S)"
                 .to_string(),
@@ -973,7 +972,7 @@ fn decode_did_key_multikey(key: &DidKeyUri) -> Result<Vec<u8>, String> {
 fn verify_p256_sec1(sec1: &[u8], message: &[u8], sig_bytes: &[u8]) -> Result<(), String> {
     let signature = Signature::try_from(sig_bytes)
         .map_err(|e| format!("invalid ECDSA signature bytes: {e}"))?;
-    if signature.normalize_s().is_some() {
+    if signature.normalize_s() != signature {
         return Err("signature is not low-S canonical (atproto requires low-S)".to_string());
     }
     let verifying_key = VerifyingKey::from_sec1_bytes(sec1)
@@ -987,7 +986,7 @@ fn verify_p256_sec1(sec1: &[u8], message: &[u8], sig_bytes: &[u8]) -> Result<(),
 fn verify_k256_sec1(sec1: &[u8], message: &[u8], sig_bytes: &[u8]) -> Result<(), String> {
     let signature = K256Signature::try_from(sig_bytes)
         .map_err(|e| format!("invalid ECDSA signature bytes: {e}"))?;
-    if signature.normalize_s().is_some() {
+    if signature.normalize_s() != signature {
         return Err("signature is not low-S canonical (atproto requires low-S)".to_string());
     }
     let verifying_key = K256VerifyingKey::from_sec1_bytes(sec1)
@@ -1087,7 +1086,6 @@ pub fn verify_p256_signature_any_s(
     })?;
     let low_s: [u8; 64] = parsed
         .normalize_s()
-        .unwrap_or(parsed)
         .to_bytes()
         .as_slice()
         .try_into()
@@ -1304,6 +1302,7 @@ pub fn verify_genesis_op(
 mod tests {
     use super::*;
     use crate::generate_p256_keypair;
+    use p256::elliptic_curve::Generate as _;
 
     /// Generates two test keypairs and calls build_did_plc_genesis_op with them.
     /// Returns (rotation_key, signing_key, private_key_bytes, result).
@@ -1720,7 +1719,7 @@ mod tests {
             "https://pds.example.com",
             |data| {
                 let sig: Signature = Signer::sign(&device_sk, data);
-                let sig = sig.normalize_s().unwrap_or(sig);
+                let sig = sig.normalize_s();
                 Ok(sig.to_bytes().to_vec())
             },
         )
@@ -1883,7 +1882,7 @@ mod tests {
                 .expect("sig decodes");
             let sig = Signature::try_from(sig_bytes.as_slice()).expect("parseable signature");
             assert!(
-                sig.normalize_s().is_none(),
+                sig.normalize_s() == sig,
                 "signature must already be canonical low-S (iteration {i})"
             );
         }
@@ -1902,7 +1901,7 @@ mod tests {
             .decode(v["sig"].as_str().expect("sig is a string"))
             .expect("sig decodes");
         let low = Signature::try_from(sig_bytes.as_slice()).expect("parseable signature");
-        assert!(low.normalize_s().is_none(), "builder must emit low-S");
+        assert!(low.normalize_s() == low, "builder must emit low-S");
         // s → n − s: still mathematically valid for the same message and key.
         let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
             .expect("high-S twin is a well-formed signature");
@@ -1931,7 +1930,7 @@ mod tests {
         let message = b"admin request canonical string";
         let (public_key, sig) = sign_message(message);
         let low = Signature::try_from(sig.as_slice()).expect("parseable signature");
-        let low = low.normalize_s().unwrap_or(low);
+        let low = low.normalize_s();
         assert!(
             verify_p256_signature(&public_key, message, &low.to_bytes().into()).is_ok(),
             "low-S signature must verify"
@@ -1952,7 +1951,7 @@ mod tests {
 
     /// Encode a k256 verifying key as a `did:key:zQ3…` URI (secp256k1 multicodec).
     fn k256_did_key(vk: &K256VerifyingKey) -> DidKeyUri {
-        let point = vk.to_encoded_point(true);
+        let point = vk.to_sec1_point(true);
         let mut multikey =
             Vec::with_capacity(SECP256K1_MULTICODEC_PREFIX.len() + point.as_bytes().len());
         multikey.extend_from_slice(SECP256K1_MULTICODEC_PREFIX);
@@ -1988,7 +1987,7 @@ mod tests {
         let mut cbor = Vec::new();
         into_writer(&unsigned, &mut cbor).expect("cbor encode");
         let sig: K256Signature = Signer::sign(sk, cbor.as_slice());
-        let sig = sig.normalize_s().unwrap_or(sig);
+        let sig = sig.normalize_s();
         signed_op.sig = URL_SAFE_NO_PAD.encode(sig.to_bytes());
         serde_json::to_string(&signed_op).expect("json encode")
     }
@@ -1997,7 +1996,7 @@ mod tests {
     /// the k256 key is not first in the authorized list (mixed-curve key sets).
     #[test]
     fn verify_plc_operation_accepts_k256_signed_op() {
-        let sk = k256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let sk = k256::ecdsa::SigningKey::generate();
         let key = k256_did_key(sk.verifying_key());
         let signed_json = k256_signed_rotation_json(&sk, &key);
 
@@ -2013,7 +2012,7 @@ mod tests {
     /// A high-S k256 signature is rejected (atproto strict verification).
     #[test]
     fn verify_plc_operation_rejects_high_s_k256_signature() {
-        let sk = k256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let sk = k256::ecdsa::SigningKey::generate();
         let key = k256_did_key(sk.verifying_key());
         let signed_json = k256_signed_rotation_json(&sk, &key);
 
@@ -2042,11 +2041,11 @@ mod tests {
     /// rejected even with a valid k256 signature over the message.
     #[test]
     fn verify_p256_signature_rejects_secp256k1_key() {
-        let sk = k256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let sk = k256::ecdsa::SigningKey::generate();
         let key = k256_did_key(sk.verifying_key());
         let message = b"admin request canonical string";
         let sig: K256Signature = Signer::sign(&sk, message.as_slice());
-        let sig = sig.normalize_s().unwrap_or(sig);
+        let sig = sig.normalize_s();
         let sig_bytes: [u8; 64] = sig.to_bytes().into();
 
         assert!(
@@ -2349,7 +2348,7 @@ mod tests {
             "https://pds.example.com",
             |data| {
                 let sig: Signature = Signer::sign(&sk, data);
-                let sig = sig.normalize_s().unwrap_or(sig);
+                let sig = sig.normalize_s();
                 Ok(sig.to_bytes().to_vec())
             },
         )
@@ -2467,7 +2466,7 @@ mod tests {
             services,
             |data| {
                 let sig: Signature = Signer::sign(&sk, data);
-                let sig = sig.normalize_s().unwrap_or(sig);
+                let sig = sig.normalize_s();
                 Ok(sig.to_bytes().to_vec())
             },
         )
@@ -2724,7 +2723,7 @@ mod tests {
             services,
             |data| {
                 let sig: Signature = Signer::sign(&sk, data);
-                let sig = sig.normalize_s().unwrap_or(sig);
+                let sig = sig.normalize_s();
                 Ok(sig.to_bytes().to_vec())
             },
         )
@@ -2766,7 +2765,7 @@ mod tests {
             services,
             |data| {
                 let sig: Signature = Signer::sign(&sk, data);
-                let sig = sig.normalize_s().unwrap_or(sig);
+                let sig = sig.normalize_s();
                 Ok(sig.to_bytes().to_vec())
             },
         )
@@ -2846,7 +2845,7 @@ mod tests {
             |data| {
                 // Deliberately return the malleable high-S twin the callback should have normalized.
                 let sig: Signature = Signer::sign(&sk, data);
-                let low = sig.normalize_s().unwrap_or(sig);
+                let low = sig.normalize_s();
                 let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
                     .expect("high-S twin");
                 Ok(high.to_bytes().to_vec())
@@ -2869,7 +2868,7 @@ mod tests {
 
         let tombstone = build_did_plc_tombstone_op(&prev_cid, |data| {
             let sig: Signature = Signer::sign(&sk, data);
-            let sig = sig.normalize_s().unwrap_or(sig);
+            let sig = sig.normalize_s();
             Ok(sig.to_bytes().to_vec())
         })
         .expect("build tombstone");
@@ -2901,7 +2900,7 @@ mod tests {
         let sk = SigningKey::from_bytes(&private_key_bytes.into()).expect("valid key");
         let tombstone = build_did_plc_tombstone_op(&prev_cid, |data| {
             let sig: Signature = Signer::sign(&sk, data);
-            let sig = sig.normalize_s().unwrap_or(sig);
+            let sig = sig.normalize_s();
             Ok(sig.to_bytes().to_vec())
         })
         .expect("build tombstone");
@@ -2955,7 +2954,7 @@ mod tests {
         let sk = SigningKey::from_bytes(&private_key_bytes.into()).expect("valid key");
         let result = build_did_plc_tombstone_op(&prev_cid, |data| {
             let sig: Signature = Signer::sign(&sk, data);
-            let low = sig.normalize_s().unwrap_or(sig);
+            let low = sig.normalize_s();
             let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
                 .expect("high-S twin");
             Ok(high.to_bytes().to_vec())
@@ -3014,7 +3013,7 @@ mod tests {
         let sk = SigningKey::from_bytes(&private_key_bytes.into()).expect("valid key");
         let tombstone = build_did_plc_tombstone_op(&prev_cid, |data| {
             let sig: Signature = Signer::sign(&sk, data);
-            let sig = sig.normalize_s().unwrap_or(sig);
+            let sig = sig.normalize_s();
             Ok(sig.to_bytes().to_vec())
         })
         .expect("build tombstone");
@@ -3052,7 +3051,7 @@ mod tests {
         let sk = SigningKey::from_bytes(&private_key_bytes.into()).expect("valid key");
         let tombstone = build_did_plc_tombstone_op(&prev_cid, |data| {
             let sig: Signature = Signer::sign(&sk, data);
-            let sig = sig.normalize_s().unwrap_or(sig);
+            let sig = sig.normalize_s();
             Ok(sig.to_bytes().to_vec())
         })
         .expect("build tombstone");
@@ -3093,7 +3092,7 @@ mod tests {
         let field_bytes: FieldBytes = (*kp.private_key_bytes).into();
         let sk = SigningKey::from_bytes(&field_bytes).expect("valid signing key");
         let sig: Signature = Signer::sign(&sk, message);
-        let sig = sig.normalize_s().unwrap_or(sig);
+        let sig = sig.normalize_s();
         let sig_bytes: [u8; 64] = sig.to_bytes().into();
         (kp.key_id, sig_bytes)
     }

@@ -29,4 +29,3 @@ hkdf = { workspace = true }
 hmac = { workspace = true }
 blake3 = { workspace = true }
 hpke = { workspace = true }
-rand_core_os = { workspace = true }

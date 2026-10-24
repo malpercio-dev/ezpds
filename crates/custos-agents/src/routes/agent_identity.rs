@@ -661,6 +661,7 @@ fn parse_scopes(json_array: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p256::elliptic_curve::Generate as _;
     use std::sync::Arc;
 
     use axum::body::Body;
@@ -672,7 +673,6 @@ mod tests {
     use common::{AgentAuthConfig, TrustedIssuer};
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
     use p256::pkcs8::EncodePrivateKey;
-    use rand_core::OsRng;
     use serde_json::json;
     use tower::ServiceExt;
 
@@ -740,9 +740,9 @@ mod tests {
     /// dynamic (`jwks_url`) trust path. Mirrors [`es256_keys`] but emits the public half as a JWK
     /// set a `DecodingKey::from_jwk` accepts.
     fn es256_keys_jwks(kid: &str) -> (String, jsonwebtoken::jwk::JwkSet) {
-        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let sk = p256::ecdsa::SigningKey::generate();
         let priv_pem = der_to_pem("PRIVATE KEY", sk.to_pkcs8_der().unwrap().as_bytes());
-        let point = sk.verifying_key().to_encoded_point(false);
+        let point = sk.verifying_key().to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
         let set = serde_json::from_value(json!({

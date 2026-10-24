@@ -878,7 +878,7 @@ fn recovery_sign_closure(
         let signing_key = SigningKey::from_slice(keypair.private_key_bytes.as_slice())
             .map_err(|e| crypto::CryptoError::KeyGeneration(e.to_string()))?;
         let signature: Signature = signing_key.sign(message);
-        let signature = signature.normalize_s().unwrap_or(signature);
+        let signature = signature.normalize_s();
         Ok(signature.to_bytes().to_vec())
     }
 }
