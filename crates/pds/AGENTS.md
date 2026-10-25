@@ -9,8 +9,13 @@ route table, and spawns the sweeps. It sits on two library crates it shares with
 crates — [`custos-db`](../custos-db/AGENTS.md) (pool, migrations, cross-feature queries) and
 [`custos-core`](../custos-core/AGENTS.md) (`CoreState`, the auth verification core, identity,
 lexicons, rate limiting, metrics, sweeps) — over the pure cores `crypto`, `repo-engine`, and
-`common`. Each feature crate is a dependency `pds` composes and nothing else may: today only
-[`custos-spaces`](../custos-spaces/AGENTS.md) (the Atproto Spaces surface). `main.rs` aliases the modules that moved to `custos-core` at the crate root, so
+`common`. Each feature crate is a dependency `pds` composes and nothing else may: the OAuth
+authorization server ([`custos-oauth`](../custos-oauth/AGENTS.md)), the auth.md agent surface
+([`custos-agents`](../custos-agents/AGENTS.md)), the blob feature
+([`custos-blobs`](../custos-blobs/AGENTS.md)), the firehose serving side
+([`custos-firehose`](../custos-firehose/AGENTS.md)), and the Atproto Spaces surface
+([`custos-spaces`](../custos-spaces/AGENTS.md)). `app.rs` merges each crate's `router`
+unconditionally, with the feature gate inside the crate. `main.rs` aliases the modules that moved to `custos-core` at the crate root, so
 `crate::identity::…`, `crate::time::…`, and their siblings resolve to it; `auth/mod.rs`
 re-exports `custos_core::auth` the same way.
 
