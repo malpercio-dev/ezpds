@@ -16,12 +16,12 @@ use std::net::SocketAddr;
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::rate_limit::{is_rate_limited, record_failure};
-use crate::auth::validation::lock_failed_login_attempts;
-use crate::db::repo_keys::{
+use custos_core::auth::rate_limit::{is_rate_limited, record_failure};
+use custos_core::auth::validation::lock_failed_login_attempts;
+use custos_core::lexicon::LexiconInput;
+use custos_db::repo_keys::{
     get_reserved_repo_key_by_did, insert_reserved_repo_key, RepoSigningKey,
 };
-use crate::lexicon::LexiconInput;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,7 +105,7 @@ pub async fn reserve_signing_key(
 }
 
 fn validate_did(did: &str) -> Result<(), ApiError> {
-    if crate::identity::did::is_valid_did(did) {
+    if custos_core::identity::did::is_valid_did(did) {
         return Ok(());
     }
 
@@ -180,8 +180,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
     use crate::routes::test_utils::{body_json, state_with_master_key};
+    use custos_core::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
 
     fn post_req(body: serde_json::Value) -> Request<Body> {
         post_req_from(body, None)

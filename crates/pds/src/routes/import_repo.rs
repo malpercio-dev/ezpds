@@ -27,8 +27,8 @@ use axum::{
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
 
 /// Maximum accepted repo CAR size. A repository CAR bundles every MST node and record block, so
 /// it is larger than a single blob; 100 MiB comfortably covers a substantial repo while bounding
@@ -60,8 +60,8 @@ pub async fn import_repo(
     let result = import_repo_inner(state, user, request).await;
     metrics.migration_imports.add(
         1,
-        &[crate::metrics::label(
-            crate::metrics::names::LABEL_OUTCOME,
+        &[custos_core::metrics::label(
+            custos_core::metrics::names::LABEL_OUTCOME,
             if result.is_ok() { "ok" } else { "error" },
         )],
     );
@@ -102,7 +102,7 @@ async fn import_repo_inner(
     // body so an active or missing account is rejected cheaply. The swap CAS below re-checks the
     // deactivated state — and the observed root — atomically at commit time, closing the gap
     // against a concurrent activation or a concurrent import.
-    let write_state = crate::db::accounts::get_repo_write_state(&state.db, &did)
+    let write_state = custos_db::accounts::get_repo_write_state(&state.db, &did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query account state");
@@ -188,7 +188,7 @@ async fn import_repo_inner(
 
     for (cid, bytes) in &imported.blocks {
         let cid = cid.to_string();
-        crate::db::blocks::put_block_with_rev(
+        custos_db::blocks::put_block_with_rev(
             &mut tx,
             &cid,
             &did,
@@ -206,7 +206,7 @@ async fn import_repo_inner(
     // `Some(old_root)` for a replacement). The swap lands only if the persisted root is still that
     // value and the account is still deactivated — so a concurrent import with a different base, or a
     // concurrent activation, makes this lose loudly rather than clobber the winner.
-    let updated = crate::db::accounts::swap_repo_root_for_deactivated(
+    let updated = custos_db::accounts::swap_repo_root_for_deactivated(
         &mut *tx,
         &did,
         &root_str,
@@ -262,7 +262,7 @@ mod tests {
             .await
             .unwrap();
         let root_cid = repo_engine::Cid::try_from(root.as_str()).unwrap();
-        let mut store = crate::db::blocks::SqliteBlockStore::new(state.db.clone(), did.to_string());
+        let mut store = custos_db::blocks::SqliteBlockStore::new(state.db.clone(), did.to_string());
         repo_engine::export_repo_car(&mut store, root_cid)
             .await
             .unwrap()
@@ -279,7 +279,7 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-        crate::db::blocks::delete_blocks_for_account(&state.db, did)
+        custos_db::blocks::delete_blocks_for_account(&state.db, did)
             .await
             .unwrap();
     }

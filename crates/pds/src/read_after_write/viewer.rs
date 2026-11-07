@@ -428,10 +428,10 @@ mod tests {
         let test_master_key = crate::routes::test_utils::test_master_key();
         let private_key_encrypted =
             crypto::encrypt_private_key(&kp.private_key_bytes, &test_master_key).unwrap();
-        crate::db::repo_keys::insert_did_signing_key(
+        custos_db::repo_keys::insert_did_signing_key(
             db,
             TEST_DID,
-            &crate::db::repo_keys::RepoSigningKey {
+            &custos_db::repo_keys::RepoSigningKey {
                 key_id: kp.key_id.to_string(),
                 public_key: kp.public_key.clone(),
                 private_key_encrypted,

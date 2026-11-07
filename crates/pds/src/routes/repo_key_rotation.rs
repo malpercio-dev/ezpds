@@ -43,14 +43,16 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::auth::guards::authenticate_owner;
-use crate::db::dids::upsert_did_document;
-use crate::db::repo_keys::{
+use common::{ApiError, ApiResultExt, ErrorCode};
+use custos_core::auth::guards::authenticate_owner;
+use custos_core::identity::plc::{
+    build_did_document_from_op, ensure_did_plc, fetch_current_plc_state,
+};
+use custos_db::dids::upsert_did_document;
+use custos_db::repo_keys::{
     get_signing_key_by_did, get_staged_signing_key, promote_staged_signing_key, stage_rotation_key,
     RepoSigningKey,
 };
-use crate::identity::plc::{build_did_document_from_op, ensure_did_plc, fetch_current_plc_state};
-use common::{ApiError, ApiResultExt, ErrorCode};
 
 /// The atproto verification-method id a repo signing key is installed under.
 const ATPROTO_VERIFICATION_METHOD_ID: &str = "atproto";
@@ -266,7 +268,7 @@ pub async fn complete_repo_key_rotation(
         let _write_guard = state.repo_write_locks.lock(&did).await;
 
         if !already_landed {
-            crate::identity::genesis::post_to_plc_directory(
+            custos_core::identity::genesis::post_to_plc_directory(
                 &state.http_client,
                 &state.config.plc_directory_url,
                 &did,
@@ -349,9 +351,9 @@ mod tests {
     };
 
     use crate::app::{app, test_state_with_plc_url, AppState};
-    use crate::auth::token::generate_token;
-    use crate::db::repo_keys::{get_signing_key_by_did, get_staged_signing_key};
     use crate::routes::test_utils::{body_json, seed_account_with_signing_key, test_master_key};
+    use custos_core::auth::token::generate_token;
+    use custos_db::repo_keys::{get_signing_key_by_did, get_staged_signing_key};
 
     const DID: &str = "did:plc:rotation1111111111111111";
     const HEAD_CID: &str = "bafyreidmwn2nk3hb2ta2b3wgqzted5cixmwjjmpq2vt6potol7cke2ptoq";

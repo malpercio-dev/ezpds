@@ -10,7 +10,7 @@ use common::RateLimitConfig;
 use tower::ServiceExt;
 
 use crate::app::{app, test_state, AppState};
-use crate::rate_limit::*;
+use custos_core::rate_limit::*;
 
 async fn state_with_global_cap(max: u64) -> AppState {
     let mut state = test_state().await;

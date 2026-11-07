@@ -32,7 +32,7 @@ crate that depends on both features.
 
 ```
 src/
-  lib.rs            — the exports above; aliases `custos_core`'s `auth`, `blob_store`, `lexicon`, `metrics`, `sweep`, `sweep_status`, `time` at the crate root so the moved files' `crate::…` paths resolve
+  lib.rs            — the exports above; `custos_core` modules are imported by full path, no root aliases
   router.rs         — the route table (`scripts/bruno-parity.sh` and `scripts/generate-docs-reference.mjs` read its `.route(` literals)
   blob_gc.rs        — periodic blob GC over per-account ownership rows (`blob_owners`, V039); references union the public MST and stored space records (V065); fails closed on a failed reconcile (that account leaks disk until fixed) — see module doc
   blob_mirror/      — off-volume blob replication to an S3-compatible bucket (`[blob_mirror]` / `EZPDS_BLOB_MIRROR_*`); boot restore runs before the listener binds; `s3.rs` is a hand-rolled SigV4 client — see module doc

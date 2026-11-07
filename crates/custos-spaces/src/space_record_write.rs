@@ -31,10 +31,10 @@
 //! Authentication and `space:` scope enforcement happen above this layer (the
 //! space auth seam); callers pass an already-authorized `(space, did)`.
 
-use crate::space_uri::SpaceRef;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 use crypto::{format_set_hash_element, LtHash};
+use custos_core::space_uri::SpaceRef;
+use custos_core::CoreState;
 
 /// What one op does to its record path.
 ///
@@ -125,7 +125,7 @@ pub struct SpaceCommitOutcome {
 /// Returns [`ErrorCode::Conflict`] when the rev CAS loses to a concurrent
 /// commit — nothing lands, the client retries against the new head.
 pub async fn apply_space_writes(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRef,
     did: &str,
     ops: &[SpaceWriteOp],
@@ -364,9 +364,9 @@ pub async fn apply_space_writes(
 
                 if let Some(prev) = &prev_cid {
                     lthash.remove(&format_set_hash_element(&op.collection, &op.rkey, prev));
-                    write_cost += crate::rate_limit::WRITE_COST_UPDATE;
+                    write_cost += custos_core::rate_limit::WRITE_COST_UPDATE;
                 } else {
-                    write_cost += crate::rate_limit::WRITE_COST_CREATE;
+                    write_cost += custos_core::rate_limit::WRITE_COST_CREATE;
                 }
                 lthash.add(&format_set_hash_element(&op.collection, &op.rkey, &cid));
 
@@ -416,7 +416,7 @@ pub async fn apply_space_writes(
                     ));
                 };
                 lthash.remove(&format_set_hash_element(&op.collection, &op.rkey, &prev));
-                write_cost += crate::rate_limit::WRITE_COST_DELETE;
+                write_cost += custos_core::rate_limit::WRITE_COST_DELETE;
                 crate::db::space_repos::delete_record(
                     &mut *tx,
                     space_uri,
@@ -465,8 +465,8 @@ pub async fn apply_space_writes(
             .inspect_err(|_| {
                 state.metrics.rate_limit_rejections.add(
                     1,
-                    &[crate::metrics::label(
-                        crate::metrics::names::LABEL_LIMITER,
+                    &[custos_core::metrics::label(
+                        custos_core::metrics::names::LABEL_LIMITER,
                         "account_writes",
                     )],
                 );
@@ -568,11 +568,11 @@ mod tests {
     const DID: &str = "did:plc:spacewriter";
 
     fn space() -> SpaceRef {
-        crate::space_uri::parse_space_ref(SPACE).expect("test space ref is well-formed")
+        custos_core::space_uri::parse_space_ref(SPACE).expect("test space ref is well-formed")
     }
 
     /// Only the account: the space row is the write path's own responsibility.
-    async fn seed(state: &crate::SpacesState) {
+    async fn seed(state: &CoreState) {
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
@@ -803,7 +803,7 @@ mod tests {
     async fn first_write_records_an_unknown_space() {
         let state = test_state().await;
         seed(&state).await;
-        let unknown = crate::space_uri::parse_space_ref(
+        let unknown = custos_core::space_uri::parse_space_ref(
             "at://did:plc:someoneelse/space/org.example.bucket/shared",
         )
         .unwrap();

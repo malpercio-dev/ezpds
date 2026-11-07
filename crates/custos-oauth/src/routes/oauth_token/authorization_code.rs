@@ -342,7 +342,7 @@ mod tests {
             "POST",
             "https://wrong-url.example.com/oauth/token",
             Some(&nonce),
-            Some(crate::time::unix_now_secs()),
+            Some(custos_core::time::unix_now_secs()),
         );
 
         let resp = test_app(state)
@@ -367,7 +367,7 @@ mod tests {
             "POST",
             "https://test.example.com/oauth/token",
             Some(&nonce),
-            Some(crate::time::unix_now_secs() - 120),
+            Some(custos_core::time::unix_now_secs() - 120),
         );
 
         let resp = test_app(state)
@@ -416,7 +416,7 @@ mod tests {
             "POST",
             "https://test.example.com/oauth/token",
             Some("fabricated-nonce-that-was-never-issued"),
-            Some(crate::time::unix_now_secs()),
+            Some(custos_core::time::unix_now_secs()),
         );
 
         let resp = test_app(state)
@@ -453,7 +453,7 @@ mod tests {
             "POST",
             "https://test.example.com/oauth/token",
             Some(&nonce),
-            Some(crate::time::unix_now_secs()),
+            Some(custos_core::time::unix_now_secs()),
         );
 
         let body = format!(
@@ -603,7 +603,7 @@ mod tests {
             "POST",
             "https://test.example.com/oauth/token",
             Some(&nonce2),
-            Some(crate::time::unix_now_secs()),
+            Some(custos_core::time::unix_now_secs()),
         );
         let resp2 = test_app(state2)
             .oneshot(post_token_with_dpop(&body, &dpop2))

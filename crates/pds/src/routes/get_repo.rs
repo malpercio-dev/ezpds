@@ -9,9 +9,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
-use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Cid;
 
 #[derive(Deserialize)]
@@ -33,7 +33,7 @@ pub struct GetRepoParams {
 /// repo never materializes the whole CAR in memory.
 ///
 /// A repeat full export of an unchanged repo to the same IP is cooled down (429) — see
-/// `crate::rate_limit`'s full-`getRepo` cooldown.
+/// `custos_core::rate_limit`'s full-`getRepo` cooldown.
 pub async fn get_repo(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -42,7 +42,7 @@ pub async fn get_repo(
     let did = &params.did;
 
     // Look up the repo root CID from the accounts table.
-    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    let root_cid_str = custos_db::accounts::get_repo_root_cid(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query repo root CID");
@@ -76,12 +76,12 @@ pub async fn get_repo(
                 })?;
             // Checked (and recorded) only once the export is ready, so a failed walk never
             // burns the caller's slot.
-            let ip = crate::rate_limit::client_ip_from_headers(&headers);
+            let ip = custos_core::rate_limit::client_ip_from_headers(&headers);
             if let Err(e) = state
                 .rate_limiter
                 .check_get_repo_full(&ip, did, &root_cid_str)
             {
-                crate::rate_limit::count_rejection(&state, "get_repo_cooldown");
+                custos_core::rate_limit::count_rejection(&state, "get_repo_cooldown");
                 tracing::info!(did = %did, ip = %ip, "getRepo: repeat full export of an unchanged repo cooled down");
                 return Err(e);
             }
@@ -90,7 +90,7 @@ pub async fn get_repo(
         // Incremental export: blocks newer than `since`, plus the commit block so the CAR always
         // contains its declared root (matters when `since` is at or ahead of the current rev).
         Some(since) => {
-            let cid_strs = crate::db::blocks::list_block_cids_since(&state.db, did, since)
+            let cid_strs = custos_db::blocks::list_block_cids_since(&state.db, did, since)
                 .await
                 .map_err(|e| {
                     tracing::error!(error = %e, did = %did, "failed to list blocks since rev");
@@ -155,7 +155,7 @@ fn stream_car_response(state: AppState, did: String, root: Cid, cids: Vec<Cid>) 
         }
         let cid = st.cids[st.next];
         st.next += 1;
-        match crate::db::blocks::get_block(&st.pool, &cid.to_string()).await {
+        match custos_db::blocks::get_block(&st.pool, &cid.to_string()).await {
             Ok(Some(block)) => {
                 let frame = repo_engine::car_v1_block_frame(cid, &block.bytes);
                 Some((Ok(Bytes::from(frame)), st))
@@ -193,7 +193,7 @@ mod tests {
     use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::db::blocks::SqliteBlockStore;
+    use custos_db::blocks::SqliteBlockStore;
     use repo_engine::{create_genesis_repo, CommitSigner};
 
     /// Helper: generate a test keypair and signer.
@@ -628,13 +628,13 @@ mod tests {
     /// A rev-tagged account on a state whose limiter is on with the given cooldown.
     async fn setup_cooldown_account(cooldown_secs: u64) -> (AppState, String) {
         let (mut state, did) = setup_revtagged_account().await;
-        state.core.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
-            &common::RateLimitConfig {
+        state.core.rate_limiter = std::sync::Arc::new(
+            custos_core::rate_limit::RateLimiterState::new(&common::RateLimitConfig {
                 enabled: true,
                 get_repo_full_cooldown_secs: cooldown_secs,
                 ..common::RateLimitConfig::default()
-            },
-        ));
+            }),
+        );
         (state, did)
     }
 

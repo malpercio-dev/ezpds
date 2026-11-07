@@ -27,13 +27,13 @@ use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
+use custos_core::CoreState;
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::auth::guards::require_admin;
 use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
-use crate::SpacesState;
 
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 100;
@@ -87,7 +87,7 @@ pub struct ListSpacesResponse {
 /// Includes deleted spaces: a tombstoned row can still carry other members' records. Admin-authed
 /// via `require_admin`; the signature covers the bare path, so paging varies without re-signing.
 pub async fn list_hosted_spaces(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     Query(params): Query<ListSpacesParams>,
     method: Method,
     uri: Uri,
@@ -170,7 +170,7 @@ pub struct SpaceTakedownResponse {
 /// Admin-authed via `require_admin` (master token or a paired device's signed request); the URI
 /// travels in the signed body, so a takedown signature is bound to its space.
 pub async fn set_space_takedown(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

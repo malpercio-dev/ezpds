@@ -32,9 +32,9 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin_json;
-use crate::auth::token::generate_token;
-use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
+use custos_core::auth::guards::require_admin_json;
+use custos_core::auth::token::generate_token;
+use custos_db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
 #[derive(Deserialize)]
 pub struct SetEmailRequest {
@@ -135,7 +135,7 @@ pub async fn set_account_email(
     .execute(&mut *tx)
     .await
     {
-        if crate::db::is_unique_violation(&error) {
+        if custos_db::is_unique_violation(&error) {
             return ApiError::new(ErrorCode::InvalidRequest, "this email address is already in use")
                 .into_response();
         }
@@ -186,7 +186,7 @@ pub async fn issue_reset_token(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let actor = match crate::auth::guards::require_admin(
+    let actor = match custos_core::auth::guards::require_admin(
         method.as_str(),
         uri.path(),
         &headers,
@@ -284,10 +284,10 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::app;
-    use crate::auth::token::hash_bearer_token;
     use crate::routes::test_utils::{
         body_json, insert_account_with_password, test_state_with_admin_token,
     };
+    use custos_core::auth::token::hash_bearer_token;
 
     const ADMIN: &str = "test-admin-token";
 

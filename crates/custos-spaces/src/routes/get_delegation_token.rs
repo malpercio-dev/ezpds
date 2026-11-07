@@ -8,6 +8,7 @@
 // Implements: GET /xrpc/com.atproto.space.getDelegationToken
 
 use axum::{extract::State, response::Json};
+use custos_core::CoreState;
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
@@ -16,7 +17,6 @@ use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes::{require_space, SpaceOp, SpaceRequest};
 use crate::auth::space::{mint_delegation_token, unix_now};
-use crate::SpacesState;
 
 #[derive(Deserialize)]
 pub struct GetDelegationTokenQuery {
@@ -38,8 +38,10 @@ pub struct GetDelegationTokenResponse {
 /// authority's call. This PDS need not know the space at all.
 pub async fn get_delegation_token(
     user: AuthenticatedUser,
-    State(state): State<SpacesState>,
-    crate::lexicon::LexiconParams(params): crate::lexicon::LexiconParams<GetDelegationTokenQuery>,
+    State(state): State<CoreState>,
+    custos_core::lexicon::LexiconParams(params): custos_core::lexicon::LexiconParams<
+        GetDelegationTokenQuery,
+    >,
 ) -> Result<Json<GetDelegationTokenResponse>, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(

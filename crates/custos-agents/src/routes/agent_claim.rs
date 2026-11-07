@@ -50,17 +50,17 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agent_child_core::{mint_child_account, ChildRegistration};
-use crate::auth::agent_assertion::{
-    mint_identity_assertion, parse_sqlite_datetime, scopes_to_json, start_claim_attempt,
-    to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
-};
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
-use crate::auth::oauth_scopes::intersect_scope_tokens;
 use crate::db::agent_auth::{
     claim_agent_identity, complete_agent_claim_attempt, get_agent_claim_attempt_by_user_code,
     get_agent_identity, get_agent_identity_by_claim_token, latest_agent_claim_attempt_for_identity,
     AgentIdentityStatus, ClaimAttemptStatus,
 };
+use custos_core::auth::agent_assertion::{
+    mint_identity_assertion, parse_sqlite_datetime, scopes_to_json, start_claim_attempt,
+    to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
+};
+use custos_core::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use custos_core::auth::oauth_scopes::intersect_scope_tokens;
 use custos_core::CoreState;
 
 // ── POST /agent/identity/claim (initiate) ─────────────────────────────────────
@@ -1008,7 +1008,7 @@ mod tests {
         .await;
         let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
 
-        let token = crate::auth::token::generate_token();
+        let token = custos_core::auth::token::generate_token();
         sqlx::query(
             "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
              VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
@@ -1047,7 +1047,7 @@ mod tests {
         .await;
         let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
 
-        let token = crate::auth::token::generate_token();
+        let token = custos_core::auth::token::generate_token();
         sqlx::query(
             "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
              VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",

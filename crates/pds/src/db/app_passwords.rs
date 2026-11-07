@@ -13,7 +13,7 @@
 
 use common::{ApiError, ErrorCode};
 
-use super::is_unique_violation;
+use custos_db::is_unique_violation;
 
 /// The mint-time grants carried by an app password beyond its base scope: `privileged`
 /// (DM/chat access, mirroring the reference scopes) and `personal_details` (read/write the

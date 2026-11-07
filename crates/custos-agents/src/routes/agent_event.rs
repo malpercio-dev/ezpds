@@ -43,11 +43,11 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
-use crate::auth::issuer_trust::{
-    select_issuer, unverified_claim, verify_trusted_jwt, TrustedJwtError, REVOKED_EVENT_TYPE,
-};
 use crate::db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
 use crate::db::agent_auth::{get_agent_identity_by_issuer_subject, revoke_agent_identity};
+use custos_core::auth::issuer_trust::{
+    select_issuer, unverified_claim, verify_trusted_jwt, TrustedJwtError, REVOKED_EVENT_TYPE,
+};
 use custos_core::CoreState;
 
 /// The media type a SET is delivered as (RFC 8935 §2.1).

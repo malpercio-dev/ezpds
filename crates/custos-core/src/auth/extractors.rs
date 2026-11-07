@@ -43,6 +43,12 @@ use super::jwt::{parse_scope, verify_access_token, AuthScope};
 /// Axum extractor that validates a Bearer (or DPoP-bound) JWT and yields the
 /// authenticated caller's DID and scope.
 ///
+/// **Guarantee:** `scope` is never [`AuthScope::Refresh`]. [`authenticate_access`], the only
+/// constructor, rejects a refresh token outright (a refresh token is spendable only at
+/// `refreshSession`/`deleteSession`, which verify it through `jwt::verify_refresh_token`). So a
+/// handler holding an `AuthenticatedUser` needs no `is_access()` re-check; it only chooses between
+/// full [`AuthScope::Access`] and the app-password scopes.
+///
 /// Extract this in any handler that requires authentication:
 /// ```rust,ignore
 /// async fn my_handler(user: AuthenticatedUser) -> impl IntoResponse { ... }

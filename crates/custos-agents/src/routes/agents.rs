@@ -36,9 +36,6 @@ use common::{ApiError, ApiResultExt, ErrorCode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::auth::agent_assertion::parse_sqlite_datetime;
-use crate::auth::guards::authenticate_owner;
-use crate::auth::oauth_scopes::intersect_scope_tokens;
 use crate::db::agent_audit::{
     insert_agent_audit_event, list_agent_audit_events, AgentAuditEventType,
 };
@@ -46,6 +43,9 @@ use crate::db::agent_auth::{
     get_agent_claim_attempt_by_user_code, get_agent_identity, list_agent_identities_for_did,
     revoke_agent_identity, AgentIdentityRow, AgentIdentityStatus,
 };
+use custos_core::auth::agent_assertion::parse_sqlite_datetime;
+use custos_core::auth::guards::authenticate_owner;
+use custos_core::auth::oauth_scopes::intersect_scope_tokens;
 use custos_core::CoreState;
 
 /// Default and maximum page sizes for the audit listing.

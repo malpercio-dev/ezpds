@@ -23,9 +23,9 @@ use serde::Deserialize;
 
 use common::{ApiError, ErrorCode};
 
-use crate::blob_store;
 use crate::db::blobs;
-use crate::lexicon::LexiconParams;
+use custos_core::blob_store;
+use custos_core::lexicon::LexiconParams;
 use custos_core::CoreState;
 
 // ── Query parameters ────────────────────────────────────────────────────────
@@ -163,7 +163,7 @@ mod tests {
         .unwrap();
 
         // Write a real file to the filesystem, named by the content's actual CID.
-        let cid = crate::blob_store::compute_cid(content);
+        let cid = custos_core::blob_store::compute_cid(content);
         let storage_path = blob_storage_path(&cid);
         let abs_path = state.config.data_dir.join(&storage_path);
         std::fs::create_dir_all(abs_path.parent().unwrap()).unwrap();

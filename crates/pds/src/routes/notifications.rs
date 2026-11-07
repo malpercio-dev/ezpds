@@ -42,7 +42,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::auth::extractors::authenticate_access;
 use crate::db::notifications as store;
 use crate::notify_relay_client::{NotifyJob, RegistrationOwner};
 use crate::routes::notification_views::{
@@ -50,6 +49,7 @@ use crate::routes::notification_views::{
     SenderKeysResponse,
 };
 use common::{ApiError, ApiResultExt, ErrorCode};
+use custos_core::auth::extractors::authenticate_access;
 
 // ── POST /v1/notifications/register ───────────────────────────────────────────
 

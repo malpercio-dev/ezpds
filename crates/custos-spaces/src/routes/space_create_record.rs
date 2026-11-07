@@ -5,13 +5,13 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
-use crate::lexicon::LexiconInput;
 use crate::space_record_write::{SpaceWriteAction, SpaceWriteOp};
-use crate::SpacesState;
 use common::ApiError;
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct SpaceCreateRecordBody {
@@ -30,7 +30,7 @@ pub struct SpaceCreateRecordBody {
 
 /// POST /xrpc/com.atproto.space.createRecord
 pub async fn space_create_record(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

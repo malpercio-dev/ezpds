@@ -51,9 +51,9 @@
 use std::time::Duration;
 
 use crate::db::firehose_seq;
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
 use axum::extract::FromRef;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 use custos_core::CoreState;
 
 /// Tally of what one retention pass did, for logging and tests.
@@ -137,7 +137,7 @@ pub async fn run_firehose_gc(state: &CoreState) -> GcStats {
     state
         .metrics
         .firehose_gc_last_run_timestamp
-        .record(crate::metrics::unix_now(), &[]);
+        .record(custos_core::metrics::unix_now(), &[]);
     // The backfill window is how far back a reconnecting subscriber's cursor still replays
     // exactly. Refreshed here (post-prune) rather than on every emit: the sweep is the only
     // thing that shrinks the window, and emits only ever extend it by seconds.
@@ -337,7 +337,7 @@ mod tests {
         for _ in 0..n {
             state
                 .firehose
-                .emit_commit(crate::firehose::CommitInput {
+                .emit_commit(custos_core::firehose::CommitInput {
                     repo: "did:plc:gc".to_string(),
                     commit: VALID_CID.to_string(),
                     rev: "3krev".to_string(),
@@ -613,12 +613,12 @@ mod tests {
 
         // The subscriber-facing contract: subscribe_from cannot replay a pruned prefix, but it
         // must replay the full retained suffix for a cursor inside it and reach the frontier.
-        let crate::firehose::SubscribeOutcome::Subscribed(sub) =
+        let custos_core::firehose::SubscribeOutcome::Subscribed(sub) =
             state.firehose.subscribe_from(Some(7)).await.unwrap()
         else {
             panic!("cursor 7 is inside the retained window");
         };
-        let seqs = crate::firehose::collect_replay_seqs(sub.replay)
+        let seqs = custos_core::firehose::collect_replay_seqs(sub.replay)
             .await
             .unwrap();
         assert_eq!(
@@ -642,7 +642,7 @@ mod tests {
         emit_n(&state, 10).await; // seq 1..=10
 
         // Attach a cursor subscription and hold its replay reader UNDRAINED across the sweep.
-        let crate::firehose::SubscribeOutcome::Subscribed(sub) =
+        let custos_core::firehose::SubscribeOutcome::Subscribed(sub) =
             state.firehose.subscribe_from(Some(0)).await.unwrap()
         else {
             panic!("expected a subscription");

@@ -11,7 +11,7 @@
 //! The operator companion to [`admin_relay_status`](super::admin_relay_status): when the readout
 //! shows the relay behind (or not-yet-crawling), this is the "Request crawl" button. Unlike the
 //! automatic, rate-limited, fire-and-forget notification the PDS sends after each firehose emission
-//! ([`crate::crawler::CrawlerNotifier::notify`]), this calls
+//! ([`custos_core::crawler::CrawlerNotifier::notify`]), this calls
 //! `CrawlerNotifier::request_crawl_now` — an explicit action
 //! bypassing the 30s auto-notify rate-limit window — and reports each relay's accept/reject
 //! outcome back so the operator sees whether each relay accepted.
@@ -30,9 +30,9 @@ use serde::Serialize;
 
 use common::{ApiError, ErrorCode};
 
-use crate::auth::guards::require_admin;
-use crate::crawler::CrawlAttempt;
 use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
+use custos_core::auth::guards::require_admin;
+use custos_core::crawler::CrawlAttempt;
 use custos_core::CoreState;
 
 #[derive(Serialize)]

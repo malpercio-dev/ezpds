@@ -5,13 +5,13 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
-use crate::lexicon::LexiconInput;
 use crate::space_record_write::{SpaceWriteAction, SpaceWriteOp};
-use crate::SpacesState;
 use common::ApiError;
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct SpacePutRecordBody {
@@ -31,7 +31,7 @@ pub struct SpacePutRecordBody {
 /// granted only one of the two must not be asked for both. The presence read therefore happens
 /// before the scope check.
 pub async fn space_put_record(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

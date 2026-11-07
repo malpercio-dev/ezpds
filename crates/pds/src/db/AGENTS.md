@@ -6,7 +6,7 @@ Query modules only `pds` reads. The pool, the migration log and runner, `DbError
 cross-feature query modules (`accounts`, `dids`, `handles`, `blobs`, `blocks`, `kek`,
 `admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`) live in
 [`crates/custos-db`](../../../custos-db/AGENTS.md), which also holds the migration log and the
-migration invariants. `mod.rs` re-exports that API, so `crate::db::…` paths resolve unchanged.
+migration invariants. Import that API as `custos_db::…`; `mod.rs` only declares the modules here.
 
 A new table's migration goes in `custos-db`; its query module goes here unless a second crate
 reads it, or a feature crate owns the table (the Spaces tables' queries live in

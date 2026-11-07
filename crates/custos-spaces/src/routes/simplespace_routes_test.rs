@@ -8,17 +8,17 @@
 
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
+use custos_core::CoreState;
 use tower::ServiceExt;
 
 use crate::auth::space::{authorize_credential_request, mint_space_credential, unix_now};
 use crate::db::dids::seed_did_document;
-use crate::space_uri::parse_space_ref;
 use crate::test_support::test_app as app;
 use crate::test_support::{
     access_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key, SpaceSigKey,
 };
 use crate::test_support::{send, xrpc_get, xrpc_post};
-use crate::SpacesState;
+use custos_core::space_uri::parse_space_ref;
 
 const ALICE: &str = "did:plc:alicesimplespaceaaaaaaaa";
 const BOB: &str = "did:plc:bobsimplespaceaaaaaaaaaa";
@@ -32,7 +32,7 @@ const MANAGING_APP: &str = "com.atproto.simplespace.defs#managingAppPolicy";
 const OPEN: &str = "com.atproto.simplespace.defs#open";
 const ALLOW_LIST: &str = "com.atproto.simplespace.defs#allowList";
 
-async fn setup() -> SpacesState {
+async fn setup() -> CoreState {
     let state = state_with_master_key().await;
     seed_account_with_repo(&state.db, ALICE).await;
     seed_account_with_repo(&state.db, BOB).await;

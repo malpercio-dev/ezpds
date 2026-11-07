@@ -25,12 +25,9 @@ pub use dpop::{
     validate_dpop_for_par, validate_dpop_for_token_endpoint, DpopNonceRotator, DpopNonces,
     DpopTokenEndpointError,
 };
-pub use permission_sets::{new_permission_set_cache, PermissionSetCache};
-// Foundational types: used once authenticated routes are wired up.
-#[allow(unused_imports)]
 pub use extractors::{authenticate_access, AuthenticatedUser};
-#[allow(unused_imports)]
 pub use jwt::AuthScope;
+pub use permission_sets::{new_permission_set_cache, PermissionSetCache};
 pub use signing_key::{
     load_or_create_iroh_secret_key, load_or_create_jwt_secret, load_or_create_oauth_signing_key,
     OAuthSigningKey,

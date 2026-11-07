@@ -34,7 +34,7 @@ async fn gc_pins_blob_referenced_only_from_a_space_record() {
     let referenced = add_blob(&state, did, b"space bytes", "2020-01-01 00:00:00").await;
     let orphan = add_blob(&state, did, b"orphan bytes", "2020-01-01 00:00:00").await;
     custos_spaces::space_record_write::apply_space_writes(
-        &custos_spaces::SpacesState::new(state.clone()),
+        &state,
         &space,
         did,
         &[custos_spaces::space_record_write::SpaceWriteOp {

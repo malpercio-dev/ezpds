@@ -37,11 +37,11 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{Method, Request, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::space_record_write::{SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp};
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
 
 /// Same ceiling as `com.atproto.repo.importRepo`. A permissioned repo has no MST overhead, so
@@ -59,7 +59,7 @@ pub struct SpaceImportRepoParams {
 
 /// POST /v1/space/import-repo?space=at://{authority}/space/{type}/{skey}
 pub async fn space_import_repo(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     Query(params): Query<SpaceImportRepoParams>,

@@ -69,9 +69,9 @@ pub async fn cancel_transfer(
 ) -> Result<CancelOutcome, sqlx::Error> {
     let mut tx = db.begin().await?;
 
-    crate::db::transfers::expire_pending_transfer_if_elapsed(&mut tx, transfer_id).await?;
+    custos_db::transfers::expire_pending_transfer_if_elapsed(&mut tx, transfer_id).await?;
 
-    let Some(row) = crate::db::transfers::transfer_by_id(&mut tx, transfer_id).await? else {
+    let Some(row) = custos_db::transfers::transfer_by_id(&mut tx, transfer_id).await? else {
         tx.commit().await?;
         return Ok(CancelOutcome::NotFound);
     };
@@ -88,7 +88,7 @@ pub async fn cancel_transfer(
         }
     }
 
-    let updated = crate::db::transfers::mark_transfer_cancelled(&mut tx, &row.id).await?;
+    let updated = custos_db::transfers::mark_transfer_cancelled(&mut tx, &row.id).await?;
     if updated != 1 {
         // The guarded UPDATE observed the same row this transaction just read as active;
         // on the single-connection pool nothing can have raced in between, so a miss here
@@ -99,10 +99,10 @@ pub async fn cancel_transfer(
     let mut revoked_device_credential = false;
     if let Some(device_id) = &row.accepted_device_id {
         revoked_device_credential =
-            crate::db::transfers::revoke_transfer_device(&mut tx, device_id).await? > 0;
+            custos_db::transfers::revoke_transfer_device(&mut tx, device_id).await? > 0;
     }
 
-    crate::db::transfers::insert_transfer_audit_event(
+    custos_db::transfers::insert_transfer_audit_event(
         &mut tx,
         &Uuid::new_v4().to_string(),
         &row.id,
@@ -137,9 +137,9 @@ pub async fn accept_transfer(
 
     // Materialise expiry before lookup so an expired code is indistinguishable from an
     // unknown code to the caller and the active-code partial index slot is released.
-    crate::db::transfers::expire_pending_code(&mut tx, code).await?;
+    custos_db::transfers::expire_pending_code(&mut tx, code).await?;
 
-    let Some(row) = crate::db::transfers::active_transfer_for_code(&mut tx, code).await? else {
+    let Some(row) = custos_db::transfers::active_transfer_for_code(&mut tx, code).await? else {
         tx.commit().await?;
         return Ok(AcceptOutcome::InvalidOrExpired);
     };
@@ -149,7 +149,7 @@ pub async fn accept_transfer(
         return Ok(AcceptOutcome::NotPending);
     }
 
-    crate::db::transfers::insert_transfer_device(
+    custos_db::transfers::insert_transfer_device(
         &mut tx,
         device_id,
         &row.did,
@@ -159,11 +159,11 @@ pub async fn accept_transfer(
     )
     .await?;
 
-    let updated = crate::db::transfers::mark_transfer_accepted(&mut tx, &row.id, device_id).await?;
+    let updated = custos_db::transfers::mark_transfer_accepted(&mut tx, &row.id, device_id).await?;
 
     if updated != 1 {
-        crate::db::transfers::delete_transfer_device(&mut tx, device_id).await?;
-        crate::db::transfers::expire_pending_transfer_if_elapsed(&mut tx, &row.id).await?;
+        custos_db::transfers::delete_transfer_device(&mut tx, device_id).await?;
+        custos_db::transfers::expire_pending_transfer_if_elapsed(&mut tx, &row.id).await?;
         tx.commit().await?;
         return Ok(AcceptOutcome::InvalidOrExpired);
     }
@@ -190,13 +190,13 @@ pub async fn complete_transfer(
 ) -> Result<CompleteOutcome, sqlx::Error> {
     let mut tx = db.begin().await?;
 
-    let Some(row) = crate::db::transfers::transfer_by_id(&mut tx, transfer_id).await? else {
+    let Some(row) = custos_db::transfers::transfer_by_id(&mut tx, transfer_id).await? else {
         tx.commit().await?;
         return Ok(CompleteOutcome::Invalid);
     };
 
     let source_session =
-        crate::db::transfers::session_token_matches_did(&mut tx, &row.did, token_hash).await?;
+        custos_db::transfers::session_token_matches_did(&mut tx, &row.did, token_hash).await?;
 
     let Some(accepted_device_id) = row.accepted_device_id.clone() else {
         tx.commit().await?;
@@ -207,7 +207,7 @@ pub async fn complete_transfer(
         });
     };
 
-    let target_device = crate::db::transfers::transfer_device_token_matches(
+    let target_device = custos_db::transfers::transfer_device_token_matches(
         &mut tx,
         &accepted_device_id,
         token_hash,
@@ -221,21 +221,21 @@ pub async fn complete_transfer(
 
     match row.status.as_str() {
         "accepted" | "completing" => {
-            let updated = crate::db::transfers::mark_transfer_complete(&mut tx, &row.id).await?;
+            let updated = custos_db::transfers::mark_transfer_complete(&mut tx, &row.id).await?;
             if updated != 1 {
                 tx.commit().await?;
                 return Ok(CompleteOutcome::Invalid);
             }
 
-            crate::db::transfers::delete_refresh_tokens_for_did(&mut tx, &row.did).await?;
-            crate::db::transfers::delete_sessions_for_did(&mut tx, &row.did).await?;
-            crate::db::transfers::revoke_other_transfer_devices(
+            custos_db::transfers::delete_refresh_tokens_for_did(&mut tx, &row.did).await?;
+            custos_db::transfers::delete_sessions_for_did(&mut tx, &row.did).await?;
+            custos_db::transfers::revoke_other_transfer_devices(
                 &mut tx,
                 &row.did,
                 &accepted_device_id,
             )
             .await?;
-            crate::db::transfers::insert_transfer_audit_event(
+            custos_db::transfers::insert_transfer_audit_event(
                 &mut tx,
                 &Uuid::new_v4().to_string(),
                 &row.id,

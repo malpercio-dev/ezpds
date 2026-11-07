@@ -15,12 +15,12 @@ use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use custos_core::CoreState;
 use serde::ser::SerializeMap;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 use repo_engine::Cid;
 
 #[derive(Deserialize)]
@@ -33,7 +33,7 @@ pub struct SpaceGetRepoParams {
 
 /// GET /xrpc/com.atproto.space.getRepo
 pub async fn space_get_repo(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -187,14 +187,14 @@ fn encode_index_block(entries: &[(String, Cid)]) -> Vec<u8> {
 /// mid-stream — ends the stream with an error rather than emitting a CAR whose blocks
 /// contradict its own commit; the client retries against the new head.
 fn stream_car(
-    state: SpacesState,
+    state: CoreState,
     space_uri: String,
     did: String,
     head: Vec<u8>,
     entries: Vec<(String, Cid)>,
 ) -> Response {
     struct CarStream {
-        state: SpacesState,
+        state: CoreState,
         space_uri: String,
         did: String,
         head: Option<Vec<u8>>,

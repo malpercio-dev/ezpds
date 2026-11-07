@@ -15,10 +15,6 @@ use axum::extract::FromRef;
 use custos_core::sweep::Scheduler;
 use custos_core::CoreState;
 
-// Modules custos-core and common own, aliased at the crate root so `crate::identity::…` and its
-// siblings resolve as they did in `pds`.
-use custos_core::{auth, firehose, identity, metrics, sweep, sweep_status};
-
 mod agent_child_core;
 mod agent_claim_sweep;
 mod capability;

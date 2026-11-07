@@ -10,10 +10,10 @@ use axum::{extract::State, http::StatusCode};
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::auth::token::generate_token;
-use crate::db::accounts::resolve_by_email;
 use crate::db::password_reset::insert_reset_token;
-use crate::lexicon::LexiconInput;
+use custos_core::auth::token::generate_token;
+use custos_core::lexicon::LexiconInput;
+use custos_db::accounts::resolve_by_email;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

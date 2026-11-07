@@ -5,13 +5,13 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes::{self, SpaceOp, SpaceRequest};
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 100;
@@ -32,7 +32,7 @@ pub struct SpaceListSpacesParams {
 /// Lists the spaces the caller has *written to*, which is not "spaces I'm a member of" — a
 /// member's PDS only ever learns about a space by storing a repo in it.
 pub async fn space_list_spaces(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

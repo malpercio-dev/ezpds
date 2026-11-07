@@ -41,11 +41,11 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 
-use crate::blob_store;
 use crate::db::blobs::{self, PhysicalBlob};
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
 use axum::extract::FromRef;
+use custos_core::blob_store;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 use custos_core::CoreState;
 
 /// A configured mirror target: the bucket client plus the object-key namespace it owns.
@@ -274,7 +274,7 @@ pub async fn run_blob_mirror(state: &CoreState, mirror: &BlobMirror) -> MirrorSt
     state
         .metrics
         .blob_mirror_last_run_timestamp
-        .record(crate::metrics::unix_now(), &[]);
+        .record(custos_core::metrics::unix_now(), &[]);
 
     stats
 }

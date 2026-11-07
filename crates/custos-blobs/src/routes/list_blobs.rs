@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::db::blobs;
-use crate::lexicon::LexiconParams;
+use custos_core::lexicon::LexiconParams;
 use custos_core::CoreState;
 
 // ── Query parameters ────────────────────────────────────────────────────────

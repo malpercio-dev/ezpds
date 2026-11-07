@@ -30,8 +30,8 @@ use serde::Serialize;
 
 use common::ApiError;
 
-use crate::auth::guards::require_admin;
 use crate::relay_status::{HostStatus, RelayReport};
+use custos_core::auth::guards::require_admin;
 use custos_core::CoreState;
 
 #[derive(Serialize)]
@@ -85,7 +85,7 @@ pub async fn relay_status(
     require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     let pds_head_seq = state.firehose.current_seq();
-    let checked_at = crate::time::now_rfc3339();
+    let checked_at = custos_core::time::now_rfc3339();
 
     // The primary relay is the first configured crawler. The default config is
     // `["https://bsky.network"]`; an operator who cleared it has federation disabled, so there is
@@ -105,9 +105,9 @@ pub async fn relay_status(
         }));
     };
 
-    let relay_host = crate::crawler::host_from_url(relay_base);
+    let relay_host = custos_core::crawler::host_from_url(relay_base);
     // The relay knows us by the same hostname the crawler advertises via requestCrawl.
-    let our_hostname = crate::crawler::host_from_url(&state.config.public_url);
+    let our_hostname = custos_core::crawler::host_from_url(&state.config.public_url);
 
     let report =
         crate::relay_status::fetch_host_status(&state.http_client, relay_base, &our_hostname).await;

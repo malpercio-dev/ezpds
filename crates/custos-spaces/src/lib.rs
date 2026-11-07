@@ -4,8 +4,7 @@
 //! `/v1/space/import-repo` and the operator's `/v1/admin/spaces` pair, the space authorization
 //! seam, the space query modules, both space sweeps, and the `spaces` capability entry.
 //!
-//! `pds` is the composition root and consumes only what this file exports: [`SpacesState`],
-//! [`router`] / [`internal_router`], [`spawn_sweeps`], [`CAPABILITY`], [`purge_account_rows`],
+//! `pds` is the composition root and consumes only what this file exports: [`router`] / [`internal_router`], [`spawn_sweeps`], [`CAPABILITY`], [`purge_account_rows`],
 //! the [`space_record_write`] choke point, and (behind `test-support`)
 //! [`test_support`]. See `AGENTS.md`.
 
@@ -14,12 +13,6 @@ use common::SpacesConfig;
 use custos_core::sweep::Scheduler;
 use custos_core::CoreState;
 use sqlx::SqliteConnection;
-
-// Modules custos-core owns, aliased at the crate root so `crate::identity::…` and its siblings
-// resolve as they did in `pds`.
-use custos_core::{
-    blob_store, identity, lexicon, metrics, rate_limit, space_uri, sweep, sweep_status, time,
-};
 
 mod auth;
 mod capability;
@@ -30,7 +23,6 @@ mod space_jti_sweep;
 mod space_notify;
 mod space_oplog_sweep;
 pub mod space_record_write;
-mod state;
 #[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // fixtures: a failed request panics the test
 pub mod test_support;
@@ -38,7 +30,6 @@ mod views;
 
 pub use capability::CAPABILITY;
 pub use router::{internal_router, router};
-pub use state::SpacesState;
 
 /// Register both space retention sweeps on `pds`'s scheduler, only while the surface is enabled.
 /// Disabled, no route can write the tables they reclaim, and their `null` slots in the health
@@ -146,7 +137,7 @@ mod purge_tests {
         .unwrap();
         apply_space_writes(
             &state,
-            &space_uri::parse_space_ref(space).unwrap(),
+            &custos_core::space_uri::parse_space_ref(space).unwrap(),
             did,
             &[SpaceWriteOp {
                 action: SpaceWriteAction::Put,

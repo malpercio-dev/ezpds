@@ -48,9 +48,9 @@ use crate::db::pending_oauth_authorizations::{
     get_pending_by_request_id, get_pending_by_user_code, insert_oauth_consent_audit_event,
     OAuthConsentAuditEventType,
 };
-use crate::identity::authority::{authorized_signing_keys, AuthorityError, AuthoritySet};
-use crate::identity::resolution::resolve_handle_to_did;
 use crate::oauth_templates::{build_code_redirect, error_page};
+use custos_core::identity::authority::{authorized_signing_keys, AuthorityError, AuthoritySet};
+use custos_core::identity::resolution::resolve_handle_to_did;
 use custos_core::CoreState;
 
 /// Minimum spacing between accepted status polls for one request; a faster poll gets the
@@ -280,9 +280,9 @@ async fn hint_binds_account(
     did: &str,
     authority: &AuthoritySet,
 ) -> Result<bool, ApiError> {
-    match crate::identity::handle::normalize_login_hint(hint) {
-        Some(crate::identity::handle::LoginHint::Did(hint_did)) => Ok(hint_did == did),
-        Some(crate::identity::handle::LoginHint::Handle(handle)) => {
+    match custos_core::identity::handle::normalize_login_hint(hint) {
+        Some(custos_core::identity::handle::LoginHint::Did(hint_did)) => Ok(hint_did == did),
+        Some(custos_core::identity::handle::LoginHint::Handle(handle)) => {
             if !authority.asserts_handle(&handle) {
                 return Ok(false);
             }
@@ -310,7 +310,7 @@ pub async fn post_authorization_approve(
         crypto::OAUTH_CONSENT_DECISION_DENY => false,
         _ => return Err(approval_rejected()),
     };
-    let now = crate::time::unix_now_secs();
+    let now = custos_core::time::unix_now_secs();
     if now.abs_diff(request.timestamp) > SOVEREIGN_TIMESTAMP_WINDOW_SECS as u64 {
         return Err(approval_rejected());
     }
@@ -757,7 +757,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
+                custos_core::time::unix_now_secs(),
                 1,
             ),
         )
@@ -827,7 +827,7 @@ mod tests {
             request_id,
             "approve",
             REQUESTED_SCOPE,
-            crate::time::unix_now_secs(),
+            custos_core::time::unix_now_secs(),
             2,
         );
 
@@ -856,7 +856,7 @@ mod tests {
             request_id,
             "approve",
             "atproto",
-            crate::time::unix_now_secs(),
+            custos_core::time::unix_now_secs(),
             3,
         );
         body["grantedScope"] = json!(REQUESTED_SCOPE);
@@ -884,7 +884,7 @@ mod tests {
                 request_id,
                 "deny",
                 "",
-                crate::time::unix_now_secs(),
+                custos_core::time::unix_now_secs(),
                 4,
             ),
         )
@@ -941,7 +941,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
+                custos_core::time::unix_now_secs(),
                 5,
             ),
         )
@@ -968,7 +968,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
+                custos_core::time::unix_now_secs(),
                 6,
             ),
         )
@@ -1066,7 +1066,7 @@ mod tests {
                     &request_id,
                     "approve",
                     REQUESTED_SCOPE,
-                    crate::time::unix_now_secs(),
+                    custos_core::time::unix_now_secs(),
                     nonce_fill as u8,
                 ),
             )
@@ -1141,7 +1141,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
+                custos_core::time::unix_now_secs(),
                 7,
             ),
         )
@@ -1194,7 +1194,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
+                custos_core::time::unix_now_secs(),
                 31,
             ),
         )
@@ -1208,7 +1208,7 @@ mod tests {
             request_id,
             "approve",
             REQUESTED_SCOPE,
-            crate::time::unix_now_secs(),
+            custos_core::time::unix_now_secs(),
             32,
         );
         wrong["matchCode"] = json!("24");
@@ -1234,7 +1234,7 @@ mod tests {
             request_id,
             "approve",
             REQUESTED_SCOPE,
-            crate::time::unix_now_secs(),
+            custos_core::time::unix_now_secs(),
             33,
         );
         right["matchCode"] = json!("42");
@@ -1271,7 +1271,7 @@ mod tests {
                 request_id,
                 "deny",
                 "",
-                crate::time::unix_now_secs(),
+                custos_core::time::unix_now_secs(),
                 34,
             ),
         )

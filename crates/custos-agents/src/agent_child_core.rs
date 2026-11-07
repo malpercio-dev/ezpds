@@ -17,8 +17,6 @@ use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
-use crate::auth::agent_assertion::{mint_identity_assertion, scopes_to_json};
-use crate::auth::password::hash_password;
 use crate::db::agent_auth::{
     complete_agent_claim_attempt, convert_identity_to_child, insert_agent_identity,
     AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity, RegistrationType,
@@ -26,6 +24,8 @@ use crate::db::agent_auth::{
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{get_reserved_repo_key_by_id, insert_did_signing_key, RepoSigningKey};
 use ceremony_journal::{Journal, JournalStore, Step};
+use custos_core::auth::agent_assertion::{mint_identity_assertion, scopes_to_json};
+use custos_core::auth::password::hash_password;
 use custos_core::CoreState;
 
 /// How the child's agent-registration row comes into being — the one thing that differs between
@@ -83,7 +83,7 @@ pub(crate) async fn mint_child_account(
     plc_op: &serde_json::Value,
     registration: ChildRegistration<'_>,
 ) -> Result<MintedChild, ApiError> {
-    crate::identity::handle::validate_handle(
+    custos_core::identity::handle::validate_handle(
         handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,
@@ -98,7 +98,7 @@ pub(crate) async fn mint_child_account(
         .ok_or_else(|| {
             ApiError::new(ErrorCode::InvalidClaim, "plcOp.rotationKeys[0] is required")
         })?;
-    let (verified, signed_op) = crate::identity::genesis::verify_and_validate_genesis_op(
+    let (verified, signed_op) = custos_core::identity::genesis::verify_and_validate_genesis_op(
         rotation_key,
         plc_op,
         handle,
@@ -143,10 +143,10 @@ pub(crate) async fn mint_child_account(
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to build child repo"))?;
     let root_string = root.to_string();
-    let genesis_car = crate::identity::genesis::build_genesis_car(root, &blocks);
-    let sync_car = crate::identity::genesis::build_commit_block_car(root, &blocks)
+    let genesis_car = custos_core::identity::genesis::build_genesis_car(root, &blocks);
+    let sync_car = custos_core::identity::genesis::build_commit_block_car(root, &blocks)
         .ok_or_else(|| ApiError::new(ErrorCode::InternalError, "failed to build child repo"))?;
-    let did_document = crate::identity::genesis::build_did_document(&verified)?;
+    let did_document = custos_core::identity::genesis::build_did_document(&verified)?;
 
     let registration_id = registration.registration_id();
     let scopes = state.config.agent_auth.granted_scopes.clone();
@@ -510,7 +510,7 @@ async fn publish_child_genesis(
         _ => false,
     };
     if !already_published {
-        crate::identity::genesis::post_to_plc_directory(
+        custos_core::identity::genesis::post_to_plc_directory(
             &state.http_client,
             &state.config.plc_directory_url,
             &prepared.child_did,
@@ -620,7 +620,7 @@ async fn finalize_child(
     let pending = emit_guard
         .stage_commit(
             &mut tx,
-            crate::firehose::CommitInput {
+            custos_core::firehose::CommitInput {
                 repo: prepared.child_did.clone(),
                 commit: prepared.root.clone(),
                 rev: prepared.rev.clone(),
@@ -634,7 +634,7 @@ async fn finalize_child(
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to sequence child repo"))?
         .stage_sync(
             &mut tx,
-            crate::firehose::SyncInput {
+            custos_core::firehose::SyncInput {
                 did: prepared.child_did.clone(),
                 rev: prepared.rev.clone(),
                 blocks: prepared.sync_car.clone(),

@@ -19,9 +19,9 @@ use uuid::Uuid;
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::token::generate_token;
-use crate::identity::handle::validate_handle;
 use crate::platform::Platform;
+use custos_core::auth::token::generate_token;
+use custos_core::identity::handle::validate_handle;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,7 +48,7 @@ pub async fn create_mobile_account(
     Json(payload): Json<CreateMobileAccountRequest>,
 ) -> Result<(StatusCode, Json<CreateMobileAccountResponse>), ApiError> {
     // --- Validate device_public_key ---
-    crate::auth::validation::validate_device_public_key(&payload.device_public_key)
+    custos_core::auth::validation::validate_device_public_key(&payload.device_public_key)
         .map_err(|msg| ApiError::new(ErrorCode::InvalidClaim, msg))?;
 
     // --- Validate email (basic non-empty check; format validation is deferred) ---
@@ -293,8 +293,8 @@ async fn provision_mobile_account(
 /// Classify a unique constraint violation from the pending_accounts INSERT into the
 /// appropriate ApiError. Returns InternalError for non-unique-violation errors.
 fn classify_pending_account_error(e: &sqlx::Error) -> ApiError {
-    use crate::db::accounts::PendingAccountConflict;
-    match crate::db::accounts::classify_pending_account_conflict(e) {
+    use custos_db::accounts::PendingAccountConflict;
+    match custos_db::accounts::classify_pending_account_conflict(e) {
         Some(PendingAccountConflict::Email) => ApiError::new(
             ErrorCode::AccountExists,
             "an account with this email already exists",
@@ -589,7 +589,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_hashes_are_sha256_of_tokens() {
-        use crate::auth::token::hash_bearer_token;
+        use custos_core::auth::token::hash_bearer_token;
 
         let state = test_state().await;
         let db = state.db.clone();
@@ -1013,7 +1013,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_public_key_returns_400() {
-        use crate::auth::validation::MAX_DEVICE_PUBLIC_KEY_LEN;
+        use custos_core::auth::validation::MAX_DEVICE_PUBLIC_KEY_LEN;
         let big_key = "x".repeat(MAX_DEVICE_PUBLIC_KEY_LEN + 1);
         let body = format!(
             r#"{{"email":"a@example.com","handle":"a.example.com","devicePublicKey":"{big_key}","platform":"ios","claimCode":"ABC123"}}"#

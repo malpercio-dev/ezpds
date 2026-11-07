@@ -147,7 +147,7 @@ async fn verify_private_key_jwt(
             .claims
             .iat
             .ok_or_else(|| invalid_client("client_assertion must carry exp or iat"))?;
-        let now = crate::time::unix_now_secs();
+        let now = custos_core::time::unix_now_secs();
         if iat > now + CLOCK_TOLERANCE_SECS as i64 {
             return Err(invalid_client("client_assertion iat is in the future"));
         }
@@ -247,8 +247,8 @@ mod tests {
             "iss": iss_sub,
             "sub": iss_sub,
             "aud": "https://test.example.com",
-            "iat": crate::time::unix_now_secs(),
-            "exp": crate::time::unix_now_secs() + 60,
+            "iat": custos_core::time::unix_now_secs(),
+            "exp": custos_core::time::unix_now_secs() + 60,
             "jti": "assertion-jti-1",
         })
     }
@@ -368,14 +368,14 @@ mod tests {
 
         // Expired well beyond the 30s tolerance: rejected.
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 120);
+        claims["exp"] = serde_json::json!(custos_core::time::unix_now_secs() - 120);
         let assertion = sign_assertion(&key, "k1", claims);
         expect_invalid_client(&state, &assertion).await;
 
         // Expired 10s ago: inside the 30s clock tolerance, accepted (interop with clients
         // whose clocks drift — the reference's zero-tolerance check is a known trap).
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 10);
+        claims["exp"] = serde_json::json!(custos_core::time::unix_now_secs() - 10);
         let assertion = sign_assertion(&key, "k1", claims);
         authenticate_token_client(
             &state,
@@ -420,7 +420,7 @@ mod tests {
         // Stale: iat beyond the 60s max age + 30s tolerance.
         let mut claims = valid_claims(CLIENT_ID);
         claims.as_object_mut().unwrap().remove("exp");
-        claims["iat"] = serde_json::json!(crate::time::unix_now_secs() - 120);
+        claims["iat"] = serde_json::json!(custos_core::time::unix_now_secs() - 120);
         let assertion = sign_assertion(&key, "k1", claims);
         expect_invalid_client(&state, &assertion).await;
 

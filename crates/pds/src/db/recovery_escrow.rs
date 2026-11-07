@@ -252,7 +252,7 @@ pub(crate) async fn list_pending_releases(
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::db::accounts::insert_bare_account as seed_account;
+    use custos_db::accounts::insert_bare_account as seed_account;
 
     async fn stored_row(db: &sqlx::SqlitePool, did: &str) -> Option<(String, Option<String>)> {
         sqlx::query_as("SELECT share_encrypted, rotated_at FROM recovery_escrow WHERE did = ?")

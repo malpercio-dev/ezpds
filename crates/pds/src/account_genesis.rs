@@ -21,8 +21,8 @@ use repo_engine::Cid;
 use sqlx::{Sqlite, Transaction};
 
 use crate::app::AppState;
-use crate::db::is_unique_violation;
-use crate::firehose::{CommitInput, EmitGuard, PendingWithSync, SyncInput};
+use custos_core::firehose::{CommitInput, EmitGuard, PendingWithSync, SyncInput};
+use custos_db::is_unique_violation;
 
 /// The `accounts` row a promotion inserts. `recovery_share` (the legacy server-held Share 2
 /// column, V010) is never written on a new promotion — the client-share path escrows into
@@ -105,7 +105,7 @@ pub(crate) async fn stage_genesis_repo<'f>(
 ) -> Result<PendingWithSync<'f>, ApiError> {
     for (cid, bytes) in repo.blocks {
         let cid = cid.to_string();
-        crate::db::blocks::put_block_with_rev(tx, &cid, repo.did, bytes.as_slice(), Some(repo.rev))
+        custos_db::blocks::put_block_with_rev(tx, &cid, repo.did, bytes.as_slice(), Some(repo.rev))
             .await
             .inspect_err(|e| tracing::error!(error = %e, "failed to insert genesis block"))
             .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store genesis repo"))?;

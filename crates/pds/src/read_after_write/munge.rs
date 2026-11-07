@@ -458,7 +458,7 @@ mod tests {
 
         let local = super::super::get_records_since_rev(&state, did, Some("0")).await;
 
-        let handle = crate::db::accounts::get_session_account(&state.db, did)
+        let handle = custos_db::accounts::get_session_account(&state.db, did)
             .await
             .unwrap()
             .unwrap();
@@ -530,7 +530,7 @@ mod tests {
 
         let local = super::super::get_records_since_rev(&state, did, Some("0")).await;
 
-        let handle = crate::db::accounts::get_session_account(&state.db, did)
+        let handle = custos_db::accounts::get_session_account(&state.db, did)
             .await
             .unwrap()
             .unwrap();
@@ -618,7 +618,7 @@ mod tests {
 
         let local = super::super::get_records_since_rev(&state, did, Some("0")).await;
 
-        let handle = crate::db::accounts::get_session_account(&state.db, did)
+        let handle = custos_db::accounts::get_session_account(&state.db, did)
             .await
             .unwrap()
             .unwrap();
@@ -669,7 +669,7 @@ mod tests {
 
         let local = super::super::get_records_since_rev(&state, requester, Some("0")).await;
 
-        let handle = crate::db::accounts::get_session_account(&state.db, requester)
+        let handle = custos_db::accounts::get_session_account(&state.db, requester)
             .await
             .unwrap()
             .unwrap();
@@ -740,7 +740,7 @@ mod tests {
 
         let local = super::super::get_records_since_rev(&state, requester, Some("0")).await;
 
-        let handle = crate::db::accounts::get_session_account(&state.db, requester)
+        let handle = custos_db::accounts::get_session_account(&state.db, requester)
             .await
             .unwrap()
             .unwrap();
@@ -821,7 +821,7 @@ mod tests {
 
         let local = super::super::get_records_since_rev(&state, requester, Some("0")).await;
 
-        let handle = crate::db::accounts::get_session_account(&state.db, requester)
+        let handle = custos_db::accounts::get_session_account(&state.db, requester)
             .await
             .unwrap()
             .unwrap();

@@ -18,9 +18,9 @@ use std::time::Duration;
 
 use crate::account_delete::{purge_account, PurgeOutcome};
 use crate::app::AppState;
-use crate::db::accounts::accounts_due_for_deletion;
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
+use custos_db::accounts::accounts_due_for_deletion;
 
 /// Permanently delete every account whose `deleteAfter` has elapsed once per `interval`.
 ///
@@ -65,7 +65,7 @@ impl Sweep<AppState> for AccountReaper {
         state
             .metrics
             .account_reaper_last_run_timestamp
-            .record(crate::metrics::unix_now(), &[]);
+            .record(custos_core::metrics::unix_now(), &[]);
         Ok(Pass::swept(deleted))
     }
 }
@@ -74,7 +74,7 @@ impl Sweep<AppState> for AccountReaper {
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::sweep::run_once;
+    use custos_core::sweep::run_once;
 
     fn sweep() -> AccountReaper {
         AccountReaper {
@@ -191,11 +191,11 @@ mod tests {
     /// frame emitted. Scheduling the deletion is `custos-agents`' half (`agent_child.rs`).
     #[tokio::test]
     async fn reaper_purges_a_deleted_child_and_keeps_the_tombstone() {
-        use crate::firehose::FirehoseEvent;
         use custos_agents::test_support::{
             access_jwt, child_request, mint_child_for, seed_account_with_repo, state_with_grace,
             test_app,
         };
+        use custos_core::firehose::FirehoseEvent;
         use tower::ServiceExt;
 
         // grace = 0 → the child is due the moment it is scheduled, so one reaper pass purges it.
@@ -224,7 +224,7 @@ mod tests {
         };
         let stats = run_once(&reaper, &state).await.unwrap();
         assert_eq!(stats.swept, 1);
-        assert!(!crate::db::accounts::account_exists(&state.db, &child)
+        assert!(!custos_db::accounts::account_exists(&state.db, &child)
             .await
             .unwrap());
         let provisioning: i64 = sqlx::query_scalar(

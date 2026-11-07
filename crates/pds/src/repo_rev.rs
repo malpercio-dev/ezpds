@@ -9,7 +9,7 @@
 //! not import from one another, so the reader is homed here beside `record_write.rs`.
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 
 /// Open `did`'s repo at `head` and return its commit revision (`rev`), or `None` if the

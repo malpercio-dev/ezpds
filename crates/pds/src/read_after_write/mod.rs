@@ -47,8 +47,8 @@ use common::{ApiError, ErrorCode};
 use std::collections::HashMap;
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
 use atrium_repo::Cid;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 
 /// Maximum size of a munged response body we will accept. AppView endpoints return modest JSON
@@ -103,7 +103,7 @@ pub(crate) async fn get_records_since_rev(
     };
 
     // 1. Fetch recent commits for this DID (200-record limit is ample).
-    let rows = match crate::db::firehose_seq::recent_commits_for_did(&state.db, did, 200).await {
+    let rows = match custos_db::firehose_seq::recent_commits_for_did(&state.db, did, 200).await {
         Ok(rows) => rows,
         Err(err) => {
             tracing::error!(error = %err, did, "failed to fetch recent commits");
@@ -116,16 +116,18 @@ pub(crate) async fn get_records_since_rev(
     let mut touched: HashMap<(String, String), (String, Cid)> = HashMap::new(); // (coll, rkey) -> (time, cid)
 
     for row in rows {
-        let event =
-            match crate::firehose::decode_stored_event(row.seq as u64, &row.event_type, &row.event)
-            {
-                Ok(crate::firehose::FirehoseEvent::Commit(c)) => c,
-                Ok(_) => continue, // Should not happen; we filtered for 'commit' in the query
-                Err(err) => {
-                    tracing::debug!(error = %err, seq = row.seq, "failed to decode commit event");
-                    continue; // best-effort: skip this record
-                }
-            };
+        let event = match custos_core::firehose::decode_stored_event(
+            row.seq as u64,
+            &row.event_type,
+            &row.event,
+        ) {
+            Ok(custos_core::firehose::FirehoseEvent::Commit(c)) => c,
+            Ok(_) => continue, // Should not happen; we filtered for 'commit' in the query
+            Err(err) => {
+                tracing::debug!(error = %err, seq = row.seq, "failed to decode commit event");
+                continue; // best-effort: skip this record
+            }
+        };
 
         // Stop if this commit's rev is at or below the header rev (string comparison: TIDs sort by time)
         if event.rev.as_str() <= header_rev {
@@ -147,7 +149,7 @@ pub(crate) async fn get_records_since_rev(
     }
 
     // 3. Get the repo root CID and open the repository once.
-    let root_str = match crate::db::accounts::get_repo_root_cid(&state.db, did).await {
+    let root_str = match custos_db::accounts::get_repo_root_cid(&state.db, did).await {
         Ok(Some(cid)) => cid,
         Ok(None) => {
             // Account has no repo; return empty records.
@@ -426,7 +428,7 @@ pub(crate) async fn pipethrough_munged(
     }
 
     // 7. Get the handle and build LocalViewer
-    let handle = match crate::db::accounts::get_session_account(&state.db, did).await {
+    let handle = match custos_db::accounts::get_session_account(&state.db, did).await {
         Ok(Some(account)) => account.handle,
         Ok(None) => {
             tracing::warn!(did, "account not found for local viewer");

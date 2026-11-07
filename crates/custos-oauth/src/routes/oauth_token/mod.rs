@@ -308,7 +308,7 @@ pub(crate) mod test_support {
             "iss": origin,
             "sub": did,
             "aud": origin,
-            "iat": crate::time::unix_now_secs(),
+            "iat": custos_core::time::unix_now_secs(),
             "exp": exp,
             "jti": Uuid::new_v4().to_string(),
             "scope": scope,

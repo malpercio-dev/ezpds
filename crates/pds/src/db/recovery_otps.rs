@@ -65,9 +65,9 @@ pub async fn consume_recovery_otp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::token::generate_token;
-    use crate::db::accounts::insert_bare_account as insert_account;
-    use crate::db::test_pool;
+    use custos_core::auth::token::generate_token;
+    use custos_db::accounts::insert_bare_account as insert_account;
+    use custos_db::test_pool;
 
     #[tokio::test]
     async fn valid_otp_consumes_once() {

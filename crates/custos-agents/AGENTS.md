@@ -35,7 +35,7 @@ without a purge statement fails here.
 
 ```
 src/
-  lib.rs            — the exports above; aliases `custos_core`'s `auth`, `firehose`, `identity`, `metrics`, `sweep`, `sweep_status` at the crate root so the moved files' `crate::…` paths resolve
+  lib.rs            — the exports above; `custos_core` modules are imported by full path, no root aliases
   router.rs         — both route tables (`scripts/bruno-parity.sh` and `scripts/generate-docs-reference.mjs` read its `.route(` literals)
   capability.rs     — `CAPABILITY`, the `agents` entry of the `describeServer` table
   agent_child_core.rs  — the verify → provision → publish → finalize core behind sovereign child accounts, shared by every route that provisions one; resumable rather than atomic, because the plc.directory publish can't join a SQLite transaction; its steps run under `ceremony_journal::Journal`, with the provisioning row as the cursor — see module doc

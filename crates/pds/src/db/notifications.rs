@@ -379,7 +379,7 @@ fn into_registration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
+    use custos_db::{open_pool, run_migrations};
 
     async fn pool() -> SqlitePool {
         let pool = open_pool("sqlite::memory:").await.expect("pool");

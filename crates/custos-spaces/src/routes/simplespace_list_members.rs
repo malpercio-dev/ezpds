@@ -5,13 +5,13 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, Uri};
 use axum::response::Json;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::oauth_scopes::SpaceOp;
 use crate::auth::space::authenticate_space_owner;
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 
 const DEFAULT_LIMIT: i64 = 100;
 
@@ -28,7 +28,7 @@ pub struct ListMembersParams {
 /// credential does not reach it and a member hosted elsewhere cannot enumerate it. Keyset
 /// paged by DID; the cursor is the last DID of a full page.
 pub async fn simplespace_list_members(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

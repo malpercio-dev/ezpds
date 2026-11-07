@@ -14,10 +14,10 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::password::{verify_password, VerifyResult};
-use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
-use crate::auth::token::generate_token;
-use crate::db::accounts::resolve_by_email;
+use custos_core::auth::password::{verify_password, VerifyResult};
+use custos_core::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
+use custos_core::auth::token::generate_token;
+use custos_db::accounts::resolve_by_email;
 
 // ── Request / Response types ─────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ pub async fn create_provisioning_session(
     // --- Rate limit gate ---
     // Check before any DB work to shed load on targeted accounts.
     {
-        let mut attempts = crate::auth::validation::lock_failed_login_attempts(
+        let mut attempts = custos_core::auth::validation::lock_failed_login_attempts(
             &state.failed_login_attempts,
             Some("rate_limit_check"),
         )?;
@@ -79,7 +79,7 @@ pub async fn create_provisioning_session(
             match result {
                 VerifyResult::Ok => {}
                 VerifyResult::WrongPassword => {
-                    let mut attempts = crate::auth::validation::lock_failed_login_attempts(
+                    let mut attempts = custos_core::auth::validation::lock_failed_login_attempts(
                         &state.failed_login_attempts,
                         Some("record_failure_wrong_password"),
                     )?;
@@ -100,7 +100,7 @@ pub async fn create_provisioning_session(
             row
         }
         None => {
-            let mut attempts = crate::auth::validation::lock_failed_login_attempts(
+            let mut attempts = custos_core::auth::validation::lock_failed_login_attempts(
                 &state.failed_login_attempts,
                 Some("record_failure_unknown_email"),
             )?;
@@ -116,7 +116,7 @@ pub async fn create_provisioning_session(
     let session_token = generate_token();
     let session_id = Uuid::new_v4().to_string();
 
-    crate::db::sessions::insert_provisioning_session(
+    custos_db::sessions::insert_provisioning_session(
         &state.db,
         &session_id,
         &account.did,
@@ -156,8 +156,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
     use crate::routes::test_utils::{body_json, insert_account_with_password};
+    use custos_core::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -255,7 +255,7 @@ mod tests {
         let token = json["sessionToken"].as_str().unwrap();
 
         // Hash the token (same as require_session does internally).
-        let hash = crate::auth::token::hash_bearer_token(token).unwrap();
+        let hash = custos_core::auth::token::hash_bearer_token(token).unwrap();
 
         let did: Option<String> = sqlx::query_scalar(
             "SELECT did FROM sessions WHERE token_hash = ? AND expires_at > datetime('now')",

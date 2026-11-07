@@ -30,7 +30,7 @@ use axum::{
 };
 
 use crate::app::AppState;
-use crate::request_host::request_host;
+use custos_core::request_host::request_host;
 
 /// Map a request host to the `did:web` DID it would identify. The host is lowercased first — `Host`
 /// and `X-Forwarded-Host` are case-insensitive, but a did:web DID is a lowercased hostname, so a
@@ -82,7 +82,7 @@ pub async fn did_json_handler(
             .into_response();
     }
 
-    match crate::db::dids::serve_hosted_did_document(&state.db, &did).await {
+    match custos_db::dids::serve_hosted_did_document(&state.db, &did).await {
         Ok(Some(document)) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, "application/did+json")],

@@ -13,10 +13,10 @@ use serde::Deserialize;
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::password::hash_password;
-use crate::auth::token::hash_bearer_token;
 use crate::db::password_reset::{get_reset_token, mark_reset_token_used, update_password_hash};
-use crate::lexicon::LexiconInput;
+use custos_core::auth::password::hash_password;
+use custos_core::auth::token::hash_bearer_token;
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,8 +89,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::auth::token::generate_token;
     use crate::routes::test_utils::{body_json, insert_account_with_password};
+    use custos_core::auth::token::generate_token;
 
     fn post_reset_password(token: &str, password: &str) -> Request<Body> {
         Request::builder()
@@ -191,7 +191,7 @@ mod tests {
                 .await
                 .unwrap();
         let hash = hash.expect("password_hash must not be null after reset");
-        use crate::auth::password::{verify_password, VerifyResult};
+        use custos_core::auth::password::{verify_password, VerifyResult};
         assert!(
             matches!(verify_password(&hash, "brandnewpass"), VerifyResult::Ok),
             "new password_hash must verify with the submitted password"

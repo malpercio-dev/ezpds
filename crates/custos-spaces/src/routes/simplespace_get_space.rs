@@ -5,12 +5,12 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, Uri};
 use axum::response::Json;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::space::authenticate_space_access;
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::ApiError;
+use custos_core::lexicon::LexiconParams;
 
 #[derive(Deserialize)]
 pub struct GetSpaceParams {
@@ -23,7 +23,7 @@ pub struct GetSpaceParams {
 /// a member hosted anywhere (including here) presents the signature-bound space credential the
 /// authority issued it — which is itself the proof it is authorized for the space.
 pub async fn simplespace_get_space(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

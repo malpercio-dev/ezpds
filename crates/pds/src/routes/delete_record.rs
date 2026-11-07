@@ -8,9 +8,9 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
-use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconInput;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 
 #[derive(Deserialize)]
@@ -45,7 +45,7 @@ pub async fn delete_record(
     let collection = &body.collection;
     let rkey = &body.rkey;
 
-    if !crate::identity::did::is_valid_did(did) {
+    if !custos_core::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
@@ -53,13 +53,7 @@ pub async fn delete_record(
     // access-auth path so the RFC 9449 scheme ↔ `cnf.jkt` binding rules and DPoP-proof
     // validation match the `AuthenticatedUser` extractor — a DPoP-bound token presented as
     // plain `Bearer` with no proof is rejected here, not silently downgraded.
-    let user = crate::auth::authenticate_access(&headers, &method, &uri, &state)?;
-    if !user.scope.is_access() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "access token required",
-        ));
-    }
+    let user = custos_core::auth::authenticate_access(&headers, &method, &uri, &state)?;
     if user.did != *did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
@@ -70,11 +64,11 @@ pub async fn delete_record(
     repo_engine::validate_record_path(collection, rkey)
         .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
 
-    if user.scope == crate::auth::jwt::AuthScope::Access {
-        crate::auth::oauth_scopes::require_repo(
+    if user.scope == custos_core::auth::jwt::AuthScope::Access {
+        custos_core::auth::oauth_scopes::require_repo(
             &user.scope_claim,
             collection,
-            crate::auth::oauth_scopes::RepoAction::Delete,
+            custos_core::auth::oauth_scopes::RepoAction::Delete,
         )?;
     }
 
@@ -82,7 +76,7 @@ pub async fn delete_record(
     // writers — see `record_write::RepoWriteLocks`. Held until this handler returns.
     let _write_guard = state.repo_write_locks.lock(did).await;
 
-    let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
+    let write_state = custos_db::accounts::get_repo_write_state(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query repo write state");
@@ -157,7 +151,8 @@ pub async fn delete_record(
                 "signing key master key not configured",
             )
         })?;
-    let signer = crate::auth::signing_key::load_repo_signer(&state.db, did, master_key).await?;
+    let signer =
+        custos_core::auth::signing_key::load_repo_signer(&state.db, did, master_key).await?;
 
     repo_engine::delete_record(&mut repo, &signer, &mst_key)
         .await
@@ -173,8 +168,8 @@ pub async fn delete_record(
     // this must run before GC). This also stamps the commit's blocks with its revision for
     // getRepo?since.
     let new_rev = repo.commit().rev().as_str().to_string();
-    let op = crate::firehose::RepoOp {
-        action: crate::firehose::OpAction::Delete,
+    let op = custos_core::firehose::RepoOp {
+        action: custos_core::firehose::OpAction::Delete,
         collection: collection.clone(),
         rkey: rkey.clone(),
         cid: None,
@@ -468,7 +463,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_record_emits_firehose_delete_op() {
-        use crate::firehose::{FirehoseEvent, OpAction};
+        use custos_core::firehose::{FirehoseEvent, OpAction};
 
         let state = state_with_master_key().await;
         let did = "did:plc:delrec".to_string();

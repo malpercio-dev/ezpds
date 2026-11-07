@@ -11,11 +11,11 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::ApiError;
+use custos_core::lexicon::LexiconParams;
 
 const DEFAULT_LIMIT: usize = 500;
 const MAX_LIMIT: usize = 1000;
@@ -35,7 +35,7 @@ pub struct SpaceListBlobsParams {
 /// CIDs ascending, deduplicated; the cursor is the last CID of a full page (a short page is
 /// the last one and carries none) — the reference's exact paging shape.
 pub async fn space_list_blobs(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

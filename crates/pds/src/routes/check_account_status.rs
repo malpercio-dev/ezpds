@@ -12,9 +12,9 @@ use ipld_core::ipld::Ipld;
 use serde::Serialize;
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 
 #[derive(Serialize)]
@@ -58,7 +58,7 @@ pub async fn check_account_status(
     // ── 1. Account lifecycle ──────────────────────────────────────────────
 
     let (activated, repo_commit, repo_rev) = {
-        let row = crate::db::accounts::get_repo_status(&state.db, did)
+        let row = custos_db::accounts::get_repo_status(&state.db, did)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, did = %did, "failed to fetch repo status");
@@ -70,11 +70,11 @@ pub async fn check_account_status(
 
     // ── 2. DID document existence ─────────────────────────────────────────
 
-    let valid_did: bool = crate::db::dids::did_document_exists(&state.db, did).await?;
+    let valid_did: bool = custos_db::dids::did_document_exists(&state.db, did).await?;
 
     // ── 3. Repo block count ───────────────────────────────────────────────
 
-    let stored_blocks = crate::db::blocks::account_block_stats(&state.db, did)
+    let stored_blocks = custos_db::blocks::account_block_stats(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to fetch block stats");
@@ -94,7 +94,7 @@ pub async fn check_account_status(
 
     // ── 5. Imported blob count ────────────────────────────────────────────
 
-    let (imported_blobs, _) = crate::db::blobs::account_blob_metrics(&state.db, did)
+    let (imported_blobs, _) = custos_db::blobs::account_blob_metrics(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to fetch blob metrics");
@@ -126,7 +126,7 @@ pub async fn check_account_status(
 /// # Performance
 ///
 /// We walk the MST once to collect all `(key, cid)` entries, then read each record block
-/// directly from the block store via [`crate::db::blocks::get_block`]. Each record read is a
+/// directly from the block store via [`custos_db::blocks::get_block`]. Each record read is a
 /// single-row `SELECT BY cid` — O(1) per record — instead of calling `Repository::get_raw_cid`
 /// which re-walks the entire MST for every record (O(N²) total).
 async fn count_records_and_blob_refs(
@@ -176,7 +176,7 @@ async fn count_records_and_blob_refs(
 
         // Read the record block directly from the DB (O(1) SELECT BY cid) instead of
         // calling `Repository::get_raw_cid` which does an O(N) MST walk per record.
-        let row = crate::db::blocks::get_block(&state.db, &cid_str)
+        let row = custos_db::blocks::get_block(&state.db, &cid_str)
             .await
             .map_err(|e| {
                 {

@@ -548,7 +548,7 @@ async fn create_pending_request(
     client_name: &str,
     display_scope: &str,
 ) -> Option<PendingWalletRequest> {
-    let client_ip = crate::rate_limit::client_ip_from_headers(headers);
+    let client_ip = custos_core::rate_limit::client_ip_from_headers(headers);
     if state
         .rate_limiter
         .check_oauth_consent_creation(&params.client_id, &client_ip)
@@ -658,9 +658,9 @@ async fn create_pending_request(
 /// never drive outbound handle resolution (the SSRF/amplification posture); an account not on
 /// this instance has no registered wallet devices to push to anyway.
 async fn resolve_login_hint_to_local_did(state: &CoreState, hint: &str) -> Option<String> {
-    let did = match crate::identity::handle::normalize_login_hint(hint)? {
-        crate::identity::handle::LoginHint::Did(did) => did,
-        crate::identity::handle::LoginHint::Handle(handle) => {
+    let did = match custos_core::identity::handle::normalize_login_hint(hint)? {
+        custos_core::identity::handle::LoginHint::Did(did) => did,
+        custos_core::identity::handle::LoginHint::Handle(handle) => {
             crate::db::handles::resolve_handle(&state.db, &handle)
                 .await
                 .ok()??

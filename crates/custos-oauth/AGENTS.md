@@ -34,7 +34,7 @@ consent page's `space:` labels, `custos_core::scope_display`).
 
 ```
 src/
-  lib.rs            — the exports above; aliases `custos_core`'s `identity`, `rate_limit`, `time` and `common::code_gen` at the crate root so the moved files' `crate::…` paths resolve
+  lib.rs            — the exports above; `custos_core` modules are imported by full path, no root aliases
   router.rs         — the route table (`scripts/bruno-parity.sh` and `scripts/generate-docs-reference.mjs` read its `.route(` literals)
   capability.rs     — `CAPABILITY`, the `walletConsent` entry of the `describeServer` table
   oauth_templates.rs, oauth_errors.rs, oauth_dpop.rs — handler-free support shared by the routes (table below)

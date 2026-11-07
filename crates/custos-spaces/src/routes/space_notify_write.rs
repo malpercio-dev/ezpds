@@ -6,15 +6,15 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::extract_bearer_token;
 use crate::auth::jwt::peek_jwt_iss;
 use crate::auth::service_auth::verify_service_auth_resolving_key;
 use crate::auth::space::unix_now;
-use crate::lexicon::LexiconInput;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconInput;
 
 const LXM: &str = "com.atproto.space.notifyWrite";
 
@@ -48,7 +48,7 @@ pub struct NotifyWriteInput {
 /// host's clock than [`MAX_REV_SKEW_SECS`] is refused (`FutureRev`): such a revision would pin
 /// the repo's writer-set entry ahead of every honest update.
 pub async fn space_notify_write(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     headers: HeaderMap,
     LexiconInput(input): LexiconInput<NotifyWriteInput>,
 ) -> Result<impl IntoResponse, ApiError> {

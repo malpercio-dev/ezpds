@@ -16,8 +16,8 @@ use axum::http::{HeaderMap, Method, Uri};
 use sqlx::SqlitePool;
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 
 /// Per-DID async locks serializing each repository's logical write sequence.
@@ -154,7 +154,7 @@ pub(crate) async fn resolve_repo_did(state: &AppState, repo: &str) -> Result<Str
     if repo.starts_with("did:") {
         return Ok(repo.to_string());
     }
-    crate::db::accounts::resolve_identifier(&state.db, repo)
+    custos_db::accounts::resolve_identifier(&state.db, repo)
         .await?
         .map(|account| account.did)
         .ok_or_else(|| {
@@ -199,9 +199,15 @@ pub async fn write_record(
     create_only: bool,
     swap: &SwapCheck,
     validate: Option<bool>,
-) -> Result<(repo_engine::Cid, Option<crate::lexicon::RecordValidation>), ApiError> {
+) -> Result<
+    (
+        repo_engine::Cid,
+        Option<custos_core::lexicon::RecordValidation>,
+    ),
+    ApiError,
+> {
     // Validate DID format.
-    if !crate::identity::did::is_valid_did(did) {
+    if !custos_core::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
@@ -210,13 +216,7 @@ pub async fn write_record(
     // binding rules and DPoP-proof validation are identical to the `AuthenticatedUser`
     // extractor — a DPoP-bound token presented as plain `Bearer` with no proof is rejected
     // here, not silently downgraded.
-    let user = crate::auth::authenticate_access(headers, method, uri, state)?;
-    if !user.scope.is_access() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "access token required",
-        ));
-    }
+    let user = custos_core::auth::authenticate_access(headers, method, uri, state)?;
     if user.did != *did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
@@ -227,7 +227,7 @@ pub async fn write_record(
     // Reject malformed self-describing record formats (top-level `createdAt` datetime, any
     // `at://` AT-URI) before any repo mutation. This schema-free gate still runs for lexicons
     // Custos doesn't vendor; for a vendored (known) lexicon the schema check below subsumes it.
-    crate::auth::validation::validate_record_formats(record)
+    custos_core::auth::validation::validate_record_formats(record)
         .map_err(|message| ApiError::new(ErrorCode::InvalidRequest, message))?;
 
     // `validate`-flag record validation (`assertValidRecord` parity): reject an invalid record of
@@ -235,16 +235,16 @@ pub async fn write_record(
     // `validate: false`, and report `validationStatus` for the response. Runs after the ownership
     // check so it can't be used to probe a repo the caller doesn't own.
     let (collection, rkey) = split_record_path(mst_key);
-    let validation_status = crate::lexicon::registry()
+    let validation_status = custos_core::lexicon::registry()
         .validate_record(&collection, &rkey, record, validate)
-        .map_err(crate::lexicon::record_validation_error)?;
+        .map_err(custos_core::lexicon::record_validation_error)?;
 
     // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
     // writers — see [`RepoWriteLocks`]. Held until this function returns, past the GC pass.
     let _write_guard = state.repo_write_locks.lock(did).await;
 
     // Look up the repo root CID and active status in one query.
-    let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
+    let write_state = custos_db::accounts::get_repo_write_state(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query repo write state");
@@ -300,12 +300,12 @@ pub async fn write_record(
         })?;
     let existed = prev_cid.is_some();
     let action = if create_only || !existed {
-        crate::auth::oauth_scopes::RepoAction::Create
+        custos_core::auth::oauth_scopes::RepoAction::Create
     } else {
-        crate::auth::oauth_scopes::RepoAction::Update
+        custos_core::auth::oauth_scopes::RepoAction::Update
     };
-    if user.scope == crate::auth::jwt::AuthScope::Access {
-        crate::auth::oauth_scopes::require_repo(
+    if user.scope == custos_core::auth::jwt::AuthScope::Access {
+        custos_core::auth::oauth_scopes::require_repo(
             &user.scope_claim,
             mst_key.split('/').next().unwrap_or(""),
             action,
@@ -335,7 +335,8 @@ pub async fn write_record(
                 "signing key master key not configured",
             )
         })?;
-    let signer = crate::auth::signing_key::load_repo_signer(&state.db, did, master_key).await?;
+    let signer =
+        custos_core::auth::signing_key::load_repo_signer(&state.db, did, master_key).await?;
 
     // Write the record (JSON is converted to the ATProto data model: $link → CID,
     // $bytes → byte string, floats rejected).
@@ -366,11 +367,11 @@ pub async fn write_record(
     // them) — call this before GC.
     let new_rev = repo.commit().rev().as_str().to_string();
     // `collection`/`rkey` were split for record validation above; reuse them for the firehose op.
-    let op = crate::firehose::RepoOp {
+    let op = custos_core::firehose::RepoOp {
         action: if existed {
-            crate::firehose::OpAction::Update
+            custos_core::firehose::OpAction::Update
         } else {
-            crate::firehose::OpAction::Create
+            custos_core::firehose::OpAction::Create
         },
         collection,
         rkey,
@@ -401,7 +402,7 @@ pub async fn write_record(
 /// Advance the repo root (optimistic-concurrency CAS) and, while both the previous and new block
 /// sets are still present, stage the corresponding firehose `#commit` event in the *same*
 /// transaction as the CAS when the diff CAR can be assembled — so the two commit or roll back
-/// together once staging is attempted (see [`crate::firehose`]'s module docs and
+/// together once staging is attempted (see [`custos_core::firehose`]'s module docs and
 /// `Firehose::stage_commit`).
 ///
 /// Before the CAS, the MST integrity check verifies the new head's actual key count against the
@@ -415,7 +416,7 @@ pub async fn write_record(
 /// that case.
 ///
 /// The commit's block diff and CARv1 diff blocks are assembled *before* the transaction opens:
-/// this crate's DB pool serves a single connection (see `db::open_pool`), so building them
+/// this crate's DB pool serves a single connection (see `custos_db::open_pool`), so building them
 /// inside the transaction — which also needs that connection for the CAS — would deadlock this
 /// task against itself waiting on a second connection that will never free up. Assembling them is
 /// still best-effort exactly as before: a failure is logged and dropped, and the write still
@@ -435,7 +436,7 @@ pub async fn commit_repo_write(
     new_rev: String,
     prev_rev: Option<String>,
     prev_data: Option<String>,
-    ops: Vec<crate::firehose::RepoOp>,
+    ops: Vec<custos_core::firehose::RepoOp>,
     expected_root: &str,
     agent_registration_id: Option<&str>,
 ) -> Result<(), ApiError> {
@@ -445,9 +446,9 @@ pub async fn commit_repo_write(
     let write_cost: u64 = ops
         .iter()
         .map(|op| match op.action {
-            crate::firehose::OpAction::Create => crate::rate_limit::WRITE_COST_CREATE,
-            crate::firehose::OpAction::Update => crate::rate_limit::WRITE_COST_UPDATE,
-            crate::firehose::OpAction::Delete => crate::rate_limit::WRITE_COST_DELETE,
+            custos_core::firehose::OpAction::Create => custos_core::rate_limit::WRITE_COST_CREATE,
+            custos_core::firehose::OpAction::Update => custos_core::rate_limit::WRITE_COST_UPDATE,
+            custos_core::firehose::OpAction::Delete => custos_core::rate_limit::WRITE_COST_DELETE,
         })
         .sum();
     state
@@ -456,8 +457,8 @@ pub async fn commit_repo_write(
         .inspect_err(|_| {
             state.metrics.rate_limit_rejections.add(
                 1,
-                &[crate::metrics::label(
-                    crate::metrics::names::LABEL_LIMITER,
+                &[custos_core::metrics::label(
+                    custos_core::metrics::names::LABEL_LIMITER,
                     "account_writes",
                 )],
             );
@@ -475,20 +476,19 @@ pub async fn commit_repo_write(
     // hold; the caller's per-DID write lock keeps the walk, the stored count, and the CAS
     // mutually consistent. A stored count of NULL (pre-V068 account, fresh genesis, or a
     // just-imported repo) skips the comparison and is initialized by this write's walk.
-    let expected_delta: i64 = ops
-        .iter()
-        .map(|op| match op.action {
-            // An op whose `prev` is `None` had no previous record, so it introduced its key.
-            // (`applyWrites` labels an upsert by its requested kind, so an `Update` that
-            // created its key is only visible through `prev`; emitted deletes always carry
-            // the removed record's CID as `prev` — no-op deletes never become ops.)
-            crate::firehose::OpAction::Create | crate::firehose::OpAction::Update => {
-                i64::from(op.prev.is_none())
-            }
-            crate::firehose::OpAction::Delete => -1,
-        })
-        .sum();
-    let stored_count = crate::db::accounts::repo_record_count(&state.db, did)
+    let expected_delta: i64 =
+        ops.iter()
+            .map(|op| match op.action {
+                // An op whose `prev` is `None` had no previous record, so it introduced its key.
+                // (`applyWrites` labels an upsert by its requested kind, so an `Update` that
+                // created its key is only visible through `prev`; emitted deletes always carry
+                // the removed record's CID as `prev` — no-op deletes never become ops.)
+                custos_core::firehose::OpAction::Create
+                | custos_core::firehose::OpAction::Update => i64::from(op.prev.is_none()),
+                custos_core::firehose::OpAction::Delete => -1,
+            })
+            .sum();
+    let stored_count = custos_db::accounts::repo_record_count(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to read maintained record count");
@@ -539,9 +539,9 @@ pub async fn commit_repo_write(
         let mut collections: Vec<&str> = Vec::new();
         for op in &ops {
             match op.action {
-                crate::firehose::OpAction::Create => creates += 1,
-                crate::firehose::OpAction::Update => updates += 1,
-                crate::firehose::OpAction::Delete => deletes += 1,
+                custos_core::firehose::OpAction::Create => creates += 1,
+                custos_core::firehose::OpAction::Update => updates += 1,
+                custos_core::firehose::OpAction::Delete => deletes += 1,
             }
             if !collections.contains(&op.collection.as_str()) {
                 collections.push(op.collection.as_str());
@@ -614,7 +614,7 @@ pub async fn commit_repo_write(
     })?;
 
     let new_root_str = new_root.to_string();
-    let advanced = crate::db::accounts::advance_repo_root_if_active(
+    let advanced = custos_db::accounts::advance_repo_root_if_active(
         &mut *tx,
         did,
         &new_root_str,
@@ -639,12 +639,12 @@ pub async fn commit_repo_write(
     // is the product's accountability guarantee, so an agent write must not land without one
     // (same fail-closed posture as the firehose staging below — `?` rolls the whole write back).
     if let Some(registration_id) = agent_registration_id {
-        crate::db::agent_audit::insert_agent_audit_event(
+        custos_db::agent_audit::insert_agent_audit_event(
             &mut *tx,
             &uuid::Uuid::new_v4().to_string(),
             registration_id,
             Some(did),
-            crate::db::agent_audit::AgentAuditEventType::RepoWrite,
+            custos_db::agent_audit::AgentAuditEventType::RepoWrite,
             agent_audit_detail.as_deref(),
         )
         .await?;
@@ -655,7 +655,7 @@ pub async fn commit_repo_write(
             let staged = emit_guard
                 .stage_commit(
                     &mut tx,
-                    crate::firehose::CommitInput {
+                    custos_core::firehose::CommitInput {
                         repo: did.to_string(),
                         commit: new_root_str,
                         rev: new_rev.clone(),
@@ -700,7 +700,7 @@ pub async fn commit_repo_write(
     // Best-effort, independent of the firehose durability guarantee above: an untagged block
     // still ships in a full export, just not in a `since` delta.
     if let Some(cid_strs) = cid_strs {
-        if let Err(e) = crate::db::blocks::tag_blocks_rev(&state.db, did, &cid_strs, &new_rev).await
+        if let Err(e) = custos_db::blocks::tag_blocks_rev(&state.db, did, &cid_strs, &new_rev).await
         {
             tracing::warn!(error = %e, did = %did, "failed to tag commit block revisions (non-fatal)");
         }
@@ -765,7 +765,7 @@ pub async fn gc_repo_blocks(
     root: repo_engine::Cid,
     reachable: &std::collections::HashSet<String>,
 ) -> Result<u64, ApiError> {
-    let current_root = crate::db::accounts::current_repo_root(pool, did)
+    let current_root = custos_db::accounts::current_repo_root(pool, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to read repo head for GC");
@@ -780,7 +780,7 @@ pub async fn gc_repo_blocks(
         return Ok(0);
     }
 
-    crate::db::blocks::delete_unreachable_blocks(pool, did, reachable)
+    custos_db::blocks::delete_unreachable_blocks(pool, did, reachable)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to delete unreachable blocks");
@@ -793,10 +793,10 @@ mod tests {
     use axum::http::StatusCode;
     use tower::ServiceExt;
 
-    use crate::db::blocks::SqliteBlockStore;
     use crate::routes::test_utils::{
         access_jwt, put_record_request, seed_account_with_repo, state_with_master_key,
     };
+    use custos_db::blocks::SqliteBlockStore;
 
     async fn repo_root(db: &sqlx::SqlitePool, did: &str) -> String {
         sqlx::query_scalar::<_, Option<String>>("SELECT repo_root_cid FROM accounts WHERE did = ?")
@@ -835,7 +835,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let advanced = crate::db::accounts::advance_repo_root_if_active(
+        let advanced = custos_db::accounts::advance_repo_root_if_active(
             &state.db,
             did,
             &repo.root().to_string(),
@@ -907,7 +907,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let events =
-            crate::db::agent_audit::list_agent_audit_events(&state.db, "reg_write_audit", None, 10)
+            custos_db::agent_audit::list_agent_audit_events(&state.db, "reg_write_audit", None, 10)
                 .await
                 .unwrap();
         assert_eq!(events.len(), 1);
@@ -935,7 +935,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let events =
-            crate::db::agent_audit::list_agent_audit_events(&state.db, "reg_write_audit", None, 10)
+            custos_db::agent_audit::list_agent_audit_events(&state.db, "reg_write_audit", None, 10)
                 .await
                 .unwrap();
         assert_eq!(events.len(), 1, "owner writes are not agent-attributed");

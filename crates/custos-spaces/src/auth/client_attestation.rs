@@ -20,6 +20,7 @@
 //! Reached only from `auth::space`'s credential-issuance policy, and only after the request's
 //! delegation token has verified — so no unauthenticated caller can drive the outbound fetches.
 
+use custos_core::CoreState;
 use jsonwebtoken::{Algorithm, Validation};
 use serde::Deserialize;
 
@@ -27,7 +28,6 @@ use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::db::oauth::ClientMetadata;
 use crate::db::space_jti::{insert_jti_if_absent, SpaceJtiScope};
-use crate::SpacesState;
 
 use super::jwt::peek_jwt_typ;
 
@@ -61,7 +61,7 @@ struct AttestationClaims {
 /// `now` is the request's clock reading, used only to bound the `jti` retention window;
 /// expiry itself is checked with [`CLOCK_TOLERANCE_SECS`] of leeway.
 pub async fn verify_client_attestation(
-    state: &SpacesState,
+    state: &CoreState,
     attestation: &str,
     expected_aud: &str,
     now: u64,

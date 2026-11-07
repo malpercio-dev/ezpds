@@ -17,8 +17,8 @@ use uuid::Uuid;
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin_token;
 use crate::code_gen::generate_code;
+use custos_core::auth::guards::require_admin_token;
 
 const CLAIM_CODE_EXPIRES_IN_HOURS: u32 = 24;
 
@@ -48,7 +48,7 @@ pub async fn create_account(
     require_admin_token(&headers, &state)?;
 
     // --- Validate handle format (structure + served-domain policy) ---
-    if let Err(msg) = crate::identity::handle::validate_handle(
+    if let Err(msg) = custos_core::identity::handle::validate_handle(
         &payload.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,
@@ -100,7 +100,7 @@ pub async fn create_account(
     // Retry up to 3 times on the rare event of a claim code collision. A UNIQUE violation on
     // pending_accounts.email/.handle is a terminal conflict, not bad luck on the generated
     // claim code, so it must not retry — `should_retry` tells the two apart.
-    use crate::db::accounts::PendingAccountConflict;
+    use custos_db::accounts::PendingAccountConflict;
     let account_id = Uuid::new_v4().to_string();
     let offset = format!("+{CLAIM_CODE_EXPIRES_IN_HOURS} hours");
     let db = &state.db;
@@ -108,9 +108,9 @@ pub async fn create_account(
     let tier = &payload.tier;
 
     let should_retry = |e: &sqlx::Error| {
-        crate::db::is_unique_violation(e)
+        custos_db::is_unique_violation(e)
             && !matches!(
-                crate::db::accounts::classify_pending_account_conflict(e),
+                custos_db::accounts::classify_pending_account_conflict(e),
                 Some(PendingAccountConflict::Email) | Some(PendingAccountConflict::Handle)
             )
     };
@@ -118,7 +118,7 @@ pub async fn create_account(
     // Not `async move`: account_id/email/handle/tier/offset are reused across retry attempts
     // and must stay borrowed, while claim_code (fresh each attempt) is captured by value because
     // it's moved out below — Rust infers that split per-variable from how each is used.
-    let result = crate::db::insert_with_retry_if("claim code", should_retry, || {
+    let result = custos_db::insert_with_retry_if("claim code", should_retry, || {
         let claim_code = generate_code();
         async {
             insert_pending_account(db, &account_id, &email, handle, tier, &claim_code, &offset)
@@ -142,7 +142,7 @@ pub async fn create_account(
             tracing::error!("exhausted all claim code generation attempts");
             ApiError::new(ErrorCode::InternalError, "failed to create account")
         }),
-        Err(e) => match crate::db::accounts::classify_pending_account_conflict(&e) {
+        Err(e) => match custos_db::accounts::classify_pending_account_conflict(&e) {
             Some(PendingAccountConflict::Email) => Err(ApiError::new(
                 ErrorCode::AccountExists,
                 "an account with this email already exists",

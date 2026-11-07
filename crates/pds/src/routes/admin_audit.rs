@@ -31,8 +31,8 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin;
-use crate::db::admin_audit::{list_admin_audit_events, AdminAuditAction, AdminAuditFilter};
+use custos_core::auth::guards::require_admin;
+use custos_db::admin_audit::{list_admin_audit_events, AdminAuditAction, AdminAuditFilter};
 
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 100;
@@ -158,8 +158,8 @@ mod tests {
     use axum::http::{self, Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
     use crate::routes::test_utils::{body_json, test_state_with_admin_token};
+    use custos_db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
     const ADMIN: &str = "test-admin-token";
 
@@ -278,7 +278,7 @@ mod tests {
         // End-to-end through the HTTP surface: a device revocation performed with the
         // master token must surface in the audit log attributed to it — and the
         // idempotent repeat must not write a second event.
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use custos_db::admin_devices::{insert_device, NewAdminDevice};
 
         let state = test_state_with_admin_token().await;
         let keypair = crypto::generate_p256_keypair().unwrap();
@@ -322,11 +322,11 @@ mod tests {
 
     #[tokio::test]
     async fn device_signed_actions_are_attributed_to_the_device() {
-        use crate::auth::guards::{
+        use custos_core::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use custos_db::admin_devices::{insert_device, NewAdminDevice};
 
         // A state with NO master token: the acting device is the only credential.
         let state = crate::app::test_state().await;
@@ -357,7 +357,7 @@ mod tests {
         .unwrap();
         let app = crate::app::app(state);
 
-        let ts = crate::time::unix_now_secs();
+        let ts = custos_core::time::unix_now_secs();
         let signed = |method: &str, path: &str, nonce: &str| {
             let sign_string = admin_request_sign_string(method, path, ts, nonce, b"");
             crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes())

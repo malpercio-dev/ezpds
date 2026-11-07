@@ -6,13 +6,13 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::authenticate_space_owner;
-use crate::lexicon::LexiconInput;
-use crate::SpacesState;
 use common::ApiError;
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct PutMemberInput {
@@ -29,7 +29,7 @@ pub struct PutMemberInput {
 /// bit at credential-mint time, the `write` bit when a write notification arrives); the member
 /// is not notified (their PDS materializes a repo on first write). Idempotent.
 pub async fn simplespace_put_member(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

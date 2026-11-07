@@ -20,9 +20,9 @@ use std::collections::BTreeMap;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::db::dids::fetch_also_known_as;
-use crate::db::repo_keys::get_signing_key_by_did;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_db::dids::fetch_also_known_as;
+use custos_db::repo_keys::get_signing_key_by_did;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

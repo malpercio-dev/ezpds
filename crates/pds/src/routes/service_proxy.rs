@@ -34,7 +34,7 @@ use axum::{
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::identity::proxy::CallerUrl;
+use custos_core::identity::proxy::CallerUrl;
 
 /// Maximum buffered request body when proxying to an upstream service. `app.bsky.*` and
 /// `chat.bsky.*` procedures carry small JSON payloads (preferences, mutes, message sends);
@@ -279,7 +279,7 @@ pub(crate) async fn proxy_xrpc(
 /// Mint a fresh ES256 service-auth JWT for proxying `nsid` to `proxy_did` on behalf of `did`.
 ///
 /// Delegates the key load + claim assembly to the shared
-/// [`crate::auth::signing_key::mint_account_service_auth`] (the same path
+/// [`custos_core::auth::signing_key::mint_account_service_auth`] (the same path
 /// `com.atproto.server.getServiceAuth` uses) so the two never drift. Resolves the master key and
 /// strips the audience fragment here: `aud` = the service DID with any `#fragment` removed (the
 /// AppView keys verification on the bare DID; the fragment belongs in the `atproto-proxy` header),
@@ -319,7 +319,7 @@ pub(crate) async fn mint_service_auth(
             ApiError::new(ErrorCode::InternalError, "system clock error").into_response()
         })?;
 
-    crate::auth::signing_key::mint_account_service_auth(
+    custos_core::auth::signing_key::mint_account_service_auth(
         &state.db,
         master_key,
         did,
@@ -369,10 +369,10 @@ mod tests {
         let kp = crypto::generate_p256_keypair().unwrap();
         let private_key_encrypted =
             crypto::encrypt_private_key(&kp.private_key_bytes, &test_master_key()).unwrap();
-        crate::db::repo_keys::insert_did_signing_key(
+        custos_db::repo_keys::insert_did_signing_key(
             db,
             TEST_DID,
-            &crate::db::repo_keys::RepoSigningKey {
+            &custos_db::repo_keys::RepoSigningKey {
                 key_id: kp.key_id.to_string(),
                 public_key: kp.public_key.clone(),
                 private_key_encrypted,

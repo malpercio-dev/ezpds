@@ -12,9 +12,9 @@ use serde::Serialize;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
 use crate::db::app_passwords::list_app_passwords;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

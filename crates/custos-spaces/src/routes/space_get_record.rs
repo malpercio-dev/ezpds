@@ -5,11 +5,11 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 
 #[derive(Deserialize)]
 pub struct SpaceGetRecordParams {
@@ -21,7 +21,7 @@ pub struct SpaceGetRecordParams {
 
 /// GET /xrpc/com.atproto.space.getRecord
 pub async fn space_get_record(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

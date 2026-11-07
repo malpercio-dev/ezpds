@@ -479,7 +479,7 @@ mod tests {
             did,
             "reg_claimed",
             "repo:* blob:*/*",
-            crate::time::unix_now_secs() + 600,
+            custos_core::time::unix_now_secs() + 600,
         );
         ClaimableIdentity::new("reg_claimed", "clm_claimed")
             .did(did)

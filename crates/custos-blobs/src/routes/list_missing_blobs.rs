@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
-use crate::auth::extractors::AuthenticatedUser;
 use crate::db::blocks::SqliteBlockStore;
-use crate::lexicon::LexiconParams;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::lexicon::LexiconParams;
 use custos_core::CoreState;
 use repo_engine::Repository;
 

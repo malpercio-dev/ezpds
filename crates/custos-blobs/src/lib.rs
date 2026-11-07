@@ -16,10 +16,6 @@ use axum::extract::FromRef;
 use custos_core::sweep::Scheduler;
 use custos_core::CoreState;
 
-// Modules custos-core owns, aliased at the crate root so `crate::blob_store::…` and its siblings
-// resolve as they did in `pds`.
-use custos_core::{auth, blob_store, lexicon, metrics, sweep, sweep_status, time};
-
 mod blob_gc;
 mod blob_mirror;
 mod blob_scrub;

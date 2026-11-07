@@ -11,6 +11,7 @@
 // Implements: POST /xrpc/com.atproto.space.getSpaceCredential
 
 use axum::{extract::State, http::HeaderMap, response::Json};
+use custos_core::CoreState;
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
@@ -22,8 +23,7 @@ use crate::auth::space::{
     authorize_credential_request, mint_space_credential, space_host_aud, unix_now,
     verify_delegation_token,
 };
-use crate::lexicon::LexiconInput;
-use crate::SpacesState;
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,7 +47,7 @@ pub struct GetSpaceCredentialResponse {
 /// HTTP message signature over it for a space credential bound to the signing key (`cnf.kid`)
 /// — the space-authority side of the Atproto Spaces credential flow. This server answers only for spaces anchored on an account it hosts.
 pub async fn get_space_credential(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     headers: HeaderMap,
     LexiconInput(input): LexiconInput<GetSpaceCredentialInput>,
 ) -> Result<Json<GetSpaceCredentialResponse>, ApiError> {
@@ -139,17 +139,17 @@ mod tests {
     };
     use crate::db::dids::seed_did_document;
     use crate::db::spaces::{insert_space, NewSpace};
-    use crate::space_uri::parse_space_ref;
     use crate::test_support::test_app as app;
     use crate::test_support::{
         body_json, seed_account_with_repo, state_with_master_key, SpaceSigKey,
     };
-    use crate::SpacesState;
     use axum::{
         body::Body,
         http::{header::AUTHORIZATION, HeaderValue, Method, Request, StatusCode},
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use custos_core::space_uri::parse_space_ref;
+    use custos_core::CoreState;
     use p256::elliptic_curve::Generate as _;
     use tower::ServiceExt;
 
@@ -171,18 +171,18 @@ mod tests {
     }
 
     /// Seed a local account + cached DID document; return its repo signer.
-    async fn seed_identity(state: &SpacesState, did: &str) -> repo_engine::CommitSigner {
+    async fn seed_identity(state: &CoreState, did: &str) -> repo_engine::CommitSigner {
         let kp = seed_account_with_repo(&state.db, did).await;
         seed_did_document(&state.db, did, did_doc(did, &kp)).await;
         repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap()
     }
 
-    async fn seed_space(state: &SpacesState, policy: &str) {
+    async fn seed_space(state: &CoreState, policy: &str) {
         seed_configured_space(state, policy, None, "open", None).await;
     }
 
     async fn seed_configured_space(
-        state: &SpacesState,
+        state: &CoreState,
         policy: &str,
         managing_app: Option<&str>,
         app_access: &str,
@@ -207,7 +207,7 @@ mod tests {
         .unwrap();
     }
 
-    async fn add_member(state: &SpacesState, did: &str) {
+    async fn add_member(state: &CoreState, did: &str) {
         sqlx::query(
             "INSERT INTO space_members (space_uri, member_did, added_at) VALUES (?, ?, 'now')",
         )

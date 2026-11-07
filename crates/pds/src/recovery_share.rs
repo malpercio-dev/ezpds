@@ -89,7 +89,7 @@ pub async fn migrate_plaintext_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
+    use custos_db::{open_pool, run_migrations};
 
     const KEY: [u8; 32] = [0x51; 32];
 

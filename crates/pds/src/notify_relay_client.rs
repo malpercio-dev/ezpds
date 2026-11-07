@@ -249,7 +249,7 @@ struct QueueDepth {
     /// Jobs enqueued but not yet finished. Signed so a pairing bug reads as a negative rather
     /// than wrapping into an astronomical unsigned value on a dashboard.
     count: std::sync::atomic::AtomicI64,
-    metrics: Arc<crate::metrics::Metrics>,
+    metrics: Arc<custos_core::metrics::Metrics>,
 }
 
 impl QueueDepth {
@@ -299,7 +299,7 @@ impl NotifySender {
             tx,
             depth: Arc::new(QueueDepth {
                 count: std::sync::atomic::AtomicI64::new(0),
-                metrics: Arc::new(crate::metrics::Metrics::disabled()),
+                metrics: Arc::new(custos_core::metrics::Metrics::disabled()),
             }),
         };
         (sender, rx)
@@ -314,7 +314,7 @@ impl NotifySender {
 pub fn spawn_worker(
     client: Arc<NotifyRelayClient>,
     db: sqlx::SqlitePool,
-    metrics: Arc<crate::metrics::Metrics>,
+    metrics: Arc<custos_core::metrics::Metrics>,
 ) -> (NotifySender, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NotifyJob>();
     let depth = Arc::new(QueueDepth {
@@ -472,7 +472,7 @@ mod tests {
             tx,
             depth: Arc::new(QueueDepth {
                 count: std::sync::atomic::AtomicI64::new(0),
-                metrics: Arc::new(crate::metrics::Metrics::disabled()),
+                metrics: Arc::new(custos_core::metrics::Metrics::disabled()),
             }),
         }
     }
@@ -502,7 +502,7 @@ mod tests {
             tx,
             depth: Arc::new(QueueDepth {
                 count: std::sync::atomic::AtomicI64::new(0),
-                metrics: Arc::new(crate::metrics::Metrics::disabled()),
+                metrics: Arc::new(custos_core::metrics::Metrics::disabled()),
             }),
         };
 
@@ -533,7 +533,7 @@ mod tests {
         let (sender, _worker) = spawn_worker(
             Arc::new(client),
             state.db.clone(),
-            Arc::new(crate::metrics::Metrics::disabled()),
+            Arc::new(custos_core::metrics::Metrics::disabled()),
         );
 
         sender.send(NotifyJob::DropHandle {

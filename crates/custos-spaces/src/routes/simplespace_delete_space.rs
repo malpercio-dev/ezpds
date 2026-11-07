@@ -5,14 +5,14 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::authenticate_space_owner;
 use crate::db::spaces::{delete_members, delete_notify_registrations, mark_space_deleted};
-use crate::lexicon::LexiconInput;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconInput;
 
 /// Most syncers one deletion notifies. The same bound the write fan-out carries; past it a
 /// space's syncers are better served by the `SpaceDeleted` renewal error than by delivery.
@@ -33,7 +33,7 @@ pub struct DeleteSpaceInput {
 /// are deliberately not notified.
 /// Idempotent: a space already deleted answers 200; one that never existed, `SpaceNotFound`.
 pub async fn simplespace_delete_space(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

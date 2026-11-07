@@ -6,13 +6,13 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
-use crate::lexicon::{LexiconInput, RecordValidation};
 use crate::space_record_write::{SpaceWriteAction, SpaceWriteOp};
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::{LexiconInput, RecordValidation};
 
 /// Matches `com.atproto.repo.applyWrites`, and the reference's space batch.
 const MAX_WRITES: usize = 200;
@@ -52,7 +52,7 @@ enum SpaceWrite {
 /// Every op in the batch is authorized before any of it lands, and the whole batch commits or
 /// none of it does — the store applies it in one transaction under a single `rev`.
 pub async fn space_apply_writes(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

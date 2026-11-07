@@ -11,11 +11,11 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 
 const DEFAULT_LIMIT: i64 = 100;
 const MAX_LIMIT: i64 = 1000;
@@ -42,7 +42,7 @@ pub struct SpaceListRepoOpsParams {
 /// Values are the record's *current* block, inlined for creates/updates unless `excludeValues`
 /// is set or a later op superseded the record (the join in `db/space_repos.rs` misses then).
 pub async fn space_list_repo_ops(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

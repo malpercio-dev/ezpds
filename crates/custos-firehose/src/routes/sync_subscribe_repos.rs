@@ -39,7 +39,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::firehose::{
+use custos_core::firehose::{
     AccountEvent, CommitEvent, FirehoseEvent, IdentityEvent, SubscribeOutcome, Subscription,
     SyncEvent,
 };
@@ -113,7 +113,7 @@ async fn handle_socket(socket: WebSocket, state: CoreState, cursor: Option<u64>)
 
     // Gauge the connection for its whole remaining lifetime: the guard's Drop decrements on
     // every exit path below. Failed subscriptions (the early returns above) never counted.
-    let _subscriber_gauge = crate::metrics::SubscriberGuard::connect(state.metrics.clone());
+    let _subscriber_gauge = custos_core::metrics::SubscriberGuard::connect(state.metrics.clone());
 
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     // The first tick fires immediately; consume it so the first real Ping waits a full interval.
@@ -486,7 +486,7 @@ fn encode_error_frame(error: &str, message: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::firehose::{OpAction, RepoOp};
+    use custos_core::firehose::{OpAction, RepoOp};
     use ipld_core::ipld::Ipld;
 
     fn sample_commit() -> CommitEvent {
@@ -723,7 +723,7 @@ mod tests {
     // These drive the real Axum handler over a loopback TCP socket with a tungstenite
     // client, exercising the full upgrade → replay → live-stream path.
 
-    use crate::firehose::{CommitInput, Firehose};
+    use custos_core::firehose::{CommitInput, Firehose};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio_tungstenite::connect_async;
@@ -1149,7 +1149,7 @@ mod tests {
 
     #[tokio::test]
     async fn websocket_streams_sync_event_with_correct_wire_format() {
-        use crate::firehose::SyncInput;
+        use custos_core::firehose::SyncInput;
         let (url, firehose) = spawn_server().await;
         let (mut ws, _resp) = connect_async(&url).await.expect("ws connect");
         await_subscribers(&firehose, 1).await;
@@ -1177,7 +1177,7 @@ mod tests {
 
     #[tokio::test]
     async fn websocket_sync_event_is_replayed_by_cursor() {
-        use crate::firehose::SyncInput;
+        use custos_core::firehose::SyncInput;
         let (url, firehose) = spawn_server().await;
 
         // Emit a #sync event before subscribing.
@@ -1556,10 +1556,13 @@ mod tests {
                 let rows = crate::db::firehose_seq::events_in_range(&db, 0, seq, 1)
                     .await
                     .unwrap();
-                let event =
-                    crate::firehose::decode_stored_event(seq, &rows[0].event_type, &rows[0].event)
-                        .expect("decode stored #commit event");
-                let crate::firehose::FirehoseEvent::Commit(commit_event) = event else {
+                let event = custos_core::firehose::decode_stored_event(
+                    seq,
+                    &rows[0].event_type,
+                    &rows[0].event,
+                )
+                .expect("decode stored #commit event");
+                let custos_core::firehose::FirehoseEvent::Commit(commit_event) = event else {
                     panic!("expected a #commit event");
                 };
                 assert_eq!(

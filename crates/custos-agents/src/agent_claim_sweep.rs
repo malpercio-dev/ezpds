@@ -17,9 +17,9 @@ use uuid::Uuid;
 
 use crate::db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
 use crate::db::agent_auth::{expire_pending_agent_claim_attempts, expired_pending_claim_attempts};
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
 use axum::extract::FromRef;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 use custos_core::CoreState;
 
 /// Expire every lapsed pending attempt and audit each expiry once per `interval`.
@@ -78,7 +78,7 @@ where
         state
             .metrics
             .agent_claim_sweep_last_run_timestamp
-            .record(crate::metrics::unix_now(), &[]);
+            .record(custos_core::metrics::unix_now(), &[]);
         Ok(Pass::swept(expired))
     }
 }
@@ -87,8 +87,8 @@ where
 mod tests {
     use super::*;
     use crate::db::accounts::insert_bare_account as seed_account;
-    use crate::sweep::run_once;
     use crate::test_support::test_state;
+    use custos_core::sweep::run_once;
 
     fn sweep() -> AgentClaimSweep {
         AgentClaimSweep {

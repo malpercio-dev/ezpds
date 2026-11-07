@@ -5,11 +5,11 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconInput;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct UnregisterNotifyInput {
@@ -27,7 +27,7 @@ pub struct UnregisterNotifyInput {
 /// rows a repo host writes for itself are its own bookkeeping about where to report its users'
 /// writes, not a subscription anyone else may cancel.
 pub async fn space_unregister_notify(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
