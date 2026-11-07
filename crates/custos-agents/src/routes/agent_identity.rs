@@ -52,13 +52,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::db::accounts::resolve_by_email;
-use crate::db::agent_audit::AgentAuditEventType;
-use crate::db::agent_auth::{
-    get_agent_identity_by_issuer_subject, insert_agent_identity, set_agent_identity_assertion,
-    AgentIdentityRow, AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity,
-    RegistrationType,
-};
 use custos_core::auth::agent_assertion::{
     claim_block, mint_identity_assertion, record_agent_audit, scopes_to_json, start_claim_attempt,
     to_sqlite_datetime, verification_uri, AgentAuthError,
@@ -68,6 +61,13 @@ use custos_core::auth::issuer_trust::{
 };
 use custos_core::auth::token::generate_token;
 use custos_core::CoreState;
+use custos_db::accounts::resolve_by_email;
+use custos_db::agent_audit::AgentAuditEventType;
+use custos_db::agent_auth::{
+    get_agent_identity_by_issuer_subject, insert_agent_identity, set_agent_identity_assertion,
+    AgentIdentityRow, AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity,
+    RegistrationType,
+};
 
 /// The one assertion type this server accepts for the `identity_assertion` flow.
 const ID_JAG_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:token-type:id-jag";

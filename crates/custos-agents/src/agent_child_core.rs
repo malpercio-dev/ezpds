@@ -17,16 +17,16 @@ use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
-use crate::db::agent_auth::{
-    complete_agent_claim_attempt, convert_identity_to_child, insert_agent_identity,
-    AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity, RegistrationType,
-};
-use crate::db::is_unique_violation;
-use crate::db::repo_keys::{get_reserved_repo_key_by_id, insert_did_signing_key, RepoSigningKey};
 use ceremony_journal::{Journal, JournalStore, Step};
 use custos_core::auth::agent_assertion::{mint_identity_assertion, scopes_to_json};
 use custos_core::auth::password::hash_password;
 use custos_core::CoreState;
+use custos_db::agent_auth::{
+    complete_agent_claim_attempt, convert_identity_to_child, insert_agent_identity,
+    AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity, RegistrationType,
+};
+use custos_db::is_unique_violation;
+use custos_db::repo_keys::{get_reserved_repo_key_by_id, insert_did_signing_key, RepoSigningKey};
 
 /// How the child's agent-registration row comes into being — the one thing that differs between
 /// this core's callers.
@@ -440,7 +440,7 @@ async fn prepare_child(
             )
         })?;
     for (cid, bytes) in blocks {
-        crate::db::blocks::put_block_with_rev(
+        custos_db::blocks::put_block_with_rev(
             &mut tx,
             &cid.to_string(),
             child_did,
@@ -561,7 +561,7 @@ async fn finalize_child(
                 ));
             }
             // A child is provisioned and authorized in one parent-approved operation.
-            crate::db::agent_auth::set_agent_identity_status(
+            custos_db::agent_auth::set_agent_identity_status(
                 &mut *tx,
                 &prepared.registration_id,
                 AgentIdentityStatus::Claimed,
@@ -598,12 +598,12 @@ async fn finalize_child(
                 ));
             }
             // The human gate anchors the audit trail, so it commits with the claim itself.
-            crate::db::agent_audit::insert_agent_audit_event(
+            custos_db::agent_audit::insert_agent_audit_event(
                 &mut *tx,
                 &Uuid::new_v4().to_string(),
                 &prepared.registration_id,
                 Some(confirmed_by),
-                crate::db::agent_audit::AgentAuditEventType::ClaimConfirmed,
+                custos_db::agent_audit::AgentAuditEventType::ClaimConfirmed,
                 Some(
                     &serde_json::json!({
                         "claim_attempt_id": claim_attempt_id,

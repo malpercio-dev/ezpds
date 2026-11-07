@@ -15,16 +15,16 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::agent_child_core::{mint_child_account, ChildRegistration};
-use crate::db::accounts::{deactivate_account, AccountStateChange};
-use crate::db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
-use crate::db::agent_auth::{
-    get_child_of_parent, list_children_of_parent, revoke_agent_identity,
-    set_agent_identity_assertion, AgentIdentityStatus, RegistrationType,
-};
 use crate::db::agent_child_deletions::{list_child_deletions_of_parent, upsert_child_deletion};
 use custos_core::auth::agent_assertion::{mint_identity_assertion, parse_sqlite_datetime};
 use custos_core::auth::guards::{authenticate_account_owner, OwnerAuthError};
 use custos_core::CoreState;
+use custos_db::accounts::{deactivate_account, AccountStateChange};
+use custos_db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
+use custos_db::agent_auth::{
+    get_child_of_parent, list_children_of_parent, revoke_agent_identity,
+    set_agent_identity_assertion, AgentIdentityStatus, RegistrationType,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,7 +139,7 @@ pub async fn mint_child(
     let parent_did = authenticate_account_owner(&headers, &method, &uri, &state)
         .await
         .map_err(owner_error)?;
-    if !crate::db::accounts::account_exists(&state.db, &parent_did).await? {
+    if !custos_db::accounts::account_exists(&state.db, &parent_did).await? {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
             "parent account is not local",
@@ -189,7 +189,7 @@ pub async fn list_children(
     let mut children = Vec::with_capacity(rows.len());
     for row in rows {
         let did = row.did.unwrap_or_default();
-        let handle = crate::db::handles::get_handle_by_did(&state.db, &did)
+        let handle = custos_db::handles::get_handle_by_did(&state.db, &did)
             .await?
             .unwrap_or_default();
         children.push(ChildView {
@@ -338,7 +338,7 @@ pub async fn delete_child(
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "child agent not found"))?;
 
     // The tombstone carries the handle because the `handles` row is purged with the child.
-    let handle = crate::db::handles::get_handle_by_did(&state.db, &request.did)
+    let handle = custos_db::handles::get_handle_by_did(&state.db, &request.did)
         .await?
         .unwrap_or_default();
     let grace = i64::try_from(state.config.accounts.child_deletion_grace_secs).unwrap_or(i64::MAX);
@@ -519,11 +519,11 @@ mod tests {
         let minted: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let child = minted["did"].as_str().unwrap();
         assert_ne!(child, parent);
-        assert!(crate::db::accounts::account_exists(&state.db, child)
+        assert!(custos_db::accounts::account_exists(&state.db, child)
             .await
             .unwrap());
         assert_eq!(
-            crate::db::handles::resolve_handle(&state.db, handle)
+            custos_db::handles::resolve_handle(&state.db, handle)
                 .await
                 .unwrap()
                 .as_deref(),
@@ -573,7 +573,7 @@ mod tests {
             .unwrap();
         assert_eq!(row.status, AgentIdentityStatus::Revoked);
         assert!(
-            crate::db::accounts::account_exists(&state.db, child)
+            custos_db::accounts::account_exists(&state.db, child)
                 .await
                 .unwrap(),
             "revocation preserves the sovereign identity and recovery path"
@@ -1082,7 +1082,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
         // The child is untouched: still active, capability intact, nothing scheduled.
-        assert!(crate::db::accounts::account_exists(&state.db, &child)
+        assert!(custos_db::accounts::account_exists(&state.db, &child)
             .await
             .unwrap());
         assert_eq!(
@@ -1116,7 +1116,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(crate::db::accounts::account_exists(&state.db, &child)
+        assert!(custos_db::accounts::account_exists(&state.db, &child)
             .await
             .unwrap());
         assert_eq!(

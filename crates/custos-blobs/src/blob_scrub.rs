@@ -28,12 +28,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::blob_mirror::BlobMirror;
-use crate::db::blobs::{self, PhysicalBlob};
 use axum::extract::FromRef;
 use custos_core::blob_store;
 use custos_core::sweep::{Pass, Sweep};
 use custos_core::sweep_status::names;
 use custos_core::CoreState;
+use custos_db::blobs::{self, PhysicalBlob};
 
 /// Tally of what one scrub pass did, for logging and tests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

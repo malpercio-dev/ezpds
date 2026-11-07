@@ -41,7 +41,7 @@ src/
   agent_child_core.rs  — the verify → provision → publish → finalize core behind sovereign child accounts, shared by every route that provisions one; resumable rather than atomic, because the plc.directory publish can't join a SQLite transaction; its steps run under `ceremony_journal::Journal`, with the provisioning row as the cursor — see module doc
   purge.rs          — this crate's account-purge step (`PURGE_ACCOUNT_SQL`, `purge_account_rows`, `child_dids`) — see module doc
   agent_claim_sweep.rs — periodic sweep flipping lapsed agent claim attempts to `expired` — see module doc
-  db/               — `agent_child_deletions.rs` (below); `custos_db` is re-exported crate-privately
+  db/               — `agent_child_deletions.rs` (below); the shared tables are named at `custos_db::…`
   routes/           — one file per surface (table below); private, only handler functions leave it
   test_support.rs   — `test-support` feature (and this crate's own tests): `test_app` wraps both routers in the layers `pds` applies, so a path no agents route claims is a plain 404 here
 ```

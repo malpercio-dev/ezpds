@@ -17,11 +17,11 @@ use axum::response::IntoResponse;
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::extract_bearer_token;
-use crate::auth::jwt::{peek_jwt_aud, peek_jwt_iss};
-use crate::auth::service_auth::verify_service_auth_resolving_key;
 use crate::auth::space::{unix_now, CREDENTIAL_REVOCATION_RETENTION_SECS};
 use common::{ApiError, ErrorCode};
+use custos_core::auth::extract_bearer_token;
+use custos_core::auth::jwt::{peek_jwt_aud, peek_jwt_iss};
+use custos_core::auth::service_auth::verify_service_auth_resolving_key;
 use custos_core::lexicon::LexiconInput;
 
 const LXM: &str = "com.atproto.space.notifyCredentialRevoked";
@@ -59,7 +59,7 @@ pub async fn space_notify_credential_revoked(
     }
     let server_did = state.config.resolve_server_did();
     let aud = peek_jwt_aud(token).unwrap_or_default();
-    if aud != server_did && !crate::db::accounts::account_exists(&state.db, &aud).await? {
+    if aud != server_did && !custos_db::accounts::account_exists(&state.db, &aud).await? {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "service auth audience is neither this server nor an account it hosts",

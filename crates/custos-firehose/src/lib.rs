@@ -14,7 +14,6 @@ use axum::extract::FromRef;
 use custos_core::sweep::Scheduler;
 use custos_core::CoreState;
 
-mod db;
 mod firehose_gc;
 mod relay_status;
 mod router;

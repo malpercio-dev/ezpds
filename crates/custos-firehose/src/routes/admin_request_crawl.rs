@@ -30,10 +30,10 @@ use serde::Serialize;
 
 use common::{ApiError, ErrorCode};
 
-use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 use custos_core::auth::guards::require_admin;
 use custos_core::crawler::CrawlAttempt;
 use custos_core::CoreState;
+use custos_db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

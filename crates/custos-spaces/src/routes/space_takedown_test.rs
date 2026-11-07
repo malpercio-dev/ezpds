@@ -248,11 +248,11 @@ async fn each_action_is_audited_against_the_space_uri() {
     takedown(&state, SPACE, false).await;
 
     // The query `GET /v1/admin/audit?subject=<uri>` serves; that route lives in `pds`.
-    let filter = crate::db::admin_audit::AdminAuditFilter {
+    let filter = custos_db::admin_audit::AdminAuditFilter {
         subject: Some(SPACE),
         ..Default::default()
     };
-    let events = crate::db::admin_audit::list_admin_audit_events(&state.db, filter, None, 50)
+    let events = custos_db::admin_audit::list_admin_audit_events(&state.db, filter, None, 50)
         .await
         .unwrap();
     let actions: Vec<&str> = events.iter().map(|e| e.action.as_str()).collect();

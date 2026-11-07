@@ -15,7 +15,7 @@
 //! the SSRF-hardened client, and the attested `client_id` is only as trustworthy as that
 //! resolution: skip it and `appAccess: #allowList` degrades from an enforceable perimeter to an
 //! unverified claim. The key resolution itself is shared verbatim with the token endpoint
-//! ([`crate::auth::jwks::client_verification_key`]).
+//! ([`custos_core::auth::jwks::client_verification_key`]).
 //!
 //! Reached only from `auth::space`'s credential-issuance policy, and only after the request's
 //! delegation token has verified — so no unauthenticated caller can drive the outbound fetches.
@@ -26,10 +26,10 @@ use serde::Deserialize;
 
 use common::{ApiError, ApiResultExt, ErrorCode};
 
-use crate::db::oauth::ClientMetadata;
 use crate::db::space_jti::{insert_jti_if_absent, SpaceJtiScope};
+use custos_db::oauth::ClientMetadata;
 
-use super::jwt::peek_jwt_typ;
+use custos_core::auth::jwt::peek_jwt_typ;
 
 /// JWT `typ` of a client attestation.
 pub const CLIENT_ATTESTATION_TYP: &str = "atproto-client-attestation+jwt";
@@ -82,7 +82,7 @@ pub async fn verify_client_attestation(
     }
     // The issuer is read *unverified* here only to know whose keys to fetch; every claim below is
     // re-checked against the signature.
-    let client_id = super::jwt::peek_jwt_iss(attestation)
+    let client_id = custos_core::auth::jwt::peek_jwt_iss(attestation)
         .filter(|iss| !iss.is_empty())
         .ok_or_else(|| invalid("client attestation has no iss".into()))?;
 
@@ -90,7 +90,7 @@ pub async fn verify_client_attestation(
     // hardened client controls which address the fetch reaches.
     // ponytail: resolved per mint (a credential lasts 2 h, so this is not a hot path) — add a
     // metadata cache alongside the JWKS cache if attestation volume ever says otherwise.
-    let metadata_json = crate::auth::oauth_client_resolution::resolve_client_metadata(
+    let metadata_json = custos_core::auth::oauth_client_resolution::resolve_client_metadata(
         &state.hardened_http_client,
         &client_id,
     )
@@ -99,7 +99,7 @@ pub async fn verify_client_attestation(
     let metadata: ClientMetadata = serde_json::from_str(&metadata_json)
         .map_err(|_| invalid("client metadata document is not valid client metadata".into()))?;
 
-    let key = crate::auth::jwks::client_verification_key(
+    let key = custos_core::auth::jwks::client_verification_key(
         &state.oauth_client_jwks_cache,
         metadata.jwks.as_ref(),
         metadata.jwks_uri.as_deref(),

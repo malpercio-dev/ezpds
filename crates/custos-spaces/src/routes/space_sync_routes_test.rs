@@ -476,7 +476,7 @@ async fn add_blob(state: &CoreState, content: &[u8]) -> String {
     )
     .await
     .unwrap();
-    crate::db::blobs::insert_blob(
+    custos_db::blobs::insert_blob(
         &state.db,
         &stored.cid,
         DID,

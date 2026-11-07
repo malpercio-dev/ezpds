@@ -60,7 +60,6 @@ use common::{ApiError, ApiResultExt, ErrorCode};
 use custos_core::CoreState;
 use serde_json::Value;
 
-use crate::db::accounts::{active_local_account_exists, AccountLifecycle};
 use crate::db::space_jti::{insert_jti_if_absent, SpaceJtiScope};
 use crate::db::spaces::{self, SpaceRow};
 use custos_core::identity::resolution::{
@@ -69,15 +68,16 @@ use custos_core::identity::resolution::{
     space_verification_key,
 };
 use custos_core::space_uri::SpaceRef;
+use custos_db::accounts::{active_local_account_exists, AccountLifecycle};
 
-use super::bearer::{extract_access_token, extract_space_credential};
-use super::extractors::AuthenticatedUser;
 use super::http_signature::{verify_space_signature, SignedFor};
-use super::jwt::{
+use custos_core::auth::bearer::{extract_access_token, extract_space_credential};
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::{
     peek_jwt_iss, peek_jwt_typ, random_jti, sign_jwt, verify_did_key_jwt, AuthScope, DidKeyJwt,
     ServiceAuthError,
 };
-use super::oauth_scopes::{self, SpaceOp, SpaceRequest};
+use custos_core::auth::oauth_scopes::{self, SpaceOp, SpaceRequest};
 
 /// JWT `typ` of a delegation token.
 pub const DELEGATION_TOKEN_TYP: &str = "atproto-space-delegation+jwt";
@@ -119,7 +119,7 @@ pub async fn authenticate_space_caller(
     method: &Method,
     uri: &Uri,
 ) -> Result<AuthenticatedUser, ApiError> {
-    let user = crate::auth::authenticate_access(headers, method, uri, state)?;
+    let user = custos_core::auth::authenticate_access(headers, method, uri, state)?;
 
     require_serviceable_caller(state, &user.did).await?;
     Ok(user)
@@ -139,7 +139,7 @@ pub async fn authenticate_space_caller(
 /// space route that authenticates through the bare `AuthenticatedUser` extractor, because it
 /// names a space this server need not host.
 pub async fn require_serviceable_caller(state: &CoreState, did: &str) -> Result<(), ApiError> {
-    match crate::db::accounts::account_lifecycle(&state.db, did).await? {
+    match custos_db::accounts::account_lifecycle(&state.db, did).await? {
         Some(AccountLifecycle::Active | AccountLifecycle::Deactivated) => Ok(()),
         _ => {
             tracing::warn!(did = %did, "space call: account missing or in a moderation state");
@@ -959,7 +959,7 @@ async fn check_managing_app(
     let Ok(now) = unix_now() else {
         return deny("system clock is before the epoch");
     };
-    let Ok(token) = crate::auth::signing_key::mint_account_service_auth(
+    let Ok(token) = custos_core::auth::signing_key::mint_account_service_auth(
         &state.db,
         master_key,
         &space.authority_did,
@@ -1079,7 +1079,6 @@ pub(crate) use custos_core::time::unix_now;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::dids::seed_did_document;
     use crate::db::spaces::{insert_space, NewSpace};
     use crate::test_support::{
         access_jwt, app_pass_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
@@ -1088,6 +1087,7 @@ mod tests {
     use axum::http::{header::AUTHORIZATION, HeaderValue};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use custos_core::space_uri::parse_space_ref;
+    use custos_db::dids::seed_did_document;
 
     const AUTHORITY: &str = "did:plc:abc234567abc234567abc234";
     const ALICE: &str = "did:plc:alice";
@@ -1239,7 +1239,7 @@ mod tests {
                 .code(),
             &ErrorCode::InvalidDelegationToken
         );
-        let service_auth = super::super::jwt::mint_service_auth_jwt(
+        let service_auth = custos_core::auth::jwt::mint_service_auth_jwt(
             |b| alice.sign(b),
             ALICE,
             &space_host_aud(&space()),

@@ -17,12 +17,12 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::auth::client_attestation::verify_client_attestation;
-use crate::auth::extract_bearer_token;
 use crate::auth::http_signature::verify_delegation_signature;
 use crate::auth::space::{
     authorize_credential_request, mint_space_credential, space_host_aud, unix_now,
     verify_delegation_token,
 };
+use custos_core::auth::extract_bearer_token;
 use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
@@ -119,7 +119,7 @@ pub async fn get_space_credential(
             )
         })?;
     let signer =
-        crate::auth::signing_key::load_repo_signer(&state.db, &row.authority_did, master_key)
+        custos_core::auth::signing_key::load_repo_signer(&state.db, &row.authority_did, master_key)
             .await?;
     let credential = mint_space_credential(
         |bytes| signer.sign(bytes),
@@ -137,7 +137,6 @@ mod tests {
     use crate::auth::space::{
         authenticate_space_read, mint_delegation_token, unix_now, SpaceReader, SPACE_CREDENTIAL_TYP,
     };
-    use crate::db::dids::seed_did_document;
     use crate::db::spaces::{insert_space, NewSpace};
     use crate::test_support::test_app as app;
     use crate::test_support::{
@@ -150,6 +149,7 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use custos_core::space_uri::parse_space_ref;
     use custos_core::CoreState;
+    use custos_db::dids::seed_did_document;
     use p256::elliptic_curve::Generate as _;
     use tower::ServiceExt;
 

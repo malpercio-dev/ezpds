@@ -41,9 +41,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use super::{cleanup_expired_state, issue_access_token, TokenRequestForm};
-use crate::db::agent_auth::{get_agent_identity, AgentIdentityStatus};
 use crate::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
 use custos_core::CoreState;
+use custos_db::agent_auth::{get_agent_identity, AgentIdentityStatus};
 
 /// Successful jwt-bearer response body. Unlike [`super::TokenResponse`], it carries no
 /// `refresh_token`: the agent re-exchanges its `identity_assertion` (RFC 7523 §2.1) instead of
@@ -158,11 +158,11 @@ pub(super) async fn handle_jwt_bearer(state: &CoreState, form: TokenRequestForm)
     // Re-mint the assertion for the response (the sliding renewal — see the module doc), matching
     // the re-mint paths in `agent_identity.rs` and `agent_child.rs`. The access token below still
     // carries the *presented* assertion's scope verbatim.
-    let renewed_scopes = crate::auth::oauth_scopes::intersect_scope_tokens(
+    let renewed_scopes = custos_core::auth::oauth_scopes::intersect_scope_tokens(
         &serde_json::from_str::<Vec<String>>(&identity.scopes).unwrap_or_default(),
         &state.config.agent_auth.granted_scopes,
     );
-    let renewed = match crate::auth::agent_assertion::mint_identity_assertion(
+    let renewed = match custos_core::auth::agent_assertion::mint_identity_assertion(
         &state.oauth_signing_keypair,
         state.config.issuer(),
         state.config.agent_auth.claimed_assertion_ttl_secs,
@@ -200,7 +200,7 @@ pub(super) async fn handle_jwt_bearer(state: &CoreState, form: TokenRequestForm)
     // `&SqlitePool` read while a transaction holds the connection.
     let audit_result = async {
         let mut tx = state.db.begin().await?;
-        crate::db::agent_auth::set_agent_identity_assertion(
+        custos_db::agent_auth::set_agent_identity_assertion(
             &mut *tx,
             &claims.registration_id,
             &renewed.jwt,
@@ -213,12 +213,12 @@ pub(super) async fn handle_jwt_bearer(state: &CoreState, form: TokenRequestForm)
             "assertion_renewed": true,
         })
         .to_string();
-        crate::db::agent_audit::insert_agent_audit_event(
+        custos_db::agent_audit::insert_agent_audit_event(
             &mut *tx,
             &uuid::Uuid::new_v4().to_string(),
             &claims.registration_id,
             Some(&claims.sub),
-            crate::db::agent_audit::AgentAuditEventType::TokenExchanged,
+            custos_db::agent_audit::AgentAuditEventType::TokenExchanged,
             Some(&detail),
         )
         .await?;
@@ -262,7 +262,7 @@ fn verify_agent_assertion(
     state: &CoreState,
 ) -> Result<AgentAssertionClaims, OAuthTokenError> {
     // Reuse the shared loader — the assertion is signed by the same OAuth key as access tokens.
-    let decoding_key = crate::auth::jwt::oauth_es256_decoding_key(state)
+    let decoding_key = custos_core::auth::jwt::oauth_es256_decoding_key(state)
         .map_err(|_| OAuthTokenError::new("server_error", "assertion verification unavailable"))?;
 
     let origin = state.config.issuer();
@@ -435,7 +435,7 @@ mod tests {
         );
 
         // The load-bearing check: the issued token is accepted by the resource-server verifier.
-        let user = crate::auth::extractors::authenticate_bearer(at, &state).unwrap();
+        let user = custos_core::auth::extractors::authenticate_bearer(at, &state).unwrap();
         assert_eq!(user.did, did);
         assert!(user.scope.is_access());
     }

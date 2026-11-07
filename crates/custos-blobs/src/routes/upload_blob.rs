@@ -26,13 +26,13 @@ use serde::Serialize;
 
 use common::{ApiError, ApiResultExt, ErrorCode};
 
-use crate::db::blobs;
 use custos_core::auth::extractors::AuthenticatedUser;
 use custos_core::auth::service_auth::{
     is_service_auth_request, require_service_auth, ServiceAuthUser,
 };
 use custos_core::CoreState;
 use custos_core::{auth::oauth_scopes, blob_store};
+use custos_db::blobs;
 
 /// The lexicon method a service-auth token must authorize to upload a blob. The official video
 /// flow mints a token with `lxm = com.atproto.repo.uploadBlob`, which `video.bsky.app` presents
@@ -216,12 +216,12 @@ pub async fn upload_blob(
             "size": stored.size_bytes,
         })
         .to_string();
-        crate::db::agent_audit::insert_agent_audit_event(
+        custos_db::agent_audit::insert_agent_audit_event(
             &state.db,
             &uuid::Uuid::new_v4().to_string(),
             registration_id,
             Some(did),
-            crate::db::agent_audit::AgentAuditEventType::BlobUpload,
+            custos_db::agent_audit::AgentAuditEventType::BlobUpload,
             Some(&detail),
         )
         .await?;
@@ -414,7 +414,7 @@ mod tests {
     async fn seed_account_with_atproto_key(state: &CoreState, did: &str, kp: &crypto::P256Keypair) {
         seed_account(state, did).await;
         let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
-        crate::db::dids::seed_did_document(
+        custos_db::dids::seed_did_document(
             &state.db,
             did,
             serde_json::json!({
@@ -559,7 +559,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let events =
-            crate::db::agent_audit::list_agent_audit_events(&state.db, "reg_blob_audit", None, 10)
+            custos_db::agent_audit::list_agent_audit_events(&state.db, "reg_blob_audit", None, 10)
                 .await
                 .unwrap();
         assert_eq!(events.len(), 1);

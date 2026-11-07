@@ -25,13 +25,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::auth::token::generate_token;
-use crate::db::oauth::{
+use crate::oauth_errors::{require, OAuthTokenError};
+use custos_core::auth::token::generate_token;
+use custos_core::CoreState;
+use custos_db::oauth::{
     cleanup_expired_par_requests, get_oauth_client, store_par_request, upsert_oauth_client,
     ClientMetadata, StoredPARParams,
 };
-use crate::oauth_errors::{require, OAuthTokenError};
-use custos_core::CoreState;
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -87,9 +87,9 @@ async fn resolve_par_dpop_jkt(
     let par_url = format!("{}/oauth/par", state.config.issuer());
     let proven_jkt = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
         Some(proof) => {
-            match crate::auth::validate_dpop_for_par(proof, "POST", &par_url) {
+            match custos_core::auth::validate_dpop_for_par(proof, "POST", &par_url) {
                 Ok(jkt) => Some(jkt),
-                Err(crate::auth::DpopTokenEndpointError::InvalidProof(msg)) => {
+                Err(custos_core::auth::DpopTokenEndpointError::InvalidProof(msg)) => {
                     return Err(OAuthTokenError::new("invalid_dpop_proof", msg).into_response());
                 }
                 // `validate_dpop_for_par` never asks for a nonce and never reports a missing
@@ -184,7 +184,7 @@ pub async fn post_par(
         .as_deref()
         .filter(|s| !s.is_empty())
         .unwrap_or("atproto");
-    let scope = match crate::auth::oauth_scopes::normalize_scope_request(requested_scope) {
+    let scope = match custos_core::auth::oauth_scopes::normalize_scope_request(requested_scope) {
         Ok(s) => s,
         Err(desc) => return OAuthTokenError::new("invalid_scope", desc).into_response(),
     };
@@ -206,7 +206,7 @@ pub async fn post_par(
             // The fetched URL is caller-supplied (the client_id itself), so it must go through
             // the SSRF-hardened client, not the plain one used for trusted admin-configured
             // upstreams; `resolve_client_metadata` takes a `HardenedClient`, so no other compiles.
-            match crate::auth::oauth_client_resolution::resolve_client_metadata(
+            match custos_core::auth::oauth_client_resolution::resolve_client_metadata(
                 &state.hardened_http_client,
                 &client_id,
             )
@@ -246,7 +246,7 @@ pub async fn post_par(
         .into_response();
     }
 
-    if let Err(desc) = crate::auth::oauth_client_resolution::validate_private_use_redirect(
+    if let Err(desc) = custos_core::auth::oauth_client_resolution::validate_private_use_redirect(
         &client_id,
         &redirect_uri,
     ) {
@@ -340,8 +340,8 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::db::oauth::register_oauth_client;
     use crate::test_support::{test_app, test_state};
+    use custos_db::oauth::register_oauth_client;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";
@@ -672,7 +672,7 @@ mod tests {
             StatusCode::CREATED,
             "PAR must resolve an unregistered URL client_id by fetching its metadata document"
         );
-        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
+        let cached = custos_db::oauth::get_oauth_client(&state.db, &client_id)
             .await
             .unwrap();
         assert!(
@@ -706,7 +706,7 @@ mod tests {
             "mismatch must be reported distinctly, got: {}",
             json["error_description"]
         );
-        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
+        let cached = custos_db::oauth::get_oauth_client(&state.db, &client_id)
             .await
             .unwrap();
         assert!(cached.is_none(), "mismatched metadata must not be cached");
@@ -733,7 +733,7 @@ mod tests {
             Some("invalid_request"),
             "resolved-but-unlisted redirect_uri is an invalid_request, not an unknown client"
         );
-        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
+        let cached = custos_db::oauth::get_oauth_client(&state.db, &client_id)
             .await
             .unwrap();
         assert!(
@@ -953,11 +953,11 @@ mod tests {
         let request_uri = json["request_uri"].as_str().unwrap();
 
         // The stored params must carry the mode so the authorize/complete tail answers in it.
-        let row = crate::db::oauth::consume_par_request(&state.db, request_uri)
+        let row = custos_db::oauth::consume_par_request(&state.db, request_uri)
             .await
             .unwrap()
             .expect("PAR row stored");
-        let stored: crate::db::oauth::StoredPARParams =
+        let stored: custos_db::oauth::StoredPARParams =
             serde_json::from_str(&row.request_parameters).unwrap();
         assert_eq!(stored.response_mode, "fragment");
     }

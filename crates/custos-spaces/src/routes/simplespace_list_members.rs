@@ -8,9 +8,9 @@ use axum::response::Json;
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::oauth_scopes::SpaceOp;
 use crate::auth::space::authenticate_space_owner;
 use common::{ApiError, ErrorCode};
+use custos_core::auth::oauth_scopes::SpaceOp;
 use custos_core::lexicon::LexiconParams;
 
 const DEFAULT_LIMIT: i64 = 100;

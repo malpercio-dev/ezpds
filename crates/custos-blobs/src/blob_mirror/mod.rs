@@ -41,12 +41,12 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 
-use crate::db::blobs::{self, PhysicalBlob};
 use axum::extract::FromRef;
 use custos_core::blob_store;
 use custos_core::sweep::{Pass, Sweep};
 use custos_core::sweep_status::names;
 use custos_core::CoreState;
+use custos_db::blobs::{self, PhysicalBlob};
 
 /// A configured mirror target: the bucket client plus the object-key namespace it owns.
 pub struct BlobMirror {

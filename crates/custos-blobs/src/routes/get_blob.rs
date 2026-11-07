@@ -23,10 +23,10 @@ use serde::Deserialize;
 
 use common::{ApiError, ErrorCode};
 
-use crate::db::blobs;
 use custos_core::blob_store;
 use custos_core::lexicon::LexiconParams;
 use custos_core::CoreState;
+use custos_db::blobs;
 
 // ── Query parameters ────────────────────────────────────────────────────────
 
@@ -169,7 +169,7 @@ mod tests {
         std::fs::create_dir_all(abs_path.parent().unwrap()).unwrap();
         std::fs::write(&abs_path, content).unwrap();
 
-        crate::db::blobs::insert_blob(
+        custos_db::blobs::insert_blob(
             &state.db,
             &cid,
             did,
@@ -299,7 +299,7 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-        crate::db::blobs::insert_blob(
+        custos_db::blobs::insert_blob(
             &state.db,
             &cid,
             "did:plc:sharesecond",

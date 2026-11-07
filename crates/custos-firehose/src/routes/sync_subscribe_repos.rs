@@ -1537,8 +1537,8 @@ mod tests {
                     .await
                     .expect("build proof CAR");
 
-                let db = crate::db::open_pool("sqlite::memory:").await.unwrap();
-                crate::db::run_migrations(&db).await.unwrap();
+                let db = custos_db::open_pool("sqlite::memory:").await.unwrap();
+                custos_db::run_migrations(&db).await.unwrap();
                 let fh = Firehose::new(db.clone()).await.unwrap();
                 let seq = fh
                     .emit_commit(CommitInput {
@@ -1553,7 +1553,7 @@ mod tests {
                     .await
                     .expect("emit commit");
 
-                let rows = crate::db::firehose_seq::events_in_range(&db, 0, seq, 1)
+                let rows = custos_db::firehose_seq::events_in_range(&db, 0, seq, 1)
                     .await
                     .unwrap();
                 let event = custos_core::firehose::decode_stored_event(

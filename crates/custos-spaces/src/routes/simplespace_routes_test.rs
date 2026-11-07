@@ -12,13 +12,13 @@ use custos_core::CoreState;
 use tower::ServiceExt;
 
 use crate::auth::space::{authorize_credential_request, mint_space_credential, unix_now};
-use crate::db::dids::seed_did_document;
 use crate::test_support::test_app as app;
 use crate::test_support::{
     access_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key, SpaceSigKey,
 };
 use crate::test_support::{send, xrpc_get, xrpc_post};
 use custos_core::space_uri::parse_space_ref;
+use custos_db::dids::seed_did_document;
 
 const ALICE: &str = "did:plc:alicesimplespaceaaaaaaaa";
 const BOB: &str = "did:plc:bobsimplespaceaaaaaaaaaa";

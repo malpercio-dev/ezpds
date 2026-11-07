@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes::{require_space, SpaceOp, SpaceRequest};
 use crate::auth::space::{mint_delegation_token, unix_now};
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes::{require_space, SpaceOp, SpaceRequest};
 
 #[derive(Deserialize)]
 pub struct GetDelegationTokenQuery {
@@ -82,7 +82,7 @@ pub async fn get_delegation_token(
             )
         })?;
     let signer =
-        crate::auth::signing_key::load_repo_signer(&state.db, &user.did, master_key).await?;
+        custos_core::auth::signing_key::load_repo_signer(&state.db, &user.did, master_key).await?;
     let token = mint_delegation_token(|bytes| signer.sign(bytes), &user.did, &space, unix_now()?);
 
     Ok(Json(GetDelegationTokenResponse { token }))

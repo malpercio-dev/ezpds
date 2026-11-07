@@ -8,10 +8,10 @@ use axum::response::Json;
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::{authenticate_space_caller, require_space_grant};
 use crate::db::spaces::{create_space, NewSpace};
 use common::{ApiError, ErrorCode};
+use custos_core::auth::oauth_scopes::{RepoAction, SpaceOp};
 use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]

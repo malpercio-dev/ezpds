@@ -9,9 +9,9 @@ use axum::response::IntoResponse;
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::authenticate_space_owner;
 use common::ApiError;
+use custos_core::auth::oauth_scopes::{RepoAction, SpaceOp};
 use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]

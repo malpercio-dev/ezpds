@@ -286,7 +286,7 @@ fn render_permission_groups(scope: &str, spaces: &SpaceDisplayMap) -> String {
         if token == "atproto" {
             continue;
         }
-        let label = crate::auth::oauth_scopes::resource_group_label(token);
+        let label = custos_core::auth::oauth_scopes::resource_group_label(token);
         match groups.iter_mut().find(|(l, _)| *l == label) {
             Some((_, tokens)) => tokens.push(token),
             None => groups.push((label, vec![token])),

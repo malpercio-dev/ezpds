@@ -136,7 +136,7 @@ pub async fn relay_status(
     // than failing the whole readout — the numeric facts above are the load-bearing ones.
     let relay_cursor_at = match relay_seq {
         Some(rs) if rs > 0 => {
-            match crate::db::firehose_seq::sequenced_at_for_seq(&state.db, rs).await {
+            match custos_db::firehose_seq::sequenced_at_for_seq(&state.db, rs).await {
                 Ok(at) => at,
                 Err(e) => {
                     tracing::warn!(error = %e, relay_seq = rs, "failed to read relay cursor timestamp");

@@ -33,9 +33,9 @@
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
-use crate::db::oauth::{get_oauth_client, ClientMetadata};
 use crate::oauth_errors::OAuthTokenError;
 use custos_core::CoreState;
+use custos_db::oauth::{get_oauth_client, ClientMetadata};
 
 pub(super) const CLIENT_ASSERTION_TYPE_JWT_BEARER: &str =
     "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
@@ -171,13 +171,13 @@ async fn verify_private_key_jwt(
 ///
 /// The inline-`jwks`/`jwks_uri` resolution — including the `jwks_uri` transport policy and the
 /// cached, SSRF-hardened fetch — is shared with Atproto Spaces client attestations; see
-/// [`crate::auth::jwks::client_verification_key`].
+/// [`custos_core::auth::jwks::client_verification_key`].
 async fn resolve_client_key(
     state: &CoreState,
     metadata: &ClientMetadata,
     kid: Option<&str>,
 ) -> Result<DecodingKey, OAuthTokenError> {
-    crate::auth::jwks::client_verification_key(
+    custos_core::auth::jwks::client_verification_key(
         &state.oauth_client_jwks_cache,
         metadata.jwks.as_ref(),
         metadata.jwks_uri.as_deref(),
@@ -204,10 +204,10 @@ mod tests {
     use p256::elliptic_curve::Generate as _;
 
     use super::*;
-    use crate::db::oauth::upsert_oauth_client;
     use crate::test_support::ec_jwk;
     use crate::test_support::test_state;
     use custos_core::CoreState;
+    use custos_db::oauth::upsert_oauth_client;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
 

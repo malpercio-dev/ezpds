@@ -8,9 +8,9 @@ use axum::response::IntoResponse;
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes::{self, SpaceOp, SpaceRequest};
 use common::{ApiError, ErrorCode};
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes::{self, SpaceOp, SpaceRequest};
 use custos_core::lexicon::LexiconParams;
 
 const DEFAULT_LIMIT: i64 = 50;

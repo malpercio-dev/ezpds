@@ -30,14 +30,14 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use crate::db::accounts;
-use crate::db::blobs;
-use crate::db::blocks::SqliteBlockStore;
 use axum::extract::FromRef;
 use custos_core::blob_store;
 use custos_core::sweep::{Pass, Sweep};
 use custos_core::sweep_status::names;
 use custos_core::CoreState;
+use custos_db::accounts;
+use custos_db::blobs;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::{Cid, Repository};
 
 /// Records read per page when walking a collection to collect blob references.

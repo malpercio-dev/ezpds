@@ -125,7 +125,7 @@ pub async fn sweep_expired_revocations(pool: &SqlitePool) -> Result<u64, sqlx::E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::test_pool;
+    use custos_db::test_pool;
 
     #[tokio::test]
     async fn duplicate_jti_rejected_per_scope_and_sweep_reclaims_expired() {

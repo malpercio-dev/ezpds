@@ -8,10 +8,10 @@ use axum::response::IntoResponse;
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::authenticate_space_owner;
 use crate::db::spaces::{delete_members, delete_notify_registrations, mark_space_deleted};
 use common::{ApiError, ErrorCode};
+use custos_core::auth::oauth_scopes::{RepoAction, SpaceOp};
 use custos_core::lexicon::LexiconInput;
 
 /// Most syncers one deletion notifies. The same bound the write fan-out carries; past it a

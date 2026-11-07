@@ -151,7 +151,7 @@ pub async fn apply_space_writes(
                         "write op is missing a record value",
                     )
                 })?;
-                crate::auth::validation::validate_record_formats(value)
+                custos_core::auth::validation::validate_record_formats(value)
                     .map_err(|message| ApiError::new(ErrorCode::InvalidRequest, message))?;
             }
             SpaceWriteAction::Delete => {}
@@ -170,8 +170,8 @@ pub async fn apply_space_writes(
     // path folds this guard into its root CAS, but the space head's CAS is on
     // `space_repos`, not `accounts`, so a pre-transaction check would leave a
     // window for a concurrent deactivation to land between check and commit.
-    use crate::db::accounts::AccountLifecycle;
-    let admitted = match crate::db::accounts::account_lifecycle(&mut *tx, did).await? {
+    use custos_db::accounts::AccountLifecycle;
+    let admitted = match custos_db::accounts::account_lifecycle(&mut *tx, did).await? {
         Some(AccountLifecycle::Active) => true,
         Some(AccountLifecycle::Deactivated) => admission == SpaceWriteAdmission::Import,
         Some(_) => false,

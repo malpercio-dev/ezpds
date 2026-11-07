@@ -16,10 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
-use crate::db::blocks::SqliteBlockStore;
 use custos_core::auth::extractors::AuthenticatedUser;
 use custos_core::lexicon::LexiconParams;
 use custos_core::CoreState;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 
 // ── Query parameters ──────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ pub async fn list_missing_blobs(
     let limit = params.limit as usize;
 
     // No repo yet → nothing referenced, nothing missing.
-    let Some(head) = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    let Some(head) = custos_db::accounts::get_repo_root_cid(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to fetch repo root");
@@ -89,7 +89,7 @@ pub async fn list_missing_blobs(
 
     // Diff against the blobs this account has actually uploaded.
     let referenced_cids: Vec<String> = refs.iter().map(|(cid, _)| cid.clone()).collect();
-    let present = crate::db::blobs::present_cids(&state.db, did, &referenced_cids)
+    let present = custos_db::blobs::present_cids(&state.db, did, &referenced_cids)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to check uploaded blobs");
@@ -174,7 +174,7 @@ async fn collect_repo_blob_refs(
         }
         let record_uri = format!("at://{did}/{key}");
 
-        let row = crate::db::blocks::get_block(&state.db, &cid_str)
+        let row = custos_db::blocks::get_block(&state.db, &cid_str)
             .await
             .map_err(|e| {
                 {
@@ -295,7 +295,7 @@ mod tests {
         let token = access_jwt(&state.jwt_secret, did);
 
         // Mark the blob as already uploaded for this account.
-        crate::db::blobs::insert_blob(
+        custos_db::blobs::insert_blob(
             &state.db,
             BLOB_CID_A,
             did,

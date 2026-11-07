@@ -174,7 +174,7 @@ pub async fn sign_current_commit(
             )
         })?;
     let signing_key =
-        crate::auth::signing_key::load_repo_signing_key(&state.db, did, master_key).await?;
+        custos_core::auth::signing_key::load_repo_signing_key(&state.db, did, master_key).await?;
 
     crypto::sign_space_commit(
         &crypto::SpaceCommitCtx {

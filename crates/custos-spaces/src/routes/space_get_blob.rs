@@ -52,7 +52,7 @@ pub async fn space_get_blob(
         return Err(blob_not_found());
     }
 
-    let blob = crate::db::blobs::get_owned_blob(&state.db, &params.repo, &params.cid)
+    let blob = custos_db::blobs::get_owned_blob(&state.db, &params.repo, &params.cid)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cid = %params.cid, "failed to query blob metadata");

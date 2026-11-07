@@ -40,9 +40,9 @@ use axum::response::IntoResponse;
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::space_record_write::{SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp};
 use common::{ApiError, ErrorCode};
+use custos_core::auth::oauth_scopes::{RepoAction, SpaceOp};
 
 /// Same ceiling as `com.atproto.repo.importRepo`. A permissioned repo has no MST overhead, so
 /// this buys proportionally more records than it does on the public path.
@@ -82,8 +82,8 @@ pub async fn space_import_repo(
     // Precondition: deactivated. Read before buffering the (large) body so an active account is
     // refused cheaply; `apply_space_writes` re-reads the lifecycle inside its commit transaction,
     // which is what actually closes the race against a concurrent `activateAccount`.
-    match crate::db::accounts::account_lifecycle(&state.db, &did).await? {
-        Some(crate::db::accounts::AccountLifecycle::Deactivated) => {}
+    match custos_db::accounts::account_lifecycle(&state.db, &did).await? {
+        Some(custos_db::accounts::AccountLifecycle::Deactivated) => {}
         Some(_) => {
             return Err(ApiError::new(
                 ErrorCode::Forbidden,

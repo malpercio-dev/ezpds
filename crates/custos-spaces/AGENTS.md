@@ -42,8 +42,8 @@ src/
   space_oplog_sweep.rs — hourly `space_repo_ops` compaction sweep (7-day retention): the oplog is droppable by spec, and a syncer whose `since` predates the window heals via `getRepo` — see module doc
   views.rs         — shared handler-free support for the space + simplespace routes: space-ref parsing, the `validate`-flag record check, stored-block decoding, the write-result shape, repo-head load + per-serving commit signing (`load_repo`/`sign_current_commit`/`commit_json`), blob-reference derivation (`space_blob_cids`), and the simplespace config's lexicon-union ↔ column mapping
   test_support.rs  — `test-support` feature (and this crate's own tests): `test_app` merges both routers under the same layers `pds` applies (shared stack, XRPC error dialect, CORS), so a path no Spaces route claims is a plain 404 here — tests that need `pds`'s `/xrpc/{method}` catch-all stay in `pds`
-  auth/            — the space authorization seam (table below); `custos_core::auth` is re-exported here
-  db/              — the space query modules (table below); `custos_db`'s cross-feature modules are re-exported here crate-privately
+  auth/            — the space authorization seam (table below); the verification core is named at `custos_core::auth::…`
+  db/              — the space query modules (table below); the shared tables are named at `custos_db::…`
   routes/          — one file per endpoint; `routes/mod.rs` re-exports handler functions only
 ```
 

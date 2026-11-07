@@ -50,11 +50,6 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agent_child_core::{mint_child_account, ChildRegistration};
-use crate::db::agent_auth::{
-    claim_agent_identity, complete_agent_claim_attempt, get_agent_claim_attempt_by_user_code,
-    get_agent_identity, get_agent_identity_by_claim_token, latest_agent_claim_attempt_for_identity,
-    AgentIdentityStatus, ClaimAttemptStatus,
-};
 use custos_core::auth::agent_assertion::{
     mint_identity_assertion, parse_sqlite_datetime, scopes_to_json, start_claim_attempt,
     to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
@@ -62,6 +57,11 @@ use custos_core::auth::agent_assertion::{
 use custos_core::auth::guards::{authenticate_account_owner, OwnerAuthError};
 use custos_core::auth::oauth_scopes::intersect_scope_tokens;
 use custos_core::CoreState;
+use custos_db::agent_auth::{
+    claim_agent_identity, complete_agent_claim_attempt, get_agent_claim_attempt_by_user_code,
+    get_agent_identity, get_agent_identity_by_claim_token, latest_agent_claim_attempt_for_identity,
+    AgentIdentityStatus, ClaimAttemptStatus,
+};
 
 // ── POST /agent/identity/claim (initiate) ─────────────────────────────────────
 
@@ -472,12 +472,12 @@ async fn confirm(
         "scopes": scopes,
     })
     .to_string();
-    crate::db::agent_audit::insert_agent_audit_event(
+    custos_db::agent_audit::insert_agent_audit_event(
         &mut *tx,
         &uuid::Uuid::new_v4().to_string(),
         &identity.id,
         Some(&caller_did),
-        crate::db::agent_audit::AgentAuditEventType::ClaimConfirmed,
+        custos_db::agent_audit::AgentAuditEventType::ClaimConfirmed,
         Some(&confirm_detail),
     )
     .await?;
@@ -514,7 +514,7 @@ async fn confirm(
 async fn confirm_with_child(
     state: &CoreState,
     caller_did: &str,
-    identity: &crate::db::agent_auth::AgentIdentityRow,
+    identity: &custos_db::agent_auth::AgentIdentityRow,
     claim_attempt_id: &str,
     bind_did: Option<&str>,
     child: &ClaimConfirmChild,

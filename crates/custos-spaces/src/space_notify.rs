@@ -273,7 +273,7 @@ async fn deliver(
         .map(|s| &*s.0)
         .ok_or_else(|| "signing key master key not configured".to_string())?;
     let now = unix_now().map_err(|e| e.to_string())?;
-    let token = crate::auth::signing_key::mint_account_service_auth(
+    let token = custos_core::auth::signing_key::mint_account_service_auth(
         &state.db,
         master_key,
         signer_did,
@@ -399,12 +399,12 @@ mod tests {
     //! retry ladder — is only observable here, against a wiremock standing in for that host.
 
     use super::*;
-    use crate::db::dids::seed_did_document;
     use crate::db::space_notify::upsert_registration;
     use crate::db::spaces::{insert_space, NewSpace};
     use crate::test_support::{seed_account_with_repo, state_with_master_key};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use custos_core::space_uri::parse_space_ref;
+    use custos_db::dids::seed_did_document;
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

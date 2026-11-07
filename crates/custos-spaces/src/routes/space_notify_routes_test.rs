@@ -19,13 +19,13 @@ use axum::http::{self, Request, StatusCode};
 use custos_core::CoreState;
 
 use crate::auth::space::{mint_space_credential, unix_now};
-use crate::db::dids::seed_did_document;
 use crate::space_record_write::{
     apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
 };
 use crate::test_support::{access_jwt, seed_account_with_repo, state_with_master_key, SpaceSigKey};
 use crate::test_support::{send, xrpc_get as get, xrpc_post as post};
 use custos_core::space_uri::parse_space_ref;
+use custos_db::dids::seed_did_document;
 
 const ALICE: &str = "did:plc:alicenotifyaaaaaaaaaaaa";
 const BOB: &str = "did:plc:bobnotifyaaaaaaaaaaaaaa";
@@ -650,7 +650,7 @@ async fn foreign_repo_token(state: &CoreState, lxm: &str) -> (String, String) {
     seed_undeliverable(state, CAROL, &kp).await;
     let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
     let now = crate::auth::space::unix_now().unwrap();
-    let token = crate::auth::jwt::mint_service_auth_jwt(
+    let token = custos_core::auth::jwt::mint_service_auth_jwt(
         |b| signer.sign(b),
         CAROL,
         &state.config.resolve_server_did(),
@@ -667,7 +667,7 @@ async fn service_auth_for(state: &CoreState, did: &str, lxm: &str) -> String {
     seed_undeliverable(state, did, &kp).await;
     let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
     let now = crate::auth::space::unix_now().unwrap();
-    crate::auth::jwt::mint_service_auth_jwt(
+    custos_core::auth::jwt::mint_service_auth_jwt(
         |b| signer.sign(b),
         did,
         &state.config.resolve_server_did(),
@@ -750,7 +750,7 @@ fn credential_jti(credential: &str) -> String {
 
 fn revoke_token(signer: &repo_engine::CommitSigner, iss: &str, aud: &str) -> String {
     let now = unix_now().unwrap();
-    crate::auth::jwt::mint_service_auth_jwt(
+    custos_core::auth::jwt::mint_service_auth_jwt(
         |b| signer.sign(b),
         iss,
         aud,
