@@ -37,7 +37,7 @@ absent — the window binding already covers them, so they need no per-command e
 
 | Permission | Why it's present |
 | --- | --- |
-| `core:event:default` | The frontend calls `listen()` for the `auth_ready` event (session restored on launch) and `plc_alert` event (`IdentityListHome` updates alert badges). The backend *emits* these from Rust, which is not ACL-gated; the webview *listening* is. |
+| `core:event:default` | The frontend calls `listen()` for the `plc_alert` event (`IdentityListHome` updates alert badges). The backend *emits* these from Rust, which is not ACL-gated; the webview *listening* is. |
 | `auth-session:default` | The in-app OAuth flow calls `plugin:auth-session\|start` (the vendored `tauri-plugin-auth-session` / `ASWebAuthenticationSession`) for both the create and claim login flows. |
 
 ### identity-wallet — `capabilities/mobile.json`

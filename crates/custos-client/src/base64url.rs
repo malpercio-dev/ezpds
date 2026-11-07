@@ -1,13 +1,14 @@
 // pattern: Functional Core
 
-//! The one base64 alphabet this crate uses — unpadded base64url (RFC 4648 §5), for DPoP
-//! proofs, JWT segments, and JWK coordinates. Centralizes the `URL_SAFE_NO_PAD` engine choice
+//! The one base64 alphabet this crate uses — unpadded base64url (RFC 4648 §5), for JWT
+//! segments. Centralizes the `URL_SAFE_NO_PAD` engine choice
 //! so call sites read as "this is base64url" rather than repeating the constant.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 
-/// Encode bytes as unpadded base64url.
+/// Encode bytes as unpadded base64url. Test-only: production code only decodes JWT segments.
+#[cfg(test)]
 pub(crate) fn b64url_encode(input: impl AsRef<[u8]>) -> String {
     URL_SAFE_NO_PAD.encode(input)
 }

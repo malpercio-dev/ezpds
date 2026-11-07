@@ -385,12 +385,6 @@ mod tests {
     use super::*;
     use httpmock::prelude::*;
 
-    fn test_dpop_keypair() -> Result<custos_client::DpopKeypair, custos_client::DpopError> {
-        custos_client::DpopKeypair::get_or_create::<crate::keystore::WalletKeychain>(
-            "test-dpop-key",
-        )
-    }
-
     #[test]
     fn test_pds_client_default() {
         let client = PdsClient::default();
@@ -1250,15 +1244,12 @@ mod tests {
     /// request_plc_operation_signature sends correct request
     #[tokio::test]
     async fn test_request_plc_operation_signature_success() {
-        use std::sync::{Arc, Mutex};
-
         let mock_server = MockServer::start();
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.identity.requestPlcOperationSignature")
-                .header_exists("Authorization")
-                .header_exists("DPoP")
+                .header("Authorization", "Bearer test_access_token")
                 // No-input procedure: a spec-strict PDS rejects any body or Content-Type.
                 .is_true(|req| req.body_ref().is_empty())
                 .is_true(|req| {
@@ -1270,20 +1261,12 @@ mod tests {
         });
 
         // Create a test session and OAuthClient
-        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = test_dpop_keypair().expect("keypair must exist");
-        let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
+            "test_access_token".to_string(),
+            String::new(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer");
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_ok());
@@ -1292,8 +1275,6 @@ mod tests {
     /// request_plc_operation_signature handles error
     #[tokio::test]
     async fn test_request_plc_operation_signature_error() {
-        use std::sync::{Arc, Mutex};
-
         let mock_server = MockServer::start();
 
         mock_server.mock(|when, then| {
@@ -1304,20 +1285,12 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = test_dpop_keypair().expect("keypair must exist");
-        let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
+            "test_access_token".to_string(),
+            String::new(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer");
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_err());
@@ -1333,15 +1306,12 @@ mod tests {
     /// sign_plc_operation sends token and rotation keys
     #[tokio::test]
     async fn test_sign_plc_operation_success() {
-        use std::sync::{Arc, Mutex};
-
         let mock_server = MockServer::start();
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.identity.signPlcOperation")
-                .header_exists("Authorization")
-                .header_exists("DPoP");
+                .header("Authorization", "Bearer test_access_token");
             then.status(200).json_body(serde_json::json!({
                 "operation": {
                     "type": "plc_operation",
@@ -1350,20 +1320,12 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = test_dpop_keypair().expect("keypair must exist");
-        let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
+            "test_access_token".to_string(),
+            String::new(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer");
 
         let request = SignPlcOperationRequest {
             token: "test_email_token".to_string(),
@@ -1382,8 +1344,6 @@ mod tests {
     /// sign_plc_operation omits optional null fields
     #[tokio::test]
     async fn test_sign_plc_operation_omits_none_fields() {
-        use std::sync::{Arc, Mutex};
-
         let mock_server = MockServer::start();
 
         let mock = mock_server.mock(|when, then| {
@@ -1394,20 +1354,12 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = test_dpop_keypair().expect("keypair must exist");
-        let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
+            "test_access_token".to_string(),
+            String::new(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer");
 
         let request = SignPlcOperationRequest {
             token: "test_token".to_string(),
@@ -1427,35 +1379,24 @@ mod tests {
     /// get_recommended_did_credentials returns credentials
     #[tokio::test]
     async fn test_get_recommended_did_credentials_success() {
-        use std::sync::{Arc, Mutex};
-
         let mock_server = MockServer::start();
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials")
-                .header_exists("Authorization")
-                .header_exists("DPoP");
+                .header("Authorization", "Bearer test_access_token");
             then.status(200).json_body(serde_json::json!({
                 "rotationKeys": ["did:key:zQ3test1"],
                 "alsoKnownAs": ["at://alice.test"]
             }));
         });
 
-        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = test_dpop_keypair().expect("keypair must exist");
-        let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
+            "test_access_token".to_string(),
+            String::new(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer");
 
         let result = get_recommended_did_credentials(&oauth_client).await;
         assert!(result.is_ok());
@@ -1522,8 +1463,6 @@ mod tests {
     /// XRPC get_recommended_did_credentials error: returns NetworkError on 403
     #[tokio::test]
     async fn test_get_recommended_did_credentials_error() {
-        use std::sync::{Arc, Mutex};
-
         let mock_server = MockServer::start();
 
         mock_server.mock(|when, then| {
@@ -1534,20 +1473,12 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = test_dpop_keypair().expect("keypair must exist");
-        let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
+            "test_access_token".to_string(),
+            String::new(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer");
 
         let result = get_recommended_did_credentials(&oauth_client).await;
         assert!(result.is_err());
@@ -1595,8 +1526,6 @@ mod tests {
     /// NetworkError. (The DPoP OAuthClient does not swallow non-`use_dpop_nonce` 400s.)
     #[tokio::test]
     async fn test_sign_plc_operation_error() {
-        use std::sync::{Arc, Mutex};
-
         let mock_server = MockServer::start();
 
         mock_server.mock(|when, then| {
@@ -1607,20 +1536,12 @@ mod tests {
             }));
         });
 
-        let session = Arc::new(Mutex::new(custos_client::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = test_dpop_keypair().expect("keypair must exist");
-        let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
+            "test_access_token".to_string(),
+            String::new(),
+            mock_server.base_url(),
+        )
+        .expect("new_bearer");
 
         let request = SignPlcOperationRequest {
             token: "test_email_token".to_string(),

@@ -1,15 +1,13 @@
-//! `custos-client`: identity-wallet's DPoP/OAuth/XRPC HTTP client, extracted from the wallet's
+//! `custos-client`: identity-wallet's Bearer-session/XRPC HTTP client, extracted from the wallet's
 //! `src-tauri`. Tauri-free by design — it depends on nothing from that `src-tauri`, so it can
 //! be reused by a platform-agnostic wallet core. It is *not* shared with admin-companion, whose
 //! request signing is a different scheme (ADR-0018's device-signed envelope, no OAuth/XRPC)
 //! with nothing to share here — see this crate's `AGENTS.md` scope note.
 //!
-//! - [`dpop`]: RFC 9449 DPoP proof construction/signing ([`DpopKeypair`]).
 //! - [`error`]: the shared XRPC failure shape ([`PdsClientError`]) and the classification tail
 //!   (`xrpc_ok`/`xrpc_json`) every XRPC call routes through, plus the [`TransportObserver`]
 //!   seam apps use to record diagnostics breadcrumbs.
-//! - [`oauth_client`]: [`OAuthClient`], the authenticated XRPC HTTP client (DPoP and Bearer
-//!   modes).
+//! - [`oauth_client`]: [`OAuthClient`], the authenticated XRPC HTTP client (Bearer sessions).
 //! - [`custos_client`]: [`CustosClient`], the pre-session HTTP client for one configured
 //!   PDS — plain JSON/Bearer requests plus OAuth PAR/token-exchange.
 //! - [`pds_client`]: [`PdsClient`], discovery/auth/XRPC against *arbitrary* PDS endpoints and
@@ -29,8 +27,7 @@
 //!   validate a restored session's sub/aud binding. No Keychain/persistence concept — the
 //!   caller resolves signing and persists the result (see that module's doc).
 //!
-//! App-specific concerns this crate deliberately does not own: Keychain storage (apps supply
-//! an `ios_device_key::KeychainStore` impl), diagnostics UI/export (apps supply a
+//! App-specific concerns this crate deliberately does not own: Keychain storage, diagnostics UI/export (apps supply a
 //! [`TransportObserver`]), and the wallet's own OAuth client identity (`client_id`,
 //! `redirect_uri`) — those stay in the app, since they name the app itself.
 
@@ -38,7 +35,6 @@ pub mod agents;
 pub mod app_passwords;
 mod base64url;
 pub mod custos_client;
-pub mod dpop;
 pub mod error;
 pub mod identity;
 pub mod migration;
@@ -47,16 +43,9 @@ pub mod pds_client;
 pub mod sovereign_session;
 
 pub use custos_client::{CustosClient, ParRequest, ParResponse, TokenErrorResponse};
-pub use dpop::{DpopError, DpopKeypair};
 pub use error::{
     classify_xrpc_error, classify_xrpc_response, error_code_is, parse_xrpc_error_envelope,
     xrpc_json, xrpc_ok, NoopObserver, PdsClientError, TransportObserver,
 };
-pub use oauth_client::{
-    NoopTokenPersister, OAuthClient, OAuthError, OAuthSession, TokenPersister, TokenResponse,
-};
+pub use oauth_client::{OAuthClient, OAuthError};
 pub use pds_client::{DescribeServerObserver, NoopDescribeServerObserver, PdsClient};
-
-// Re-exported so callers can implement `DpopKeypair::get_or_create::<K>` against the same
-// `KeychainStore` trait without a direct `ios-device-key` dependency of their own.
-pub use ios_device_key::KeychainStore;
