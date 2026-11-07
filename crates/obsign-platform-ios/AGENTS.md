@@ -23,4 +23,4 @@ The iOS implementations of `obsign-core`'s platform traits ([ADR-0039](../../doc
 ## Boundaries
 
 - No Tauri. The APNs bridge stays in the wallet: it patches the Tauri app delegate's class.
-- `ios-device-key` still links Security.framework itself on Apple targets (it reaches the core through `custos-client`'s `KeychainStore` re-export), but no wallet device key goes through it: the global key is `EnclaveSigner`'s too, under `KeyId::Global`.
+- `ios-device-key` is the console's key crate and is not in the wallet's dependency graph: every wallet device key, the global one included, is `EnclaveSigner`'s under its `KeyId`.

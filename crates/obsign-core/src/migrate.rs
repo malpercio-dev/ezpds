@@ -1729,9 +1729,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_build_and_submit_migration_self_signs_repoint() {
-        use crate::oauth::OAuthSession;
         use httpmock::prelude::*;
-        use std::sync::{Arc, Mutex};
 
         let did = "did:plc:migratetest";
         const DEST_SIGN: &str = "did:key:zDESTSIGN";
@@ -1805,14 +1803,7 @@ mod tests {
                     "services": { ATPROTO_PDS_SERVICE_ID: { "type": "AtprotoPersonalDataServer", "endpoint": "https://new.pds" } }
                 }));
         });
-        let keypair = crate::oauth::test_dpop_keypair().expect("dpop keypair");
-        let session = Arc::new(Mutex::new(OAuthSession {
-            access_token: "test-access".to_string(),
-            refresh_token: "test-refresh".to_string(),
-            expires_at: u64::MAX, // never trigger a refresh
-            dpop_nonce: None,
-        }));
-        let dest_client = crate::oauth_client::new_for_test(keypair, session, dest.base_url());
+        let dest_client = crate::oauth_client::bearer_for_test("test-access", dest.base_url());
 
         // Build the self-signed repoint op.
         let built = build_migration_op(&pds_client, &dest_client, did)

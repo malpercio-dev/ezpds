@@ -6,8 +6,7 @@
 //! software key via the `crypto` crate, with the private scalar stored in the Keychain.
 //!
 //! The identity wallet's device keys are `obsign_core::signer`'s (that module doc says why);
-//! the wallet reaches this crate only for the [`KeychainStore`] seam `custos_client::DpopKeypair`
-//! stores the DPoP key through.
+//! nothing in the wallet depends on this crate.
 //!
 //! Public API: [`get_or_create`] (idempotent — every call returns the same key) and [`sign`]
 //! (raw 64-byte `r||s` ECDSA). Signatures are **low-S normalized on both paths** —

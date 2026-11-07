@@ -95,7 +95,7 @@ Both apps' bundle identifiers, each app's stable Keychain access group declared 
 
 ### Keychain account names
 
-Every Keychain account-name constant the wallet and console use to store device keys, tokens, ceremony records, and settings (for example `device-rotation-key-priv`, `oauth-access-token`, `relay-base-url`, and the per-DID `{did}:device-key` family in `apps/identity-wallet/src-tauri/src/keychain.rs`; `admin-device-key-priv` and `notification-key-priv` in the console). A renamed account is an unreachable key on an already-installed phone, with no error.
+Every Keychain account-name constant the wallet and console use to store device keys, tokens, ceremony records, and settings (for example `device-rotation-key-priv`, `relay-base-url`, and the per-DID `{did}:device-key` family in `apps/identity-wallet/src-tauri/src/keychain.rs`; `admin-device-key-priv` and `notification-key-priv` in the console). A renamed account is an unreachable key on an already-installed phone, with no error.
 
 - **Oracle:** `account_names_are_pinned` in each app's `keychain.rs` holds every account name, the per-DID templates, and the `SERVICE` string against a literal golden list (run by `just ios-pr-check` / `just admin-pr-check`); `obsign-core`'s `signer::tests::key_ids_route_to_their_own_accounts` (Linux gate) holds that the wallet's global and per-DID device keys each resolve to their own pinned accounts; `ios-device-key`'s `stores_under_the_supplied_account_name_verbatim` (Linux gate) holds that the console's shared crate stores under exactly the name the app supplies.
 

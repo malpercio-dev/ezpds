@@ -7,8 +7,7 @@ The operator console's per-device P-256 key — Secure Enclave on a real iOS dev
 software key everywhere else — over a Keychain the calling app supplies; the key is the
 device's admin credential. The identity wallet's device keys go through
 `obsign_core::signer::Signer` instead (the Secure Enclave implementation is
-`crates/obsign-platform-ios`), so the wallet reaches this crate only for the
-`KeychainStore` seam `custos_client::DpopKeypair` stores the DPoP key through.
+`crates/obsign-platform-ios`); nothing in the wallet depends on this crate.
 
 The module docs are the authority: `src/lib.rs` for the seam (why the Keychain is a trait
 and not a `#[cfg(test)]` switch), `src/device_key.rs` for the two key paths.

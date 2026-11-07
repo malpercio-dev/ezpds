@@ -1,59 +1,34 @@
 // pattern: Mixed (unavoidable)
 
-//! `Core` (the app-wide Tauri-managed state) plus the wallet's OAuth DPoP client
-//! machinery. The types (`Core`, `OAuthSession`) are Functional Core.
+//! `Core` (the app-wide Tauri-managed state): the flow-state slots and both clients.
 //!
-//! **`Core` slots.** `oauth_session` (`std::sync::Mutex<Option<_>>`, cleanly empty
-//! outside a flow — restored from Keychain-persisted tokens on startup; the create-flow login
-//! that used to populate it live was retired, see below); `custos_client` (`OnceLock`, set
-//! once from the Keychain URL or first-launch config, compile-time default otherwise);
-//! `pds_client` (eager — cheap and stateless; exposed via [`Core::pds_client`] for the
-//! claim-flow commands); and the per-flow `tokio::sync::Mutex<Option<_>>` slots
-//! (`claim_state`, `recovery_state`, `rotation_state`, `migration_state`,
-//! `orchestration_state`, `share_recovery_state`) — tokio mutexes because those commands hold
-//! the lock across `.await` points. Neither source login (claim, outbound migration) parks
-//! OAuth state here: both are password `createSession` (`claim::authenticate_source_pds`,
-//! `migration_orchestrator::authenticate_migration_source`).
+//! **`Core` slots.** `custos_client` (`OnceLock`, set once from the Keychain URL or
+//! first-launch config, compile-time default otherwise); `pds_client` (eager — cheap and
+//! stateless; exposed via [`Core::pds_client`] for the claim-flow commands); and the per-flow
+//! `tokio::sync::Mutex<Option<_>>` slots (`claim_state`, `recovery_state`, `rotation_state`,
+//! `migration_state`, `orchestration_state`, `share_recovery_state`) — tokio mutexes because
+//! those commands hold the lock across `.await` points. Neither source login (claim, outbound
+//! migration) parks OAuth state here: both are password `createSession`
+//! (`claim::authenticate_source_pds`, `migration_orchestrator::authenticate_migration_source`),
+//! and every other authenticated operation resolves a per-DID session via
+//! `SessionProvider::full_access_client` (minted by `sovereign_login`/`password_unlock`
+//! against the device key the genesis op pinned at `rotationKeys[0]`).
 //!
-//! **The create-flow OAuth login has no live caller.** It used to be `prepare_oauth_flow`
-//! (DPoP keygen + PKCE + PAR → authorize URL) and `complete_oauth_flow` (callback validation +
-//! DPoP-bound token exchange into `oauth_session` and the Keychain), split around the in-app
-//! `ASWebAuthenticationSession`; both were removed once the create flow started ending at
-//! `home` with no OAuth round trip. The final authorize step was unreachable for a
-//! passwordless account (a password form with no password to enter, and a wallet hand-off
-//! pointing at the very app hosting the browser), and the evidence said it proved nothing —
-//! `POST /v1/dids` already returns `status: "active"` plus a session token, `oauth_session`
-//! had writers but zero readers, and `OAuthClient`'s DPoP mode has no production caller
-//! (Bearer construction does not touch the shared [`DpopKeypair`] at all — a Bearer client's
-//! `dpop` field is `None`, so it never generates or persists a key) because every
-//! authenticated operation resolves a per-DID session
-//! via `SessionProvider::full_access_client` (minted by `sovereign_login`/`password_unlock`
-//! against the device key the genesis op pinned at `rotationKeys[0]`). [`DpopKeypair`], the
-//! global `oauth-*` Keychain items, the `auth_ready` startup emit, and the vendored
-//! `tauri-plugin-auth-session` remain — `OAuthClient`'s DPoP mode and the claim/migration
-//! password logins still depend on them.
-//!
-//! Also here: [`DpopKeypair`] (P-256, persisted in Keychain and reused across flows so a
-//! server can `jkt`-bind tokens to it) — the type itself, its Keychain wiring, and the
-//! `custos_client::OAuthClient` adapters (diagnostics, token persistence) live in
-//! `custos-client` and this module respectively; see the crate's own module docs for the
-//! DPoP/XRPC machinery. [`OAuthError`] serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; its
+//! There is no global OAuth session and no DPoP key: the create flow ends at `home` with no
+//! OAuth round trip. [`OAuthError`] serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; its
 //! TypeScript union must match.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
-pub use custos_client::{DpopKeypair, OAuthError, OAuthSession};
+pub use custos_client::OAuthError;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
-/// App-wide OAuth state registered via `.manage()` in lib.rs.
+/// App-wide state registered via `.manage()` in lib.rs.
 ///
-/// Option-wrapped so the state is cleanly empty before any OAuth flow starts and after a
-/// flow completes.
+/// Flow slots are Option-wrapped so they are cleanly empty before a flow starts and after it
+/// completes.
 pub struct Core {
-    /// The active authenticated session after a successful token exchange.
-    /// Restored from the Keychain on startup; read by `OAuthClient` for every request.
-    pub oauth_session: Mutex<Option<OAuthSession>>,
     /// Runtime custos client. Populated from Keychain on startup or by
     /// `save_pds_url` on first launch. Falls back to the compile-time default if unset.
     custos_client: OnceLock<crate::http::CustosClient>,
@@ -97,7 +72,6 @@ pub struct Core {
 impl Core {
     pub fn new() -> Self {
         Self {
-            oauth_session: Mutex::new(None),
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::new_with_diagnostics(),
             claim_state: tokio::sync::Mutex::new(None),
@@ -152,21 +126,3 @@ impl Default for Core {
         Self::new()
     }
 }
-
-// ── DPoP keypair Keychain wiring ─────────────────────────────────────────────
-//
-// `DpopKeypair` itself (proof construction/signing) lives in `custos_client::dpop` — this is
-// only the wallet's Keychain wiring for it.
-
-/// Load or create the wallet's DPoP keypair via its real Keychain, at the same account this
-/// module used before the `custos-client` extraction. `OAuthClient::new` (DPoP mode) has no
-/// production caller today — see this module's doc — so this is currently reachable only from
-/// tests; kept as the one production-shaped entry point a revived create-flow OAuth login would
-/// call.
-#[cfg(any(test, feature = "test-support"))]
-pub fn test_dpop_keypair() -> Result<DpopKeypair, custos_client::DpopError> {
-    DpopKeypair::get_or_create::<crate::keystore::WalletKeychain>(DPOP_KEY_PRIV_ACCOUNT)
-}
-
-/// The wallet's DPoP proof-signing key account (pinned by the wallet's `keychain.rs`).
-pub const DPOP_KEY_PRIV_ACCOUNT: &str = "oauth-dpop-key-priv";
