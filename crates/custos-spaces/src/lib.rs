@@ -4,8 +4,8 @@
 //! `/v1/space/import-repo` and the operator's `/v1/admin/spaces` pair, the space authorization
 //! seam, the space query modules, both space sweeps, and the `spaces` capability entry.
 //!
-//! `pds` is the composition root and consumes only what this file exports: [`router`] / [`internal_router`], [`spawn_sweeps`], [`CAPABILITY`], [`purge_account_rows`],
-//! the [`space_record_write`] choke point, and (behind `test-support`)
+//! `pds` is the composition root and consumes only what this file exports: [`router`] / [`internal_router`],
+//! [`spawn_sweeps`], [`CAPABILITY`], [`purge_account_rows`], the [`space_record_write`] choke point, and (behind `test-support`)
 //! [`test_support`]. See `AGENTS.md`.
 
 use axum::extract::FromRef;

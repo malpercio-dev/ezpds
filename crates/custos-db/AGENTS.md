@@ -20,7 +20,8 @@ depends on no HTTP stack and on nothing above it.
   (`crates/pds/src/db/` today) until a second crate needs it.
 
 Every consumer, `pds` included, imports these as `custos_db::…`; `pds` has no re-export shim
-(`crate::db` holds only the query modules `pds` alone reads). Pool and migration entry points exist only here.
+(`crate::db` holds only the query modules `pds` alone reads). Pool and migration entry points
+exist only here.
 
 ## Contracts
 

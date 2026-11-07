@@ -1,6 +1,6 @@
 //! Fixtures for tests that drive the Spaces surface: everything in `custos_core::test_support`
-//! (re-exported below), the router the tests send through ([`test_app`]), the space request signer ([`SpaceSigKey`]), and the
-//! request builders and record bodies the space test modules share.
+//! (re-exported below), the router the tests send through ([`test_app`]), the space request
+//! signer ([`SpaceSigKey`]), and the request builders and record bodies the space test modules share.
 //!
 //! What stays file-local on purpose, because it genuinely differs rather than merely being
 //! spelled differently: each module's `setup()` (different fixtures per surface), `write_one`
