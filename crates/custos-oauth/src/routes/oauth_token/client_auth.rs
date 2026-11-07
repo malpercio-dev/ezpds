@@ -201,7 +201,7 @@ async fn resolve_client_key(
 mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-    use rand_core::OsRng;
+    use p256::elliptic_curve::Generate as _;
 
     use super::*;
     use crate::db::oauth::upsert_oauth_client;
@@ -307,7 +307,7 @@ mod tests {
             }),
         )
         .await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
         expect_invalid_client(&state, &assertion).await;
     }
@@ -315,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn confidential_client_with_valid_assertion_is_accepted() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         seed_client(&state, confidential_metadata(&key)).await;
         let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
         authenticate_token_client(
@@ -333,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn confidential_client_missing_assertion_is_rejected() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         seed_client(&state, confidential_metadata(&key)).await;
         let err = authenticate_token_client(&state, CLIENT_ID, None, None)
             .await
@@ -344,9 +344,9 @@ mod tests {
     #[tokio::test]
     async fn confidential_client_wrong_key_is_rejected() {
         let state = test_state().await;
-        let registered = SigningKey::random(&mut OsRng);
+        let registered = SigningKey::generate();
         seed_client(&state, confidential_metadata(&registered)).await;
-        let imposter = SigningKey::random(&mut OsRng);
+        let imposter = SigningKey::generate();
         let assertion = sign_assertion(&imposter, "k1", valid_claims(CLIENT_ID));
         expect_invalid_client(&state, &assertion).await;
     }
@@ -354,7 +354,7 @@ mod tests {
     #[tokio::test]
     async fn assertion_iss_sub_must_be_client_id() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         seed_client(&state, confidential_metadata(&key)).await;
         let assertion = sign_assertion(&key, "k1", valid_claims("https://other.example/meta.json"));
         expect_invalid_client(&state, &assertion).await;
@@ -363,7 +363,7 @@ mod tests {
     #[tokio::test]
     async fn expired_assertion_is_rejected_with_clock_tolerance() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         seed_client(&state, confidential_metadata(&key)).await;
 
         // Expired well beyond the 30s tolerance: rejected.
@@ -393,7 +393,7 @@ mod tests {
     #[tokio::test]
     async fn assertion_without_exp_is_accepted_while_iat_is_fresh() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         seed_client(&state, confidential_metadata(&key)).await;
 
         let mut claims = valid_claims(CLIENT_ID);
@@ -414,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn assertion_without_exp_needs_a_fresh_iat() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         seed_client(&state, confidential_metadata(&key)).await;
 
         // Stale: iat beyond the 60s max age + 30s tolerance.
@@ -447,7 +447,7 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -489,7 +489,7 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -530,7 +530,7 @@ mod tests {
     #[tokio::test]
     async fn plain_http_jwks_uri_is_refused() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         seed_client(
             &state,
             serde_json::json!({
@@ -550,7 +550,7 @@ mod tests {
     #[tokio::test]
     async fn confidential_client_with_no_keys_is_refused() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         seed_client(
             &state,
             serde_json::json!({
@@ -569,7 +569,7 @@ mod tests {
     #[tokio::test]
     async fn wrong_client_assertion_type_is_refused() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         seed_client(&state, confidential_metadata(&key)).await;
         let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
         let err = authenticate_token_client(

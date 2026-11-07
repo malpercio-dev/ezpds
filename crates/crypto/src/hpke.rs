@@ -20,8 +20,7 @@ use hpke::{
     aead::AesGcm256, kdf::HkdfSha256, kem::DhP256HkdfSha256, Deserializable, Kem as _, OpModeR,
     OpModeS, Serializable,
 };
-use p256::elliptic_curve::sec1::ToEncodedPoint;
-use rand_core_os::{OsRng, UnwrapErr};
+use p256::elliptic_curve::sec1::ToSec1Point;
 
 use crate::error::CryptoError;
 
@@ -70,17 +69,14 @@ pub fn seal_notification(
     let sender_pk = Kem::sk_to_pk(&sender_sk);
     let recipient_pk = public_key_from_sec1(recipient_public_key)?;
 
-    let (enc, ct) = hpke::single_shot_seal::<Aead, Kdf, Kem, _>(
+    // The getrandom-backed seal panics if the OS CSPRNG fails. That is the right outcome:
+    // the alternative is a payload sealed under degraded randomness.
+    let (enc, ct) = hpke::single_shot_seal::<Aead, Kdf, Kem>(
         &OpModeS::Auth((sender_sk, sender_pk)),
         &recipient_pk,
         NOTIFY_INFO,
         plaintext,
         NOTIFY_AAD,
-        // rand_core 0.9 models the OS RNG as fallible; `UnwrapErr` restores the infallible
-        // `RngCore` hpke wants. A failing OS CSPRNG is not a condition we can seal through,
-        // so panicking is the correct outcome — the alternative is a payload sealed under
-        // degraded randomness.
-        &mut UnwrapErr(OsRng),
     )
     .map_err(|_| CryptoError::Encryption("hpke seal failed".to_string()))?;
 
@@ -143,7 +139,7 @@ fn public_key_from_sec1(bytes: &[u8]) -> Result<<Kem as hpke::Kem>::PublicKey, C
         // reformat. It rides the workspace's own p256 — the same version hpke resolves to.
         p256::PublicKey::from_sec1_bytes(bytes)
             .map_err(|_| invalid())?
-            .to_encoded_point(false)
+            .to_sec1_point(false)
             .as_bytes()
             .to_vec()
     };
@@ -250,7 +246,7 @@ mod tests {
         let (recipient_sk, recipient_pk) = keypair(&[4u8; 32]);
         let compressed = p256::PublicKey::from_sec1_bytes(&recipient_pk)
             .unwrap()
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec();
         assert_eq!(compressed.len(), 33);

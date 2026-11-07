@@ -135,7 +135,7 @@ impl Signer for SoftwareSigner {
         })?;
         Ok(signing_key
             .verifying_key()
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec())
     }
@@ -161,7 +161,7 @@ impl Signer for SoftwareSigner {
 
         Ok(Box::new(move |data: &[u8]| {
             let signature: Signature = signing_key.sign(data);
-            let signature = signature.normalize_s().unwrap_or(signature);
+            let signature = signature.normalize_s();
             Ok(signature.to_bytes().to_vec())
         }))
     }
@@ -187,7 +187,10 @@ mod tests {
 
         let signature = (SoftwareSigner.signer(DID).unwrap())(b"op").unwrap();
         let signature = Signature::from_slice(&signature).unwrap();
-        assert!(signature.normalize_s().is_none(), "signature must be low-S");
+        assert!(
+            signature.normalize_s() == signature,
+            "signature must be low-S"
+        );
         VerifyingKey::from_sec1_bytes(&public)
             .unwrap()
             .verify(b"op", &signature)

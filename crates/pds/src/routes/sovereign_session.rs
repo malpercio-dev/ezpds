@@ -213,13 +213,13 @@ pub async fn create_sovereign_session(
 
 #[cfg(test)]
 mod tests {
+    use p256::elliptic_curve::Generate as _;
     use std::sync::Arc;
 
     use axum::{body::Body, http::Request};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use k256::ecdsa::{signature::Signer as _, Signature as K256Signature};
     use p256::ecdsa::{Signature as P256Signature, SigningKey as P256SigningKey};
-    use rand_core::OsRng;
     use serde_json::{json, Value};
     use tower::ServiceExt;
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
@@ -267,26 +267,21 @@ mod tests {
 
     fn p256_key() -> TestKey {
         let generated = crypto::generate_p256_keypair().unwrap();
-        let signing_key = P256SigningKey::from_bytes(generated.private_key_bytes.as_slice().into())
+        let signing_key = P256SigningKey::from_bytes((&*generated.private_key_bytes).into())
             .expect("valid P-256 scalar");
         TestKey {
             did: generated.key_id.0,
             sign: Box::new(move |message| {
                 let sig: P256Signature = signing_key.sign(message);
-                URL_SAFE_NO_PAD.encode(sig.normalize_s().unwrap_or(sig).to_bytes())
+                URL_SAFE_NO_PAD.encode(sig.normalize_s().to_bytes())
             }),
         }
     }
 
     fn secp256k1_key() -> TestKey {
-        let signing_key = k256::ecdsa::SigningKey::random(&mut OsRng);
+        let signing_key = k256::ecdsa::SigningKey::generate();
         let mut multikey = vec![0xe7, 0x01];
-        multikey.extend_from_slice(
-            signing_key
-                .verifying_key()
-                .to_encoded_point(true)
-                .as_bytes(),
-        );
+        multikey.extend_from_slice(signing_key.verifying_key().to_sec1_point(true).as_bytes());
         let did = format!(
             "did:key:{}",
             multibase::encode(multibase::Base::Base58Btc, multikey)
@@ -295,7 +290,7 @@ mod tests {
             did,
             sign: Box::new(move |message| {
                 let sig: K256Signature = signing_key.sign(message);
-                URL_SAFE_NO_PAD.encode(sig.normalize_s().unwrap_or(sig).to_bytes())
+                URL_SAFE_NO_PAD.encode(sig.normalize_s().to_bytes())
             }),
         }
     }

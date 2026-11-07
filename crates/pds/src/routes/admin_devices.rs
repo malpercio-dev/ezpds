@@ -558,10 +558,10 @@ mod tests {
     /// Sign `message` with the keypair's private bytes, returning base64url r‖s.
     fn sign_with(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
         use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-        let sk = SigningKey::from_bytes(keypair.private_key_bytes.as_slice().into())
-            .expect("valid scalar");
+        let sk =
+            SigningKey::from_bytes((&*keypair.private_key_bytes).into()).expect("valid scalar");
         let sig: Signature = sk.sign(message);
-        let normalized = sig.normalize_s().unwrap_or(sig);
+        let normalized = sig.normalize_s();
         URL_SAFE_NO_PAD.encode(normalized.to_bytes())
     }
 

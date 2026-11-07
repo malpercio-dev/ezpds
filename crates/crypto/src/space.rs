@@ -203,7 +203,7 @@ pub fn sign_space_commit(
     OsRng.fill_bytes(&mut ikm);
     let ctx_bytes = encode_space_commit_ctx(ctx, &ikm)?;
     let sig: Signature = Signer::sign(&sk, &ctx_bytes);
-    let sig = sig.normalize_s().unwrap_or(sig);
+    let sig = sig.normalize_s();
     Ok(SignedSpaceCommit {
         ver: SPACE_COMMIT_VERSION,
         hash,

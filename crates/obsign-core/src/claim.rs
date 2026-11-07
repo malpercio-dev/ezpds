@@ -1891,7 +1891,7 @@ mod tests {
             services,
             |data| {
                 let sig: p256::ecdsa::Signature = Signer::sign(&sk, data);
-                let sig = sig.normalize_s().unwrap_or(sig);
+                let sig = sig.normalize_s();
                 Ok(sig.to_bytes().to_vec())
             },
         )

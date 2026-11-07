@@ -150,6 +150,7 @@ mod tests {
         http::{header::AUTHORIZATION, HeaderValue, Method, Request, StatusCode},
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use p256::elliptic_curve::Generate as _;
     use tower::ServiceExt;
 
     const AUTHORITY: &str = "did:plc:abc234567abc234567abc234";
@@ -392,11 +393,11 @@ mod tests {
 
     impl ClientKey {
         fn generate() -> Self {
-            Self(p256::ecdsa::SigningKey::random(&mut rand_core::OsRng))
+            Self(p256::ecdsa::SigningKey::generate())
         }
 
         fn jwk(&self, kid: &str) -> serde_json::Value {
-            let point = self.0.verifying_key().to_encoded_point(false);
+            let point = self.0.verifying_key().to_sec1_point(false);
             serde_json::json!({
                 "kty": "EC",
                 "crv": "P-256",

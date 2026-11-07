@@ -1229,7 +1229,7 @@ mod tests {
                 let signing_key = SigningKey::from_slice(&device_priv_array)
                     .map_err(|_| crypto::CryptoError::KeyGeneration("Invalid key".into()))?;
                 let signature: Signature = signing_key.sign(data);
-                let signature = signature.normalize_s().unwrap_or(signature);
+                let signature = signature.normalize_s();
                 Ok(signature.to_bytes().to_vec())
             },
         )

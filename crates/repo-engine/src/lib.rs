@@ -52,11 +52,12 @@ pub use signer::{CommitSigner, CommitSignerError};
 #[cfg(test)]
 pub(crate) mod test_support {
     use crate::signer::CommitSigner;
+    use p256::elliptic_curve::Generate as _;
 
     /// Construct a `CommitSigner` from a fresh random P-256 key.
     pub(crate) fn test_signer() -> CommitSigner {
         use p256::ecdsa::SigningKey;
-        let key = SigningKey::random(&mut rand_core::OsRng);
+        let key = SigningKey::generate();
         let bytes: [u8; 32] = key.to_bytes().into();
         CommitSigner::from_bytes(&bytes).unwrap()
     }

@@ -106,7 +106,7 @@ impl DpopKeypair {
     )]
     pub fn public_jwk(&self) -> serde_json::Value {
         let verifying_key = self.signing_key.verifying_key();
-        let point = verifying_key.to_encoded_point(false); // false = uncompressed: 04 || x || y
+        let point = verifying_key.to_sec1_point(false); // false = uncompressed: 04 || x || y
         let x = b64url_encode(point.x().expect("P-256 uncompressed point has x"));
         let y = b64url_encode(point.y().expect("P-256 uncompressed point has y"));
         serde_json::json!({
@@ -193,7 +193,7 @@ impl DpopKeypair {
         // Normalize to low-S (consistent with the rest of the codebase, even though
         // the custos's DPoP validator does not require it — low-S is harmless and keeps
         // key usage consistent with ATProto expectations).
-        let signature = signature.normalize_s().unwrap_or(signature);
+        let signature = signature.normalize_s();
         let sig_b64 = b64url_encode(signature.to_bytes().as_slice());
 
         Ok(format!("{signing_input}.{sig_b64}"))
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn dpop_proof_signature_verifies_against_embedded_jwk() {
-        use p256::elliptic_curve::sec1::EncodedPoint;
+        use p256::elliptic_curve::sec1::Sec1Point;
 
         let kp = get_or_create();
         let proof = kp
@@ -402,14 +402,14 @@ mod tests {
         let mut point_bytes = vec![0x04u8];
         point_bytes.extend_from_slice(&x_bytes);
         point_bytes.extend_from_slice(&y_bytes);
-        let point = EncodedPoint::<p256::NistP256>::from_bytes(&point_bytes)
+        let point = Sec1Point::<p256::NistP256>::from_bytes(&point_bytes)
             .expect("valid uncompressed point");
-        let verifying_key = p256::ecdsa::VerifyingKey::from_encoded_point(&point)
+        let verifying_key = p256::ecdsa::VerifyingKey::from_sec1_point(&point)
             .expect("valid verifying key from JWK");
 
         let sig_bytes = b64url_decode(sig_b64).expect("valid base64url sig");
-        let signature = p256::ecdsa::Signature::from_bytes(sig_bytes.as_slice().into())
-            .expect("valid R||S signature bytes");
+        let signature =
+            p256::ecdsa::Signature::from_slice(&sig_bytes).expect("valid R||S signature bytes");
 
         let signing_input = format!("{header_b64}.{claims_b64}");
         verifying_key
