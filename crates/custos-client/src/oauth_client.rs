@@ -50,6 +50,8 @@ pub enum OAuthError {
     InvalidGrant,
     #[error("Not authenticated")]
     NotAuthenticated,
+    #[error("Refusing to send credentials over an insecure connection")]
+    InsecureTransport,
 }
 
 /// The token pair a client carries.
@@ -97,7 +99,8 @@ pub struct OAuthClient {
 impl OAuthClient {
     /// Build a Bearer-session client for a plain `accessJwt`/`refreshJwt` session (a migration
     /// destination account, a sovereign/password login, …). `expires_at` is derived from the
-    /// access token's `exp` claim so proactive refresh works. Records no diagnostics breadcrumbs
+    /// access token's `exp` claim so proactive refresh works. Fails with
+    /// [`OAuthError::InsecureTransport`] unless `base_url` is HTTPS or loopback. Records no diagnostics breadcrumbs
     /// on transport failure — use [`Self::new_bearer_with_observer`] for that.
     ///
     /// `Client::new()` inherits the TLS backend configured at the crate level via Cargo features
@@ -122,6 +125,10 @@ impl OAuthClient {
         base_url: String,
         observer: std::sync::Arc<dyn TransportObserver>,
     ) -> Result<Self, OAuthError> {
+        if !crate::pds_client::pds_url_is_secure(&base_url) {
+            tracing::error!("refusing to build a Bearer client for a non-HTTPS, non-loopback URL");
+            return Err(OAuthError::InsecureTransport);
+        }
         let expires_at = jwt_exp_claim(&access_jwt).unwrap_or(0);
         Ok(Self {
             inner: Client::new(),
@@ -485,6 +492,33 @@ mod tests {
             session.expires_at, jwt_exp,
             "expires_at must match the JWT exp claim"
         );
+    }
+
+    #[test]
+    fn new_bearer_refuses_plaintext_non_loopback_urls() {
+        for url in [
+            "http://pds.example.com",
+            "ftp://pds.example.com",
+            "not a url",
+        ] {
+            assert!(
+                matches!(
+                    OAuthClient::new_bearer("a".into(), "r".into(), url.into()),
+                    Err(OAuthError::InsecureTransport)
+                ),
+                "{url} must be refused"
+            );
+        }
+        for url in [
+            "https://pds.example.com",
+            "http://127.0.0.1:1",
+            "http://localhost",
+        ] {
+            assert!(
+                OAuthClient::new_bearer("a".into(), "r".into(), url.into()).is_ok(),
+                "{url} must be allowed"
+            );
+        }
     }
 
     #[tokio::test]

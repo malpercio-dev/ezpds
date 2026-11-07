@@ -48,4 +48,6 @@ pub use error::{
     xrpc_json, xrpc_ok, NoopObserver, PdsClientError, TransportObserver,
 };
 pub use oauth_client::{OAuthClient, OAuthError};
-pub use pds_client::{DescribeServerObserver, NoopDescribeServerObserver, PdsClient};
+pub use pds_client::{
+    pds_url_is_secure, DescribeServerObserver, NoopDescribeServerObserver, PdsClient,
+};

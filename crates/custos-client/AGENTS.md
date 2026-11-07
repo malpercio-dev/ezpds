@@ -50,6 +50,9 @@ exist.
 - **`PdsClientError`/`OAuthError` never carry Rust-authored user-facing prose**
   (ADR-0031) — they are the typed seam; the app's own frontend or command-level enum maps
   `code` to a sentence. This crate's job stops at a typed, classified failure.
+- **Credentials only travel over HTTPS (or loopback).** `pds_url_is_secure` is the one check;
+  `OAuthClient::new_bearer*` returns `OAuthError::InsecureTransport` for anything else, and the
+  password and sovereign logins call the same function.
 - **No DPoP key or DPoP-mode client lives here.** The password logins (claim, outbound
   migration) and every per-DID sovereign session are Bearer sessions; none depends on a DPoP
   keypair. `CustosClient::par`/`token_exchange` and `PdsClient::pds_par`/`pds_token_exchange`
