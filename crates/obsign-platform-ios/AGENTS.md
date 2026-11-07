@@ -1,6 +1,6 @@
 # obsign-platform-ios
 
-Last verified: 2026-10-21
+Last verified: 2026-11-07
 
 ## Purpose
 
@@ -11,7 +11,7 @@ The iOS implementations of `obsign-core`'s platform traits ([ADR-0039](../../doc
 | File | What it is |
 |---|---|
 | `src/keychain.rs` | `AppleKeychain`, the `KeyStore`: generic-password items under the app's service name, the `kSecAttrSynchronizable` store as the cloud slot, delete-then-add for `AfterFirstUnlock` |
-| `src/enclave_signer.rs` | `EnclaveSigner`, the Secure Enclave `Signer` (real device only), and `classify_se_fast_path`, the host-tested decision behind its restore-safe fast path |
+| `src/enclave_signer.rs` | `EnclaveSigner`, the Secure Enclave `Signer` (real device only) for every `KeyId`, the global key included; `classify_se_fast_path` and `resolve_se_fast_path`, the host-tested decision behind its restore-safe fast path and the per-key metadata reads that feed it |
 | `src/icloud.rs` | `ICloudBackupStore`, the `BackupStore`: the iCloud Drive ubiquity container, no location on a device with iCloud Drive off, the shell's local folder off-device; and the evicted-placeholder download |
 | `src/scheduler.rs` | `IosScheduler`, the `Scheduler` (iOS only): each job a `BGProcessingTask` or a `BGAppRefreshTask` (`TaskKind`, chosen by the app) under an app-supplied identifier, re-armed as it fires, "unmetered only" checked at fire time, completed exactly once |
 
@@ -23,4 +23,4 @@ The iOS implementations of `obsign-core`'s platform traits ([ADR-0039](../../doc
 ## Boundaries
 
 - No Tauri. The APNs bridge stays in the wallet: it patches the Tauri app delegate's class.
-- `ios-device-key` and `custos-client` still link Security.framework themselves on Apple targets, for the global device key and the DPoP key.
+- `ios-device-key` still links Security.framework itself on Apple targets (it reaches the core through `custos-client`'s `KeychainStore` re-export), but no wallet device key goes through it: the global key is `EnclaveSigner`'s too, under `KeyId::Global`.

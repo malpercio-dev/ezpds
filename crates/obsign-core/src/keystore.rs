@@ -239,10 +239,9 @@ pub fn is_not_found(err: &KeyStoreError) -> bool {
     matches!(err, KeyStoreError::NotFound)
 }
 
-/// The installed store as `ios_device_key`'s [`KeychainStore`](ios_device_key::KeychainStore):
-/// the device key and the DPoP key (`custos_client::DpopKeypair`) are stored through it. The
-/// account-name parameter on that trait's associated functions is what lets one impl serve
-/// several keys.
+/// The installed store as `ios_device_key`'s [`KeychainStore`](ios_device_key::KeychainStore),
+/// the seam `custos_client::DpopKeypair` stores the DPoP key through. The device keys do not
+/// pass here: they are the installed [`Signer`](crate::signer::Signer)'s.
 pub struct WalletKeychain;
 
 impl ios_device_key::KeychainStore for WalletKeychain {

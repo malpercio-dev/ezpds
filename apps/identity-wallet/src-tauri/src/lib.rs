@@ -101,7 +101,8 @@ pub fn run() {
     let _ = obsign_core::keystore::install(Box::new(
         obsign_platform_ios::keychain::AppleKeychain::new(keychain::SERVICE),
     ));
-    // Each identity's device key: the Secure Enclave on a real device, software elsewhere.
+    // Every device key (each identity's, and the global one the create flow signs with): the
+    // Secure Enclave on a real device, software elsewhere.
     #[cfg(all(target_os = "ios", not(target_env = "sim")))]
     let _ =
         obsign_core::signer::install(Box::new(obsign_platform_ios::enclave_signer::EnclaveSigner));

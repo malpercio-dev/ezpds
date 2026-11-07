@@ -14,7 +14,7 @@ claim doesn't belong here, it belongs in [Open items](#open-items).
 | Genesis/rotation keys (device, recovery, PDS) | Wallet Secure Enclave / Keychain (device), re-derived only during recovery from Shamir shares (recovery), PDS key store (PDS) — [`docs/architecture/identity-and-key-custody.md`](../architecture/identity-and-key-custody.md), genesis ops in `crates/crypto/src/plc.rs` |
 | Repo signing key | PDS-side, wrapped by the master KEK; signs every repo commit — [ADR-0004](../architecture/decisions/0004-pds-signed-repo-commits.md), rotation in `crates/custos-core/src/auth/signing_key.rs` |
 | Master key (KEK) | `EZPDS_SIGNING_KEY_MASTER_KEY`, env-only, wraps every at-rest secret — [`docs/operations/master-key-disaster-runbook.md`](../operations/master-key-disaster-runbook.md) |
-| Device keys | `crates/ios-device-key/src/device_key.rs` — Secure Enclave on a real device, software P-256 elsewhere, over a Keychain the calling app supplies |
+| Device keys | Wallet: `crates/obsign-platform-ios/src/enclave_signer.rs` (Secure Enclave, every key through one `Signer` with the restore-liveness probe) and `obsign_core::signer::SoftwareSigner` elsewhere. Console: `crates/ios-device-key/src/device_key.rs`, the same two paths over a Keychain the app supplies |
 | Recovery shares (Shamir) | `crates/crypto/src/shamir.rs` (3-share split, 2-of-3 reconstruction), rendered to words by `crates/crypto/src/mnemonic.rs` |
 | Account data and blobs | SQLite (`{data_dir}/*.db`) + `{data_dir}/blobs/`, Litestream-replicated DB and mirror-replicated blobs — [`docs/deploy.md`](../deploy.md) |
 | Sessions/tokens | Access/refresh JWTs and OAuth DPoP-bound tokens — `crates/custos-core/src/auth/jwt.rs`, `crates/custos-core/src/auth/dpop.rs` |
@@ -46,7 +46,7 @@ Boundaries and their primary control:
 | PDS ↔ plc.directory | Signed PLC operations | DAG-CBOR canonicalization + signature verification (`crates/crypto/src/plc.rs`) |
 | PDS ↔ outbound fetch (handle/did:web/client metadata/JWKS/blob mirror) | Caller-influenced URLs | `HardenedClient` + `CallerUrl` + `SsrfResolver` (`crates/custos-core/src/identity/proxy.rs`) |
 | PDS ↔ SQLite/filesystem | Queries, blob reads/writes | Per-crate DB module ownership (`crates/pds/AGENTS.md`), path validation |
-| Wallet ↔ Secure Enclave/Keychain | Signing requests, key material | `crates/ios-device-key`, no key ever leaves the enclave |
+| Wallet ↔ Secure Enclave/Keychain | Signing requests, key material | `crates/obsign-platform-ios` (`EnclaveSigner`, `AppleKeychain`), no key ever leaves the enclave |
 | Wallet ↔ PDS | Session tokens, DPoP proofs | RFC 9449 binding (`crates/custos-core/src/auth/dpop.rs`) |
 | PDS ↔ notify-relay (iroh) | Enrollment RPCs, sealed push payloads | Connection-identity binding (`crates/notify-relay/AGENTS.md`) |
 | Sidecar ↔ PDS | Forwarded OAuth bearer, no cached secret | [ADR-0024](../architecture/decisions/0024-hosted-agent-credential-forwarding.md) |

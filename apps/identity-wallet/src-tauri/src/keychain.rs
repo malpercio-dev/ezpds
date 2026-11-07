@@ -59,7 +59,7 @@
 //! * `pending-removals` (`identity_removal`) — DIDs whose post-delete tombstone/wipe
 //!   is unfinished; fail-open.
 //! * `oauth-dpop-key-priv` (loaded via `custos_client::DpopKeypair::get_or_create` over
-//!   `device_key::WalletKeychain`, at [`DPOP_KEY_PRIV_ACCOUNT`]), `oauth-access-token`,
+//!   `keystore::WalletKeychain`, at [`DPOP_KEY_PRIV_ACCOUNT`]), `oauth-access-token`,
 //!   `oauth-refresh-token` — the retained but currently dead legacy OAuth-client items
 //!   ([`store_oauth_tokens`]).
 //! * the five `notification-*` accounts (`notifications::NOTIFICATION_ACCOUNTS` is the
@@ -109,7 +109,7 @@ pub const LEGACY_ACCESS_GROUP: &str = "dev.malpercio.identitywallet";
 // ── OAuth Keychain helpers ─────────────────────────────────────────────────────
 
 /// The wallet's DPoP proof-signing key (see the module doc's account inventory). Read by
-/// `oauth.rs` through `custos_client::DpopKeypair::get_or_create::<device_key::WalletKeychain>`
+/// `oauth.rs` through `custos_client::DpopKeypair::get_or_create::<keystore::WalletKeychain>`
 /// rather than a dedicated load/store pair — that generic path is the one implementation of
 /// "load or mint a Keychain-backed key" this crate needs. `#[cfg(test)]`: `OAuthClient::new`
 /// (DPoP mode) has no production caller today (see `oauth.rs`'s module doc), so this account is
@@ -246,7 +246,7 @@ mod tests {
 
         assert_eq!(SERVICE, "ezpds-identity-wallet");
         assert_eq!(
-            device_key::ACCOUNTS.secure_enclave_label,
+            device_key::DEVICE_KEY_HARDWARE_LABEL,
             "ezpds-device-rotation-key"
         );
 
@@ -506,7 +506,7 @@ mod dpop_adapter {
 
         /// End-to-end check of the wallet's own adapters (not `custos_client`'s internals, which
         /// the crate's own test suite covers): a DPoP-mode `OAuthClient` built with
-        /// `device_key::WalletKeychain`, `WalletTransportObserver`, and `WalletTokenPersister`
+        /// `keystore::WalletKeychain`, `WalletTransportObserver`, and `WalletTokenPersister`
         /// refreshes a token and the new pair lands in the wallet's real (test-mode in-memory)
         /// Keychain via `keychain::load_oauth_tokens`.
         #[tokio::test]

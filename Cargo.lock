@@ -3594,7 +3594,6 @@ dependencies = [
  "custos-client",
  "http",
  "httpmock",
- "ios-device-key",
  "ipld-core",
  "log",
  "multibase",

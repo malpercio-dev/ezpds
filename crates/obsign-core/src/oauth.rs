@@ -156,7 +156,7 @@ impl Default for Core {
 // ── DPoP keypair Keychain wiring ─────────────────────────────────────────────
 //
 // `DpopKeypair` itself (proof construction/signing) lives in `custos_client::dpop` — this is
-// only the wallet's Keychain wiring for it, mirroring `device_key.rs`'s pattern.
+// only the wallet's Keychain wiring for it.
 
 /// Load or create the wallet's DPoP keypair via its real Keychain, at the same account this
 /// module used before the `custos-client` extraction. `OAuthClient::new` (DPoP mode) has no
@@ -165,7 +165,7 @@ impl Default for Core {
 /// call.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_dpop_keypair() -> Result<DpopKeypair, custos_client::DpopError> {
-    DpopKeypair::get_or_create::<crate::device_key::WalletKeychain>(DPOP_KEY_PRIV_ACCOUNT)
+    DpopKeypair::get_or_create::<crate::keystore::WalletKeychain>(DPOP_KEY_PRIV_ACCOUNT)
 }
 
 /// The wallet's DPoP proof-signing key account (pinned by the wallet's `keychain.rs`).
