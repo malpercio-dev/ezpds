@@ -230,7 +230,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            device_key::ACCOUNTS.secure_enclave_label,
+            device_key::DEVICE_KEY_HARDWARE_LABEL,
             "ezpds-device-rotation-key"
         );
 

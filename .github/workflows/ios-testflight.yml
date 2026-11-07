@@ -24,7 +24,6 @@ on:
       - "crates/ceremony-journal/**"
       - "crates/obsign-core/**"
       - "crates/obsign-platform-ios/**"
-      - "crates/ios-device-key/**"
       - "Cargo.toml"
       - "Cargo.lock"
       # The build/upload delegate to `just ios-*`, so a recipe change can break the lane.

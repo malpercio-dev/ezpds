@@ -1,62 +1,53 @@
-//! The wallet's global P-256 device key: this app's Keychain and account names bound to the
-//! shared `ios-device-key` implementation (Secure Enclave on a real device, software key on
-//! macOS and the Simulator — that crate's module docs are the authority on both paths).
-//!
-//! Public API: [`get_or_create`] (idempotent — every call returns the same key, which is what
-//! makes `create_account` retries safe: the PDS sees one device key per device) and [`sign`]
-//! (raw 64-byte `r||s` ECDSA, low-S normalized).
+//! The wallet's global P-256 device key: [`KeyId::Global`] on the installed
+//! [`Signer`](crate::signer::Signer), whose module doc owns why every key shares one
+//! implementation. This module owns what makes the global key distinct: its frozen Keychain
+//! account names, and the two convenience calls over the signer.
 //!
 //! The create flow signs its did:plc genesis op with this key, before any DID exists to
-//! namespace a per-DID key under. The `pub(crate)` account-name consts are the single source
-//! of those names; changing any of them orphans existing keys.
-//! `IdentityStore::adopt_global_device_key` copies whichever of these accounts exists into the
-//! per-DID slots, for identities whose genesis op was signed with this global key before the
-//! DID existed.
+//! namespace a per-DID key under; `IdentityStore::adopt_global_device_key` then copies these
+//! accounts into the per-DID slots so the identity's own key resolves to the one its DID
+//! document names. [`get_or_create`] is idempotent (every call returns the same key, which is
+//! what makes `create_account` retries safe: the PDS sees one device key per device) and
+//! [`sign`] returns raw 64-byte `r||s` ECDSA, low-S normalized.
+//!
+//! Changing any account name orphans existing keys; the shell's `account_names_are_pinned`
+//! test holds each one against a literal.
 
-use ios_device_key::DeviceKeyAccounts;
-
-pub use ios_device_key::{DeviceKeyError, DevicePublicKey};
-
-/// Shared with `identity_store.rs`, which derives per-DID keys needing the same encoding.
-pub use ios_device_key::make_device_public_key;
+use crate::signer::{signer, KeyId, SignerError};
 
 // ── Global device-key Keychain account names ────────────────────────────────
 //
-// Software path uses only the private-scalar account; the Secure Enclave path uses the pub +
-// app-label metadata accounts (the SE private key never leaves the enclave).
+// Software keys use only the private-scalar account; hardware keys use the pub + app-label
+// metadata accounts (the private key never leaves the hardware).
 pub const DEVICE_KEY_PRIV_ACCOUNT: &str = "device-rotation-key-priv";
 pub const DEVICE_KEY_PUB_ACCOUNT: &str = "device-rotation-key-pub";
 pub const DEVICE_KEY_APP_LABEL_ACCOUNT: &str = "device-rotation-key-app-label";
+/// The label the generated hardware key carries (`kSecAttrLabel` on iOS).
+pub const DEVICE_KEY_HARDWARE_LABEL: &str = "ezpds-device-rotation-key";
 
-pub const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
-    private_scalar: DEVICE_KEY_PRIV_ACCOUNT,
-    public_key: DEVICE_KEY_PUB_ACCOUNT,
-    application_label: DEVICE_KEY_APP_LABEL_ACCOUNT,
-    secure_enclave_label: "ezpds-device-rotation-key",
-};
+/// A device key's public half as the IPC reports it; `identity_store.rs` encodes per-DID keys
+/// through the same function.
+pub use crypto::{make_device_public_key, DevicePublicKey};
 
-/// The installed `KeyStore` as `ios-device-key`'s store.
-pub use crate::keystore::WalletKeychain;
-
-/// Return this device's key, generating one on first call.
-pub fn get_or_create() -> Result<DevicePublicKey, DeviceKeyError> {
-    ios_device_key::get_or_create::<WalletKeychain>(&ACCOUNTS)
+/// Return this device's global key, generating one on first call.
+pub fn get_or_create() -> Result<DevicePublicKey, SignerError> {
+    let compressed = signer().public_key(KeyId::Global)?;
+    Ok(make_device_public_key(&compressed))
 }
 
-/// Sign `data` with this device's key, returning raw 64-byte `r||s`.
-pub fn sign(data: &[u8]) -> Result<Vec<u8>, DeviceKeyError> {
-    ios_device_key::sign::<WalletKeychain>(&ACCOUNTS, data)
+/// Sign `data` with this device's global key, returning raw 64-byte `r||s`.
+pub fn sign(data: &[u8]) -> Result<Vec<u8>, SignerError> {
+    (signer().signer(KeyId::Global)?)(data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The wiring this module owns: the shared implementation reaches the wallet's Keychain,
-    /// and it does so under these exact account names. Key generation, signing, and the IPC
-    /// error shape are covered by `ios-device-key`'s own tests.
+    /// The wiring this module owns: the global key reaches the installed signer, under these
+    /// exact account names. Key generation and signing are covered by `signer`'s own tests.
     #[test]
-    fn the_key_round_trips_through_the_wallet_keychain() {
+    fn the_key_round_trips_through_the_installed_signer() {
         crate::keystore::clear_for_test();
 
         let key = get_or_create().expect("get_or_create must succeed");
@@ -73,6 +64,6 @@ mod tests {
         );
 
         crate::keystore::delete_item(DEVICE_KEY_PRIV_ACCOUNT).expect("delete");
-        assert!(matches!(sign(b"no key"), Err(DeviceKeyError::KeyNotFound)));
+        assert!(matches!(sign(b"no key"), Err(SignerError::NotFound { .. })));
     }
 }

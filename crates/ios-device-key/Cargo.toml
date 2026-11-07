@@ -15,8 +15,6 @@ thiserror = { workspace = true }
 crypto = { workspace = true }
 # Both paths: signature parsing and low-S normalization.
 p256 = { workspace = true }
-# did:key derivation from the compressed point.
-multibase = { workspace = true }
 
 # Secure Enclave key generation and lookup. Apple-only, so the dependency is target-gated:
 # without it the crate would not build on the Linux PDS gate, where the software path and the
@@ -25,5 +23,7 @@ multibase = { workspace = true }
 security-framework = { workspace = true, features = ["OSX_10_12"] }
 
 [dev-dependencies]
-# The tests assert the IPC error/JSON shape both apps' TypeScript unions mirror.
+# The tests assert the IPC error/JSON shape the app's TypeScript union mirrors, and decode
+# the multibase point `crypto` encodes.
 serde_json = { workspace = true }
+multibase = { workspace = true }

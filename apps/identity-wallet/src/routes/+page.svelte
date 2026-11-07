@@ -647,6 +647,11 @@
       case 'KEYCHAIN_ERROR':
         failToLastInputStep("Couldn't save credentials to your device. Try again.");
         break;
+      case 'DEVICE_KEY_UNUSABLE':
+        failToLastInputStep(
+          "This device's signing key is gone, so it can't create a new identity. This happens after a backup is restored onto a device; set up on a device that still holds its key."
+        );
+        break;
       case 'NETWORK_ERROR':
         failToLastInputStep("Couldn't reach the server. Check your connection.");
         break;

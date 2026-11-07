@@ -8,6 +8,7 @@ use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::elliptic_curve::Generate as _;
 use p256::SecretKey;
 use rand_core::OsRng;
+use serde::Serialize;
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
@@ -96,6 +97,44 @@ pub fn p256_public_key_from_did_key(did_key: &str) -> Result<Vec<u8>, CryptoErro
     Ok(public_key.to_sec1_point(true).as_bytes().to_vec())
 }
 
+/// A P-256 public key in the two encodings the apps' frontends and the network need.
+///
+/// Serializes with camelCase keys (`keyId`): the IPC shape both mobile apps' TypeScript mirrors.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevicePublicKey {
+    /// Multibase base58btc-encoded compressed P-256 public key point.
+    /// Format: 'z' + base58btc(33-byte SEC1 compressed point).
+    pub multibase: String,
+    /// Full did:key URI. Format: "did:key:z...".
+    pub key_id: String,
+}
+
+/// Build a [`DevicePublicKey`] from a compressed (33-byte SEC1) P-256 point, with the same
+/// did:key encoding [`generate_p256_keypair`] emits. Encodes only; `compressed` is taken as
+/// a point.
+pub fn make_device_public_key(compressed: &[u8]) -> DevicePublicKey {
+    DevicePublicKey {
+        multibase: multibase::encode(Base::Base58Btc, compressed),
+        key_id: did_key_from_p256_public_key(compressed).0,
+    }
+}
+
+/// The `did:key` URI for a compressed (33-byte SEC1) P-256 point: the inverse of
+/// [`p256_public_key_from_did_key`].
+fn did_key_from_p256_public_key(compressed: &[u8]) -> DidKeyUri {
+    // did:key multikey: P-256 multicodec varint + compressed public key bytes.
+    let mut multikey = Vec::with_capacity(P256_MULTICODEC_PREFIX.len() + compressed.len());
+    multikey.extend_from_slice(P256_MULTICODEC_PREFIX);
+    multikey.extend_from_slice(compressed);
+
+    // multibase::encode with Base58Btc prepends the 'z' prefix automatically.
+    DidKeyUri(format!(
+        "did:key:{}",
+        multibase::encode(Base::Base58Btc, &multikey)
+    ))
+}
+
 /// Build the public [`P256Keypair`] representation (did:key URI, multibase public key, and
 /// zeroized private scalar) from a P-256 `SecretKey`. Shared by [`generate_p256_keypair`] and
 /// [`derive_recovery_keypair`] so both emit byte-identical did:key encodings.
@@ -106,14 +145,7 @@ fn keypair_from_secret_key(secret_key: &SecretKey) -> P256Keypair {
     let compressed = public_key.to_sec1_point(true);
     let compressed_bytes = compressed.as_bytes();
 
-    // did:key multikey: P-256 multicodec varint + compressed public key bytes.
-    let mut multikey = Vec::with_capacity(P256_MULTICODEC_PREFIX.len() + compressed_bytes.len());
-    multikey.extend_from_slice(P256_MULTICODEC_PREFIX);
-    multikey.extend_from_slice(compressed_bytes);
-
-    // multibase::encode with Base58Btc prepends the 'z' prefix automatically.
-    let multibase_encoded = multibase::encode(Base::Base58Btc, &multikey);
-    let key_id = DidKeyUri(format!("did:key:{multibase_encoded}"));
+    let key_id = did_key_from_p256_public_key(compressed_bytes);
     let public_key_str = multibase::encode(Base::Base58Btc, compressed_bytes);
 
     // Copy private key bytes into a Zeroizing wrapper.
@@ -375,6 +407,12 @@ mod tests {
         assert_eq!(decoded.len(), 33, "compressed SEC1 is 33 bytes");
         let (_, expected) = multibase::decode(&keypair.public_key).unwrap();
         assert_eq!(decoded, expected);
+
+        // And the inverse: the compressed point re-encodes to the same did:key and multibase
+        // the keypair was minted with, so both derivations agree byte for byte.
+        let device_key = make_device_public_key(&decoded);
+        assert_eq!(device_key.key_id, keypair.key_id.0);
+        assert_eq!(device_key.multibase, keypair.public_key);
     }
 
     #[test]

@@ -142,7 +142,7 @@ PDS running at the configured URL for account creation to succeed at runtime.
 - Frontend → Rust via Tauri IPC (`@tauri-apps/api/core` `invoke()`).
 - Rust → workspace deps: `crates/obsign-core` (the platform-free core: `KeyStore` and the other platform traits; see its AGENTS.md), `crates/crypto` (P-256 software path + envelope builders),
   `crates/custos-client` (the Bearer-session/XRPC client, including DNS TXT handle resolution — see
-  its AGENTS.md), `crates/ios-device-key` (device key), `p256`, `multibase`, `urlencoding`,
+  its AGENTS.md), `p256`, `multibase`, `urlencoding`,
   `chrono`; reqwest is rustls-only (no OpenSSL — rustls handles iOS TLS natively).
 - Rust → the configured PDS, arbitrary PDSes, and plc.directory over HTTPS at runtime (the
   endpoint inventory is each client module's doc: `http.rs`, `pds_client.rs`).

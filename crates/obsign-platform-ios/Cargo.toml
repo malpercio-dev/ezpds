@@ -33,3 +33,7 @@ block2 = { workspace = true }
 system-configuration = { workspace = true }
 # Polling for an evicted file to come back.
 tokio = { workspace = true }
+
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+# The host tests seed the core's in-memory `KeyStore` to drive the enclave fast path.
+obsign-core = { workspace = true, features = ["test-support"] }
