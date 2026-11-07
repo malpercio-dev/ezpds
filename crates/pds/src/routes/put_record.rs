@@ -70,6 +70,7 @@ pub async fn put_record(
 ) -> Result<impl IntoResponse, ApiError> {
     // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
+    let authorized = crate::record_write::authorize(&state, &headers, &method, &uri, &did)?;
     let collection = &body.collection;
     let rkey = &body.rkey;
 
@@ -84,16 +85,12 @@ pub async fn put_record(
         record: body.swap_record,
     };
 
-    // Delegate to the shared write helper with create_only=false.
     let (record_cid, validation_status) = crate::record_write::write_record(
         &state,
-        &headers,
-        &method,
-        &uri,
-        &did,
+        authorized,
         &mst_key,
         &body.record,
-        false, // create_only=false: upsert semantics
+        crate::record_write::RecordMode::Put,
         &swap,
         body.validate,
     )

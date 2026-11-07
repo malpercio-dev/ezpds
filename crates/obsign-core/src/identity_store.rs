@@ -12,16 +12,13 @@
 //! `{ code: "SCREAMING_SNAKE_CASE" }`.
 //!
 //! Device keys are lazily generated on first [`IdentityStore::get_or_create_device_key`]
-//! — never at registration — with the same `#[cfg]` dispatch as `device_key.rs`
-//! (software P-256 on macOS/simulator, Secure Enclave on a real device) but per-DID
-//! account namespacing (`"{did}:device-key"` instead of `"device-rotation-key-priv"`).
-//! On the Secure Enclave path the fast path **probes the enclave before trusting
-//! cached metadata** ([`classify_se_fast_path`], kept `cfg`-free so it is host-tested):
-//! the two metadata items restore from an encrypted device backup while the enclave key
-//! never does, so "both items present" is exactly the state a restored device wakes up
-//! in. A dead probe returns `DeviceKeyUnusable` and must NOT mint a replacement — a
-//! fresh key is absent from the DID's `rotationKeys`, and recovery is the destination;
-//! only positive probe verdicts are cached in-process.
+//! — never at registration — through the installed [`Signer`](crate::signer::Signer)
+//! under `KeyId::Identity(did)`, the same path the global key takes under `KeyId::Global`;
+//! only the account namespacing differs (`"{did}:device-key"` instead of
+//! `"device-rotation-key-priv"`). On a real device the Secure Enclave signer **probes the
+//! enclave before trusting cached metadata** (`obsign-platform-ios`'s `enclave_signer`
+//! owns the rule): a dead probe is `DeviceKeyUnusable`, never a freshly minted key — a
+//! fresh key is absent from the DID's `rotationKeys`, and recovery is the destination.
 //!
 //! [`IdentityStore::adopt_global_device_key`] aliases the per-DID key to the global
 //! `device_key.rs` key by copying its Keychain material — the create flow signs its
@@ -48,7 +45,7 @@
 //! All Keychain operations use the shared `keychain::SERVICE` prefix.
 
 use crate::device_key::DevicePublicKey;
-use crate::signer::SignerError;
+use crate::signer::{KeyId, SignerError};
 use serde::{Deserialize, Serialize};
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -866,7 +863,7 @@ impl From<SignerError> for IdentityStoreError {
 }
 
 fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, IdentityStoreError> {
-    let compressed = crate::signer::signer().public_key(did)?;
+    let compressed = crate::signer::signer().public_key(KeyId::Identity(did))?;
     Ok(crate::device_key::make_device_public_key(&compressed))
 }
 
@@ -893,12 +890,14 @@ pub enum PerDidSignError {
 pub fn per_did_sign_closure(
     did: &str,
 ) -> Result<impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError>, PerDidSignError> {
-    let sign = crate::signer::signer().signer(did).map_err(|e| match e {
-        SignerError::NotFound { message } => PerDidSignError::DeviceKeyNotFound { message },
-        other => PerDidSignError::SigningSetupFailed {
-            message: other.to_string(),
-        },
-    })?;
+    let sign = crate::signer::signer()
+        .signer(KeyId::Identity(did))
+        .map_err(|e| match e {
+            SignerError::NotFound { message } => PerDidSignError::DeviceKeyNotFound { message },
+            other => PerDidSignError::SigningSetupFailed {
+                message: other.to_string(),
+            },
+        })?;
     Ok(move |data: &[u8]| sign(data).map_err(|e| crypto::CryptoError::PlcOperation(e.to_string())))
 }
 

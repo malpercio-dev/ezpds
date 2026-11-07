@@ -1,6 +1,6 @@
 # obsign-core
 
-Last verified: 2026-10-21
+Last verified: 2026-11-07
 
 ## Purpose
 
@@ -10,18 +10,18 @@ The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decis
 
 | File | What it is |
 |---|---|
-| `src/keystore.rs` | `KeyStore` (the trait a shell implements), `install`, `WalletKeychain` (the installed store as `ios_device_key::KeychainStore`, for the device and DPoP keys), the accessors every wallet module calls (`store_item`, `get_item`, the `*_synced` family, `is_not_found`), and the Share 1 cloud-slot allowlist (`syncs_to_icloud`). The module doc owns the two-namespace and protection-class semantics |
+| `src/keystore.rs` | `KeyStore` (the trait a shell implements), `install`, the accessors every wallet module calls (`store_item`, `get_item`, the `*_synced` family, `is_not_found`), and the Share 1 cloud-slot allowlist (`syncs_to_icloud`). The module doc owns the two-namespace and protection-class semantics |
 | `src/diagnostics.rs` | redacted-by-construction network-error breadcrumbs, exported on demand from Settings, and `WalletTransportObserver`, the `custos_client` observer that records into it; capture scope and redaction rules in the module doc |
 | `src/http.rs` | Re-exports `custos_client::CustosClient` for the one configured PDS (runtime URL, Keychain-persisted); owns the compile-time default base URL and `new_configured`, which wires this app's diagnostics observer — see module doc |
-| `src/oauth_client.rs` | Re-exports `custos_client::OAuthClient` (DPoP and Bearer modes, lazy refresh, nonce retry, non-nonce 400s passed through intact — see that crate's module doc) plus `diagnostics_observer()`, the one seam a real `new_bearer_with_observer` call site should pass |
+| `src/oauth_client.rs` | Re-exports `custos_client::OAuthClient` (Bearer sessions, lazy refresh, non-2xx responses passed through intact — see that crate's module doc) plus `diagnostics_observer()`, the one seam a real `new_bearer_with_observer` call site should pass |
 | `src/pds_client.rs` | Re-exports `custos_client::PdsClient` (discovery/auth/XRPC against arbitrary PDSes + plc.directory) plus this app's OAuth identity constants (canonical client_id, reverse-FQDN redirect, V042 sync) and `new_with_diagnostics`/`new_for_test`, which wire this app's diagnostics + `pds_capabilities` observers (`new_for_test` wires *real* observers unlike the crate's own — see `crates/custos-client/AGENTS.md`'s Boundaries for why). Also re-exports `PdsClientError` + the claim/app-password/migration typed XRPC types, and wraps `custos_client::{identity,app_passwords,migration}`'s methods with this app's diagnostics observer — full inventory and error reachability in the module doc |
 | `src/pds_config.rs` | the configured PDS: the Keychain-persisted base URL (`relay-base-url`, read past the retired-apex rewrite), `save_pds_url`'s validate → health-probe → persist → re-probe sequence, and `get_pds_capabilities` (an unreachable host reports an empty list, never an error) |
 | `src/pds_capabilities.rs` | per-host cache of `describeServer`'s `custos` extension; absence is not an error, gates ask about features never vendors; `WalletDescribeServerObserver` warms it from every `describeServer` call — cache contract in the module doc |
 | `src/source_login.rs` | the one shared password `createSession` core (HTTPS + account-match + 2FA) behind the claim, migration, and password-unlock paths (ADR-0021) — see module doc |
 | `src/share_ceremony.rs` | client-side 2-of-3 share generation + the three fail-closed staging slots (create / re-key / self-held kit); staging contract and load-bearing teardown order in the module doc |
-| `src/device_key.rs` | the global P-256 device key: this app's Keychain and account names bound to the shared `crates/ios-device-key` implementation (software-or-Secure-Enclave by `#[cfg]`; `get_or_create` idempotent, `sign` low-S-normalized r\|\|s) — see both module docs |
+| `src/device_key.rs` | the global P-256 device key as `KeyId::Global` on the installed `Signer`: its frozen account names (`device-rotation-key-*`, the hardware label), the `crypto` re-exports `DevicePublicKey`/`make_device_public_key` (the did:key/multibase pair every device key is reported as), and `get_or_create` (idempotent) / `sign` (low-S r\|\|s) over the signer — see module doc |
 | `src/identity_store.rs` | multi-identity Keychain lifecycle (`managed-dids` index + per-DID entries), per-DID device keys through the installed `Signer` (`per_did_sign_closure` is the one signing seam), the shared `SovereignTokenRecord` session record, and the IPC reads over the store (`list_identities`, `get_stored_did_doc`, `get_device_key_id`, `refresh_did_doc`); removal semantics and the Share 1 exception in the module doc |
-| `src/signer.rs` | `Signer` (each identity's device key, by DID: get-or-create public key, two-phase signing, `is_hardware_bound`), `install`, and `SoftwareSigner`, the implementation for every target without hardware-bound keys |
+| `src/signer.rs` | `Signer` (every device key, addressed by `KeyId::Global` or `KeyId::Identity(did)`: get-or-create public key, two-phase signing, `is_hardware_bound`), `KeyId::accounts` (the one place a key's Keychain accounts and hardware label are decided, so implementations differ only in where the private half lives), `install`, and `SoftwareSigner`, the implementation for every target without hardware-bound keys |
 | `src/agents.rs` | agent consent + audit plus the sovereign-child parent console: the per-identity "My agents" claim-ceremony and child-lifecycle commands over a self-healing per-DID session. The plain network cores are `custos_client::agents` typed methods; only minting a child account and post-recovery reconciliation stay here (they sign with the wallet's delegation seed) — see module doc |
 | `src/app_passwords.rs` | app-password mint/list/revoke over a per-DID full-access session (the "sign the Bluesky app into a passwordless account" surface) — see module doc |
 | `src/blob_backup.rs` | user-held media backup: CID-verified incremental iCloud mirror + per-blob-degrading restore; also feeds the migration blob drain (`mirror_fallback_blob`) and the background sweep — see module doc |
@@ -36,7 +36,7 @@ The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decis
 | `src/migration_orchestrator.rs` | the outbound-migration state machine (prepare → … → finalize; also disaster recovery's transfer tail), resumable under `ceremony_journal::Journal` with the in-memory `OutboundMigrationState.phase` as the cursor (`MigrationJournal`); cutover ordering, the capability-gated credential branch, blob-loss handling, and state-vs-session persistence in the module doc |
 | `src/notification_routes.rs` | the host-tested half of notification-tap routing: one newest-wins pending-route slot drained by `take_pending_notification_route`; pointer-not-claim discipline in the module doc |
 | `src/notifications.rs` | device half of the E2E-encrypted notification relay: device-global keypair/uuid, per-host pinned sender keys, register + re-pin, and the extension's `notification-failures` breadcrumb slot — design invariants in the module doc |
-| `src/oauth.rs` | `Core` (all flow-state slots and both clients; Tauri-managed, reached by commands through `commands.rs`); re-exports `custos_client::{DpopKeypair, OAuthSession, OAuthError}` plus the test-only DPoP `TokenPersister` adapter. The create-flow OAuth login (`prepare/complete_oauth_flow`) was removed once the create flow started ending at `home` with no OAuth round trip — slot inventory and the retirement rationale in the module doc |
+| `src/oauth.rs` | `Core` (all flow-state slots and both clients; Tauri-managed, reached by commands through `commands.rs`); re-exports `custos_client::OAuthError`. There is no global OAuth session or DPoP key: the create flow ends at `home` with no OAuth round trip — slot inventory in the module doc |
 | `src/oauth_consent.rs` | wallet-confirmed OAuth consent client (preview by code / by QR `request_id`, device-key-signed approve); envelope contents and Phase C match-code rules in the module doc |
 | `src/password_unlock.rs` | the password origin for the shared session record on non-sovereign hosts: capability-driven route choice (unreached ⇒ SOVEREIGN) + `createSession` → bind → persist — see module doc |
 | `src/preferences.rs` | the in-app appearance preference (`appearance-preference`): Keychain is the durable truth, the frontend's localStorage mirror is pre-paint only, a corrupt value reads as absent |
@@ -59,7 +59,7 @@ The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decis
 ## Contracts
 
 - **The shell installs a `KeyStore` before anything touches storage.** Uninstalled calls return `NotInstalled`, never an empty store. The wallet's `run()` installs `keychain::AppleKeychain`.
-- **The shell installs a `Signer` too,** with the same fail-closed rule: production never falls back to a software key, which would mint keys the DID documents do not name. The wallet installs `EnclaveSigner` on a real device and `SoftwareSigner` elsewhere.
+- **The shell installs a `Signer` too,** with the same fail-closed rule: production never falls back to a software key, which would mint keys the DID documents do not name. The wallet installs `EnclaveSigner` on a real device and `SoftwareSigner` elsewhere. Every device key goes through it, the global one included (`signer.rs`'s module doc says why).
 - **`EventSink` and `BackupStore` are installed the same way,** in the shell's `setup` (they need the app handle). Uninstalled, events are dropped and the backup location is `None`, so a backup surface reads "unavailable" rather than writing somewhere the user was not told about.
 - **Commands are not defined here.** Each command's body is a plain function taking `&Core`; the wallet's `commands.rs` generates the `#[tauri::command]` wrappers.
 - **The cloud-slot allowlist is enforced here,** before any `KeyStore` is reached, so no implementation can widen what leaves the device.
@@ -67,5 +67,5 @@ The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decis
 
 ## Boundaries
 
-- No `tauri`, no `cfg(target_os)`, and no Apple crate (`objc2*`, `block2`, `security-framework`, `system-configuration`) in `[dependencies]`.
+- No `tauri`, no `cfg(target_os)`, and no Apple crate (`objc2*`, `block2`, `security-framework`, `system-configuration`) in `[dependencies]`, and no `ios-device-key` (the console's key crate): `grep -rn ios_device_key src` matches nothing, and on Apple targets the core links Security.framework through nothing of its own.
 - Keychain account names belong to the app that stores them (the wallet's `keychain.rs` is the inventory and holds the pin test). The one exception is the Share 1 account naming, which lives here because the allowlist needs it.

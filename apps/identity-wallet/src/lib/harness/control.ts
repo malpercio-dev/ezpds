@@ -7,8 +7,8 @@
  *
  * `emit` routes through Tauri's real `@tauri-apps/api/event` `emit()` — which, under
  * `mockIPC(..., { shouldMockEvents: true })`, is delivered to the app's live listeners.
- * So `window.__harness.emit('auth_ready')` exercises the exact `listen('auth_ready')`
- * path the OAuth deep-link return would (browser-harness.AC2.4).
+ * So `window.__harness.emit('plc_alert', …)` exercises the exact `listen('plc_alert')`
+ * path the native monitor's emit would (browser-harness.AC2.4).
  */
 import { emit } from '@tauri-apps/api/event';
 import { buildScenario, scenarios } from './scenarios';

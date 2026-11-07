@@ -75,10 +75,11 @@ fn par_rejection_message(status: reqwest::StatusCode, body: &str) -> String {
     format!("PAR returned {status}: {body}")
 }
 
-/// Whether a PDS URL is safe to send an account password to: HTTPS, or a loopback host over HTTP
-/// (localhost/127.0.0.1/::1) for local development and the test harness. Anything else — including
-/// an unparseable URL — is refused, so the password never crosses a plaintext link.
-fn pds_url_is_password_safe(pds_url: &str) -> bool {
+/// Whether it is safe to send credentials (an account password, a Bearer token) to `pds_url`:
+/// HTTPS, or a loopback host over HTTP (localhost/127.0.0.1/::1) for local development and the
+/// test harness. Anything else — including an unparseable URL — is refused, so a credential never
+/// crosses a plaintext link.
+pub fn pds_url_is_secure(pds_url: &str) -> bool {
     match url::Url::parse(pds_url) {
         Ok(url) => match url.scheme() {
             "https" => true,
@@ -681,7 +682,7 @@ impl PdsClient {
     ) -> Result<CreateSessionResponse, PdsClientError> {
         // Never send the account password over a plaintext link. `pds_url` comes from the DID
         // document, so a misconfigured or hostile `http://` endpoint must be refused here.
-        if !pds_url_is_password_safe(pds_url) {
+        if !pds_url_is_secure(pds_url) {
             tracing::error!(pds_url = %pds_url, "refusing to send password to a non-HTTPS PDS");
             return Err(PdsClientError::InsecurePdsUrl {
                 url: pds_url.to_string(),
@@ -1299,7 +1300,7 @@ impl PdsClient {
         credential: &DeleteCredential,
         token: &str,
     ) -> Result<(), PdsClientError> {
-        if !pds_url_is_password_safe(pds_url) {
+        if !pds_url_is_secure(pds_url) {
             return Err(PdsClientError::InsecurePdsUrl {
                 url: pds_url.to_string(),
             });

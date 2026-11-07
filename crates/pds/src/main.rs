@@ -29,6 +29,8 @@ mod platform;
 mod rate_limit_test;
 mod read_after_write;
 mod record_write;
+#[cfg(test)]
+mod record_write_sequence_test;
 mod recovery_share;
 mod repo_rev;
 mod rewrap;

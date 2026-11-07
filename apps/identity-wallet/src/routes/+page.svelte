@@ -558,15 +558,6 @@
     // PdsConfigScreen internally checks for saved PDS URL, so the "Create new
     // identity" path handles them correctly without additional logic here.
 
-    // Vestigial: the create flow no longer runs an OAuth round trip, so nothing emits this
-    // on a fresh install. It still fires on relaunch for an install that completed the old
-    // flow and left global OAuth tokens in the Keychain, where it lands on the same `home`
-    // the listIdentities check above already chose. Retired with the rest of the wallet's
-    // unused OAuth-client machinery.
-    listen('auth_ready', () => {
-      goTo('home');
-    });
-
     // Warm-foreground notification taps: the iOS tap handler parks the route and emits this
     // event. Reading through take() (not the event payload) keeps one consumption path — a
     // route the cold-start drain already took is gone, so a tap can never navigate twice.
@@ -655,6 +646,11 @@
         break;
       case 'KEYCHAIN_ERROR':
         failToLastInputStep("Couldn't save credentials to your device. Try again.");
+        break;
+      case 'DEVICE_KEY_UNUSABLE':
+        failToLastInputStep(
+          "This device's signing key is gone, so it can't create a new identity. This happens after a backup is restored onto a device; set up on a device that still holds its key."
+        );
         break;
       case 'NETWORK_ERROR':
         failToLastInputStep("Couldn't reach the server. Check your connection.");

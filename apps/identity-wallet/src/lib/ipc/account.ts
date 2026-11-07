@@ -30,6 +30,8 @@ export type CreateAccountError = {
     | 'EMAIL_TAKEN'
     | 'HANDLE_TAKEN'
     | 'KEYCHAIN_ERROR'
+    /** This device's signing key is gone (restored from a backup); retrying cannot help. */
+    | 'DEVICE_KEY_UNUSABLE'
     | 'NETWORK_ERROR'
     | 'UNKNOWN';
   message?: string;
@@ -90,6 +92,8 @@ export type DIDCeremonyError = {
     /** DID was committed at the PDS but Share 1 Keychain write failed. Retrying the
      *  ceremony will fail (DID already exists). Share storage can be retried separately. */
     | 'SHARE_STORAGE_FAILED'
+    /** This device's signing key is gone (restored from a backup); retrying cannot help. */
+    | 'DEVICE_KEY_UNUSABLE'
     | 'NETWORK_ERROR';
   message?: string;
 };

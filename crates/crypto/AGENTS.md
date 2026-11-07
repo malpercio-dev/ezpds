@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-10-24
+Last verified: 2026-11-07
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace:
@@ -61,14 +61,16 @@ pub fn decrypt_secret_bytes(&str, &[u8; 32]) -> Result<Zeroizing<Vec<u8>>, Crypt
 - Exists for KEK-wrapped secrets that are not 32-byte key scalars — the PDS's escrowed 42-byte Shamir share envelope, and the `rewrap-master-key` sweep which re-wraps every `SecretFamily` column through this pair regardless of plaintext length
 - Same properties as the fixed-length pair: fresh nonce per call, opaque `CryptoError::Decryption` on all failure modes (a truncated storage blob shorter than nonce + tag is refused before decryption)
 
-**`p256_keypair_from_secret`** / **`p256_public_key_from_did_key`**
+**`p256_keypair_from_secret`** / **`p256_public_key_from_did_key`** / **`make_device_public_key`**
 
 ```rust
 pub fn p256_keypair_from_secret(private_key: &[u8; 32]) -> Result<P256Keypair, CryptoError>
 pub fn p256_public_key_from_did_key(did_key: &str) -> Result<Vec<u8>, CryptoError>
+pub fn make_device_public_key(compressed: &[u8]) -> DevicePublicKey
 ```
 
-- The two inverses of `keypair_from_secret_key`'s encoding, added for the notification path (an instance stores only its sender *secret* and re-derives the published `did:key`; a device's registered notification key arrives as a `did:key` and must become SEC1 bytes for HPKE).
+- `make_device_public_key` encodes a compressed point the way `keypair_from_secret_key` does (same did:key, same multibase), as the [`DevicePublicKey`](#public-types) both mobile apps report a device key as; `ios-device-key` (the console) and `obsign-core` (the wallet) re-export it rather than keeping a copy each. Encodes only — `compressed` is taken as a 33-byte SEC1 point, not validated; round-trips with `p256_public_key_from_did_key` (test-pinned).
+- The other two are inverses of that encoding, added for the notification path (an instance stores only its sender *secret* and re-derives the published `did:key`; a device's registered notification key arrives as a `did:key` and must become SEC1 bytes for HPKE).
 - `p256_keypair_from_secret` lets a caller that persists only the secret re-derive the `did:key` on demand — one stored secret cannot disagree with a public key that was never stored separately. Errors on a scalar that is zero or ≥ the curve order.
 - `p256_public_key_from_did_key` validates **every layer** — URI prefix, multibase alphabet, multicodec prefix, and finally the point against the curve — returning compressed SEC1 bytes. It **rejects a non-P-256 multicodec**, notably secp256k1's `zQ3…` (otherwise a perfectly well-formed did:key in this ecosystem): the notification suite is pinned to DHKEM(P-256), so such a key would otherwise fail deep inside HPKE with an opaque error instead of at the boundary where the caller can say what is wrong.
 
@@ -461,6 +463,9 @@ pub fn verify_space_commit(
 - Errors: `CryptoError::Space` for a ctx field over the u16 length prefix, a bad state length, version/rev/MAC mismatch; `CryptoError::SignatureVerification` from the signature path.
 
 ### Public types
+
+**`DevicePublicKey`**
+- The public half of a device key as the mobile apps' IPC reports it: `multibase` (base58btc compressed point) and `key_id` (full `did:key:z...` URI), serialized camelCase (`keyId`) — both apps' TypeScript unions mirror it, so a field change is a wire-contract change
 
 **`P256Keypair`**
 - `key_id`: full `did:key:z...` URI

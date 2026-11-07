@@ -91,6 +91,8 @@
         return "Couldn't save to your device. Please try again.";
       case 'SHARE_STORAGE_FAILED':
         return 'Your identity was created, but we couldn’t save your recovery key. Please contact support — do not retry setup.';
+      case 'DEVICE_KEY_UNUSABLE':
+        return "This device's signing key is gone, so it can't seal an identity. This happens after a backup is restored onto a device; set up on a device that still holds its key.";
       case 'KEY_NOT_FOUND':
       default:
         return 'Something went wrong. Please try again.';
@@ -100,7 +102,9 @@
   function canRetry(err: DIDCeremonyError): boolean {
     // SHARE_STORAGE_FAILED means the DID is already committed — retrying the full
     // ceremony will fail with DID_ALREADY_EXISTS. Only recoverable out-of-band.
-    return err.code !== 'SHARE_STORAGE_FAILED';
+    // DEVICE_KEY_UNUSABLE: the key is gone and the app never mints a replacement, so a
+    // retry would fail the same way.
+    return err.code !== 'SHARE_STORAGE_FAILED' && err.code !== 'DEVICE_KEY_UNUSABLE';
   }
 </script>
 

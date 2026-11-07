@@ -1,5 +1,5 @@
 //! The wallet's Keychain: its service name, access groups, every account name, and the
-//! legacy OAuth-client token helpers. `run()` installs
+//! cleanup of the retired OAuth-client items. `run()` installs
 //! `obsign_platform_ios::keychain::AppleKeychain` under [`SERVICE`] into `obsign_core::keystore`.
 //!
 //! The accessors every module calls (`store_item`, `get_item`, the `*_synced` family,
@@ -58,10 +58,9 @@
 //!   the deliberate-removal record launch reconciliation consults.
 //! * `pending-removals` (`identity_removal`) — DIDs whose post-delete tombstone/wipe
 //!   is unfinished; fail-open.
-//! * `oauth-dpop-key-priv` (loaded via `custos_client::DpopKeypair::get_or_create` over
-//!   `device_key::WalletKeychain`, at [`DPOP_KEY_PRIV_ACCOUNT`]), `oauth-access-token`,
-//!   `oauth-refresh-token` — the retained but currently dead legacy OAuth-client items
-//!   ([`store_oauth_tokens`]).
+//! * `oauth-dpop-key-priv`, `oauth-access-token`, `oauth-refresh-token` — retired; no code
+//!   reads or writes them. [`retire_legacy_oauth_items`] deletes them on launch
+//!   ([`RETIRED_OAUTH_ACCOUNTS`]).
 //! * the five `notification-*` accounts (`notifications::NOTIFICATION_ACCOUNTS` is the
 //!   inventory) — the key, the pinned sender-key document, and the extension's failure
 //!   log are written via `keystore::store_item_after_first_unlock`; none of the five ever syncs.
@@ -83,7 +82,7 @@
 //! stored items; `account_names_are_pinned` holds every name above against a literal.
 //!
 
-use obsign_core::keystore::{self, KeyStoreError};
+use obsign_core::keystore;
 
 pub const SERVICE: &str = "ezpds-identity-wallet";
 
@@ -106,58 +105,34 @@ pub const STABLE_ACCESS_GROUP: &str = "org.obsign.shared";
 /// updates never migrates.
 pub const LEGACY_ACCESS_GROUP: &str = "dev.malpercio.identitywallet";
 
-// ── OAuth Keychain helpers ─────────────────────────────────────────────────────
+// ── Retired legacy OAuth-client items ──────────────────────────────────────────
 
-/// The wallet's DPoP proof-signing key (see the module doc's account inventory). Read by
-/// `oauth.rs` through `custos_client::DpopKeypair::get_or_create::<device_key::WalletKeychain>`
-/// rather than a dedicated load/store pair — that generic path is the one implementation of
-/// "load or mint a Keychain-backed key" this crate needs. `#[cfg(test)]`: `OAuthClient::new`
-/// (DPoP mode) has no production caller today (see `oauth.rs`'s module doc), so this account is
-/// currently reachable only from `oauth::test_dpop_keypair`.
-#[cfg(test)]
-pub(crate) use obsign_core::oauth::DPOP_KEY_PRIV_ACCOUNT;
-const OAUTH_ACCESS_TOKEN_ACCOUNT: &str = "oauth-access-token";
-const OAUTH_REFRESH_TOKEN_ACCOUNT: &str = "oauth-refresh-token";
-/// Store the OAuth access token and refresh token in the Keychain.
-pub fn store_oauth_tokens(access_token: &str, refresh_token: &str) -> Result<(), KeyStoreError> {
-    keystore::store_item(OAUTH_ACCESS_TOKEN_ACCOUNT, access_token.as_bytes())?;
-    keystore::store_item(OAUTH_REFRESH_TOKEN_ACCOUNT, refresh_token.as_bytes())?;
-    Ok(())
-}
-
-/// Load the OAuth access token and refresh token from the Keychain.
+/// The global OAuth-client accounts no code reads or writes any more: the DPoP proof key and
+/// the access/refresh token pair of the retired create-flow OAuth login.
 ///
-/// Returns `None` if either token is missing (not yet authenticated).
-pub fn load_oauth_tokens() -> Option<(String, String)> {
-    let access = match keystore::get_item(OAUTH_ACCESS_TOKEN_ACCOUNT) {
-        Ok(b) => match String::from_utf8(b) {
-            Ok(s) => s,
+/// ADR-0030 freezes Keychain account names, so these are deleted by
+/// [`retire_legacy_oauth_items`] rather than renamed. Keep the literals (and
+/// `account_names_are_pinned`'s check of them) until that cleanup has shipped to every install
+/// that could still hold the items; after that the list can go.
+pub(crate) const RETIRED_OAUTH_ACCOUNTS: [&str; 3] = [
+    "oauth-dpop-key-priv",
+    "oauth-access-token",
+    "oauth-refresh-token",
+];
+
+/// Delete the orphaned [`RETIRED_OAUTH_ACCOUNTS`] items. Idempotent and best-effort: an absent
+/// item is the normal case, and a failed delete only leaves an unread item behind, so it is
+/// logged and never blocks launch.
+pub fn retire_legacy_oauth_items() {
+    for account in RETIRED_OAUTH_ACCOUNTS {
+        match keystore::delete_item(account) {
+            Ok(()) => tracing::info!(account, "deleted retired OAuth Keychain item"),
+            Err(e) if keystore::is_not_found(&e) => {}
             Err(e) => {
-                tracing::error!(error = ?e, "UTF-8 error decoding access token from Keychain");
-                return None;
+                tracing::warn!(account, error = ?e, "could not delete retired OAuth Keychain item")
             }
-        },
-        Err(e) if keystore::is_not_found(&e) => return None,
-        Err(e) => {
-            tracing::error!(error = ?e, "Keychain error loading access token");
-            return None;
         }
-    };
-    let refresh = match keystore::get_item(OAUTH_REFRESH_TOKEN_ACCOUNT) {
-        Ok(b) => match String::from_utf8(b) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = ?e, "UTF-8 error decoding refresh token from Keychain");
-                return None;
-            }
-        },
-        Err(e) if keystore::is_not_found(&e) => return None,
-        Err(e) => {
-            tracing::error!(error = ?e, "Keychain error loading refresh token");
-            return None;
-        }
-    };
-    Some((access, refresh))
+    }
 }
 
 #[cfg(test)]
@@ -245,8 +220,17 @@ mod tests {
         let d = DID;
 
         assert_eq!(SERVICE, "ezpds-identity-wallet");
+        // Retired accounts: no live constant owns them, so the cleanup list is the pin.
         assert_eq!(
-            device_key::ACCOUNTS.secure_enclave_label,
+            RETIRED_OAUTH_ACCOUNTS,
+            [
+                "oauth-dpop-key-priv",
+                "oauth-access-token",
+                "oauth-refresh-token"
+            ]
+        );
+        assert_eq!(
+            device_key::DEVICE_KEY_HARDWARE_LABEL,
             "ezpds-device-rotation-key"
         );
 
@@ -256,9 +240,6 @@ mod tests {
             (DEVICE_TOKEN_ACCOUNT, "device-token"),
             (SESSION_TOKEN_ACCOUNT, "session-token"),
             (LEGACY_DID_ACCOUNT, "did"),
-            (DPOP_KEY_PRIV_ACCOUNT, "oauth-dpop-key-priv"),
-            (OAUTH_ACCESS_TOKEN_ACCOUNT, "oauth-access-token"),
-            (OAUTH_REFRESH_TOKEN_ACCOUNT, "oauth-refresh-token"),
             (
                 device_key::DEVICE_KEY_PRIV_ACCOUNT,
                 "device-rotation-key-priv",
@@ -472,147 +453,86 @@ mod tests {
     }
 }
 
-/// The wallet's own `custos_client` adapters, end to end: the DPoP key through the installed
-/// store, breadcrumbs into the diagnostics log, and refreshed tokens into the legacy global
-/// OAuth-client accounts above.
+/// The wallet's `custos_client` observer adapter, end to end, plus the retired-item cleanup.
 #[cfg(test)]
-mod dpop_adapter {
+mod adapters {
     use super::*;
-    use obsign_core::oauth::{OAuthError, OAuthSession};
+    use crate::diagnostics::WalletTransportObserver;
+    use custos_client::OAuthClient;
+    use obsign_core::oauth::OAuthError;
+    use std::sync::Arc;
 
-    // ── custos_client adapters ───────────────────────────────────────────────────
-    //
-    // `OAuthClient` is Tauri-free; it takes its diagnostics and token-persistence seams as
-    // trait objects rather than calling `crate::diagnostics`/`crate::keychain` directly.
-
-    /// Persists a DPoP-mode refreshed token pair to the wallet's legacy global OAuth-client
-    /// Keychain item (see `keychain.rs`'s module doc). Test-only: only `OAuthClient::new`
-    /// (DPoP mode) would call this, and that constructor has no production caller today.
-    pub struct WalletTokenPersister;
-
-    impl custos_client::TokenPersister for WalletTokenPersister {
-        fn store_tokens(&self, access_token: &str, refresh_token: &str) -> Result<(), String> {
-            store_oauth_tokens(access_token, refresh_token).map_err(|e| e.to_string())
+    #[test]
+    fn retire_legacy_oauth_items_deletes_only_the_retired_accounts() {
+        keystore::clear_for_test();
+        for account in RETIRED_OAUTH_ACCOUNTS {
+            keystore::store_item(account, b"orphan").unwrap();
         }
+        keystore::store_item("relay-base-url", b"https://pds.example").unwrap();
+
+        retire_legacy_oauth_items();
+
+        for account in RETIRED_OAUTH_ACCOUNTS {
+            assert!(keystore::is_not_found(
+                &keystore::get_item(account).unwrap_err()
+            ));
+        }
+        assert_eq!(
+            keystore::get_item("relay-base-url").unwrap(),
+            b"https://pds.example"
+        );
+
+        // A second run, with nothing left to delete, is a no-op.
+        retire_legacy_oauth_items();
     }
 
-    mod tests {
-        use super::*;
-        use crate::diagnostics::WalletTransportObserver;
-        use custos_client::OAuthClient;
-        use httpmock::prelude::*;
-        use obsign_core::oauth::test_dpop_keypair;
-        use std::sync::{Arc, Mutex};
+    /// End-to-end check of the redaction pipeline through the wallet's real
+    /// `WalletTransportObserver` and `crate::diagnostics::export_diagnostics()`: a lazy-refresh
+    /// transport failure must record a breadcrumb, and the exported report must never contain
+    /// the access/refresh tokens. The secret assertions are the point of this test and use
+    /// uniquely-named markers (safe under the process-global sink shared with tests running in
+    /// parallel); the `"oauthBearerRefresh"` recorded-check is a shared op name, so under parallel
+    /// execution a sibling test's breadcrumb could satisfy it — a weaker signal than the secret
+    /// checks. The `"private-identity-oauthrs-test"` marker (in the request path) can never reach
+    /// the report here: the lazy refresh fails before that request is built.
+    #[tokio::test]
+    async fn lazy_refresh_transport_failure_records_a_redacted_breadcrumb() {
+        // A bound-then-dropped listener: a real, briefly-valid port that is guaranteed closed
+        // by the time the client connects, so the transport failure is deterministic across
+        // platforms (unlike a fixed low port number, which may be filtered rather than refused).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
 
-        /// End-to-end check of the wallet's own adapters (not `custos_client`'s internals, which
-        /// the crate's own test suite covers): a DPoP-mode `OAuthClient` built with
-        /// `device_key::WalletKeychain`, `WalletTransportObserver`, and `WalletTokenPersister`
-        /// refreshes a token and the new pair lands in the wallet's real (test-mode in-memory)
-        /// Keychain via `keychain::load_oauth_tokens`.
-        #[tokio::test]
-        async fn refresh_persists_tokens_through_wallet_keychain_adapter() {
-            obsign_core::keystore::clear_for_test();
+        // A non-JWT access token has no `exp`, so the client treats it as due for refresh.
+        let client = OAuthClient::new_bearer_with_observer(
+            "private-access-token-oauthrs-test".to_string(),
+            "private-refresh-token-oauthrs-test".to_string(),
+            base_url,
+            Arc::new(WalletTransportObserver),
+        )
+        .unwrap();
 
-            let server = MockServer::start();
-            server.mock(|when, then| {
-                when.method(POST).path("/oauth/token");
-                then.status(200).json_body(serde_json::json!({
-                    "access_token": "wallet-new-access",
-                    "token_type": "DPoP",
-                    "expires_in": 300,
-                    "refresh_token": "wallet-new-refresh",
-                    "scope": "atproto"
-                }));
-            });
+        let error = client
+            .get("/resource?did=did:plc:private-identity-oauthrs-test")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, OAuthError::TokenRefreshFailed));
 
-            let keypair = test_dpop_keypair().expect("keypair must exist");
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            let session = Arc::new(Mutex::new(OAuthSession {
-                access_token: "wallet-old-access".to_string(),
-                refresh_token: "wallet-old-refresh".to_string(),
-                expires_at: now, // already due for refresh
-                dpop_nonce: None,
-            }));
-            let client = OAuthClient::new(
-                keypair,
-                "test-client-id".to_string(),
-                session,
-                server.base_url(),
-                Arc::new(WalletTransportObserver),
-                Arc::new(WalletTokenPersister),
-            );
-
-            client.refresh_token().await.expect("refresh must succeed");
-
-            let (access, refresh) = load_oauth_tokens().expect("tokens must be persisted");
-            assert_eq!(access, "wallet-new-access");
-            assert_eq!(refresh, "wallet-new-refresh");
-        }
-
-        /// End-to-end check of the redaction pipeline through the wallet's real
-        /// `WalletTransportObserver` and `crate::diagnostics::export_diagnostics()`: a lazy-refresh
-        /// transport failure must record a breadcrumb, and the exported report must never contain
-        /// the access/refresh tokens. The three secret assertions are the point of this test and use
-        /// uniquely-named markers (safe under the process-global sink shared with tests running in
-        /// parallel); the `"oauthRefresh"` recorded-check is the shared, hardcoded op name every
-        /// DPoP-mode refresh failure uses, so under parallel execution it could in principle be
-        /// satisfied by a sibling test's own breadcrumb rather than this call's — a weaker signal
-        /// than the secret checks, kept for readability rather than as the test's real assertion.
-        /// The `"private-identity-oauthrs-test"` marker (embedded in the `/resource?did=...` path)
-        /// can never actually leak here: the lazy refresh fails before that request is built, so
-        /// this assertion cannot fail either. Covering a leak from the *resource* request itself
-        /// would need a scenario where the refresh succeeds and the follow-up request fails —
-        /// not this one.
-        #[tokio::test]
-        async fn lazy_refresh_transport_failure_records_a_redacted_breadcrumb() {
-            // A bound-then-dropped listener: a real, briefly-valid port that is guaranteed closed
-            // by the time the client connects, so the transport failure is deterministic across
-            // platforms (unlike a fixed low port number, which may be filtered rather than refused).
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let base_url = format!("http://{}", listener.local_addr().unwrap());
-            drop(listener);
-
-            let keypair = test_dpop_keypair().expect("keypair must exist");
-            let session = Arc::new(Mutex::new(OAuthSession {
-                access_token: "private-access-token-oauthrs-test".to_string(),
-                refresh_token: "private-refresh-token-oauthrs-test".to_string(),
-                expires_at: 0, // already due for refresh
-                dpop_nonce: None,
-            }));
-            let client = OAuthClient::new(
-                keypair,
-                "test-client-id".to_string(),
-                session,
-                base_url,
-                Arc::new(WalletTransportObserver),
-                Arc::new(WalletTokenPersister),
-            );
-
-            let error = client
-                .get("/resource?did=did:plc:private-identity-oauthrs-test")
-                .await
-                .unwrap_err();
-            assert!(matches!(error, OAuthError::TokenRefreshFailed));
-
-            let report = crate::diagnostics::export_diagnostics();
+        let report = crate::diagnostics::export_diagnostics();
+        assert!(
+            report.contains("oauthBearerRefresh"),
+            "the transport failure must be recorded"
+        );
+        for marker in [
+            "private-access-token-oauthrs-test",
+            "private-refresh-token-oauthrs-test",
+            "private-identity-oauthrs-test",
+        ] {
             assert!(
-                report.contains("oauthRefresh"),
-                "the transport failure must be recorded"
+                !report.contains(marker),
+                "test marker leaked into diagnostics report: {marker}"
             );
-            // Fake markers planted in the request; none may reach the exported report.
-            for marker in [
-                "private-access-token-oauthrs-test",
-                "private-refresh-token-oauthrs-test",
-                "private-identity-oauthrs-test",
-            ] {
-                assert!(
-                    !report.contains(marker),
-                    "test marker leaked into diagnostics report: {marker}"
-                );
-            }
         }
     }
 }

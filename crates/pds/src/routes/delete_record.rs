@@ -10,8 +10,6 @@ use serde::Deserialize;
 use crate::app::AppState;
 use common::{ApiError, ErrorCode};
 use custos_core::lexicon::LexiconInput;
-use custos_db::blocks::SqliteBlockStore;
-use repo_engine::Repository;
 
 #[derive(Deserialize)]
 pub struct DeleteRecordBody {
@@ -41,81 +39,18 @@ pub async fn delete_record(
 ) -> Result<impl IntoResponse, ApiError> {
     // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
-    let did = did.as_str();
+    let authorized = crate::record_write::authorize(&state, &headers, &method, &uri, &did)?;
     let collection = &body.collection;
     let rkey = &body.rkey;
 
-    if !custos_core::identity::did::is_valid_did(did) {
-        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
-    }
-
-    // Authenticate: require a valid access token whose subject owns this repo. Runs the shared
-    // access-auth path so the RFC 9449 scheme ↔ `cnf.jkt` binding rules and DPoP-proof
-    // validation match the `AuthenticatedUser` extractor — a DPoP-bound token presented as
-    // plain `Bearer` with no proof is rejected here, not silently downgraded.
-    let user = custos_core::auth::authenticate_access(&headers, &method, &uri, &state)?;
-    if user.did != *did {
-        return Err(ApiError::new(
-            ErrorCode::Forbidden,
-            "authenticated account does not own this repository",
-        ));
-    }
-
     repo_engine::validate_record_path(collection, rkey)
         .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
+    authorized.require_repo(
+        collection,
+        custos_core::auth::oauth_scopes::RepoAction::Delete,
+    )?;
 
-    if user.scope == custos_core::auth::jwt::AuthScope::Access {
-        custos_core::auth::oauth_scopes::require_repo(
-            &user.scope_claim,
-            collection,
-            custos_core::auth::oauth_scopes::RepoAction::Delete,
-        )?;
-    }
-
-    // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
-    // writers — see `record_write::RepoWriteLocks`. Held until this handler returns.
-    let _write_guard = state.repo_write_locks.lock(did).await;
-
-    let write_state = custos_db::accounts::get_repo_write_state(&state.db, did)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to query repo write state");
-            ApiError::new(ErrorCode::InternalError, "failed to delete record")
-        })?
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
-
-    // A deactivated, suspended, or taken-down account is read-only: no writes until reactivated
-    // or the moderation action is cleared. Checked right after account existence — before the
-    // repo-root lookup — so a non-active account is a 403 even if it never created a repo; only a
-    // truly missing account (handled above) is a 404. The CAS below also carries the same
-    // lifecycle guard to close the gap between this check and commit.
-    if !write_state.active {
-        return Err(ApiError::new(
-            ErrorCode::Forbidden,
-            "account is deactivated",
-        ));
-    }
-
-    let root_cid_str = write_state
-        .repo_root_cid
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
-
-    let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
-        tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
-        ApiError::new(ErrorCode::InternalError, "failed to delete record")
-    })?;
-
-    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let mut repo = Repository::open(block_store, root_cid).await.map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to open repo");
-        ApiError::new(ErrorCode::InternalError, "failed to delete record")
-    })?;
-
-    // Capture the pre-delete revision and MST root for the firehose event's `since` and Sync v1.1
-    // `prevData` (the previous commit's MST root CID) — both read before the delete mutates the repo.
-    let prev_rev = repo.commit().rev().as_str().to_string();
-    let prev_data = repo.commit().data().to_string();
-
+    let mut locked = authorized.lock(&state).await?;
     let mst_key = format!("{collection}/{rkey}");
 
     // Enforce explicit swapCommit/swapRecord preconditions before anything else, so a stale
@@ -125,12 +60,12 @@ pub async fn delete_record(
         commit: body.swap_commit.clone(),
         record: body.swap_record.clone().map(Some),
     };
-    crate::record_write::enforce_swap(&swap, &root_cid_str, &mut repo, &mst_key).await?;
+    locked.enforce_swap(&swap, &mst_key).await?;
 
     // Idempotent: if the record is already absent, succeed without a new commit. The current CID,
     // read before the delete mutates the repo, doubles as the firehose op's Sync v1.1 `prev` (the
     // previous record CID for this delete).
-    let prev_cid = repo_engine::get_record_cid(&mut repo, &mst_key)
+    let prev_cid = repo_engine::get_record_cid(&mut locked.repo, &mst_key)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, key = %mst_key, "failed to read record");
@@ -140,34 +75,14 @@ pub async fn delete_record(
         return Ok((StatusCode::OK, axum::Json(serde_json::json!({}))));
     }
 
-    let master_key: &[u8; 32] = state
-        .config
-        .signing_key_master_key
-        .as_ref()
-        .map(|s| &*s.0)
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::ServiceUnavailable,
-                "signing key master key not configured",
-            )
-        })?;
-    let signer =
-        custos_core::auth::signing_key::load_repo_signer(&state.db, did, master_key).await?;
-
-    repo_engine::delete_record(&mut repo, &signer, &mst_key)
+    let signer = locked.signer(&state).await?;
+    repo_engine::delete_record(&mut locked.repo, &signer, &mst_key)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, key = %mst_key, "failed to delete record");
             ApiError::new(ErrorCode::InternalError, "failed to delete record")
         })?;
 
-    // Advance the root with optimistic concurrency (see putRecord for rationale). The shared
-    // helper folds the deactivation guard into the CAS so an account deactivated after the
-    // `get_repo_write_state` check above cannot have this delete land, and commits the CAS
-    // atomically with the firehose `#commit` event (the diff CAR needs the prior block set, so
-    // this must run before GC). This also stamps the commit's blocks with its revision for
-    // getRepo?since.
-    let new_rev = repo.commit().rev().as_str().to_string();
     let op = custos_core::firehose::RepoOp {
         action: custos_core::firehose::OpAction::Delete,
         collection: collection.clone(),
@@ -177,21 +92,7 @@ pub async fn delete_record(
         prev: prev_cid.map(|c| c.to_string()),
         value: None,
     };
-    crate::record_write::commit_repo_write(
-        &state,
-        did,
-        root_cid,
-        repo.root(),
-        new_rev,
-        Some(prev_rev),
-        Some(prev_data),
-        vec![op],
-        &root_cid_str,
-        user.registration_id.as_deref(),
-    )
-    .await?;
-    // `commit_repo_write` reclaims this commit's superseded blocks incrementally; no separate
-    // full-repo reachability sweep runs on the write path.
+    locked.commit(&state, vec![op]).await?;
 
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }
@@ -226,29 +127,6 @@ mod tests {
         let app = crate::app::app(state);
         let resp = app.oneshot(delete_req(&did, "t1", None)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn delete_record_on_deactivated_account_returns_403() {
-        let state = state_with_master_key().await;
-        let did = "did:plc:delrec".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
-            .bind(&did)
-            .execute(&state.db)
-            .await
-            .unwrap();
-        let token = access_jwt(&state.jwt_secret, &did);
-        let app = crate::app::app(state);
-        let resp = app
-            .oneshot(delete_req(&did, "t1", Some(&token)))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::FORBIDDEN,
-            "a deactivated account must not be able to delete records"
-        );
     }
 
     #[tokio::test]

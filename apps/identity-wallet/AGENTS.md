@@ -118,7 +118,7 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 |---|---|
 | `lib.rs` | crate root and app wiring: `run()`'s startup sequence and the `EventSink` adapter — see module doc |
 | `main.rs` | desktop entry point (calls `lib::run()`) |
-| `keychain.rs` | the wallet's Keychain service name, access groups (and the entitlement-order invariant), and the **canonical account inventory** — the module doc is the authority on every account name; also the legacy OAuth-token helpers and the account-name pin test, which pins the core's account constants (`create_flow`, `pds_config`, `preferences`, …) alongside this file's own. The Keychain itself is `obsign_platform_ios::keychain::AppleKeychain`, which `run()` installs under this service |
+| `keychain.rs` | the wallet's Keychain service name, access groups (and the entitlement-order invariant), and the **canonical account inventory** — the module doc is the authority on every account name; also the launch-time cleanup of the retired OAuth items and the account-name pin test, which pins the core's account constants (`create_flow`, `pds_config`, `preferences`, …) alongside this file's own. The Keychain itself is `obsign_platform_ios::keychain::AppleKeychain`, which `run()` installs under this service |
 | `diagnostics.rs` | the Settings `export_diagnostics` command; the log itself is `obsign_core::diagnostics` |
 | `commands.rs` | the IPC command table: one line per registered command, from which the `commands!` macro generates every `#[tauri::command]` wrapper and the invoke handler. **A new command is a new line here**; the function it names takes `&Core`/`AppHandle` ahead of its IPC arguments and carries no Tauri attribute |
 | `apns.rs` | iOS-only APNs bridge: add-only delegate-method installation for the token callbacks + the notification-tap deep link — see module doc |
@@ -141,8 +141,8 @@ PDS running at the configured URL for account creation to succeed at runtime.
 
 - Frontend → Rust via Tauri IPC (`@tauri-apps/api/core` `invoke()`).
 - Rust → workspace deps: `crates/obsign-core` (the platform-free core: `KeyStore` and the other platform traits; see its AGENTS.md), `crates/crypto` (P-256 software path + envelope builders),
-  `crates/custos-client` (the DPoP/OAuth/XRPC client, including DNS TXT handle resolution — see
-  its AGENTS.md), `crates/ios-device-key` (device key), `p256`, `multibase`, `urlencoding`,
+  `crates/custos-client` (the Bearer-session/XRPC client, including DNS TXT handle resolution — see
+  its AGENTS.md), `p256`, `multibase`, `urlencoding`,
   `chrono`; reqwest is rustls-only (no OpenSSL — rustls handles iOS TLS natively).
 - Rust → the configured PDS, arbitrary PDSes, and plc.directory over HTTPS at runtime (the
   endpoint inventory is each client module's doc: `http.rs`, `pds_client.rs`).

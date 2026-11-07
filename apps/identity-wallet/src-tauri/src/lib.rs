@@ -4,9 +4,8 @@
 //!
 //! - `run()` — the iOS/Android entry point (`#[cfg_attr(mobile, tauri::mobile_entry_point)]`;
 //!   `main.rs` calls it on desktop). Its `setup` installs the platform adapters, restores the
-//!   configured PDS URL, runs `obsign_core::startup_reconcile`, restores the legacy OAuth
-//!   session (`expires_at = 0` forces an immediate refresh; `auth_ready` emitted after a 300 ms
-//!   delay so SvelteKit can register its listener), spawns the PLC monitoring loop, and on iOS
+//!   configured PDS URL, runs `obsign_core::startup_reconcile`, deletes the retired OAuth
+//!   Keychain items, spawns the PLC monitoring loop, and on iOS
 //!   registers the background jobs and the APNs bridge.
 //! - `TauriEvents`, the `EventSink` adapter, and the `BGTaskScheduler` identifiers.
 
@@ -101,7 +100,8 @@ pub fn run() {
     let _ = obsign_core::keystore::install(Box::new(
         obsign_platform_ios::keychain::AppleKeychain::new(keychain::SERVICE),
     ));
-    // Each identity's device key: the Secure Enclave on a real device, software elsewhere.
+    // Every device key (each identity's, and the global one the create flow signs with): the
+    // Secure Enclave on a real device, software elsewhere.
     #[cfg(all(target_os = "ios", not(target_env = "sim")))]
     let _ =
         obsign_core::signer::install(Box::new(obsign_platform_ios::enclave_signer::EnclaveSigner));
@@ -156,30 +156,8 @@ pub fn run() {
             // created-identity re-registration. Must follow the adapter installs above.
             obsign_core::startup_reconcile::run();
 
-            // On relaunch: restore persisted session from Keychain and notify frontend.
-            // The 300 ms delay lets the SvelteKit app boot and register its event listener
-            // before the event fires — emitting synchronously here would be dropped.
-            if let Some((access, refresh)) = keychain::load_oauth_tokens() {
-                {
-                    let state = app.state::<oauth::Core>();
-                    *state
-                        .oauth_session
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some(oauth::OAuthSession {
-                            access_token: access,
-                            refresh_token: refresh,
-                            // expires_at = 0 ensures OAuthClient refreshes immediately on first use.
-                            expires_at: 0,
-                            dpop_nonce: None,
-                        });
-                }
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                    handle.emit("auth_ready", ()).ok();
-                });
-            }
+            // Delete the Keychain items the retired create-flow OAuth login left behind.
+            keychain::retire_legacy_oauth_items();
 
             // Start the PLC monitor's foreground timer (15-minute interval). It runs alongside
             // the background PLC job requested below, which covers the app being closed.

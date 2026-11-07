@@ -1,13 +1,13 @@
 # ios-device-key
 
-Last verified: 2026-09-04
+Last verified: 2026-11-07
 
 ## Purpose
-The per-device P-256 key both Tauri apps hold — Secure Enclave on a real iOS device,
-software key everywhere else — over a Keychain the calling app supplies. The identity
-wallet's copy is `rotationKeys[0]` for a did:plc identity; the operator console's is the
-device's admin credential. Before this crate each app carried its own copy of the same
-two paths.
+The operator console's per-device P-256 key — Secure Enclave on a real iOS device,
+software key everywhere else — over a Keychain the calling app supplies; the key is the
+device's admin credential. The identity wallet's device keys go through
+`obsign_core::signer::Signer` instead (the Secure Enclave implementation is
+`crates/obsign-platform-ios`); nothing in the wallet depends on this crate.
 
 The module docs are the authority: `src/lib.rs` for the seam (why the Keychain is a trait
 and not a `#[cfg(test)]` switch), `src/device_key.rs` for the two key paths.
@@ -15,7 +15,7 @@ and not a `#[cfg(test)]` switch), `src/device_key.rs` for the two key paths.
 ## Map
 | File | What it is |
 |---|---|
-| `src/lib.rs` | the `KeychainStore` seam, `DeviceKeyAccounts`, the IPC-shaped `DevicePublicKey`/`DeviceKeyError`, and did:key derivation |
+| `src/lib.rs` | the `KeychainStore` seam, `DeviceKeyAccounts`, the IPC-shaped `DeviceKeyError`, and the `crypto` re-exports `DevicePublicKey`/`make_device_public_key` |
 | `src/device_key.rs` | `get_or_create` + `sign` on both compile-time paths, and the test battery over an in-memory store |
 
 ## Contracts
@@ -25,11 +25,13 @@ and not a `#[cfg(test)]` switch), `src/device_key.rs` for the two key paths.
 - `sign` returns raw 64-byte `r||s`, low-S normalized on both paths.
 - `DeviceKeyError` serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; both apps' TypeScript
   `DeviceKeyError` unions mirror it, so a variant change is a wire-contract change.
-- Account names live in the apps, not here. Each app pins its own `DeviceKeyAccounts`;
+- Account names live in the app, not here. The console pins its own `DeviceKeyAccounts`;
   changing a name orphans existing keys.
+- `DevicePublicKey` and `make_device_public_key` are `crypto`'s, re-exported, so the two
+  apps encode one point alike.
 
 ## Boundaries
-- No `#[cfg(test)]` Keychain here — the apps' in-memory stores would not apply to a
+- No `#[cfg(test)]` Keychain here — an app's in-memory store would not apply to a
   dependency's test build, and a Cargo feature that did would ship one into a release.
 - `security-framework` is target-gated to Apple, so the crate builds and its tests run on
   the Linux PDS gate. The two `#[cfg]` paths are exact complements; the Apple targets
