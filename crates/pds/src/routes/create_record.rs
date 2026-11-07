@@ -56,6 +56,7 @@ pub async fn create_record(
 ) -> Result<impl IntoResponse, ApiError> {
     // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
+    let authorized = crate::record_write::authorize(&state, &headers, &method, &uri, &did)?;
     let collection = &body.collection;
     // Treat empty string as "absent" — generate a TID.
     let rkey = body
@@ -76,16 +77,12 @@ pub async fn create_record(
         record: None,
     };
 
-    // Delegate to the shared write helper with create_only=true.
     let (record_cid, validation_status) = crate::record_write::write_record(
         &state,
-        &headers,
-        &method,
-        &uri,
-        &did,
+        authorized,
         &mst_key,
         &body.record,
-        true, // create_only: reject if record already exists
+        crate::record_write::RecordMode::Create,
         &swap,
         body.validate,
     )
@@ -401,41 +398,6 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn create_record_on_deactivated_account_returns_403() {
-        let (state, did) = setup_account_with_repo().await;
-        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
-            .bind(&did)
-            .execute(&state.db)
-            .await
-            .unwrap();
-        let token = access_jwt(&state.jwt_secret, &did);
-        let app = crate::app::app(state);
-
-        let request = Request::builder()
-            .method(http::Method::POST)
-            .uri("/xrpc/com.atproto.repo.createRecord")
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {token}"))
-            .body(Body::from(
-                serde_json::to_string(&serde_json::json!({
-                    "repo": did,
-                    "collection": "app.bsky.feed.post",
-                    "validate": false,
-                    "record": {"text": "should be rejected"}
-                }))
-                .unwrap(),
-            ))
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::FORBIDDEN,
-            "a deactivated account must not be able to write records"
-        );
     }
 
     #[tokio::test]

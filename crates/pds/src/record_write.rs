@@ -1,13 +1,12 @@
 // pattern: Imperative Shell
 
-//! Shared record write operations for com.atproto.repo.{create,put,delete}Record.
+//! The one authorized, locked repo write every `com.atproto.repo.*` writer goes through.
 //!
-//! This module consolidates the common write flow (auth, repo open, signer load,
-//! optimistic concurrency, GC) so that individual route handlers remain thin
-//! gatherers that delegate to a single authoritative write path.
-//!
-//! The `create_only` flag distinguishes `createRecord` (must reject pre-existing rkeys)
-//! from `putRecord` (upsert semantics) and `deleteRecord` (always removes).
+//! [`authorize`] → [`Authorized::lock`] is the opening sequence `createRecord`, `putRecord`,
+//! `deleteRecord`, and `applyWrites` share: valid DID, access token, ownership, then the repo
+//! write lock, active check, and repo open. The resulting [`LockedRepo`] holds the lock and
+//! carries the signer load and the commit ([`commit_repo_write`]: CAS + firehose event + GC).
+//! Each route keeps only its own operation body; [`write_record`] is the create/put body.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -30,10 +29,10 @@ use repo_engine::Repository;
 /// the other's freshly written (not yet root-reachable) blocks, leaving the persisted root
 /// pointing at missing blocks and the repo permanently unopenable.
 ///
-/// Every path that mutates a repo's block set or root (`createRecord`/`putRecord` via
-/// [`write_record`], `deleteRecord`, `applyWrites`) must hold this lock from before it reads the
-/// repo root until after its GC pass. Lock ordering: this lock is acquired *before* the firehose
-/// emit lock (inside [`commit_repo_write`]); nothing acquires them in the reverse order.
+/// Every path that mutates a repo's block set or root must hold this lock from before it reads
+/// the repo root until after its GC pass; the record writers hold it through [`LockedRepo`].
+/// Lock ordering: this lock is acquired *before* the firehose emit lock (inside
+/// [`commit_repo_write`]); nothing acquires them in the reverse order.
 ///
 /// Entries are never evicted: the map is bounded by the number of accounts that ever wrote, and
 /// one mutex per account is negligible next to the account's rows.
@@ -165,51 +164,31 @@ pub(crate) async fn resolve_repo_did(state: &AppState, repo: &str) -> Result<Str
         })
 }
 
-/// Shared write flow: authenticate → open repo → load signer → write record →
-/// optimistic-concurrency CAS → GC.
+/// An access-token caller proven to own the repo it is about to write. Only [`authorize`] builds
+/// one, and only [`Authorized::lock`] opens a repo for writing, so every writer authenticates
+/// before it takes the repo write lock.
+pub(crate) struct Authorized {
+    user: crate::auth::AuthenticatedUser,
+}
+
+/// The first half of the opening sequence every repo writer shares: valid DID → access token
+/// (the shared `authenticate_access` path, so DPoP binding rules match the `AuthenticatedUser`
+/// extractor and a DPoP-bound token presented as plain `Bearer` is rejected) → access scope →
+/// the token's subject owns `did`.
 ///
-/// # Arguments
-/// * `state` - Application state (DB pool, config, etc.)
-/// * `headers` - Request headers (for access-token extraction + optional DPoP proof)
-/// * `method` / `uri` - The request method and URI, needed to validate a DPoP proof's
-///   `htm`/`htu` binding (RFC 9449); the calling handler has both.
-/// * `did` - The DID of the repo owner
-/// * `mst_key` - The MST key (collection/rkey)
-/// * `record` - The record data as JSON
-/// * `create_only` - If true, reject writes when the key already exists (createRecord
-///   semantics). If false, upsert (putRecord semantics).
-/// * `swap` - Optional `swapCommit`/`swapRecord` optimistic-concurrency preconditions
-///   enforced before the write; pass [`SwapCheck::default`] for none.
-///
-/// # Precondition
-/// `mst_key` must already be validated via `repo_engine::validate_record_path`; this
-/// helper trusts it and does not re-check the collection/rkey format.
-// The request-context trio (`headers`/`method`/`uri`, needed for DPoP-proof `htm`/`htu`
-// validation) plus the write parameters push this over clippy's argument threshold; the
-// grouping is already as tight as it can be (same posture as `commit_repo_write`).
-#[allow(clippy::too_many_arguments)]
-pub async fn write_record(
+/// Writers run their request-shape validation after this and before [`Authorized::lock`], so a
+/// malformed write never waits on the lock and validation can't probe a repo the caller doesn't
+/// own.
+pub(crate) fn authorize(
     state: &AppState,
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
     did: &str,
-    mst_key: &str,
-    record: &serde_json::Value,
-    create_only: bool,
-    swap: &SwapCheck,
-    validate: Option<bool>,
-) -> Result<(repo_engine::Cid, Option<crate::lexicon::RecordValidation>), ApiError> {
-    // Validate DID format.
+) -> Result<Authorized, ApiError> {
     if !crate::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
-
-    // Authenticate: require a valid access token whose subject owns this repo. This runs the
-    // shared access-auth path (`authenticate_access`), so the RFC 9449 scheme ↔ `cnf.jkt`
-    // binding rules and DPoP-proof validation are identical to the `AuthenticatedUser`
-    // extractor — a DPoP-bound token presented as plain `Bearer` with no proof is rejected
-    // here, not silently downgraded.
     let user = crate::auth::authenticate_access(headers, method, uri, state)?;
     if !user.scope.is_access() {
         return Err(ApiError::new(
@@ -217,13 +196,196 @@ pub async fn write_record(
             "access token required",
         ));
     }
-    if user.did != *did {
+    if *user.did != *did {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
             "authenticated account does not own this repository",
         ));
     }
+    Ok(Authorized { user })
+}
 
+impl Authorized {
+    pub(crate) fn did(&self) -> &str {
+        &self.user.did
+    }
+
+    /// The OAuth granular-scope check for one record op. Legacy session and app-password tokens
+    /// carry no granular grant and pass.
+    pub(crate) fn require_repo(
+        &self,
+        collection: &str,
+        action: crate::auth::oauth_scopes::RepoAction,
+    ) -> Result<(), ApiError> {
+        if self.user.scope == crate::auth::jwt::AuthScope::Access {
+            crate::auth::oauth_scopes::require_repo(&self.user.scope_claim, collection, action)?;
+        }
+        Ok(())
+    }
+
+    /// The second half of the opening sequence: take the repo write lock (see
+    /// [`RepoWriteLocks`]), then read the root and active status, refuse a non-active account,
+    /// and open the repo at its root. The lock lives in the returned [`LockedRepo`], so it is
+    /// held until the writer drops it — past the commit and its GC pass.
+    pub(crate) async fn lock(self, state: &AppState) -> Result<LockedRepo, ApiError> {
+        let did = self.did().to_string();
+        let guard = state.repo_write_locks.lock(&did).await;
+
+        let write_state = crate::db::accounts::get_repo_write_state(&state.db, &did)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, "failed to query repo write state");
+                ApiError::new(ErrorCode::InternalError, "failed to write record")
+            })?
+            .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
+
+        // A deactivated, suspended, or taken-down account is read-only until reactivated or the
+        // moderation action is cleared. Checked before the repo-root lookup, so a non-active
+        // account is a 403 even if it never created a repo; only a missing account is a 404. The
+        // commit CAS carries the same lifecycle guard, closing the gap between here and commit.
+        if !write_state.active {
+            return Err(ApiError::new(
+                ErrorCode::Forbidden,
+                "account is deactivated",
+            ));
+        }
+
+        let root_cid_str = write_state
+            .repo_root_cid
+            .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
+        let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
+            tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
+            ApiError::new(ErrorCode::InternalError, "failed to write record")
+        })?;
+
+        let block_store = SqliteBlockStore::new(state.db.clone(), did.clone());
+        let repo = Repository::open(block_store, root_cid).await.map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to open repo");
+            ApiError::new(ErrorCode::InternalError, "failed to write record")
+        })?;
+
+        // The pre-write revision and MST root become the firehose event's `since` and Sync v1.1
+        // `prevData`; both must be read before the write mutates the repo.
+        let prev_rev = repo.commit().rev().as_str().to_string();
+        let prev_data = repo.commit().data().to_string();
+
+        Ok(LockedRepo {
+            _guard: guard,
+            authorized: self,
+            root_cid,
+            root_cid_str,
+            repo,
+            prev_rev,
+            prev_data,
+        })
+    }
+}
+
+/// An authorized writer's repo, opened at its persisted root under the repo write lock.
+pub(crate) struct LockedRepo {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    authorized: Authorized,
+    root_cid: repo_engine::Cid,
+    root_cid_str: String,
+    pub(crate) repo: Repository<SqliteBlockStore>,
+    prev_rev: String,
+    prev_data: String,
+}
+
+impl LockedRepo {
+    pub(crate) fn did(&self) -> &str {
+        self.authorized.did()
+    }
+
+    pub(crate) fn require_repo(
+        &self,
+        collection: &str,
+        action: crate::auth::oauth_scopes::RepoAction,
+    ) -> Result<(), ApiError> {
+        self.authorized.require_repo(collection, action)
+    }
+
+    /// The persisted repo head this write started from, as a CID string (`swapCommit` compares
+    /// against it).
+    pub(crate) fn root_cid_str(&self) -> &str {
+        &self.root_cid_str
+    }
+
+    /// Enforce `swapCommit` / `swapRecord` for `mst_key` against the repo as opened.
+    pub(crate) async fn enforce_swap(
+        &mut self,
+        swap: &SwapCheck,
+        mst_key: &str,
+    ) -> Result<(), ApiError> {
+        enforce_swap(swap, &self.root_cid_str, &mut self.repo, mst_key).await
+    }
+
+    /// Load this account's repo signing key.
+    pub(crate) async fn signer(
+        &self,
+        state: &AppState,
+    ) -> Result<repo_engine::CommitSigner, ApiError> {
+        let master_key: &[u8; 32] = state
+            .config
+            .signing_key_master_key
+            .as_ref()
+            .map(|s| &*s.0)
+            .ok_or_else(|| {
+                ApiError::new(
+                    ErrorCode::ServiceUnavailable,
+                    "signing key master key not configured",
+                )
+            })?;
+        crate::auth::signing_key::load_repo_signer(&state.db, self.did(), master_key).await
+    }
+
+    /// Commit the repo's current head (see [`commit_repo_write`]) against the root this write
+    /// opened at, attributing it to the caller's agent registration when there is one.
+    pub(crate) async fn commit(
+        &self,
+        state: &AppState,
+        ops: Vec<crate::firehose::RepoOp>,
+    ) -> Result<(), ApiError> {
+        commit_repo_write(
+            state,
+            self.did(),
+            self.root_cid,
+            self.repo.root(),
+            self.repo.commit().rev().as_str().to_string(),
+            Some(self.prev_rev.clone()),
+            Some(self.prev_data.clone()),
+            ops,
+            &self.root_cid_str,
+            self.authorized.user.registration_id.as_deref(),
+        )
+        .await
+    }
+}
+
+/// Whether a single-record write may replace an existing record.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RecordMode {
+    /// `createRecord`: the key must be absent (409 otherwise).
+    Create,
+    /// `putRecord`: upsert.
+    Put,
+}
+
+/// The single-record create/put flow: format + lexicon validation → lock and open → scope check
+/// (create vs update needs the current record) → swap preconditions → write → commit.
+///
+/// # Precondition
+/// `mst_key` must already be validated via `repo_engine::validate_record_path`; this
+/// helper trusts it and does not re-check the collection/rkey format.
+pub async fn write_record(
+    state: &AppState,
+    authorized: Authorized,
+    mst_key: &str,
+    record: &serde_json::Value,
+    mode: RecordMode,
+    swap: &SwapCheck,
+    validate: Option<bool>,
+) -> Result<(repo_engine::Cid, Option<crate::lexicon::RecordValidation>), ApiError> {
     // Reject malformed self-describing record formats (top-level `createdAt` datetime, any
     // `at://` AT-URI) before any repo mutation. This schema-free gate still runs for lexicons
     // Custos doesn't vendor; for a vendored (known) lexicon the schema check below subsumes it.
@@ -232,114 +394,45 @@ pub async fn write_record(
 
     // `validate`-flag record validation (`assertValidRecord` parity): reject an invalid record of
     // a known lexicon by default, require validity when `validate: true`, skip when
-    // `validate: false`, and report `validationStatus` for the response. Runs after the ownership
-    // check so it can't be used to probe a repo the caller doesn't own.
+    // `validate: false`, and report `validationStatus` for the response.
     let (collection, rkey) = split_record_path(mst_key);
     let validation_status = crate::lexicon::registry()
         .validate_record(&collection, &rkey, record, validate)
         .map_err(crate::lexicon::record_validation_error)?;
 
-    // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
-    // writers — see [`RepoWriteLocks`]. Held until this function returns, past the GC pass.
-    let _write_guard = state.repo_write_locks.lock(did).await;
+    let mut locked = authorized.lock(state).await?;
+    let did = locked.did().to_string();
 
-    // Look up the repo root CID and active status in one query.
-    let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
+    // The record's current CID decides create vs update (for both the scope check and the
+    // firehose op) and, when present, is the op's Sync v1.1 `prev`.
+    let prev_cid = repo_engine::get_record_cid(&mut locked.repo, mst_key)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to query repo write state");
+            tracing::error!(error = %e, did = %did, key = %mst_key, "failed to check record existence");
             ApiError::new(ErrorCode::InternalError, "failed to write record")
-        })?
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
-
-    // A deactivated, suspended, or taken-down account is read-only: its repo reports a non-active
-    // status and accepts no writes until reactivated (com.atproto.server.activateAccount) or the
-    // moderation action is cleared. Checked right after account existence — before the repo-root
-    // lookup — so a non-active account is a 403 even if it never created a repo; only a truly
-    // missing account (handled above) is a 404. The CAS below also carries the same lifecycle
-    // guard to close the gap between this check and commit.
-    if !write_state.active {
-        return Err(ApiError::new(
-            ErrorCode::Forbidden,
-            "account is deactivated",
-        ));
-    }
-
-    let root_cid_str = write_state
-        .repo_root_cid
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
-
-    let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
-        tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
-        ApiError::new(ErrorCode::InternalError, "failed to write record")
-    })?;
-
-    // Open the repo.
-    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let mut repo = Repository::open(block_store, root_cid).await.map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to open repo");
-        ApiError::new(ErrorCode::InternalError, "failed to write record")
-    })?;
-
-    // Capture the pre-write revision and MST root: they become the firehose event's `since` (the
-    // commit this one supersedes) and Sync v1.1 `prevData` (the previous commit's MST root CID,
-    // the inductive-validation anchor). Both must be read *before* the write mutates the repo.
-    let prev_rev = repo.commit().rev().as_str().to_string();
-    let prev_data = repo.commit().data().to_string();
-
-    // Look up the record's current CID — both to enforce create-only semantics (and to label the
-    // firehose op as a create vs an update) and, when it exists, to carry as the op's Sync v1.1
-    // `prev` (the previous record CID for the update). Read before the write mutates the repo.
-    let prev_cid = repo_engine::get_record_cid(&mut repo, mst_key)
-        .await
-        .map_err(|e| {
-            {
-                tracing::error!(error = %e, did = %did, key = %mst_key, "failed to check record existence");
-                ApiError::new(ErrorCode::InternalError, "failed to write record")
-            }
         })?;
     let existed = prev_cid.is_some();
-    let action = if create_only || !existed {
+    let action = if mode == RecordMode::Create || !existed {
         crate::auth::oauth_scopes::RepoAction::Create
     } else {
         crate::auth::oauth_scopes::RepoAction::Update
     };
-    if user.scope == crate::auth::jwt::AuthScope::Access {
-        crate::auth::oauth_scopes::require_repo(
-            &user.scope_claim,
-            mst_key.split('/').next().unwrap_or(""),
-            action,
-        )?;
-    }
+    locked.require_repo(&collection, action)?;
 
-    // Enforce explicit swapCommit/swapRecord preconditions (ATProto optimistic concurrency)
-    // after authorization and before mutating anything.
-    enforce_swap(swap, &root_cid_str, &mut repo, mst_key).await?;
+    locked.enforce_swap(swap, mst_key).await?;
 
-    if create_only && existed {
+    if mode == RecordMode::Create && existed {
         return Err(ApiError::new(
             ErrorCode::Conflict,
             "record already exists; use putRecord to update",
         ));
     }
 
-    // Load the signing key for this account.
-    let master_key: &[u8; 32] = state
-        .config
-        .signing_key_master_key
-        .as_ref()
-        .map(|s| &*s.0)
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::ServiceUnavailable,
-                "signing key master key not configured",
-            )
-        })?;
-    let signer = crate::auth::signing_key::load_repo_signer(&state.db, did, master_key).await?;
+    let signer = locked.signer(state).await?;
 
     // Write the record (JSON is converted to the ATProto data model: $link → CID,
     // $bytes → byte string, floats rejected).
-    let record_cid = repo_engine::put_record_json(&mut repo, &signer, mst_key, record)
+    let record_cid = repo_engine::put_record_json(&mut locked.repo, &signer, mst_key, record)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, key = %mst_key, "failed to write record");
@@ -351,21 +444,6 @@ pub async fn write_record(
             }
         })?;
 
-    // Advance the repo root with optimistic concurrency: only if it hasn't moved since we read
-    // it. If a concurrent write advanced it first, that write wins and we return 409 so the
-    // client retries against the new root (rather than silently clobbering the other commit).
-    // The new blocks we wrote are orphaned and GC-able. The lifecycle guard folds the
-    // deactivation/suspension/takedown check into the commit CAS: the active check above and this
-    // swap are not atomic, so an account that lost active status in between would otherwise still
-    // commit (a status change leaves `repo_root_cid` untouched, so the CAS would match). Requiring
-    // the account to still be active here blocks that write — it surfaces as a concurrent-
-    // modification conflict rather than landing on a non-active repo.
-    //
-    // The CAS and the firehose `#commit` event commit atomically (see `commit_repo_write`), while
-    // both the previous and new block sets are still present (the diff CAR is computed against
-    // them) — call this before GC.
-    let new_rev = repo.commit().rev().as_str().to_string();
-    // `collection`/`rkey` were split for record validation above; reuse them for the firehose op.
     let op = crate::firehose::RepoOp {
         action: if existed {
             crate::firehose::OpAction::Update
@@ -379,21 +457,7 @@ pub async fn write_record(
         prev: prev_cid.map(|c| c.to_string()),
         value: Some(record.clone()),
     };
-    commit_repo_write(
-        state,
-        did,
-        root_cid,
-        repo.root(),
-        new_rev,
-        Some(prev_rev),
-        Some(prev_data),
-        vec![op],
-        &root_cid_str,
-        user.registration_id.as_deref(),
-    )
-    .await?;
-    // `commit_repo_write` reclaims this commit's superseded blocks incrementally (see its
-    // post-commit GC); no separate full-repo reachability sweep runs on the write path.
+    locked.commit(state, vec![op]).await?;
 
     Ok((record_cid, validation_status))
 }

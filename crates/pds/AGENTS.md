@@ -36,7 +36,8 @@ src/
   iroh_tunnel.rs   — opt-in (`[iroh] enabled`) NAT-traversing QUIC endpoint devices dial by node id; v0.1 echo ALPN, IPv6 gate for v4-only hosts — see module doc
   notify_relay_client.rs — outbound iroh leg to the notification relay (`ezpds/notify/0`) + the fire-and-forget send worker; lazy cached connection, self-healing enrollment — see module doc
   notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; `RelayNotifier` is the `custos_core::notify::Notifier` features push through, `notify_admin_devices` the operator channel; inert when `[notifications] relay` is unset — see module doc
-  record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (one reachability walk per commit); every commit passes the MST integrity check (new head's key count vs the maintained `accounts.record_count` witness, V068) before the CAS — see module doc
+  record_write.rs  — the one authorized, locked repo write (`authorize` → `Authorized::lock` → `LockedRepo`) every `com.atproto.repo.*` writer opens through, the create/put body, firehose commit emission + post-commit block GC (one reachability walk per commit); every commit passes the MST integrity check (new head's key count vs the maintained `accounts.record_count` witness, V068) before the CAS — see module doc
+  record_write_sequence_test.rs — the opening-sequence tests: the helper, plus one table over the four write routes (lock wait, inactive refused, owner mismatch refused)
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   account_delete.rs— shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, `#account` deleted frame), used by deleteAccount and the reaper — see module doc
   account_genesis.rs— the steps the two account-genesis transactions (`create_did.rs`, `create_account_xrpc.rs`) share: the `accounts` row, the genesis blocks + staged `#commit`/`#sync`, and the post-commit announce. Deliberately not one merged promotion — the module doc says what differs around it
@@ -252,6 +253,7 @@ Look here before writing a helper. Each row is the one home; copies elsewhere ar
 | the OAuth issuer / public URL without a trailing slash | `Config::issuer()` |
 | cache a freshly authored or resolved DID document | `db::dids::upsert_did_document` (UPDATE-only heal: `rewrite_did_document`) |
 | authenticate the account owner and map to XRPC errors | `auth::guards::authenticate_owner` |
+| authorize, lock, and open a repo for a record write (then sign + commit) | `record_write::{authorize, Authorized::lock}` → `LockedRepo` |
 | insert a generated value, retrying on a UNIQUE collision | `db::insert_with_retry_on_collision` |
 | open an auth.md claim ceremony | `custos_core::auth::agent_assertion::start_claim_attempt` |
 | the account row + genesis repo + announce shared by account promotion | `account_genesis` |

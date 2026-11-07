@@ -8,10 +8,9 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
 use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
-use repo_engine::{Repository, WriteOp};
+use repo_engine::WriteOp;
 
 #[derive(Deserialize)]
 pub struct ApplyWritesBody {
@@ -106,29 +105,8 @@ pub async fn apply_writes(
 ) -> Result<impl IntoResponse, ApiError> {
     // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
+    let authorized = crate::record_write::authorize(&state, &headers, &method, &uri, &did)?;
     let did = did.as_str();
-
-    if !crate::identity::did::is_valid_did(did) {
-        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
-    }
-
-    // Authenticate: require a valid access token whose subject owns this repo. Runs the shared
-    // access-auth path so the RFC 9449 scheme ↔ `cnf.jkt` binding rules and DPoP-proof
-    // validation match the `AuthenticatedUser` extractor — a DPoP-bound token presented as
-    // plain `Bearer` with no proof is rejected here, not silently downgraded.
-    let user = crate::auth::authenticate_access(&headers, &method, &uri, &state)?;
-    if !user.scope.is_access() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "access token required",
-        ));
-    }
-    if user.did != *did {
-        return Err(ApiError::new(
-            ErrorCode::Forbidden,
-            "authenticated account does not own this repository",
-        ));
-    }
 
     if body.writes.is_empty() {
         return Err(ApiError::new(
@@ -195,9 +173,7 @@ pub async fn apply_writes(
             Kind::Update => crate::auth::oauth_scopes::RepoAction::Update,
             Kind::Delete => crate::auth::oauth_scopes::RepoAction::Delete,
         };
-        if user.scope == crate::auth::jwt::AuthScope::Access {
-            crate::auth::oauth_scopes::require_repo(&user.scope_claim, &collection, repo_action)?;
-        }
+        authorized.require_repo(&collection, repo_action)?;
 
         let key = format!("{collection}/{rkey}");
         op_values.push(value.clone());
@@ -217,38 +193,11 @@ pub async fn apply_writes(
         kinds.push(kind);
     }
 
-    // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
-    // writers — see `record_write::RepoWriteLocks`. Held until this handler returns.
-    let _write_guard = state.repo_write_locks.lock(did).await;
-
-    // Look up the repo root CID and active status in one query.
-    let write_state = crate::db::accounts::get_repo_write_state(&state.db, did)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, did = %did, "failed to query repo write state");
-            ApiError::new(ErrorCode::InternalError, "failed to apply writes")
-        })?
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
-
-    // A deactivated, suspended, or taken-down account is read-only: no writes until reactivated
-    // or the moderation action is cleared. Checked right after account existence — before the
-    // repo-root lookup — so a non-active account is a 403 even if it never created a repo; only a
-    // truly missing account (handled above) is a 404. The CAS below also carries the same
-    // lifecycle guard to close the gap between this check and commit.
-    if !write_state.active {
-        return Err(ApiError::new(
-            ErrorCode::Forbidden,
-            "account is deactivated",
-        ));
-    }
-
-    let root_cid_str = write_state
-        .repo_root_cid
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
+    let mut locked = authorized.lock(&state).await?;
 
     // swapCommit: reject up front if the caller's expected commit no longer matches.
     if let Some(expected) = &body.swap_commit {
-        if expected != &root_cid_str {
+        if expected != locked.root_cid_str() {
             return Err(ApiError::new(
                 ErrorCode::Conflict,
                 "swapCommit does not match current repo commit",
@@ -256,38 +205,10 @@ pub async fn apply_writes(
         }
     }
 
-    let root_cid = repo_engine::Cid::try_from(root_cid_str.as_str()).map_err(|e| {
-        tracing::error!(error = %e, did = %did, "invalid repo root CID in database");
-        ApiError::new(ErrorCode::InternalError, "failed to apply writes")
-    })?;
-
-    let block_store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let mut repo = Repository::open(block_store, root_cid).await.map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to open repo");
-        ApiError::new(ErrorCode::InternalError, "failed to apply writes")
-    })?;
-
-    // Capture the pre-write revision and MST root for the firehose event's `since` and Sync v1.1
-    // `prevData` (the previous commit's MST root CID) — both read before the batch mutates the repo.
-    let prev_rev = repo.commit().rev().as_str().to_string();
-    let prev_data = repo.commit().data().to_string();
-
-    // Load the signing key for this account.
-    let master_key: &[u8; 32] = state
-        .config
-        .signing_key_master_key
-        .as_ref()
-        .map(|s| &*s.0)
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::ServiceUnavailable,
-                "signing key master key not configured",
-            )
-        })?;
-    let signer = crate::auth::signing_key::load_repo_signer(&state.db, did, master_key).await?;
+    let signer = locked.signer(&state).await?;
 
     // Apply the batch in memory. On any error we return here without swapping the root.
-    let outcomes = repo_engine::apply_writes(&mut repo, &signer, &ops)
+    let outcomes = repo_engine::apply_writes(&mut locked.repo, &signer, &ops)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to apply writes");
@@ -309,11 +230,10 @@ pub async fn apply_writes(
     // committing that CAS atomically with the batch's firehose `#commit` event (before GC, since
     // the diff CAR is computed against the previous block set). A concurrent write losing this
     // race returns 409 rather than clobbering the other commit. The shared helper folds the
-    // deactivation guard into the CAS so an account deactivated after the `get_repo_write_state`
-    // check above cannot have this batch land. Each engine outcome maps back to its write's kind
-    // and retained value to form a `#repoOp`.
-    let new_root = repo.root().to_string();
-    let new_rev = repo.commit().rev().as_str().to_string();
+    // deactivation guard into the CAS so an account deactivated after `lock`'s active check
+    // cannot have this batch land. Each engine outcome maps back to its write's kind and
+    // retained value to form a `#repoOp`.
+    let new_root = locked.repo.root().to_string();
     let fh_ops: Vec<crate::firehose::RepoOp> = kinds
         .iter()
         .zip(outcomes.iter())
@@ -350,24 +270,12 @@ pub async fn apply_writes(
     // root is unchanged. Skip the CAS + firehose emit entirely rather than staging an empty,
     // unchanged-root `#commit` — mirroring `deleteRecord`'s idempotent no-op path.
     if !fh_ops.is_empty() {
-        crate::record_write::commit_repo_write(
-            &state,
-            did,
-            root_cid,
-            repo.root(),
-            new_rev,
-            Some(prev_rev),
-            Some(prev_data),
-            fh_ops,
-            &root_cid_str,
-            user.registration_id.as_deref(),
-        )
-        .await?;
+        locked.commit(&state, fh_ops).await?;
         // `commit_repo_write` reclaims this commit's superseded and intermediate-batch blocks
         // incrementally; no separate full-repo reachability sweep runs on the write path.
     }
 
-    let rev = repo.commit().rev().as_str().to_string();
+    let rev = locked.repo.commit().rev().as_str().to_string();
 
     // Build per-write results in batch order, pairing each write's variant with its outcome.
     // `outcome.key` is the `<collection>/<rkey>` written by the engine, so the AT-URI is just
@@ -523,25 +431,6 @@ mod tests {
         let body = serde_json::json!({ "repo": did, "writes": [create_item("k1", "hi")] });
         let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn apply_writes_on_deactivated_account_returns_403() {
-        let (state, did) = setup().await;
-        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
-            .bind(&did)
-            .execute(&state.db)
-            .await
-            .unwrap();
-        let token = access_jwt(&state.jwt_secret, &did);
-        let app = crate::app::app(state);
-        let body = serde_json::json!({ "repo": did, "writes": [create_item("k1", "hi")] });
-        let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::FORBIDDEN,
-            "a deactivated account must not be able to apply writes"
-        );
     }
 
     #[tokio::test]
