@@ -19,6 +19,7 @@
 //! `register_created_identity` then aliases to the per-DID key.
 
 use crate::oauth::Core;
+use crate::signer::SignerError;
 use crate::{device_key, identity_store, rekey, share_ceremony};
 use crypto::{
     build_did_plc_genesis_op_multi_rotation_with_external_signer, CryptoError, DidKeyUri,
@@ -151,10 +152,26 @@ pub enum CreateAccountError {
     HandleTaken,
     #[error("keychain storage failed")]
     KeychainError,
+    /// This device's global key is gone: its Keychain metadata survived a backup restore
+    /// but the hardware key did not. Retrying cannot help, and the signer never mints a
+    /// replacement (`signer`'s module doc), so the screen must say so rather than offer one.
+    #[error("device key is no longer usable on this device")]
+    DeviceKeyUnusable,
     #[error("network error: {message}")]
     NetworkError { message: String },
     #[error("unknown error: {message}")]
     Unknown { message: String },
+}
+
+/// The global device key's failures as the create flow reports them: the restored-device
+/// verdict keeps its own code; everything else is a Keychain fault worth retrying.
+impl From<SignerError> for CreateAccountError {
+    fn from(e: SignerError) -> Self {
+        match e {
+            SignerError::Unusable => CreateAccountError::DeviceKeyUnusable,
+            _ => CreateAccountError::KeychainError,
+        }
+    }
 }
 
 /// Successful result returned to the Svelte frontend after DID ceremony completes.
@@ -208,8 +225,23 @@ pub enum DIDCeremonyError {
     /// storage separately once the Keychain is available.
     #[error("DID created but recovery share storage failed")]
     ShareStorageFailed,
+    /// See [`CreateAccountError::DeviceKeyUnusable`]; reached when the device was restored
+    /// between creating the account and sealing its identity.
+    #[error("device key is no longer usable on this device")]
+    DeviceKeyUnusable,
     #[error("network error: {message}")]
     NetworkError { message: String },
+}
+
+/// The global device key's failures as the ceremony reports them (see the
+/// `CreateAccountError` impl).
+impl From<SignerError> for DIDCeremonyError {
+    fn from(e: SignerError) -> Self {
+        match e {
+            SignerError::Unusable => DIDCeremonyError::DeviceKeyUnusable,
+            _ => DIDCeremonyError::KeyNotFound,
+        }
+    }
 }
 
 /// Subset of `GET /xrpc/com.atproto.server.describeServer` used internally.
@@ -340,7 +372,7 @@ pub async fn create_account(
     // 1. Get or create the device's SE-backed (or simulator-fallback) P-256 key.
     let device_key = device_key::get_or_create().map_err(|e| {
         tracing::warn!(error = %e, "device key creation failed during account creation");
-        CreateAccountError::KeychainError
+        CreateAccountError::from(e)
     })?;
 
     // 2. POST to PDS.
@@ -426,7 +458,7 @@ struct DidCeremonyContext {
 fn load_did_ceremony_context() -> Result<DidCeremonyContext, DIDCeremonyError> {
     let device_key = device_key::get_or_create().map_err(|e| {
         tracing::warn!(error = %e, "device key creation failed during DID ceremony");
-        DIDCeremonyError::KeyNotFound
+        DIDCeremonyError::from(e)
     })?;
     let token_bytes = crate::keystore::get_item(SESSION_TOKEN_ACCOUNT).map_err(|e| {
         tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
@@ -1183,6 +1215,36 @@ mod tests {
         let err = CreateAccountError::EmailTaken;
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["code"], "EMAIL_TAKEN");
+    }
+
+    // -- The restored-device verdict keeps its own code on both create-flow enums, matching
+    // -- identity_store's DEVICE_KEY_UNUSABLE so the frontend has one code to key copy on;
+    // -- every other signer failure stays the retryable Keychain code.
+    #[test]
+    fn error_device_key_unusable_keeps_its_own_code() {
+        let create = CreateAccountError::from(SignerError::Unusable);
+        assert!(matches!(create, CreateAccountError::DeviceKeyUnusable));
+        assert_eq!(
+            serde_json::to_value(&create).unwrap()["code"],
+            "DEVICE_KEY_UNUSABLE"
+        );
+        assert!(matches!(
+            CreateAccountError::from(SignerError::Storage {
+                message: "locked".into()
+            }),
+            CreateAccountError::KeychainError
+        ));
+
+        let ceremony = DIDCeremonyError::from(SignerError::Unusable);
+        assert!(matches!(ceremony, DIDCeremonyError::DeviceKeyUnusable));
+        assert_eq!(
+            serde_json::to_value(&ceremony).unwrap()["code"],
+            "DEVICE_KEY_UNUSABLE"
+        );
+        assert!(matches!(
+            DIDCeremonyError::from(SignerError::GenerationFailed),
+            DIDCeremonyError::KeyNotFound
+        ));
     }
 
     // -- CreateAccountError::HandleTaken serialization --
