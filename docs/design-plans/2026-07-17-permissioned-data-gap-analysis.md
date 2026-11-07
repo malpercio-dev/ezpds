@@ -186,6 +186,29 @@ files (`notifyCredentialRevoked` added; `simplespace.addMember` became
    that route/validation code accepting a space parameter should validate it
    as a `space-ref`.
 
+### 2026-10-23 and 2026-10-30 weekly watches (folded into the 2026-11-06 entry)
+
+Two earlier watch runs diffed the same moving target in smaller steps; their
+findings are subsumed by the 2026-11-06 entry below, which is the one to read.
+Only what that entry does not restate is kept here.
+
+- **2026-10-23** (proposals `c76714a`…`b89d0b0`, atproto `3a0b8c6`; schema set
+  still 21 `space` + 9 `simplespace`): the release-10-22 batch (#114, #120,
+  #122, #123, #124) introduced the KEM-keyed MAC, STAR, the simplified DID
+  resolution, the reshaped `getSpaceCredential` and the reliable
+  `notifySpaceDeleted`; `packages/space/` gained `kem.ts`, `mac.ts` and
+  `star.ts`. The `getSpaceCredential` error set at that point was
+  `SpaceNotFound`, `SpaceDeleted`, `UserNotAuthorized`, `AppNotAuthorized`,
+  `NotAuthorized`, `InvalidDelegationToken` and `InvalidClientAttestation`.
+  The proposal's comparison table changed from "Signature / Deniable on
+  rebroadcast" to "Commit authenticity: Signature vs HMAC".
+- **2026-10-30** (proposals `c76714a`…`701ef9c`, atproto `d009736`; 31 `space`
+  + 5 `memberspace` + 2 `managedspace` + 1 `personalspace` = 39 files,
+  `simplespace` gone): the release-10-29 batch added the policy model (#119),
+  `clearRecords` (#127), `removeWriter` (#128) and migration (#129).
+  `kem.test.ts` carries an RFC 9180-derived P-256 vector, which is the one to
+  pin for the KEM primitive.
+
 ### 2026-11-06 weekly watch (proposals repo, commits `c76714a`…`9e86df3`)
 
 The largest single-week rewrite since the alpha: fifteen commits (PRs #114,
