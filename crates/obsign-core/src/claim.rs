@@ -1732,12 +1732,8 @@ mod tests {
         });
 
         // Create a test session and OAuthClient
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -1803,12 +1799,8 @@ mod tests {
         });
 
         // Create a test session and OAuthClient
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -1973,12 +1965,8 @@ mod tests {
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
         // Create test session and OAuthClient
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         // rotation_keys is empty: this DID has no prior rotation keys,
         // so adding device_key at [0] is purely an addition (no removals to flag).
@@ -2072,12 +2060,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2166,12 +2150,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2259,12 +2239,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2350,12 +2326,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let mut original_services = HashMap::new();
         original_services.insert(
@@ -2458,12 +2430,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let mut original_services = HashMap::new();
         original_services.insert(

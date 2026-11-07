@@ -23,3 +23,12 @@ use std::sync::Arc;
 pub fn diagnostics_observer() -> Arc<dyn custos_client::TransportObserver> {
     Arc::new(crate::diagnostics::WalletTransportObserver)
 }
+
+/// A Bearer client for tests: `access` as the access token and an empty refresh token, so it
+/// never attempts a refresh.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::expect_used, reason = "new_bearer always returns Ok")]
+pub fn bearer_for_test(access: &str, base_url: String) -> OAuthClient {
+    OAuthClient::new_bearer(access.to_string(), String::new(), base_url)
+        .expect("new_bearer is infallible")
+}

@@ -27,8 +27,8 @@
 //!   validate a restored session's sub/aud binding. No Keychain/persistence concept — the
 //!   caller resolves signing and persists the result (see that module's doc).
 //!
-//! App-specific concerns this crate deliberately does not own: Keychain storage, diagnostics UI/export (apps supply a
-//! [`TransportObserver`]), and the wallet's own OAuth client identity (`client_id`,
+//! App-specific concerns this crate deliberately does not own: Keychain storage, diagnostics UI/export
+//! (apps supply a [`TransportObserver`]), and the wallet's own OAuth client identity (`client_id`,
 //! `redirect_uri`) — those stay in the app, since they name the app itself.
 
 pub mod agents;

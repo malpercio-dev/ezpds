@@ -1803,12 +1803,7 @@ mod tests {
                     "services": { ATPROTO_PDS_SERVICE_ID: { "type": "AtprotoPersonalDataServer", "endpoint": "https://new.pds" } }
                 }));
         });
-        let dest_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test-access".to_string(),
-            String::new(), // never refreshes
-            dest.base_url(),
-        )
-        .expect("new_bearer");
+        let dest_client = crate::oauth_client::bearer_for_test("test-access", dest.base_url());
 
         // Build the self-signed repoint op.
         let built = build_migration_op(&pds_client, &dest_client, did)

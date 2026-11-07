@@ -157,7 +157,7 @@ pub async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientEr
 }
 
 // ============================================================================
-// XRPC methods (require DPoP-authenticated OAuthClient)
+// XRPC methods (require an authenticated OAuthClient)
 // ============================================================================
 //
 // The typed methods themselves now live in `custos_client::{identity,app_passwords,migration}`
@@ -1261,12 +1261,8 @@ mod tests {
         });
 
         // Create a test session and OAuthClient
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_ok());
@@ -1285,12 +1281,8 @@ mod tests {
             }));
         });
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_err());
@@ -1320,12 +1312,8 @@ mod tests {
             }));
         });
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let request = SignPlcOperationRequest {
             token: "test_email_token".to_string(),
@@ -1354,12 +1342,8 @@ mod tests {
             }));
         });
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let request = SignPlcOperationRequest {
             token: "test_token".to_string(),
@@ -1391,12 +1375,8 @@ mod tests {
             }));
         });
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let result = get_recommended_did_credentials(&oauth_client).await;
         assert!(result.is_ok());
@@ -1473,12 +1453,8 @@ mod tests {
             }));
         });
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let result = get_recommended_did_credentials(&oauth_client).await;
         assert!(result.is_err());
@@ -1536,12 +1512,8 @@ mod tests {
             }));
         });
 
-        let oauth_client = crate::oauth_client::OAuthClient::new_bearer(
-            "test_access_token".to_string(),
-            String::new(),
-            mock_server.base_url(),
-        )
-        .expect("new_bearer");
+        let oauth_client =
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let request = SignPlcOperationRequest {
             token: "test_email_token".to_string(),

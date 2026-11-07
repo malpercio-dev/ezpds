@@ -3586,7 +3586,6 @@ dependencies = [
  "cid",
  "crypto",
  "custos-client",
- "http",
  "httpmock",
  "ios-device-key",
  "ipld-core",
