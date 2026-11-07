@@ -58,7 +58,9 @@ depends on no HTTP stack and on nothing above it.
 
 `#[cfg(test)]` does not cross crates. `test_pool()` (fresh in-memory pool, migrated) and the
 seed helpers (`accounts::insert_bare_account`, `dids::seed_did_document`,
-`oauth::register_oauth_client`) are compiled under `cfg(any(test, feature = "test-support"))`.
+`oauth::register_oauth_client`) are compiled under `cfg(any(test, feature = "test-support"))`,
+as is `purge_coverage`, the account-purge schema walk each table-owning crate runs over its own
+tables.
 Enable `test-support` only under `[dev-dependencies]`.
 
 ## Key Files

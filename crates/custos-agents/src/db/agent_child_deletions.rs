@@ -7,8 +7,8 @@
 // trail — the child's own history cannot anchor "the deletion is auditable after the fact". This
 // table is that anchor: keyed by `child_did` with no FK on that column, so a child purge leaves it
 // intact, and anchored to `parent_did` so the parent's audit view outlives the child. It is
-// reclaimed only when the parent itself is deleted (`purge_account` deletes it `WHERE parent_did =
-// ?`, never `WHERE child_did = ?`).
+// reclaimed only when the parent itself is deleted (this crate's purge step, `crate::purge`, deletes
+// it `WHERE parent_did = ?`, never `WHERE child_did = ?`).
 
 use common::{ApiError, ErrorCode};
 use sqlx::Sqlite;

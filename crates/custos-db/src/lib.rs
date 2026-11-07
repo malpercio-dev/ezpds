@@ -262,6 +262,9 @@ pub async fn test_pool() -> SqlitePool {
     pool
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod purge_coverage;
+
 #[cfg(test)]
 mod tests {
     use super::*;

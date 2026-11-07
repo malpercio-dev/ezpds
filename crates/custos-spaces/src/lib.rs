@@ -6,7 +6,7 @@
 //!
 //! `pds` is the composition root and consumes only what this file exports: [`SpacesState`],
 //! [`router`] / [`internal_router`], [`spawn_sweeps`], [`CAPABILITY`], [`purge_account_rows`],
-//! the [`db`] query modules, the [`space_record_write`] choke point, and (behind `test-support`)
+//! the [`space_record_write`] choke point, and (behind `test-support`)
 //! [`test_support`]. See `AGENTS.md`.
 
 use axum::extract::FromRef;
@@ -23,7 +23,7 @@ use custos_core::{
 
 mod auth;
 mod capability;
-pub mod db;
+mod db;
 mod router;
 mod routes;
 mod space_jti_sweep;
@@ -70,7 +70,7 @@ where
 }
 
 /// The statements [`purge_account_rows`] runs, in FK order (ops and records reference the repo
-/// row). Public so `pds`'s schema-walking purge test sees every account-keyed table covered.
+/// row); this crate's own schema-walking test checks it covers every space table's account FK.
 ///
 /// `spaces` rows deliberately survive even when the account is the authority: members' records are
 /// their own, and an unanswerable space is exactly the spec's deletion semantics. `space_writers`
@@ -92,4 +92,115 @@ pub async fn purge_account_rows(tx: &mut SqliteConnection, did: &str) -> Result<
         sqlx::query(sql).bind(did).execute(&mut *tx).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod purge_tests {
+    use super::*;
+    use crate::db::spaces::{insert_space, NewSpace};
+    use crate::space_record_write::{
+        apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
+    };
+    use crate::test_support::{seed_account_with_repo, state_with_master_key};
+
+    /// Every account FK on a space table is scoped by [`PURGE_ACCOUNT_SQL`], so a `space*` table
+    /// added without extending the purge fails here rather than FK-failing the reaper.
+    #[tokio::test]
+    async fn purge_covers_every_space_account_foreign_key() {
+        let pool = custos_db::test_pool().await;
+        let checked = custos_db::purge_coverage::assert_purge_covers(
+            &pool,
+            |t| t.starts_with("space"), // `spaces` and every `space_*` table
+            PURGE_ACCOUNT_SQL,
+        )
+        .await;
+        assert!(checked >= 1, "sanity: found {checked} space account FKs");
+    }
+
+    /// The purge takes the account's own space repo, its membership and notify rows, and its row
+    /// in a locally-hosted space's writer set (`listRepos` must stop advertising it), while the
+    /// `spaces` row it is authority for survives as the tombstone that makes the space
+    /// unanswerable (members' own records are theirs; the space simply stops answering).
+    #[tokio::test]
+    async fn purge_removes_space_rows_and_keeps_authority_space_tombstone() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:purgespaces";
+        seed_account_with_repo(&state.db, did).await;
+        let space = "at://did:plc:purgespaces/space/org.example.bucket/self";
+        insert_space(
+            &state.db,
+            &NewSpace {
+                uri: space,
+                authority_did: did,
+                space_type: "org.example.bucket",
+                skey: "self",
+                policy: Some("member-list"),
+                app_access: Some("open"),
+                app_allowed: None,
+                managing_app: None,
+                write_policy: None,
+                write_managing_app: None,
+            },
+        )
+        .await
+        .unwrap();
+        apply_space_writes(
+            &state,
+            &space_uri::parse_space_ref(space).unwrap(),
+            did,
+            &[SpaceWriteOp {
+                action: SpaceWriteAction::Put,
+                collection: "org.example.note".to_string(),
+                rkey: "one".to_string(),
+                value: Some(serde_json::json!({"text": "purge me"})),
+            }],
+            SpaceWriteAdmission::Active,
+        )
+        .await
+        .unwrap();
+        for sql in [
+            "INSERT INTO space_members (space_uri, member_did, added_at) \
+             VALUES (?, ?, datetime('now'))",
+            "INSERT INTO space_notify_registrations \
+             (space_uri, subscriber_did, repo_did, created_at, expires_at) \
+             VALUES (?, ?, '', datetime('now'), datetime('now', '+1 hour'))",
+        ] {
+            sqlx::query(sql)
+                .bind(space)
+                .bind(did)
+                .execute(&state.db)
+                .await
+                .unwrap();
+        }
+
+        let mut tx = state.db.begin().await.unwrap();
+        purge_account_rows(&mut tx, did).await.unwrap();
+        tx.commit().await.unwrap();
+
+        for (table, column) in [
+            ("space_repo_ops", "account_did"),
+            ("space_records", "account_did"),
+            ("space_repos", "account_did"),
+            ("space_members", "member_did"),
+            ("space_notify_registrations", "subscriber_did"),
+            ("space_writers", "repo_did"),
+        ] {
+            let n: i64 =
+                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?"))
+                    .bind(did)
+                    .fetch_one(&state.db)
+                    .await
+                    .unwrap();
+            assert_eq!(n, 0, "{table} rows survived the purge");
+        }
+        let spaces: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM spaces WHERE uri = ?")
+            .bind(space)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(
+            spaces, 1,
+            "the authority's space row survives as the unanswerable-space tombstone"
+        );
+    }
 }

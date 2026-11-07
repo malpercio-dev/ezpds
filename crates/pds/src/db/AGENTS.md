@@ -9,8 +9,8 @@ cross-feature query modules (`accounts`, `dids`, `handles`, `blobs`, `blocks`, `
 migration invariants. `mod.rs` re-exports that API, so `crate::db::…` paths resolve unchanged.
 
 A new table's migration goes in `custos-db`; its query module goes here unless a second crate
-reads it, or a feature crate owns the table (the Spaces tables' queries are
-[`custos_spaces::db`](../../../custos-spaces/AGENTS.md)).
+reads it, or a feature crate owns the table (the Spaces tables' queries live in
+[`custos-spaces`](../../../custos-spaces/AGENTS.md)).
 
 ## Key Files
 
