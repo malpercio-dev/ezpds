@@ -129,7 +129,7 @@ ADMIN_CAPS="apps/admin-companion/src-tauri/capabilities"
 
 # Audited-minimal allowlists (see docs/security/tauri-ipc-boundary.md for the rationale
 # tracing each permission to real frontend usage):
-#   wallet default  — core:event:default (listen for plc_alert / auth_ready) + the
+#   wallet default  — core:event:default (listen for plc_alert) + the
 #                     in-app OAuth plugin. App commands need no entry.
 #   wallet mobile   — the three iOS/android plugins (biometric gate, share sheet, and the
 #                     barcode scanner for the OAuth consent scan path); platform-gated in-file.

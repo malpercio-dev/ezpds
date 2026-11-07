@@ -25,7 +25,7 @@
 //!   it.
 //!
 //! Mirrors `sovereign_session.rs`: the per-DID device key is resolved before any
-//! request, the same `pds_url_is_safe` and DID-doc-match checks, the same canonical
+//! request, the same `pds_url_is_secure` and DID-doc-match checks, the same canonical
 //! envelope discipline. The biometric gate lives in the frontend, in front of
 //! `confirmOAuthConsent`, so a cancelled prompt signs and sends nothing. Request cores
 //! are `_impl` functions taking `&PdsClient`, tested against httpmock.
@@ -161,18 +161,6 @@ fn map_discovery_error(error: PdsClientError) -> ConsentError {
     }
 }
 
-fn pds_url_is_safe(url: &str) -> bool {
-    let Ok(url) = url::Url::parse(url) else {
-        return false;
-    };
-    url.scheme() == "https"
-        || (url.scheme() == "http"
-            && matches!(
-                url.host_str(),
-                Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
-            ))
-}
-
 /// Resolve the selected DID's hosting PDS URL, verifying the DID document matches and the endpoint
 /// is safe to send a request to.
 async fn resolve_safe_pds(pds_client: &PdsClient, did: &str) -> Result<String, ConsentError> {
@@ -183,7 +171,7 @@ async fn resolve_safe_pds(pds_client: &PdsClient, did: &str) -> Result<String, C
     if did_doc.did != did {
         return Err(ConsentError::DidMismatch);
     }
-    if !pds_url_is_safe(&pds_url) {
+    if !custos_client::pds_url_is_secure(&pds_url) {
         return Err(ConsentError::UnsupportedHost);
     }
     Ok(pds_url)

@@ -3,9 +3,8 @@
 //! Per-DID full-access session lifecycle.
 //!
 //! [`SessionProvider::full_access_client`] is the seam every authenticated wallet
-//! operation on a Custos-hosted identity goes through. It replaces the single
-//! global in-memory `oauth_session` with an on-demand, per-DID resolver running a
-//! decision ladder over the DID's versioned [`SovereignTokenRecord`]:
+//! operation on a Custos-hosted identity goes through. It is an on-demand, per-DID resolver running
+//! a decision ladder over the DID's versioned [`SovereignTokenRecord`]:
 //!
 //! 1. No record, or a dead refresh chain → [`SessionError::NeedsUnlock`]
 //!    (`NoRefreshChain`).

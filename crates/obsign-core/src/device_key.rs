@@ -35,7 +35,7 @@ pub const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
     secure_enclave_label: "ezpds-device-rotation-key",
 };
 
-/// The installed `KeyStore` as `ios-device-key`'s store; `oauth.rs` reuses it for the DPoP key.
+/// The installed `KeyStore` as `ios-device-key`'s store.
 pub use crate::keystore::WalletKeychain;
 
 /// Return this device's key, generating one on first call.

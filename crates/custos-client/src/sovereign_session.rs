@@ -209,18 +209,6 @@ pub fn unix_timestamp() -> Result<i64, SovereignLoginError> {
     })
 }
 
-fn pds_url_is_safe(url: &str) -> bool {
-    let Ok(url) = url::Url::parse(url) else {
-        return false;
-    };
-    url.scheme() == "https"
-        || (url.scheme() == "http"
-            && matches!(
-                url.host_str(),
-                Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
-            ))
-}
-
 fn map_discovery_error(error: PdsClientError) -> SovereignLoginError {
     match error {
         PdsClientError::DidNotFound | PdsClientError::InvalidResponse { .. } => {
@@ -270,7 +258,7 @@ pub async fn sovereign_login(
     if did_doc.did != did {
         return Err(SovereignLoginError::DidMismatch);
     }
-    if !pds_url_is_safe(&pds_url) {
+    if !crate::pds_client::pds_url_is_secure(&pds_url) {
         return Err(SovereignLoginError::UnsupportedHost);
     }
     let server = pds_client

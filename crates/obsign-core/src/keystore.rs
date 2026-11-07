@@ -240,7 +240,7 @@ pub fn is_not_found(err: &KeyStoreError) -> bool {
 }
 
 /// The installed store as `ios_device_key`'s [`KeychainStore`](ios_device_key::KeychainStore):
-/// the device key and the DPoP key (`custos_client::DpopKeypair`) are stored through it. The
+/// the device key is stored through it. The
 /// account-name parameter on that trait's associated functions is what lets one impl serve
 /// several keys.
 pub struct WalletKeychain;

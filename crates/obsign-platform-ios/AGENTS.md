@@ -23,4 +23,4 @@ The iOS implementations of `obsign-core`'s platform traits ([ADR-0039](../../doc
 ## Boundaries
 
 - No Tauri. The APNs bridge stays in the wallet: it patches the Tauri app delegate's class.
-- `ios-device-key` and `custos-client` still link Security.framework themselves on Apple targets, for the global device key and the DPoP key.
+- `ios-device-key` still links Security.framework itself on Apple targets, for the global device key.

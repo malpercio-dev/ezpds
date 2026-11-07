@@ -1721,33 +1721,19 @@ mod tests {
     async fn test_request_claim_verification_success() {
         crate::keystore::clear_for_test();
         use httpmock::MockServer;
-        use std::sync::{Arc, Mutex};
 
         let mock_server = MockServer::start();
 
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.identity.requestPlcOperationSignature")
-                .header_exists("Authorization")
-                .header_exists("DPoP");
+                .header("Authorization", "Bearer test_access_token");
             then.status(200).json_body(serde_json::json!({}));
         });
 
         // Create a test session and OAuthClient
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -1801,7 +1787,6 @@ mod tests {
     async fn test_request_claim_verification_pds_returns_500() {
         crate::keystore::clear_for_test();
         use httpmock::MockServer;
-        use std::sync::{Arc, Mutex};
 
         let mock_server = MockServer::start();
 
@@ -1814,20 +1799,8 @@ mod tests {
         });
 
         // Create a test session and OAuthClient
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -1929,7 +1902,7 @@ mod tests {
         crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         let mock_server = MockServer::start();
         let prev_cid = "bagtest123".to_string();
@@ -1952,8 +1925,7 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.identity.getRecommendedDidCredentials")
-                .header_exists("Authorization")
-                .header_exists("DPoP");
+                .header("Authorization", "Bearer test_access_token");
             then.status(200).json_body(serde_json::json!({
                 "rotationKeys": [],
                 "alsoKnownAs": ["at://alice.example.com"],
@@ -1966,8 +1938,7 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.identity.signPlcOperation")
-                .header_exists("Authorization")
-                .header_exists("DPoP");
+                .header("Authorization", "Bearer test_access_token");
             then.status(200).json_body(serde_json::json!({
                 "operation": serde_json::from_str::<serde_json::Value>(&rotation_json).unwrap()
             }));
@@ -1994,20 +1965,8 @@ mod tests {
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
         // Create test session and OAuthClient
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_access_token".to_string(),
-            refresh_token: "test_refresh_token".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+            crate::oauth_client::bearer_for_test("test_access_token", mock_server.base_url());
 
         // rotation_keys is empty: this DID has no prior rotation keys,
         // so adding device_key at [0] is purely an addition (no removals to flag).
@@ -2044,7 +2003,7 @@ mod tests {
         crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         let mock_server = MockServer::start();
         let wrong_key = "did:key:zQ3wrong_key".to_string();
@@ -2101,20 +2060,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_token".to_string(),
-            refresh_token: "refresh".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2147,7 +2094,7 @@ mod tests {
         crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         let mock_server = MockServer::start();
         let wrong_prev = "bagwrong".to_string();
@@ -2203,20 +2150,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_token".to_string(),
-            refresh_token: "refresh".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2249,7 +2184,7 @@ mod tests {
         crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         let mock_server = MockServer::start();
         let original_key = "did:key:zQ3original".to_string();
@@ -2304,20 +2239,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_token".to_string(),
-            refresh_token: "refresh".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2350,7 +2273,7 @@ mod tests {
         crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         let mock_server = MockServer::start();
         let prev_cid = "bagtest123".to_string();
@@ -2403,20 +2326,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_token".to_string(),
-            refresh_token: "refresh".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let mut original_services = HashMap::new();
         original_services.insert(
@@ -2458,7 +2369,7 @@ mod tests {
         crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         let mock_server = MockServer::start();
         let prev_cid = "bagtest123".to_string();
@@ -2519,20 +2430,8 @@ mod tests {
 
         let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
-        let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
-            access_token: "test_token".to_string(),
-            refresh_token: "refresh".to_string(),
-            expires_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600,
-            dpop_nonce: None,
-        }));
-
-        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
         let oauth_client =
-            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
+            crate::oauth_client::bearer_for_test("test_token", mock_server.base_url());
 
         let mut original_services = HashMap::new();
         original_services.insert(

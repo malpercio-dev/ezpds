@@ -1292,7 +1292,7 @@ async fn transfer_preferences_impl(
     source_client: &OAuthClient,
     dest_client: &OAuthClient,
 ) -> Result<(), MigrationError> {
-    // 1. Get preferences from source (old PDS, DPoP-authenticated)
+    // 1. Get preferences from source (old PDS, authenticated)
     tracing::debug!("fetching preferences from source");
     let prefs = crate::pds_client::get_preferences(source_client)
         .await
