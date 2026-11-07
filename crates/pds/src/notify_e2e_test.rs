@@ -17,6 +17,7 @@
 
 #![cfg(test)]
 
+use p256::elliptic_curve::Generate as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,7 +71,7 @@ async fn start_relay(
     // any bearer, so the only requirement is that it is a genuine key.
     let dir = tempfile::tempdir().expect("tempdir");
     let key_path = dir.path().join("apns.p8");
-    let signing_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+    let signing_key = p256::ecdsa::SigningKey::generate();
     let pem = p256::pkcs8::EncodePrivateKey::to_pkcs8_pem(
         &p256::SecretKey::from(&signing_key),
         p256::pkcs8::LineEnding::LF,

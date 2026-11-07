@@ -54,13 +54,11 @@ pub async fn load_or_create_oauth_signing_key(
     let key_id = Uuid::new_v4().to_string();
 
     // Build JWK for the public key (uncompressed EC point → x, y coordinates).
-    let signing_key = p256::ecdsa::SigningKey::from_bytes(p256::FieldBytes::from_slice(
-        keypair.private_key_bytes.as_ref(),
-    ))
-    .map_err(|e| anyhow::anyhow!("invalid P-256 private key bytes: {e}"))?;
+    let signing_key = p256::ecdsa::SigningKey::from_bytes((&*keypair.private_key_bytes).into())
+        .map_err(|e| anyhow::anyhow!("invalid P-256 private key bytes: {e}"))?;
 
     let vk = signing_key.verifying_key();
-    let point = vk.to_encoded_point(false);
+    let point = vk.to_sec1_point(false);
     let x = URL_SAFE_NO_PAD.encode(point.x().expect("P-256 x coordinate"));
     let y = URL_SAFE_NO_PAD.encode(point.y().expect("P-256 y coordinate"));
     let public_key_jwk = serde_json::to_string(&serde_json::json!({
@@ -221,9 +219,8 @@ fn decode_oauth_signing_key(
     let raw_bytes = crypto::decrypt_private_key(private_key_encrypted, master_key)
         .map_err(|e| anyhow::anyhow!("failed to decrypt OAuth signing key: {e}"))?;
 
-    let signing_key =
-        p256::ecdsa::SigningKey::from_bytes(p256::FieldBytes::from_slice(raw_bytes.as_ref()))
-            .map_err(|e| anyhow::anyhow!("invalid stored P-256 private key: {e}"))?;
+    let signing_key = p256::ecdsa::SigningKey::from_bytes((&*raw_bytes).into())
+        .map_err(|e| anyhow::anyhow!("invalid stored P-256 private key: {e}"))?;
 
     let encoding_key = build_encoding_key(&signing_key)?;
     let public_key_jwk: serde_json::Value = serde_json::from_str(public_key_jwk_str)

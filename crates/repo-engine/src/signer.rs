@@ -54,9 +54,8 @@ impl CommitSigner {
     pub fn sign(&self, commit_bytes: &[u8]) -> Vec<u8> {
         let sig: Signature = self.key.sign(commit_bytes);
         // ATProto requires canonical low-S signatures; ~half of raw P-256 signatures
-        // are high-S and would be rejected by network verifiers. normalize_s() returns
-        // Some(normalized) only when the original was high-S.
-        let sig = sig.normalize_s().unwrap_or(sig);
+        // are high-S and would be rejected by network verifiers.
+        let sig = sig.normalize_s();
         sig.to_bytes().to_vec()
     }
 }
@@ -65,11 +64,12 @@ impl CommitSigner {
 mod tests {
     use super::*;
     use p256::ecdsa::{signature::Verifier, VerifyingKey};
+    use p256::elliptic_curve::Generate as _;
 
     #[test]
     fn from_valid_key_succeeds() {
         // Generate a valid P-256 key.
-        let signing_key = SigningKey::random(&mut rand_core::OsRng);
+        let signing_key = SigningKey::generate();
         let bytes: [u8; 32] = signing_key.to_bytes().into();
 
         let signer = CommitSigner::from_bytes(&bytes);
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn sign_produces_64_byte_signature() {
-        let signing_key = SigningKey::random(&mut rand_core::OsRng);
+        let signing_key = SigningKey::generate();
         let bytes: [u8; 32] = signing_key.to_bytes().into();
         let signer = CommitSigner::from_bytes(&bytes).unwrap();
 
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn sign_is_deterministic() {
-        let signing_key = SigningKey::random(&mut rand_core::OsRng);
+        let signing_key = SigningKey::generate();
         let bytes: [u8; 32] = signing_key.to_bytes().into();
         let signer = CommitSigner::from_bytes(&bytes).unwrap();
 
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn sign_verifies_with_corresponding_public_key() {
-        let signing_key = SigningKey::random(&mut rand_core::OsRng);
+        let signing_key = SigningKey::generate();
         let verifying_key = VerifyingKey::from(&signing_key);
         let bytes: [u8; 32] = signing_key.to_bytes().into();
         let signer = CommitSigner::from_bytes(&bytes).unwrap();
@@ -133,16 +133,16 @@ mod tests {
         // ATProto requires canonical low-S signatures; verifiers reject high-S.
         // Sample many keys/messages — roughly half of un-normalized P-256 sigs are high-S.
         for i in 0..256u32 {
-            let signing_key = SigningKey::random(&mut rand_core::OsRng);
+            let signing_key = SigningKey::generate();
             let bytes: [u8; 32] = signing_key.to_bytes().into();
             let signer = CommitSigner::from_bytes(&bytes).unwrap();
 
             let sig_bytes = signer.sign(format!("commit bytes {i}").as_bytes());
             let sig = Signature::from_slice(&sig_bytes).unwrap();
 
-            // normalize_s() returns Some(_) only when the signature WAS high-S.
+            // A low-S signature is a fixed point of normalize_s().
             assert!(
-                sig.normalize_s().is_none(),
+                sig.normalize_s() == sig,
                 "signature must already be canonical low-S (iteration {i})"
             );
         }
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn sign_different_messages_produce_different_signatures() {
-        let signing_key = SigningKey::random(&mut rand_core::OsRng);
+        let signing_key = SigningKey::generate();
         let bytes: [u8; 32] = signing_key.to_bytes().into();
         let signer = CommitSigner::from_bytes(&bytes).unwrap();
 

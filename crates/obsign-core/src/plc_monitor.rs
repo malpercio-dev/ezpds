@@ -1011,7 +1011,7 @@ mod tests {
             let field_bytes: FieldBytes = device_priv.into();
             let sk = SigningKey::from_bytes(&field_bytes).expect("valid device key");
             let sig: p256::ecdsa::Signature = Signer::sign(&sk, data);
-            let sig = sig.normalize_s().unwrap_or(sig);
+            let sig = sig.normalize_s();
             Ok::<_, crypto::CryptoError>(sig.to_bytes().to_vec())
         };
 

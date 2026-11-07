@@ -386,11 +386,12 @@ fn classify_status(status: u16) -> PushOutcome {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use p256::elliptic_curve::Generate as _;
     use p256::pkcs8::{EncodePrivateKey, LineEnding};
 
     /// A throwaway P-256 key written out in the PKCS#8 PEM shape Apple ships a `.p8` in.
     fn test_key_pem() -> String {
-        let secret = p256::SecretKey::random(&mut rand_core::OsRng);
+        let secret = p256::SecretKey::generate();
         secret
             .to_pkcs8_pem(LineEnding::LF)
             .expect("encode test key")

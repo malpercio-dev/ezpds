@@ -5,6 +5,7 @@
 //! token, DPoP-proof, request-builder, and body-decoding helpers. Compiled only under `cfg(test)`
 //! or the `test-support` feature, which other crates enable from `[dev-dependencies]` alone.
 
+use p256::elliptic_curve::Generate as _;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -37,7 +38,6 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
     };
     use custos_db::{open_pool, run_migrations};
     use p256::pkcs8::EncodePrivateKey;
-    use rand_core::OsRng;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -57,12 +57,12 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> CoreState {
     // Generate a fresh ephemeral P-256 keypair for tests (no DB persistence needed).
     let test_signing_key = {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-        let sk = p256::ecdsa::SigningKey::random(&mut OsRng);
+        let sk = p256::ecdsa::SigningKey::generate();
         let pkcs8 = sk
             .to_pkcs8_der()
             .expect("PKCS#8 encoding must succeed for test key");
         let vk = sk.verifying_key();
-        let point = vk.to_encoded_point(false);
+        let point = vk.to_sec1_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().expect("P-256 x"));
         let y = URL_SAFE_NO_PAD.encode(point.y().expect("P-256 y"));
         let public_key_jwk = serde_json::json!({
@@ -650,7 +650,7 @@ pub fn cnf_bound_access_jwt(secret: &[u8; 32], sub: &str, jkt: &str) -> String {
 /// client-assertion tests, which need to tag the JWK with a `kid` — can build one too.
 pub fn ec_jwk(signing_key: &p256::ecdsa::SigningKey) -> serde_json::Value {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    let point = signing_key.verifying_key().to_encoded_point(false);
+    let point = signing_key.verifying_key().to_sec1_point(false);
     serde_json::json!({
         "kty": "EC",
         "crv": "P-256",
@@ -671,7 +671,7 @@ impl DpopProofKey {
     /// Generate a fresh random P-256 key.
     pub fn generate() -> Self {
         Self {
-            signing_key: p256::ecdsa::SigningKey::random(&mut rand_core::OsRng),
+            signing_key: p256::ecdsa::SigningKey::generate(),
         }
     }
 
@@ -970,10 +970,9 @@ pub fn delete_record_request(
 pub fn sign_p256(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-    let sk =
-        SigningKey::from_bytes(keypair.private_key_bytes.as_slice().into()).expect("valid scalar");
+    let sk = SigningKey::from_bytes((&*keypair.private_key_bytes).into()).expect("valid scalar");
     let sig: Signature = sk.sign(message);
-    URL_SAFE_NO_PAD.encode(sig.normalize_s().unwrap_or(sig).to_bytes())
+    URL_SAFE_NO_PAD.encode(sig.normalize_s().to_bytes())
 }
 
 /// Reserve an unbound repo signing key encrypted under [`test_master_key`], the way
@@ -1143,7 +1142,7 @@ pub fn es256_keys() -> (String, String) {
         format!("-----BEGIN {label}-----\n{body}-----END {label}-----\n")
     }
 
-    let sk = p256::SecretKey::random(&mut rand_core::OsRng);
+    let sk = p256::SecretKey::generate();
     let priv_pem = der_to_pem("PRIVATE KEY", sk.to_pkcs8_der().unwrap().as_bytes());
     let pub_pem = der_to_pem(
         "PUBLIC KEY",
