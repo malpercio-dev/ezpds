@@ -36,6 +36,27 @@ pub trait TransportObserver: Send + Sync {
     fn record_transport_category(&self, _op: &str, _host: Option<&str>, _category: &str) {}
 }
 
+/// Classify a `reqwest` transport error into a short, non-sensitive category. The error's
+/// `Display` can embed the full request URL (host *and* query), so it is deliberately never
+/// captured — only this fixed category is. Lives here, not in the wallet's diagnostics,
+/// because `is_connect` does not exist on wasm, where every connect failure is a `request`.
+pub fn transport_category(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        return "timeout";
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if e.is_connect() {
+        return "connect";
+    }
+    if e.is_decode() || e.is_body() {
+        "read"
+    } else if e.is_request() {
+        "request"
+    } else {
+        "other"
+    }
+}
+
 /// A [`TransportObserver`] that records nothing.
 pub struct NoopObserver;
 
@@ -239,19 +260,27 @@ const MAX_XRPC_ERROR_BODY: usize = 8 * 1024;
 /// Read at most `cap` bytes of a response body, streaming so an oversized (untrusted) payload is
 /// never fully buffered. Returns the decoded (lossy-UTF-8) prefix. A transport error mid-read
 /// propagates as `Err` so the caller can treat it as a `NetworkError` rather than a server verdict.
-async fn read_body_capped(
-    mut resp: reqwest::Response,
-    cap: usize,
-) -> Result<String, reqwest::Error> {
+async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Result<String, reqwest::Error> {
     let mut buf: Vec<u8> = Vec::new();
-    while buf.len() < cap {
-        match resp.chunk().await? {
-            Some(chunk) => {
-                let take = (cap - buf.len()).min(chunk.len());
-                buf.extend_from_slice(&chunk[..take]);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut resp = resp;
+        while buf.len() < cap {
+            match resp.chunk().await? {
+                Some(chunk) => {
+                    let take = (cap - buf.len()).min(chunk.len());
+                    buf.extend_from_slice(&chunk[..take]);
+                }
+                None => break,
             }
-            None => break,
         }
+    }
+    // The fetch backend has no chunk reader; the browser has already buffered the body, so the
+    // cap only bounds what is kept.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bytes = resp.bytes().await?;
+        buf.extend_from_slice(&bytes[..bytes.len().min(cap)]);
     }
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }

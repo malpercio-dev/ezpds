@@ -32,7 +32,7 @@ block2 = { workspace = true }
 # can't require an unmetered link.
 system-configuration = { workspace = true }
 # Polling for an evicted file to come back.
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
 
 [target.'cfg(target_vendor = "apple")'.dev-dependencies]
 # The host tests seed the core's in-memory `KeyStore` to drive the enclave fast path.

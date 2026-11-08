@@ -66,7 +66,11 @@ undocumented_unsafe_blocks = "deny"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "signal", "io-util"] }
+# The portable subset only — the five features tokio itself supports on wasm32 — because every
+# member inherits this list and `obsign-core` is checked for `wasm32-unknown-unknown` (`just
+# wasm-check`). The OS features (`rt-multi-thread`, `net`, `fs`, `signal`) are additive, so a
+# server crate or the iOS platform crate declares the ones its own code uses.
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "io-util"] }
 
 # Web framework (pds)
 axum = "0.8"
@@ -178,6 +182,11 @@ objc2-user-notifications = "0.3"
 # (hickory-resolver/reqwest); promoted to a direct iOS-target dep at the use site.
 system-configuration = "0.7"
 rand_core = { version = "0.6", features = ["getrandom"] }
+# wasm32-unknown-unknown has no OS entropy source; these select getrandom's JS backend there.
+# Both majors are already in the graph (0.2 under rand_core 0.6, 0.4 under crypto-bigint); only
+# `obsign-core` depends on them, and only for that target.
+getrandom = { version = "0.4", default-features = false }
+getrandom02 = { package = "getrandom", version = "0.2", default-features = false }
 base64 = "0.21"
 ciborium = "0.2"
 data-encoding = "2"

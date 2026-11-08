@@ -21,7 +21,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 iroh = { workspace = true }
 sqlx = { workspace = true }
 serde = { workspace = true }

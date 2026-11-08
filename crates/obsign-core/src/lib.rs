@@ -24,6 +24,7 @@ pub mod disaster_recovery;
 pub mod endpoint_repair;
 pub mod events;
 pub mod failure;
+mod fs;
 pub mod handle_change;
 pub mod http;
 pub mod identity_removal;

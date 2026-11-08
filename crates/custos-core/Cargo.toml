@@ -47,7 +47,7 @@ sha2 = { workspace = true }
 sqlx = { workspace = true }
 subtle = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net", "fs"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }

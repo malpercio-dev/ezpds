@@ -14,4 +14,6 @@ targets = [
     "aarch64-unknown-linux-gnu",
     "aarch64-apple-ios",
     "aarch64-apple-ios-sim",
+    # `just wasm-check`: the target with no OS or Apple SDK that proves obsign-core platform-free.
+    "wasm32-unknown-unknown",
 ]

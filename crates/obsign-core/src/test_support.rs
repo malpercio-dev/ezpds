@@ -156,11 +156,11 @@ impl BackupStore for FakeBackupStore {
             match outcome {
                 Some(Ok(bytes)) => {
                     if let Some(parent) = path.parent() {
-                        tokio::fs::create_dir_all(parent)
+                        crate::fs::create_dir_all(parent)
                             .await
                             .map_err(|e| e.to_string())?;
                     }
-                    tokio::fs::write(path, bytes)
+                    crate::fs::write(path, bytes)
                         .await
                         .map_err(|e| e.to_string())?;
                     Ok(true)

@@ -123,22 +123,7 @@ pub fn record_reqwest_transport(op: &str, url: Option<&str>, error: &reqwest::Er
     record_transport(op, host.as_deref(), transport_category(error));
 }
 
-/// Classify a `reqwest` transport error into a short, non-sensitive category. The error's
-/// `Display` can embed the full request URL (host *and* query), so it is deliberately never
-/// captured — only this fixed category is.
-pub fn transport_category(e: &reqwest::Error) -> &'static str {
-    if e.is_timeout() {
-        "timeout"
-    } else if e.is_connect() {
-        "connect"
-    } else if e.is_decode() || e.is_body() {
-        "read"
-    } else if e.is_request() {
-        "request"
-    } else {
-        "other"
-    }
-}
+use custos_client::error::transport_category;
 
 /// Render the recorded breadcrumbs into a shareable plain-text report.
 pub fn export() -> String {

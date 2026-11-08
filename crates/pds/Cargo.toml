@@ -36,7 +36,7 @@ opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 opentelemetry-prometheus = { workspace = true }
 prometheus = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 urlencoding = { workspace = true }

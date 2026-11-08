@@ -262,7 +262,7 @@ fn storage_error(context: &str, e: std::io::Error) -> BlobBackupError {
 /// over (the fail-closed posture of `ceremony-staging`).
 async fn load_manifest(root: &Path, did: &str) -> Result<Manifest, BlobBackupError> {
     let path = manifest_path(root, did);
-    let raw = match tokio::fs::read(&path).await {
+    let raw = match crate::fs::read(&path).await {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Manifest::new(did)),
         Err(e) => return Err(storage_error("failed to read backup manifest", e)),
@@ -283,17 +283,17 @@ async fn save_manifest(root: &Path, did: &str, manifest: &Manifest) -> Result<()
         .parent()
         .expect("manifest path always has a parent directory")
         .to_path_buf();
-    tokio::fs::create_dir_all(&dir)
+    crate::fs::create_dir_all(&dir)
         .await
         .map_err(|e| storage_error("failed to create manifest directory", e))?;
     let json = serde_json::to_vec_pretty(manifest).map_err(|e| BlobBackupError::StorageError {
         message: format!("failed to encode backup manifest: {e}"),
     })?;
     let tmp = dir.join(format!(".tmp-manifest-{}", uuid::Uuid::new_v4()));
-    tokio::fs::write(&tmp, &json)
+    crate::fs::write(&tmp, &json)
         .await
         .map_err(|e| storage_error("failed to write backup manifest", e))?;
-    tokio::fs::rename(&tmp, &path)
+    crate::fs::rename(&tmp, &path)
         .await
         .map_err(|e| storage_error("failed to finalize backup manifest", e))
 }
@@ -303,14 +303,14 @@ async fn save_manifest(root: &Path, did: &str, manifest: &Manifest) -> Result<()
 /// the PDS's crash-durable `store_blob`).
 async fn write_blob(root: &Path, cid: &str, bytes: &[u8]) -> Result<(), BlobBackupError> {
     let dir = blobs_dir(root);
-    tokio::fs::create_dir_all(&dir)
+    crate::fs::create_dir_all(&dir)
         .await
         .map_err(|e| storage_error("failed to create blobs directory", e))?;
     let tmp = dir.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
-    tokio::fs::write(&tmp, bytes)
+    crate::fs::write(&tmp, bytes)
         .await
         .map_err(|e| storage_error("failed to write blob", e))?;
-    tokio::fs::rename(&tmp, blob_path(root, cid))
+    crate::fs::rename(&tmp, blob_path(root, cid))
         .await
         .map_err(|e| storage_error("failed to finalize blob", e))
 }
@@ -469,7 +469,7 @@ pub async fn run_backup_core(
         // Present = recorded in the manifest AND the file is still there (a file the
         // user deleted in the Files app is re-fetched; an iCloud-evicted file reads
         // as absent and is harmlessly re-fetched too).
-        let file_exists = tokio::fs::try_exists(blob_path(root, cid))
+        let file_exists = crate::fs::try_exists(blob_path(root, cid))
             .await
             .unwrap_or(false);
         if known.contains_key(cid.as_str()) && file_exists {
@@ -556,12 +556,12 @@ async fn read_mirrored_blob(
     store: &dyn crate::backup_store::BackupStore,
 ) -> Result<(Vec<u8>, bool), String> {
     let path = blob_path(root, cid);
-    match tokio::fs::read(&path).await {
+    match crate::fs::read(&path).await {
         Ok(bytes) => Ok((bytes, false)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             match store.materialize(&path).await {
                 Ok(true) => {
-                    let bytes = tokio::fs::read(&path).await.map_err(|e| {
+                    let bytes = crate::fs::read(&path).await.map_err(|e| {
                         format!("failed to read the file iCloud just downloaded: {e}")
                     })?;
                     Ok((bytes, true))
@@ -688,7 +688,7 @@ pub async fn mirror_fallback_blob(root: &Path, did: &str, cid: &str) -> Option<V
 
     // Read the mirrored file. NotFound = never downloaded on this device (iCloud placeholder) or
     // deleted; either way the mirror can't help this blob.
-    let bytes = match tokio::fs::read(blob_path(root, cid)).await {
+    let bytes = match crate::fs::read(blob_path(root, cid)).await {
         Ok(bytes) => bytes,
         Err(e) => {
             tracing::info!(did = %did, cid = %cid, error = %e, "blob drain: local mirror has no usable copy for this blob");
@@ -929,13 +929,13 @@ mod tests {
 
         // Bytes landed at their CID paths.
         assert_eq!(
-            tokio::fs::read(blob_path(dir.path(), &cid_a))
+            crate::fs::read(blob_path(dir.path(), &cid_a))
                 .await
                 .unwrap(),
             blob_a
         );
         assert_eq!(
-            tokio::fs::read(blob_path(dir.path(), &cid_b))
+            crate::fs::read(blob_path(dir.path(), &cid_b))
                 .await
                 .unwrap(),
             blob_b
@@ -1003,10 +1003,10 @@ mod tests {
         assert_eq!(report.failed.len(), 1);
         assert_eq!(report.failed[0].cid, cid_listed);
         assert!(report.failed[0].reason.contains("do not match"));
-        assert!(!tokio::fs::try_exists(blob_path(dir.path(), &cid_listed))
+        assert!(!crate::fs::try_exists(blob_path(dir.path(), &cid_listed))
             .await
             .unwrap());
-        assert!(tokio::fs::try_exists(blob_path(dir.path(), &cid_good))
+        assert!(crate::fs::try_exists(blob_path(dir.path(), &cid_good))
             .await
             .unwrap());
         let manifest = load_manifest(dir.path(), did).await.unwrap();
@@ -1045,7 +1045,7 @@ mod tests {
 
         // Simulate the user deleting the file in the Files app; the manifest entry
         // remains but the pass must re-fetch the bytes.
-        tokio::fs::remove_file(blob_path(dir.path(), &cid))
+        crate::fs::remove_file(blob_path(dir.path(), &cid))
             .await
             .unwrap();
         let report = run_backup_core(core, dir.path(), did, &server.base_url())
@@ -1060,15 +1060,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let did = "did:plc:corruptmanifest";
         let path = manifest_path(dir.path(), did);
-        tokio::fs::create_dir_all(path.parent().unwrap())
+        crate::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
-        tokio::fs::write(&path, b"{not json").await.unwrap();
+        crate::fs::write(&path, b"{not json").await.unwrap();
 
         let err = load_manifest(dir.path(), did).await.unwrap_err();
         assert!(matches!(err, BlobBackupError::ManifestCorrupt { .. }));
         // The corrupt file is preserved, never rebuilt over.
-        assert!(tokio::fs::try_exists(&path).await.unwrap());
+        assert!(crate::fs::try_exists(&path).await.unwrap());
     }
 
     // ── Restore pass ───────────────────────────────────────────────────────
@@ -1279,7 +1279,7 @@ mod tests {
         };
         save_manifest(dir.path(), did, &manifest).await.unwrap();
         // The file is genuinely absent before restore runs.
-        assert!(!tokio::fs::try_exists(blob_path(dir.path(), &cid))
+        assert!(!crate::fs::try_exists(blob_path(dir.path(), &cid))
             .await
             .unwrap());
 
@@ -1539,7 +1539,7 @@ mod tests {
         let did = "did:plc:placeholder";
         let bytes = b"recorded but not downloaded".to_vec();
         let cid = seed_mirror_blob_for_test(dir.path(), did, &bytes, "video/mp4").await;
-        tokio::fs::remove_file(blob_path(dir.path(), &cid))
+        crate::fs::remove_file(blob_path(dir.path(), &cid))
             .await
             .unwrap();
 

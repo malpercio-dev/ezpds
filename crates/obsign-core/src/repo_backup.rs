@@ -421,7 +421,7 @@ fn manifest_path(root: &Path, did: &str) -> PathBuf {
 /// one is `ManifestCorrupt` and the file is preserved (fail-closed, never rebuilt over blindly).
 async fn load_manifest(root: &Path, did: &str) -> Result<Option<RepoManifest>, RepoBackupError> {
     let path = manifest_path(root, did);
-    let raw = match tokio::fs::read(&path).await {
+    let raw = match crate::fs::read(&path).await {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(storage_error("failed to read repo backup manifest", e)),
@@ -440,17 +440,17 @@ async fn save_manifest(
     manifest: &RepoManifest,
 ) -> Result<(), RepoBackupError> {
     let dir = repo_dir(root);
-    tokio::fs::create_dir_all(&dir)
+    crate::fs::create_dir_all(&dir)
         .await
         .map_err(|e| storage_error("failed to create repo backup directory", e))?;
     let json = serde_json::to_vec_pretty(manifest).map_err(|e| RepoBackupError::StorageError {
         message: format!("failed to encode repo backup manifest: {e}"),
     })?;
     let tmp = dir.join(format!(".tmp-manifest-{}", uuid::Uuid::new_v4()));
-    tokio::fs::write(&tmp, &json)
+    crate::fs::write(&tmp, &json)
         .await
         .map_err(|e| storage_error("failed to write repo backup manifest", e))?;
-    tokio::fs::rename(&tmp, manifest_path(root, did))
+    crate::fs::rename(&tmp, manifest_path(root, did))
         .await
         .map_err(|e| storage_error("failed to finalize repo backup manifest", e))
 }
@@ -459,14 +459,14 @@ async fn save_manifest(
 /// snapshot at the canonical path — the prior good snapshot survives an interrupted write.
 async fn write_car(root: &Path, did: &str, bytes: &[u8]) -> Result<(), RepoBackupError> {
     let dir = repo_dir(root);
-    tokio::fs::create_dir_all(&dir)
+    crate::fs::create_dir_all(&dir)
         .await
         .map_err(|e| storage_error("failed to create repo backup directory", e))?;
     let tmp = dir.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
-    tokio::fs::write(&tmp, bytes)
+    crate::fs::write(&tmp, bytes)
         .await
         .map_err(|e| storage_error("failed to write repo snapshot", e))?;
-    tokio::fs::rename(&tmp, car_path(root, did))
+    crate::fs::rename(&tmp, car_path(root, did))
         .await
         .map_err(|e| storage_error("failed to finalize repo snapshot", e))
 }
@@ -570,7 +570,7 @@ pub async fn run_backup_core(
     let _guard = lock.lock().await;
 
     let existing = load_manifest(root, did).await?;
-    let car_present = tokio::fs::try_exists(car_path(root, did))
+    let car_present = crate::fs::try_exists(car_path(root, did))
         .await
         .unwrap_or(false);
 
@@ -649,7 +649,7 @@ pub async fn mirror_repo_car(root: &Path, did: &str) -> Option<Vec<u8>> {
     let lock = repo_lock(did);
     let _guard = lock.lock().await;
 
-    let bytes = match tokio::fs::read(car_path(root, did)).await {
+    let bytes = match crate::fs::read(car_path(root, did)).await {
         Ok(bytes) => bytes,
         Err(e) => {
             tracing::info!(did = %did, error = %e, "repo transfer: local mirror has no usable snapshot");
@@ -1030,7 +1030,7 @@ mod tests {
 
         // The snapshot landed at its path, byte-for-byte.
         assert_eq!(
-            tokio::fs::read(car_path(dir.path(), did)).await.unwrap(),
+            crate::fs::read(car_path(dir.path(), did)).await.unwrap(),
             car
         );
         // The manifest records the identity of the snapshot.
@@ -1064,7 +1064,7 @@ mod tests {
 
         // The CAR on disk is unchanged; a second pass with the same rev must not rewrite it, but
         // must still succeed and advance the manifest timestamp.
-        let before = tokio::fs::metadata(car_path(dir.path(), did))
+        let before = crate::fs::metadata(car_path(dir.path(), did))
             .await
             .unwrap()
             .modified()
@@ -1074,7 +1074,7 @@ mod tests {
             .unwrap();
         assert!(!second.updated, "unchanged rev should short-circuit");
         assert_eq!(second.rev, first.rev);
-        let after = tokio::fs::metadata(car_path(dir.path(), did))
+        let after = crate::fs::metadata(car_path(dir.path(), did))
             .await
             .unwrap()
             .modified()
@@ -1155,7 +1155,7 @@ mod tests {
 
         // The prior good snapshot survives untouched.
         assert_eq!(
-            tokio::fs::read(car_path(dir.path(), did)).await.unwrap(),
+            crate::fs::read(car_path(dir.path(), did)).await.unwrap(),
             good_car
         );
         let manifest = load_manifest(dir.path(), did).await.unwrap().unwrap();
@@ -1191,10 +1191,10 @@ mod tests {
         let core = &crate::test_support::core();
         let did = "did:plc:manifest";
         let dir = tempfile::tempdir().unwrap();
-        tokio::fs::create_dir_all(repo_dir(dir.path()))
+        crate::fs::create_dir_all(repo_dir(dir.path()))
             .await
             .unwrap();
-        tokio::fs::write(manifest_path(dir.path(), did), b"{ not valid json")
+        crate::fs::write(manifest_path(dir.path(), did), b"{ not valid json")
             .await
             .unwrap();
         let err = status_core(core, Some(dir.path()), Some(BackupLocation::Local), did)
@@ -1202,7 +1202,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, RepoBackupError::ManifestCorrupt { .. }));
         // The corrupt file is preserved, not rebuilt over.
-        assert!(tokio::fs::try_exists(manifest_path(dir.path(), did))
+        assert!(crate::fs::try_exists(manifest_path(dir.path(), did))
             .await
             .unwrap());
     }

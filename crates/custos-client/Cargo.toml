@@ -17,12 +17,15 @@ tracing = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
-# DNS TXT lookup for handle resolution (PdsClient::resolve_handle).
-hickory-resolver = { workspace = true }
 # Sovereign-session nonce generation.
 rand_core = { workspace = true }
 # Sovereign-session envelope encoding (`crypto::encode_sovereign_session_envelope`).
 crypto = { workspace = true }
+
+# DNS TXT lookup for handle resolution (PdsClient::resolve_handle). A browser has no raw DNS,
+# and the resolver's tokio `net` is refused on wasm, so that target gets the stub in pds_client.rs.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+hickory-resolver = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
