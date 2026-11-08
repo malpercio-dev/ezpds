@@ -156,6 +156,12 @@ impl OAuthClient {
         (session.access_token.clone(), session.refresh_token.clone())
     }
 
+    /// The observer the typed XRPC methods (`identity`, `app_passwords`, `migration`) record
+    /// classification breadcrumbs into: the one this client was built with.
+    pub(crate) fn observer(&self) -> &dyn TransportObserver {
+        self.observer.as_ref()
+    }
+
     fn access_token(&self) -> String {
         self.session
             .lock()
@@ -352,17 +358,8 @@ impl OAuthClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::bearer_jwt;
     use httpmock::prelude::*;
-
-    /// Create a Bearer-mode test JWT with a specific exp claim.
-    fn make_bearer_jwt(exp: u64) -> String {
-        use crate::base64url::b64url_encode;
-        let header = b64url_encode(r#"{"alg":"ES256"}"#);
-        let payload = b64url_encode(format!(r#"{{"exp":{}}}"#, exp).as_bytes());
-        // Dummy signature; jwt_exp_claim never verifies it
-        let sig = "dummy_signature";
-        format!("{}.{}.{}", header, payload, sig)
-    }
 
     /// Create a Bearer-mode OAuthClient for testing.
     async fn make_bearer_client(access: &str, refresh: &str, base_url: &str) -> OAuthClient {
@@ -392,7 +389,7 @@ mod tests {
             .unwrap()
             .as_secs()
             + 3600;
-        let access_jwt = make_bearer_jwt(far_future);
+        let access_jwt = bearer_jwt(far_future);
         let mock = server.mock(|when, then| {
             when.method(PUT)
                 .path("/v1/recovery/escrow-share")
@@ -421,7 +418,7 @@ mod tests {
             .unwrap()
             .as_secs();
         let future_exp = now + 3600;
-        let access_jwt = make_bearer_jwt(future_exp);
+        let access_jwt = bearer_jwt(future_exp);
         // The access token IS the JWT, so the Authorization header is `Bearer {jwt}`.
         let expected_auth = format!("Bearer {access_jwt}");
 
@@ -458,7 +455,7 @@ mod tests {
             .unwrap()
             .as_secs();
         let future_exp = now + 3600;
-        let access_jwt = make_bearer_jwt(future_exp);
+        let access_jwt = bearer_jwt(future_exp);
         let client = make_bearer_client(&access_jwt, "my_refresh_token", &server.base_url()).await;
 
         let resp = client.get("/resource").await.expect("GET must not error");
@@ -478,7 +475,7 @@ mod tests {
             .unwrap()
             .as_secs();
         let jwt_exp = now + 7200; // 2 hours in future
-        let access_jwt = make_bearer_jwt(jwt_exp);
+        let access_jwt = bearer_jwt(jwt_exp);
 
         let client = OAuthClient::new_bearer(
             access_jwt,
@@ -568,7 +565,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let expired_jwt = make_bearer_jwt(now - 100); // Already expired
+        let expired_jwt = bearer_jwt(now - 100); // Already expired
         let client =
             make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
 
@@ -635,7 +632,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let expired_jwt = make_bearer_jwt(now - 100);
+        let expired_jwt = bearer_jwt(now - 100);
         let client =
             make_bearer_client(&expired_jwt, "old_refresh_token", &server.base_url()).await;
 
@@ -657,7 +654,7 @@ mod tests {
             .unwrap()
             .as_secs();
         let future_exp = now + 3600;
-        let access_jwt = make_bearer_jwt(future_exp);
+        let access_jwt = bearer_jwt(future_exp);
         // The access token IS the JWT, so the Authorization header is `Bearer {jwt}`.
         let expected_auth = format!("Bearer {access_jwt}");
 

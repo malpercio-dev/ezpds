@@ -877,9 +877,12 @@ pub async fn check_custom_handle_dns(
         .map_err(|e| map_plc_fetch_error("failed to discover hosting PDS", e))?;
 
     let pds_answer = resolve_handle_via_pds(pds_client, &pds_url, &handle).await?;
-    let dns_answer = crate::pds_client::try_resolve_dns(&handle)
-        .await
-        .unwrap_or_default();
+    let dns_answer = custos_client::pds_client::try_resolve_dns(
+        &handle,
+        &crate::diagnostics::WalletTransportObserver,
+    )
+    .await
+    .unwrap_or_default();
 
     let (status, found_did) = dns_check_verdict(&did, pds_answer.as_deref(), dns_answer.as_deref());
     Ok(CustomHandleDnsCheck {

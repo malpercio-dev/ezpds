@@ -440,31 +440,8 @@ pub async fn confirm_agent_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::bearer_client;
     use httpmock::prelude::*;
-
-    fn make_bearer_jwt(exp: u64) -> String {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#).as_bytes());
-        format!("{header}.{payload}.sig")
-    }
-
-    /// A Bearer-mode client pointed at the mock server, with a far-future access token so no
-    /// refresh fires before the request under test.
-    fn bearer_client(server: &MockServer) -> OAuthClient {
-        let exp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 3600;
-        OAuthClient::new_bearer(
-            make_bearer_jwt(exp),
-            "refresh".to_string(),
-            server.base_url(),
-        )
-        .expect("new_bearer must succeed")
-    }
 
     #[tokio::test]
     async fn list_agents_parses_summaries() {

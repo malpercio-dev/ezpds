@@ -41,6 +41,8 @@ pub mod migration;
 pub mod oauth_client;
 pub mod pds_client;
 pub mod sovereign_session;
+#[cfg(test)]
+mod test_support;
 
 pub use custos_client::{CustosClient, ParRequest, ParResponse, TokenErrorResponse};
 pub use error::{
