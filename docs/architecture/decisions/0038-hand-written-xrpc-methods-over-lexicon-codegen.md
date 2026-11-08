@@ -36,7 +36,8 @@ enough on its own:
    HTTP-status classification tail (429/401/other-non-2xx), which every
    caller in this crate depends on.
 4. **No DPoP.** Its `XrpcClient`/`HttpClient` traits carry no RFC 9449 DPoP
-   proof construction. `OAuthClient`'s DPoP/nonce-retry logic would stay
+   proof construction. The crate's own hand-written DPoP proof construction —
+   the PAR / token-exchange legs on `CustosClient`/`PdsClient` — would stay
    exactly as hand-written as it is today regardless of which client library
    issues the request.
 5. **No lexicon at all for a third of the surface.** auth.md's own endpoints
@@ -73,9 +74,9 @@ wholesale rewrite.
 - **Adopt `atrium-api` wholesale for the `com.atproto.*` subset, hand-write
   only `agents.rs`.** Rejected: splits the crate's request/response types
   across two conventions (generated newtypes vs. plain structs) for a partial
-  win, while `PdsClientError`'s classification tail and `OAuthClient`'s DPoP
-  layer would still wrap every call either way — the maintenance saved on the
-  `com.atproto.*` half does not offset the split.
+  win, while `PdsClientError`'s classification tail would still wrap every call
+  either way — the maintenance saved on the `com.atproto.*` half does not offset
+  the split.
 - **Fork `atrium-codegen`'s output to add Custos's extension fields.**
   Rejected: turns this crate's dependency into a vendored, hand-patched copy
   of generated code — strictly more maintenance than the current hand-written
