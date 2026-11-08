@@ -782,7 +782,7 @@ impl PdsClient {
                 self.note_transport_failure("refreshSession", Some(&url), &e);
                 // Strip the URL before it becomes a message: a reqwest error's `Display`
                 // embeds the full request URL, and this message reaches the frontend
-                // verbatim as SessionError::Offline's payload.
+                // verbatim as obsign-core's `SharedFailure::NetworkError` payload.
                 let e = e.without_url();
                 PdsClientError::NetworkError {
                     message: format!("refreshSession request failed: {}", e),
