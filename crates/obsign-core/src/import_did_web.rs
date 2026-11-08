@@ -149,7 +149,7 @@ pub async fn import_did_web_identity(
         }
     })?;
 
-    let store = identity_store::IdentityStore;
+    let store = state.identities();
     let handle = persist_imported_did_web(&store, &did, &pds_url, &doc.also_known_as)?;
 
     tracing::info!(did = %did, pds_url = %pds_url, "existing did:web identity imported");
@@ -208,8 +208,8 @@ mod tests {
 
     #[test]
     fn persist_imported_did_web_registers_and_stores_doc() {
-        crate::keystore::clear_for_test();
-        let store = identity_store::IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:web:import.example";
         let aka = vec!["at://import.example".to_string()];
 

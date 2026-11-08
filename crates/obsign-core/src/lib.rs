@@ -3,8 +3,10 @@
 //! The core reaches the platform only through traits a shell implements:
 //! [`KeyStore`](keystore::KeyStore), [`Signer`](signer::Signer),
 //! [`EventSink`](events::EventSink), [`BackupStore`](backup_store::BackupStore),
-//! [`Scheduler`](scheduler::Scheduler) and [`Clock`](platform::Clock). Nothing in this crate names Tauri, carries a
-//! `cfg(target_os)`, or depends on an Apple crate.
+//! [`Scheduler`](scheduler::Scheduler) and [`Clock`](platform::Clock), handed to
+//! [`Core`](oauth::Core) as one [`Platform`](platform::Platform). Nothing in this crate names
+//! Tauri, carries a `cfg(target_os)`, or depends on an Apple crate. `test_support` holds a fake
+//! for each.
 //!
 //! The wallet's logic moves in from `apps/identity-wallet/src-tauri` one step at a time; the
 //! order is `docs/implementation-plans/2026-10-21-obsign-core-extraction.md`.
@@ -54,3 +56,5 @@ pub mod signer;
 pub mod source_login;
 pub mod sovereign_session;
 pub mod startup_reconcile;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;

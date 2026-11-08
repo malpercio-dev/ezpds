@@ -70,7 +70,6 @@ use custos_client::agents::CeremonyErrorBody;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::identity_store::IdentityStore;
 use crate::oauth::OAuthError;
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::PdsClient;
@@ -227,15 +226,11 @@ fn map_session_error(error: SessionError) -> AgentsError {
 
 /// Resolve the DID's full-access session (restore / refresh, or `SessionLocked`).
 async fn full_access_session(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<crate::session_provider::ActiveSession, AgentsError> {
-    let now =
-        crate::sovereign_session::unix_timestamp().map_err(|_| AgentsError::NetworkError {
-            message: "system clock is unavailable".to_string(),
-        })?;
     SessionProvider
-        .full_access_client(pds_client, &IdentityStore, did, now)
+        .full_access_client(core, did)
         .await
         .map_err(map_session_error)
 }
@@ -537,8 +532,8 @@ async fn map_child_confirm_error(status: u16, resp: reqwest::Response) -> Agents
 ///
 /// Local-only, so a Keychain failure reads as "unprovisioned": the honest answer for a
 /// gate, and the route it sends the user down re-checks rather than trusting it.
-pub fn agent_accounts_provisioned(did: String) -> bool {
-    IdentityStore
+pub fn agent_accounts_provisioned(core: &crate::oauth::Core, did: String) -> bool {
+    core.identities()
         .is_delegation_provisioned(&did)
         .unwrap_or_else(|e| {
             tracing::warn!(did = %did, error = %e, "delegation-seed probe failed; reporting unprovisioned");
@@ -551,7 +546,7 @@ pub async fn list_agents(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<Vec<AgentSummary>, AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     Ok(custos_client::agents::list_agents(&session.client).await?)
 }
 
@@ -561,7 +556,7 @@ pub async fn revoke_agent(
     did: String,
     registration_id: String,
 ) -> Result<(), AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     Ok(custos_client::agents::revoke_agent(&session.client, &registration_id).await?)
 }
 
@@ -572,7 +567,7 @@ pub async fn get_agent_audit(
     registration_id: String,
     cursor: Option<String>,
 ) -> Result<AgentAuditPage, AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     let page = custos_client::agents::get_agent_audit(
         &session.client,
         &registration_id,
@@ -589,7 +584,7 @@ pub async fn preview_agent_claim(
     did: String,
     user_code: String,
 ) -> Result<AgentClaimPreview, AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     Ok(custos_client::agents::preview_agent_claim(&session.client, &user_code).await?)
 }
 
@@ -600,7 +595,7 @@ pub async fn confirm_agent_claim(
     did: String,
     user_code: String,
 ) -> Result<AgentClaimConfirmation, AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     Ok(custos_client::agents::confirm_agent_claim(&session.client, &user_code).await?)
 }
 
@@ -621,19 +616,21 @@ pub async fn mint_child_from_claim(
     user_code: String,
     handle: String,
 ) -> Result<MintedChild, AgentsError> {
-    let delegation_seed = IdentityStore
+    let delegation_seed = state
+        .identities()
         .load_delegation_seed(&did)
         .map_err(|e| AgentsError::Unknown {
             message: format!("delegation seed read failed: {e}"),
         })?
         .ok_or(AgentsError::NotProvisioned)?;
-    let index = IdentityStore
+    let index = state
+        .identities()
         .load_child_index(&did)
         .map_err(|e| AgentsError::Unknown {
             message: format!("child index read failed: {e}"),
         })?;
 
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     let minted = mint_child_from_claim_impl(
         &session.client,
         state.pds_client(),
@@ -648,7 +645,10 @@ pub async fn mint_child_from_claim(
     // Best-effort: the child exists on the server either way, and the PDS child list is the
     // authoritative index record (recovery rebuilds the counter from it). A failure here costs a
     // collision on the next mint, not this one — so it is logged, never surfaced as a mint failure.
-    if let Err(e) = IdentityStore.store_child_index(&did, index.saturating_add(1)) {
+    if let Err(e) = state
+        .identities()
+        .store_child_index(&did, index.saturating_add(1))
+    {
         tracing::error!(did = %did, error = %e, "failed to advance the child index after a mint");
     }
     Ok(minted)
@@ -665,7 +665,7 @@ pub async fn list_children(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<Vec<ChildSummary>, AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     Ok(custos_client::agents::list_children(&session.client).await?)
 }
 
@@ -678,7 +678,7 @@ pub async fn revoke_child(
     did: String,
     child_did: String,
 ) -> Result<(), AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     Ok(custos_client::agents::revoke_child(&session.client, &child_did).await?)
 }
 
@@ -692,7 +692,7 @@ pub async fn delete_child(
     did: String,
     child_did: String,
 ) -> Result<ChildDeletion, AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     Ok(custos_client::agents::delete_child(&session.client, &child_did).await?)
 }
 
@@ -707,7 +707,7 @@ pub async fn remint_child_assertion(
     did: String,
     child_did: String,
 ) -> Result<ChildAssertion, AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     Ok(custos_client::agents::remint_child_assertion(&session.client, &child_did).await?)
 }
 
@@ -727,19 +727,22 @@ pub async fn reconcile_children(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<ChildReconciliation, AgentsError> {
-    let delegation_seed = IdentityStore
+    let delegation_seed = state
+        .identities()
         .load_delegation_seed(&did)
         .map_err(|e| AgentsError::Unknown {
             message: format!("delegation seed read failed: {e}"),
         })?
         .ok_or(AgentsError::NotProvisioned)?;
-    let stored_index = IdentityStore
-        .load_child_index(&did)
-        .map_err(|e| AgentsError::Unknown {
-            message: format!("child index read failed: {e}"),
-        })?;
+    let stored_index =
+        state
+            .identities()
+            .load_child_index(&did)
+            .map_err(|e| AgentsError::Unknown {
+                message: format!("child index read failed: {e}"),
+            })?;
 
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     let result = reconcile_children_impl(
         &session.client,
         state.pds_client(),
@@ -752,7 +755,10 @@ pub async fn reconcile_children(
     // showing even if the counter write fails, and the server list stays the authoritative record
     // either way. The cost of a failure is a colliding index on the next mint, not a lost child.
     if result.rebuilt && result.next_index != stored_index {
-        if let Err(e) = IdentityStore.store_child_index(&did, result.next_index) {
+        if let Err(e) = state
+            .identities()
+            .store_child_index(&did, result.next_index)
+        {
             tracing::error!(did = %did, error = %e, "failed to rebuild the child index after recovery");
         }
     }

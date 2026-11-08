@@ -25,7 +25,7 @@
 //! per-DID async lock, then re-loads the freshly-persisted record — so a refresh
 //! token can never be raced into replay detection. The lock registry is a
 //! process-global `OnceLock<Mutex<HashMap<did, Arc<tokio::Mutex>>>>`
-//! (unit-struct-over-global shape, like `IdentityStore`). The provider deliberately
+//! (a unit struct over a global). The provider deliberately
 //! does NOT reuse `OAuthClient::refresh_token_bearer`, which is in-memory-only by
 //! design — refresh + persist belong here.
 //!
@@ -148,7 +148,7 @@ impl From<&ActiveSession> for SessionReady {
 
 /// Per-DID full-access session resolver.
 ///
-/// Zero-sized, like [`IdentityStore`]: its only state is a process-global registry
+/// Zero-sized: its only state is a process-global registry
 /// of per-DID coalescing locks, so it is cheap to construct anywhere a resolve is
 /// needed (Tauri commands, downstream operation modules, tests).
 #[derive(Default)]
@@ -212,19 +212,19 @@ fn pds_urls_match(a: &str, b: &str) -> bool {
 
 impl SessionProvider {
     /// Obtain a ready full-access client for `did`, refreshing or reporting a needed
-    /// unlock as required. `now` is the current Unix time in seconds (injected so the
-    /// expiry ladder is deterministic in tests).
+    /// unlock as required. The expiry ladder reads `core`'s clock, so a test drives it with a
+    /// fixed one.
     ///
     /// The entire decision runs under the DID's coalescing lock, and the token record
     /// is re-read *inside* the lock so a caller that waited on an in-flight rotation
     /// observes the freshly-persisted pair instead of racing a second refresh.
     pub async fn full_access_client(
         &self,
-        pds_client: &PdsClient,
-        store: &IdentityStore,
+        core: &crate::oauth::Core,
         did: &str,
-        now: i64,
     ) -> Result<ActiveSession, SessionError> {
+        let pds_client = core.pds_client();
+        let store = &core.identities();
         let lock = did_lock(did);
         let _guard = lock.lock().await;
 
@@ -253,6 +253,7 @@ impl SessionProvider {
 
         // Fast path: a still-valid access token is usable directly — no discovery, no
         // network — which is what lets a restart (or an offline launch) skip the prompt.
+        let now = core.unix_timestamp();
         if (access.exp as i64) > now + ACCESS_REFRESH_MARGIN_SECS {
             return active_session_from_record(did, record, false);
         }
@@ -295,13 +296,7 @@ pub async fn ensure_identity_session(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<SessionReady, SessionError> {
-    let now =
-        crate::sovereign_session::unix_timestamp().map_err(|_| SessionError::InvalidResponse {
-            message: "system clock is unavailable".into(),
-        })?;
-    let session = SessionProvider
-        .full_access_client(state.pds_client(), &IdentityStore, &did, now)
-        .await?;
+    let session = SessionProvider.full_access_client(state, &did).await?;
     Ok(SessionReady::from(&session))
 }
 
@@ -344,7 +339,7 @@ fn active_session_from_record(
 /// rotated pair and discarding a dead record on a classified revocation.
 async fn rotate_and_persist(
     pds_client: &PdsClient,
-    store: &IdentityStore,
+    store: &IdentityStore<'_>,
     did: &str,
     record: &SovereignTokenRecord,
     now: i64,
@@ -394,7 +389,7 @@ async fn rotate_and_persist(
 /// record itself fails.
 fn map_refresh_error(
     error: PdsClientError,
-    store: &IdentityStore,
+    store: &IdentityStore<'_>,
     did: &str,
 ) -> Result<SessionError, SessionError> {
     Ok(match error {
@@ -484,10 +479,9 @@ mod tests {
 
     /// Register `did` fresh and store `record` under it. Clears the (thread-local test)
     /// Keychain first so scenarios do not bleed into one another.
-    fn seed(did: &str, record: &SovereignTokenRecord) {
-        crate::keystore::clear_for_test();
-        IdentityStore.add_identity(did).unwrap();
-        IdentityStore.store_oauth_tokens(did, record).unwrap();
+    fn seed(core: &crate::oauth::Core, did: &str, record: &SovereignTokenRecord) {
+        core.identities().add_identity(did).unwrap();
+        core.identities().store_oauth_tokens(did, record).unwrap();
     }
 
     /// Mock the two calls `discover_pds` makes — the PLC document (pointing the PDS
@@ -528,19 +522,21 @@ mod tests {
 
     #[tokio::test]
     async fn valid_access_restores_without_network() {
+        let core = &crate::test_support::core_at(now() as u64);
         let record = record_for(
             now() + 3_600,
             now() + 86_400,
             "https://pds.example.com",
             SERVER_DID,
         );
-        seed(DID, &record);
+        seed(core, DID, &record);
 
         // An unroutable plc.directory: reaching the network at all would error, so a
         // success proves the fast path never touched it.
         let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
+        let core = &core.with_pds_client(client);
         let session = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
+            .full_access_client(core, DID)
             .await
             .expect("valid access token restores");
 
@@ -553,9 +549,10 @@ mod tests {
 
     #[tokio::test]
     async fn expired_access_rotates_once_and_persists() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
         let record = record_for(now() - 10, now() + 86_400, &server.base_url(), SERVER_DID);
-        seed(DID, &record);
+        seed(core, DID, &record);
         let _plc = discovery_mocks(&server, DID, &server.base_url()).await;
         let new_access = jwt(now() + 3_600, DID, SERVER_DID);
         let new_refresh = jwt(now() + 172_800, DID, SERVER_DID);
@@ -580,15 +577,16 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
+        let core = &core.with_pds_client(client);
         let session = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
+            .full_access_client(core, DID)
             .await
             .expect("rotation succeeds");
 
         refresh.assert_async().await;
         assert!(session.rotated, "an expired token must rotate");
         assert_eq!(session.access_expires_at, (now() + 3_600) as u64);
-        let stored = IdentityStore.load_oauth_tokens(DID).unwrap().unwrap();
+        let stored = core.identities().load_oauth_tokens(DID).unwrap().unwrap();
         assert_eq!(stored.access_jwt, new_access, "new pair must be persisted");
         assert_eq!(stored.refresh_jwt, new_refresh);
         assert_eq!(stored.refresh_expires_at, Some((now() + 172_800) as u64));
@@ -598,9 +596,10 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_callers_refresh_only_once() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
         let record = record_for(now() - 10, now() + 86_400, &server.base_url(), SERVER_DID);
-        seed(DID, &record);
+        seed(core, DID, &record);
         let _plc = discovery_mocks(&server, DID, &server.base_url()).await;
         let refresh = server
             .mock_async(|when, then| {
@@ -615,9 +614,10 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
+        let core = &core.with_pds_client(client);
         let (a, b) = tokio::join!(
-            SessionProvider.full_access_client(&client, &IdentityStore, DID, now()),
-            SessionProvider.full_access_client(&client, &IdentityStore, DID, now()),
+            SessionProvider.full_access_client(core, DID),
+            SessionProvider.full_access_client(core, DID),
         );
 
         assert!(a.is_ok() && b.is_ok(), "both callers get a session");
@@ -632,6 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_change_discards_credentials_and_needs_unlock() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
         // Stored host differs from where the DID now resolves (the mock server).
         let record = record_for(
@@ -640,7 +641,7 @@ mod tests {
             "https://old.example.com",
             SERVER_DID,
         );
-        seed(DID, &record);
+        seed(core, DID, &record);
         let _plc = discovery_mocks(&server, DID, &server.base_url()).await;
         let refresh = server
             .mock_async(|when, then| {
@@ -651,9 +652,8 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
-            .await;
+        let core = &core.with_pds_client(client);
+        let result = SessionProvider.full_access_client(core, DID).await;
 
         assert!(matches!(
             result,
@@ -667,7 +667,7 @@ mod tests {
             "no refresh token is sent to the stale host"
         );
         assert_eq!(
-            IdentityStore.load_oauth_tokens(DID).unwrap(),
+            core.identities().load_oauth_tokens(DID).unwrap(),
             None,
             "the old-audience record must be discarded"
         );
@@ -677,9 +677,10 @@ mod tests {
 
     #[tokio::test]
     async fn revoked_refresh_needs_unlock_and_discards() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
         let record = record_for(now() - 10, now() + 86_400, &server.base_url(), SERVER_DID);
-        seed(DID, &record);
+        seed(core, DID, &record);
         let _plc = discovery_mocks(&server, DID, &server.base_url()).await;
         let _refresh = server
             .mock_async(|when, then| {
@@ -691,9 +692,8 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
-            .await;
+        let core = &core.with_pds_client(client);
+        let result = SessionProvider.full_access_client(core, DID).await;
 
         assert!(matches!(
             result,
@@ -701,7 +701,7 @@ mod tests {
                 reason: UnlockReason::RefreshRevoked
             })
         ));
-        assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+        assert_eq!(core.identities().load_oauth_tokens(DID).unwrap(), None);
     }
 
     /// A 400 (not just a 401) also means the refresh token itself was rejected — pinned
@@ -709,9 +709,10 @@ mod tests {
     /// `classify_xrpc_error` continuing to route both statuses the same way.
     #[tokio::test]
     async fn revoked_refresh_400_needs_unlock_and_discards() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
         let record = record_for(now() - 10, now() + 86_400, &server.base_url(), SERVER_DID);
-        seed(DID, &record);
+        seed(core, DID, &record);
         let _plc = discovery_mocks(&server, DID, &server.base_url()).await;
         let _refresh = server
             .mock_async(|when, then| {
@@ -723,9 +724,8 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
-            .await;
+        let core = &core.with_pds_client(client);
+        let result = SessionProvider.full_access_client(core, DID).await;
 
         assert!(matches!(
             result,
@@ -733,14 +733,15 @@ mod tests {
                 reason: UnlockReason::RefreshRevoked
             })
         ));
-        assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+        assert_eq!(core.identities().load_oauth_tokens(DID).unwrap(), None);
     }
 
     #[tokio::test]
     async fn rate_limited_refresh_is_distinct_and_keeps_record() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
         let record = record_for(now() - 10, now() + 86_400, &server.base_url(), SERVER_DID);
-        seed(DID, &record);
+        seed(core, DID, &record);
         let _plc = discovery_mocks(&server, DID, &server.base_url()).await;
         let _refresh = server
             .mock_async(|when, then| {
@@ -751,16 +752,15 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
-            .await;
+        let core = &core.with_pds_client(client);
+        let result = SessionProvider.full_access_client(core, DID).await;
 
         assert!(matches!(
             result,
             Err(SessionError::RateLimited { retry_after: Some(v) }) if v == "30"
         ));
         assert!(
-            IdentityStore.load_oauth_tokens(DID).unwrap().is_some(),
+            core.identities().load_oauth_tokens(DID).unwrap().is_some(),
             "a rate limit must not discard a still-valid refresh chain"
         );
     }
@@ -769,19 +769,19 @@ mod tests {
 
     #[tokio::test]
     async fn offline_during_discovery_is_distinct() {
+        let core = &crate::test_support::core_at(now() as u64);
         let record = record_for(
             now() - 10,
             now() + 86_400,
             "https://pds.example.com",
             SERVER_DID,
         );
-        seed(DID, &record);
+        seed(core, DID, &record);
 
         // Expired access forces the refresh path, but discovery cannot reach the network.
         let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
-        let result = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
-            .await;
+        let core = &core.with_pds_client(client);
+        let result = SessionProvider.full_access_client(core, DID).await;
 
         assert!(matches!(result, Err(SessionError::Offline { .. })));
     }
@@ -790,13 +790,12 @@ mod tests {
 
     #[tokio::test]
     async fn missing_record_needs_unlock() {
-        crate::keystore::clear_for_test();
-        IdentityStore.add_identity(DID).unwrap();
+        let core = &crate::test_support::core_at(now() as u64);
+        core.identities().add_identity(DID).unwrap();
 
         let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
-        let result = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
-            .await;
+        let core = &core.with_pds_client(client);
+        let result = SessionProvider.full_access_client(core, DID).await;
 
         assert!(matches!(
             result,
@@ -808,20 +807,20 @@ mod tests {
 
     #[tokio::test]
     async fn expired_refresh_needs_unlock_without_network() {
+        let core = &crate::test_support::core_at(now() as u64);
         let record = record_for(
             now() - 100,
             now() - 10,
             "https://pds.example.com",
             SERVER_DID,
         );
-        seed(DID, &record);
+        seed(core, DID, &record);
 
         // Unroutable plc.directory: reaching it would error, so a clean NeedsUnlock
         // proves the dead-chain short-circuit precedes any discovery.
         let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
-        let result = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
-            .await;
+        let core = &core.with_pds_client(client);
+        let result = SessionProvider.full_access_client(core, DID).await;
 
         assert!(matches!(
             result,
@@ -835,7 +834,7 @@ mod tests {
 
     #[tokio::test]
     async fn two_identities_hold_independent_sessions() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core_at(now() as u64);
         let alice_record = record_for(
             now() + 3_600,
             now() + 86_400,
@@ -848,28 +847,29 @@ mod tests {
             "https://bob-pds.example.com",
             "did:web:bob.example.com",
         );
-        IdentityStore.add_identity(DID).unwrap();
-        IdentityStore.add_identity(OTHER_DID).unwrap();
+        core.identities().add_identity(DID).unwrap();
+        core.identities().add_identity(OTHER_DID).unwrap();
         // record_for hardcodes DID as the subject; rebuild bob's tokens under its own DID.
         let bob_record = SovereignTokenRecord {
             access_jwt: jwt(now() + 3_600, OTHER_DID, "did:web:bob.example.com"),
             refresh_jwt: jwt(now() + 86_400, OTHER_DID, "did:web:bob.example.com"),
             ..bob_record
         };
-        IdentityStore
+        core.identities()
             .store_oauth_tokens(DID, &alice_record)
             .unwrap();
-        IdentityStore
+        core.identities()
             .store_oauth_tokens(OTHER_DID, &bob_record)
             .unwrap();
 
         let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
+        let core = &core.with_pds_client(client);
         let alice = SessionProvider
-            .full_access_client(&client, &IdentityStore, DID, now())
+            .full_access_client(core, DID)
             .await
             .expect("alice restores");
         let bob = SessionProvider
-            .full_access_client(&client, &IdentityStore, OTHER_DID, now())
+            .full_access_client(core, OTHER_DID)
             .await
             .expect("bob restores");
 

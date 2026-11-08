@@ -4,7 +4,7 @@ Last verified: 2026-11-07
 
 ## Purpose
 
-The iOS implementations of `obsign-core`'s platform traits ([ADR-0039](../../docs/architecture/decisions/0039-obsign-core-bound-rust-core.md)). The wallet's `run()` constructs and installs them. Apple-only: off Apple targets the crate compiles to nothing, so the Linux PDS gate builds the workspace without the Apple toolchain, and its tests run in the iOS PR lane (`just ios-pr-check`).
+The iOS implementations of `obsign-core`'s platform traits ([ADR-0039](../../docs/architecture/decisions/0039-obsign-core-bound-rust-core.md)). The wallet's `run()` constructs them and hands them to its `Core`. Apple-only: off Apple targets the crate compiles to nothing, so the Linux PDS gate builds the workspace without the Apple toolchain, and its tests run in the iOS PR lane (`just ios-pr-check`).
 
 ## Map
 

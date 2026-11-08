@@ -40,7 +40,6 @@
 
 use serde::Serialize;
 
-use crate::identity_store::IdentityStore;
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::{PdsClientError, PlcDidDocument};
 use crypto::DidKeyUri;
@@ -308,7 +307,7 @@ pub async fn resolve_identity(
 
     // Check if DID is registered and get device key status
     let device_key_is_root = {
-        let identity_store = IdentityStore;
+        let identity_store = state.identities();
         match identity_store.list_identities() {
             Ok(identities) => {
                 if identities.contains(&did) {
@@ -458,7 +457,8 @@ pub async fn authenticate_source_pds(
 }
 
 /// Testable core: run `createSession` against the source PDS and build a full-session Bearer
-/// `OAuthClient`. Extracted so it can be exercised without Tauri's `State` wrapper.
+/// `OAuthClient`. Split out so the command can release the claim-state lock around the network
+/// call.
 ///
 /// The `createSession` body + account-match guard are shared with the outbound migration in
 /// `source_login::authenticate_source_password`; this wrapper only maps the neutral
@@ -511,8 +511,8 @@ impl From<crate::source_login::SourceLoginError> for ClaimError {
 /// **Prerequisites:** `authenticate_source_pds` must have completed successfully and populated
 /// `ClaimState.pds_oauth_client`.
 ///
-/// The core logic is extracted into `request_claim_verification_impl` to make it testable
-/// without Tauri's `State` wrapper.
+/// The core logic is `request_claim_verification_impl`, run on a copy of the claim state so the
+/// lock is not held across the network call.
 pub async fn request_claim_verification(
     state: &crate::oauth::Core,
     did: String,
@@ -632,10 +632,13 @@ fn mentions_invalid_token(error: Option<&str>, message: &str) -> bool {
 /// registration, the same tolerance `submit_claim` has) is what makes the sign step possible
 /// for a fresh identity. A store failure surfaces as `VerificationFailed` — it is a local
 /// keychain problem, never a network one.
-fn ensure_claim_device_key(did: &str) -> Result<crate::device_key::DevicePublicKey, ClaimError> {
-    use crate::identity_store::{IdentityStore, IdentityStoreError};
+fn ensure_claim_device_key(
+    core: &crate::oauth::Core,
+    did: &str,
+) -> Result<crate::device_key::DevicePublicKey, ClaimError> {
+    use crate::identity_store::IdentityStoreError;
 
-    match IdentityStore.add_identity(did) {
+    match core.identities().add_identity(did) {
         Ok(()) | Err(IdentityStoreError::IdentityAlreadyExists) => {}
         Err(e) => {
             tracing::error!(did = %did, error = %e, "claim device-key registration failed");
@@ -645,12 +648,14 @@ fn ensure_claim_device_key(did: &str) -> Result<crate::device_key::DevicePublicK
         }
     }
 
-    IdentityStore.get_or_create_device_key(did).map_err(|e| {
-        tracing::error!(did = %did, error = %e, "claim device-key creation failed");
-        ClaimError::VerificationFailed {
-            message: format!("failed to prepare device key: {}", e),
-        }
-    })
+    core.identities()
+        .get_or_create_device_key(did)
+        .map_err(|e| {
+            tracing::error!(did = %did, error = %e, "claim device-key creation failed");
+            ClaimError::VerificationFailed {
+                message: format!("failed to prepare device key: {}", e),
+            }
+        })
 }
 
 /// Sign and verify a PLC operation.
@@ -698,7 +703,7 @@ pub async fn sign_and_verify_claim(
     }; // claim_state lock released here
 
     // Step 2: Register the DID (if new) and get its device key.
-    let device_key = ensure_claim_device_key(&did)?;
+    let device_key = ensure_claim_device_key(state, &did)?;
 
     let (verified_op, signed_op_json) = sign_and_verify_claim_impl(
         pds_client_ref,
@@ -975,7 +980,7 @@ pub async fn sign_and_verify_claim_impl(
 /// 4. Returns `ClaimResult` with the updated DID document
 ///    (Caller is responsible for clearing `ClaimState` on success)
 pub async fn submit_claim_impl(
-    pds_client: &crate::pds_client::PdsClient,
+    core: &crate::oauth::Core,
     claim_state: &ClaimState,
 ) -> Result<ClaimResult, ClaimError> {
     // Step 1: Read verified_signed_op from ClaimState
@@ -986,7 +991,7 @@ pub async fn submit_claim_impl(
 
     // Step 2: POST the signed operation to plc.directory
     tracing::info!(did = %claim_state.did, "submitting signed PLC operation to plc.directory");
-    pds_client
+    core.pds_client()
         .post_plc_operation(&claim_state.did, operation)
         .await
         .map_err(|e| {
@@ -1003,7 +1008,7 @@ pub async fn submit_claim_impl(
     tracing::info!(did = %claim_state.did, "PLC operation accepted by plc.directory");
 
     // Step 3: Persist the claimed identity to IdentityStore
-    let store = IdentityStore;
+    let store = core.identities();
 
     // 3a: Register DID in managed-dids index (may already exist from prior attempts)
     tracing::debug!(did = %claim_state.did, "registering identity in store");
@@ -1037,7 +1042,8 @@ pub async fn submit_claim_impl(
     // "Unknown", and the migrate entry (gated on rotationKeys[0] == device key)
     // never appeared for a claimed identity.
     tracing::debug!(did = %claim_state.did, "re-fetching DID document after claim");
-    let did_doc_value = pds_client
+    let did_doc_value = core
+        .pds_client()
         .fetch_plc_data_document(&claim_state.did)
         .await
         .map_err(|e| {
@@ -1063,7 +1069,7 @@ pub async fn submit_claim_impl(
 
     // 3d: Fetch and store the PLC audit log
     tracing::debug!(did = %claim_state.did, "fetching audit log for persistence");
-    let log_json = pds_client
+    let log_json = core.pds_client()
         .fetch_audit_log(&claim_state.did)
         .await
         .map_err(|e| {
@@ -1092,13 +1098,13 @@ pub async fn submit_claim_impl(
 
 /// Tauri command wrapper for submit_claim.
 ///
-/// Delegates to `submit_claim_impl` to allow testing without Core.
+/// Delegates to `submit_claim_impl` on a copy of the claim state, so the lock is not held across
+/// the network calls.
 pub async fn submit_claim(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<ClaimResult, ClaimError> {
     tracing::info!("submit_claim command: submitting claim for {}", did);
-    let pds_client = state.pds_client();
 
     // Acquire lock, extract claim state, then release lock before network calls
     let claim_state_copy = {
@@ -1115,7 +1121,7 @@ pub async fn submit_claim(
         return Err(ClaimError::Unauthorized);
     }
 
-    let result = submit_claim_impl(pds_client, &claim_state).await;
+    let result = submit_claim_impl(state, &claim_state).await;
 
     // On success, clear claim state
     if result.is_ok() {
@@ -1719,7 +1725,6 @@ mod tests {
     /// request_claim_verification calls requestPlcOperationSignature on the old PDS
     #[tokio::test]
     async fn test_request_claim_verification_success() {
-        crate::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let mock_server = MockServer::start();
@@ -1785,7 +1790,6 @@ mod tests {
     /// request_claim_verification returns NetworkError on PDS failure
     #[tokio::test]
     async fn test_request_claim_verification_pds_returns_500() {
-        crate::keystore::clear_for_test();
         use httpmock::MockServer;
 
         let mock_server = MockServer::start();
@@ -1879,18 +1883,19 @@ mod tests {
     /// mapped to NETWORK_ERROR, killing every first-time claim before any network call.
     #[test]
     fn ensure_claim_device_key_registers_fresh_did() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:freshclaimdevicekey";
 
-        let key = ensure_claim_device_key(did).expect("fresh DID must get a device key");
+        let key = ensure_claim_device_key(core, did).expect("fresh DID must get a device key");
 
         // Idempotent: a retry (or a prior partial claim) reuses the registration and key.
-        let again = ensure_claim_device_key(did).expect("existing registration is tolerated");
+        let again = ensure_claim_device_key(core, did).expect("existing registration is tolerated");
         assert_eq!(key.multibase, again.multibase);
         assert_eq!(key.key_id, again.key_id);
 
         // The DID is now registered, so submit_claim's own add_identity tolerance applies.
-        let ids = crate::identity_store::IdentityStore
+        let ids = core
+            .identities()
             .list_identities()
             .expect("list_identities");
         assert!(ids.contains(&did.to_string()));
@@ -1899,7 +1904,6 @@ mod tests {
     /// Test 1: Success path with device key at rotationKeys[0]
     #[tokio::test]
     async fn test_sign_and_verify_claim_success() {
-        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::Arc;
@@ -2000,7 +2004,6 @@ mod tests {
     /// Test 2: Wrong key at rotationKeys[0]
     #[tokio::test]
     async fn test_sign_and_verify_claim_wrong_key_at_rotation_keys_0() {
-        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::Arc;
@@ -2091,7 +2094,6 @@ mod tests {
     /// Test 3: prev chain mismatch
     #[tokio::test]
     async fn test_sign_and_verify_claim_prev_mismatch() {
-        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::Arc;
@@ -2181,7 +2183,6 @@ mod tests {
     /// Test 4: unexpected key removal
     #[tokio::test]
     async fn test_sign_and_verify_claim_unexpected_key_removal() {
-        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::Arc;
@@ -2270,7 +2271,6 @@ mod tests {
     /// Test 5: unexpected service change
     #[tokio::test]
     async fn test_sign_and_verify_claim_unexpected_service_change() {
-        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::Arc;
@@ -2366,7 +2366,6 @@ mod tests {
     /// Test 6: warnings for benign additions
     #[tokio::test]
     async fn test_sign_and_verify_claim_warnings_for_added_service() {
-        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::{BTreeMap, HashMap};
         use std::sync::Arc;
@@ -2478,7 +2477,6 @@ mod tests {
     /// Test 7: Invalid token error from PDS
     #[tokio::test]
     async fn test_sign_and_verify_claim_invalid_token() {
-        crate::keystore::clear_for_test();
         use httpmock::MockServer;
         use std::collections::HashMap;
         use std::sync::Arc;
@@ -2550,7 +2548,7 @@ mod tests {
     /// Test Success: submit_claim POSTs signed operation and persists identity
     #[tokio::test]
     async fn test_submit_claim_success() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         use httpmock::MockServer;
 
         let mock_server = MockServer::start();
@@ -2610,6 +2608,7 @@ mod tests {
         });
 
         let pds_client = crate::pds_client::new_for_test(mock_server.base_url());
+        let core = &core.with_pds_client(pds_client);
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -2629,7 +2628,7 @@ mod tests {
             })),
         };
 
-        let result = submit_claim_impl(&pds_client, &claim_state).await;
+        let result = submit_claim_impl(core, &claim_state).await;
 
         assert!(
             result.is_ok(),
@@ -2639,7 +2638,8 @@ mod tests {
         assert_eq!(claim_result.updated_did_doc["did"], "did:plc:test");
         // The cached doc must carry rotationKeys (PLC data shape) — the home card's
         // custody badge and the migrate-entry gate read rotationKeys[0].
-        let cached = crate::identity_store::IdentityStore
+        let cached = core
+            .identities()
             .get_did_doc("did:plc:test")
             .expect("get_did_doc should succeed")
             .expect("DID doc should be cached after claim");
@@ -2662,6 +2662,7 @@ mod tests {
         });
 
         let pds_client = crate::pds_client::new_for_test(mock_server.base_url());
+        let core = &crate::test_support::core().with_pds_client(pds_client);
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -2680,7 +2681,7 @@ mod tests {
             })),
         };
 
-        let result = submit_claim_impl(&pds_client, &claim_state).await;
+        let result = submit_claim_impl(core, &claim_state).await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -2694,7 +2695,7 @@ mod tests {
     /// Test: Unauthorized — no verified signed operation
     #[tokio::test]
     async fn test_submit_claim_no_verified_op() {
-        let pds_client = crate::pds_client::PdsClient::new();
+        let core = &crate::test_support::core();
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -2710,7 +2711,7 @@ mod tests {
             verified_signed_op: None, // No verified operation
         };
 
-        let result = submit_claim_impl(&pds_client, &claim_state).await;
+        let result = submit_claim_impl(core, &claim_state).await;
 
         assert!(
             matches!(result, Err(ClaimError::Unauthorized)),

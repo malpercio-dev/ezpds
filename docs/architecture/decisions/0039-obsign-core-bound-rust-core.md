@@ -63,9 +63,13 @@ carries over from ADR-0013 unchanged.
 - `BackupStore` was added during the extraction (2026-10-21). The mirrors are
   files, not secrets, so they fit neither `KeyStore` nor `Scheduler`, and the
   iCloud container is platform code like the rest.
-- `Clock` is declared but not yet wired. Routing every wall-clock read in the
-  ceremonies and the PLC window through it lands with the wasm build, where
+- `Clock` was declared before it was wired. Every wall-clock read in the
+  ceremonies and the PLC window now goes through the `Core`'s clock (2026-11-07).
+  The diagnostics log's breadcrumb timestamps still read `chrono::Utc::now`
+  directly; that read must move behind `Clock` before the wasm build, where
   `SystemTime::now` panics.
+- `Core` owns every adapter (2026-11-07). The extraction first installed each one
+  process-wide; owning them lets a test build a `Core` over fakes instead.
 - The optional cloud slot is the one real design change Android forces. The
   share ceremony must handle "no cloud slot" by routing share 1 to the user or a
   second escrow.

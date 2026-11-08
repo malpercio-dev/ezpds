@@ -44,7 +44,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::identity_store::IdentityStore;
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::{self, PdsClient, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
@@ -408,13 +407,13 @@ async fn write_blob(root: &Path, cid: &str, bytes: &[u8]) -> Result<(), BlobBack
 /// Resolve where the mirror lives, or `None` when no acceptable location exists: the env
 /// override (tests/dev) first, then the installed `BackupStore` (see that module for the
 /// per-platform rules, including why a real device has no local fallback).
-pub fn resolve_backup_root() -> Option<(PathBuf, BackupLocation)> {
+pub fn resolve_backup_root(core: &crate::oauth::Core) -> Option<(PathBuf, BackupLocation)> {
     if let Ok(dir) = std::env::var(BACKUP_DIR_ENV) {
         if !dir.is_empty() {
             return Some((PathBuf::from(dir), BackupLocation::Local));
         }
     }
-    crate::backup_store::root()
+    core.backup_store().root()
 }
 
 // ── Opt-in flag ──────────────────────────────────────────────────────────────
@@ -423,8 +422,9 @@ pub fn resolve_backup_root() -> Option<(PathBuf, BackupLocation)> {
 /// Referenced by `IdentityStore::remove_identity` for cleanup.
 pub use crate::identity_store::blob_backup_enabled_account as backup_enabled_account;
 
-fn load_enabled(did: &str) -> bool {
-    crate::keystore::get_item(&backup_enabled_account(did))
+fn load_enabled(core: &crate::oauth::Core, did: &str) -> bool {
+    core.keys()
+        .get_item(&backup_enabled_account(did))
         .map(|v| v == b"true")
         .unwrap_or(false)
 }
@@ -433,23 +433,28 @@ fn load_enabled(did: &str) -> bool {
 /// reads this to decide which identities to top up; a never-opted-in or Keychain-error
 /// read is `false` (never back up without an explicit opt-in). Only the iOS background
 /// sweep calls this; the foreground surface reads `load_enabled` via `status_core`.
-pub fn is_backup_enabled(did: &str) -> bool {
-    load_enabled(did)
+pub fn is_backup_enabled(core: &crate::oauth::Core, did: &str) -> bool {
+    load_enabled(core, did)
 }
 
-fn store_enabled(did: &str, enabled: bool) -> Result<(), BlobBackupError> {
+fn store_enabled(
+    core: &crate::oauth::Core,
+    did: &str,
+    enabled: bool,
+) -> Result<(), BlobBackupError> {
     let value: &[u8] = if enabled { b"true" } else { b"false" };
-    crate::keystore::store_item(&backup_enabled_account(did), value).map_err(|e| {
-        BlobBackupError::KeychainError {
+    core.keys()
+        .store_item(&backup_enabled_account(did), value)
+        .map_err(|e| BlobBackupError::KeychainError {
             message: e.to_string(),
-        }
-    })
+        })
 }
 
 // ── Cores (testable without Tauri) ───────────────────────────────────────────
 
 /// Build the status readout from the manifest on disk.
 async fn status_core(
+    core: &crate::oauth::Core,
     root: Option<&Path>,
     location: Option<BackupLocation>,
     did: &str,
@@ -466,7 +471,7 @@ async fn status_core(
         None => (0, 0, None),
     };
     Ok(BlobBackupStatus {
-        enabled: load_enabled(did),
+        enabled: load_enabled(core, did),
         location,
         backed_up_count,
         backed_up_bytes,
@@ -493,7 +498,7 @@ fn mirror_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
 /// mirror lacks, verify each against its CID, write, and record in the manifest.
 /// Idempotent by construction (content-addressed, immutable files); degrades per-blob.
 pub async fn run_backup_core(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     root: &Path,
     did: &str,
     pds_url: &str,
@@ -513,7 +518,8 @@ pub async fn run_backup_core(
     let mut remote_cids: Vec<String> = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let page = pds_client
+        let page = core
+            .pds_client()
             .list_blobs(pds_url, did, cursor.as_deref())
             .await
             .map_err(|e| map_fetch_error("failed to list blobs", e))?;
@@ -556,7 +562,11 @@ pub async fn run_backup_core(
             continue;
         }
 
-        let (bytes, content_type) = match pds_client.fetch_blob_with_type(pds_url, did, cid).await {
+        let (bytes, content_type) = match core
+            .pds_client()
+            .fetch_blob_with_type(pds_url, did, cid)
+            .await
+        {
             Ok(fetched) => fetched,
             Err(e) => {
                 tracing::warn!(did = %did, cid = %cid, error = %e, "blob backup: fetch failed");
@@ -592,7 +602,7 @@ pub async fn run_backup_core(
             cid: cid.clone(),
             mime_type: content_type.unwrap_or_else(|| "application/octet-stream".to_string()),
             size: bytes.len() as u64,
-            fetched_at: chrono::Utc::now().to_rfc3339(),
+            fetched_at: core.utc_now().to_rfc3339(),
         };
         match known.get(cid.as_str()) {
             Some(&i) => manifest.entries[i] = entry,
@@ -610,7 +620,7 @@ pub async fn run_backup_core(
         }
     }
 
-    manifest.last_backup_at = Some(chrono::Utc::now().to_rfc3339());
+    manifest.last_backup_at = Some(core.utc_now().to_rfc3339());
     save_manifest(root, did, &manifest).await?;
 
     report.backed_up_count = manifest.entries.len() as u64;
@@ -620,52 +630,21 @@ pub async fn run_backup_core(
 
 // ── iCloud placeholder materialization ───────────────────────────────────────
 
-/// Bring an evicted iCloud file local before a restore reads it.
-///
-/// On a real device iOS silently evicts the least-used files in the ubiquity container
-/// to reclaim space, replacing each with a `.{name}.icloud` placeholder; the bytes come
-/// back only when something asks iCloud to download them. Restore injects this so the
-/// iOS download path stays isolated from the platform-agnostic, unit-tested restore
-/// core — and a test can drive every branch (download, genuinely-missing, timeout)
-/// without iCloud. Mirrors the file's existing split around `ubiquity_documents_dir`.
-pub trait PlaceholderMaterializer {
-    /// Try to make the file at `path` locally readable.
-    ///
-    /// - `Ok(true)` — a placeholder existed and the file is now present (a download ran).
-    /// - `Ok(false)` — no placeholder: the file is genuinely absent, not merely evicted.
-    /// - `Err(reason)` — a placeholder existed but the download failed or timed out.
-    fn materialize(
-        &self,
-        path: &Path,
-    ) -> impl std::future::Future<Output = Result<bool, String>> + Send;
-}
-
-/// The production materializer: the installed `BackupStore`'s (the real iOS download-and-await
-/// on device; an inert "no placeholder" everywhere else, where a missing file is genuinely
-/// missing, never merely evicted).
-pub struct PlatformMaterializer;
-
-impl PlaceholderMaterializer for PlatformMaterializer {
-    async fn materialize(&self, path: &Path) -> Result<bool, String> {
-        crate::backup_store::materialize(path).await
-    }
-}
-
 /// Read a mirrored blob's bytes for restore, first materializing an evicted iCloud
 /// placeholder if that is why the file is missing. Returns `(bytes, downloaded_this_run)`
 /// or a per-blob failure reason. A genuinely-missing file (no placeholder) keeps the
 /// original "download it in the Files app" guidance; a placeholder whose download fails
 /// or times out surfaces that reason instead.
-async fn read_mirrored_blob<M: PlaceholderMaterializer>(
+async fn read_mirrored_blob(
     root: &Path,
     cid: &str,
-    materializer: &M,
+    store: &dyn crate::backup_store::BackupStore,
 ) -> Result<(Vec<u8>, bool), String> {
     let path = blob_path(root, cid);
     match tokio::fs::read(&path).await {
         Ok(bytes) => Ok((bytes, false)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            match materializer.materialize(&path).await {
+            match store.materialize(&path).await {
                 Ok(true) => {
                     let bytes = tokio::fs::read(&path).await.map_err(|e| {
                         format!("failed to read the file iCloud just downloaded: {e}")
@@ -688,12 +667,12 @@ async fn read_mirrored_blob<M: PlaceholderMaterializer>(
 /// — the PDS recomputes the same CID, so records never need rewriting. Degrades per-blob
 /// (a corrupt file, or a file with no local copy and no placeholder to download, is a
 /// report entry with guidance, never an aborted run). Evicted iCloud placeholders are
-/// downloaded on demand via `materializer` before reading, and counted in the report.
-pub async fn restore_core<M: PlaceholderMaterializer>(
+/// downloaded on demand through `store` before reading, and counted in the report.
+pub async fn restore_core(
     client: &OAuthClient,
     root: &Path,
     did: &str,
-    materializer: &M,
+    store: &dyn crate::backup_store::BackupStore,
 ) -> Result<BlobRestoreReport, BlobBackupError> {
     let lock = mirror_lock(did);
     let _guard = lock.lock().await;
@@ -715,7 +694,7 @@ pub async fn restore_core<M: PlaceholderMaterializer>(
             continue;
         }
 
-        let (bytes, downloaded) = match read_mirrored_blob(root, &entry.cid, materializer).await {
+        let (bytes, downloaded) = match read_mirrored_blob(root, &entry.cid, store).await {
             Ok(loaded) => loaded,
             Err(reason) => {
                 report.failed.push(BlobFailure {
@@ -835,15 +814,11 @@ pub async fn seed_mirror_blob_for_test(root: &Path, did: &str, bytes: &[u8], mim
 
 /// Resolve the DID's full-access session (restore / refresh, or `SessionLocked`).
 async fn full_access_session(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<crate::session_provider::ActiveSession, BlobBackupError> {
-    let now =
-        crate::sovereign_session::unix_timestamp().map_err(|_| BlobBackupError::NetworkError {
-            message: "system clock is unavailable".to_string(),
-        })?;
     SessionProvider
-        .full_access_client(pds_client, &IdentityStore, did, now)
+        .full_access_client(core, did)
         .await
         .map_err(map_session_error)
 }
@@ -859,20 +834,24 @@ async fn hosting_pds_url(pds_client: &PdsClient, did: &str) -> Result<String, Bl
 
 /// Tauri command: the Media Backup screen's status readout — mirror location (or its
 /// absence), the opt-in flag, and the mirror's size (shown before opting in).
-pub async fn get_blob_backup_status(did: String) -> Result<BlobBackupStatus, BlobBackupError> {
-    match resolve_backup_root() {
-        Some((root, location)) => status_core(Some(&root), Some(location), &did).await,
-        None => status_core(None, None, &did).await,
+pub async fn get_blob_backup_status(
+    core: &crate::oauth::Core,
+    did: String,
+) -> Result<BlobBackupStatus, BlobBackupError> {
+    match resolve_backup_root(core) {
+        Some((root, location)) => status_core(core, Some(&root), Some(location), &did).await,
+        None => status_core(core, None, None, &did).await,
     }
 }
 
 /// Tauri command: flip the explicit opt-in flag. Returns the refreshed status.
 pub async fn set_blob_backup_enabled(
+    core: &crate::oauth::Core,
     did: String,
     enabled: bool,
 ) -> Result<BlobBackupStatus, BlobBackupError> {
-    store_enabled(&did, enabled)?;
-    get_blob_backup_status(did).await
+    store_enabled(core, &did, enabled)?;
+    get_blob_backup_status(core, did).await
 }
 
 /// One incremental backup pass for `did`, resolving the mirror root, hosting PDS, and
@@ -884,10 +863,10 @@ pub async fn run_backup_for_did(
     state: &crate::oauth::Core,
     did: &str,
 ) -> Result<BlobBackupRunReport, BlobBackupError> {
-    let (root, _location) = resolve_backup_root().ok_or(BlobBackupError::BackupUnavailable)?;
+    let (root, _location) = resolve_backup_root(state).ok_or(BlobBackupError::BackupUnavailable)?;
     let pds_client = state.pds_client();
     let pds_url = hosting_pds_url(pds_client, did).await?;
-    run_backup_core(pds_client, &root, did, &pds_url).await
+    run_backup_core(state, &root, did, &pds_url).await
 }
 
 /// Tauri command: run one incremental backup sync pass for the identity. Reads only
@@ -906,9 +885,9 @@ pub async fn restore_blob_backup(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<BlobRestoreReport, BlobBackupError> {
-    let (root, _location) = resolve_backup_root().ok_or(BlobBackupError::BackupUnavailable)?;
-    let session = full_access_session(state.pds_client(), &did).await?;
-    restore_core(&session.client, &root, &did, &PlatformMaterializer).await
+    let (root, _location) = resolve_backup_root(state).ok_or(BlobBackupError::BackupUnavailable)?;
+    let session = full_access_session(state, &did).await?;
+    restore_core(&session.client, &root, &did, state.backup_store()).await
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1079,7 +1058,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let client = PdsClient::new();
-        let report = run_backup_core(&client, dir.path(), did, &server.base_url())
+        let core = &crate::test_support::core().with_pds_client(client);
+        let report = run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
 
@@ -1111,7 +1091,7 @@ mod tests {
         assert!(manifest.last_backup_at.is_some());
 
         // A second pass is a no-op: everything already present, nothing re-fetched.
-        let second = run_backup_core(&client, dir.path(), did, &server.base_url())
+        let second = run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
         assert_eq!(second.already_present, 2);
@@ -1155,7 +1135,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let client = PdsClient::new();
-        let report = run_backup_core(&client, dir.path(), did, &server.base_url())
+        let core = &crate::test_support::core().with_pds_client(client);
+        let report = run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
 
@@ -1198,7 +1179,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let client = PdsClient::new();
-        run_backup_core(&client, dir.path(), did, &server.base_url())
+        let core = &crate::test_support::core().with_pds_client(client);
+        run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
         assert_eq!(get_mock.calls_async().await, 1);
@@ -1208,7 +1190,7 @@ mod tests {
         tokio::fs::remove_file(blob_path(dir.path(), &cid))
             .await
             .unwrap();
-        let report = run_backup_core(&client, dir.path(), did, &server.base_url())
+        let report = run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
         assert_eq!(report.fetched, 1);
@@ -1232,53 +1214,6 @@ mod tests {
     }
 
     // ── Restore pass ───────────────────────────────────────────────────────
-
-    /// Test double for `PlaceholderMaterializer`, keyed by CID (the blob file name):
-    ///   - `Ok(bytes)` → simulate iOS finishing the download by writing `bytes` at the
-    ///     path, return `Ok(true)`;
-    ///   - `Err(reason)` → the placeholder's download failed / timed out;
-    ///   - absent key → no placeholder (a genuinely missing file), `Ok(false)`.
-    #[derive(Default)]
-    struct FakeMaterializer {
-        outcomes: HashMap<String, Result<Vec<u8>, String>>,
-    }
-
-    impl FakeMaterializer {
-        /// A materializer that downloads `bytes` for `cid` (writes them at the CID path).
-        fn downloads(cid: &str, bytes: &[u8]) -> Self {
-            let mut outcomes = HashMap::new();
-            outcomes.insert(cid.to_string(), Ok(bytes.to_vec()));
-            Self { outcomes }
-        }
-
-        /// A materializer whose download of `cid` fails with `reason`.
-        fn fails(cid: &str, reason: &str) -> Self {
-            let mut outcomes = HashMap::new();
-            outcomes.insert(cid.to_string(), Err(reason.to_string()));
-            Self { outcomes }
-        }
-    }
-
-    impl PlaceholderMaterializer for FakeMaterializer {
-        async fn materialize(&self, path: &Path) -> Result<bool, String> {
-            let cid = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string();
-            match self.outcomes.get(&cid) {
-                Some(Ok(bytes)) => {
-                    if let Some(parent) = path.parent() {
-                        tokio::fs::create_dir_all(parent).await.unwrap();
-                    }
-                    tokio::fs::write(path, bytes).await.unwrap();
-                    Ok(true)
-                }
-                Some(Err(reason)) => Err(reason.clone()),
-                None => Ok(false),
-            }
-        }
-    }
 
     #[tokio::test]
     async fn restore_uploads_each_entry_with_its_stored_mime() {
@@ -1327,9 +1262,14 @@ mod tests {
             OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
         // The absent entry has no placeholder here, so the default fake reports it
         // genuinely missing (Ok(false)) — the pre-materialization behavior, unchanged.
-        let report = restore_core(&client, dir.path(), did, &FakeMaterializer::default())
-            .await
-            .unwrap();
+        let report = restore_core(
+            &client,
+            dir.path(),
+            did,
+            &crate::test_support::FakeBackupStore::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(report.manifest_count, 2);
         assert_eq!(report.uploaded, 1);
@@ -1371,9 +1311,14 @@ mod tests {
 
         let client =
             OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
-        let report = restore_core(&client, dir.path(), did, &FakeMaterializer::default())
-            .await
-            .unwrap();
+        let report = restore_core(
+            &client,
+            dir.path(),
+            did,
+            &crate::test_support::FakeBackupStore::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(report.uploaded, 0);
         assert_eq!(report.failed.len(), 1);
@@ -1438,9 +1383,14 @@ mod tests {
 
         let client =
             OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
-        let report = restore_core(&client, dir.path(), did, &FakeMaterializer::default())
-            .await
-            .unwrap();
+        let report = restore_core(
+            &client,
+            dir.path(),
+            did,
+            &crate::test_support::FakeBackupStore::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(report.uploaded, 1);
         assert_eq!(report.failed.len(), 1);
@@ -1488,7 +1438,8 @@ mod tests {
 
         let client =
             OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
-        let materializer = FakeMaterializer::downloads(&cid, &blob);
+        let materializer = crate::test_support::FakeBackupStore::default();
+        materializer.evicted(&cid, &blob);
         let report = restore_core(&client, dir.path(), did, &materializer)
             .await
             .unwrap();
@@ -1531,9 +1482,14 @@ mod tests {
 
         let client =
             OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
-        let report = restore_core(&client, dir.path(), did, &FakeMaterializer::default())
-            .await
-            .unwrap();
+        let report = restore_core(
+            &client,
+            dir.path(),
+            did,
+            &crate::test_support::FakeBackupStore::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(report.uploaded, 0);
         assert_eq!(report.downloaded_from_icloud, 0);
@@ -1570,8 +1526,8 @@ mod tests {
             "http://127.0.0.1:1".to_string(),
         )
         .unwrap();
-        let materializer =
-            FakeMaterializer::fails(&cid, "iCloud did not finish downloading within 90s");
+        let materializer = crate::test_support::FakeBackupStore::default();
+        materializer.evicted_failing(&cid, "iCloud did not finish downloading within 90s");
         let report = restore_core(&client, dir.path(), did, &materializer)
             .await
             .unwrap();
@@ -1616,7 +1572,8 @@ mod tests {
         let client =
             OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
         // The fake "downloads" bytes that do NOT hash to the manifest CID.
-        let materializer = FakeMaterializer::downloads(&cid, b"corrupted replacement bytes");
+        let materializer = crate::test_support::FakeBackupStore::default();
+        materializer.evicted(&cid, b"corrupted replacement bytes");
         let report = restore_core(&client, dir.path(), did, &materializer)
             .await
             .unwrap();
@@ -1632,11 +1589,11 @@ mod tests {
 
     #[tokio::test]
     async fn status_reports_manifest_totals_and_flag() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let dir = tempfile::tempdir().unwrap();
         let did = "did:plc:statustest";
 
-        let empty = status_core(Some(dir.path()), Some(BackupLocation::Local), did)
+        let empty = status_core(core, Some(dir.path()), Some(BackupLocation::Local), did)
             .await
             .unwrap();
         assert!(!empty.enabled);
@@ -1664,9 +1621,9 @@ mod tests {
             ],
         };
         save_manifest(dir.path(), did, &manifest).await.unwrap();
-        store_enabled(did, true).unwrap();
+        store_enabled(core, did, true).unwrap();
 
-        let status = status_core(Some(dir.path()), Some(BackupLocation::Local), did)
+        let status = status_core(core, Some(dir.path()), Some(BackupLocation::Local), did)
             .await
             .unwrap();
         assert!(status.enabled);
@@ -1678,20 +1635,20 @@ mod tests {
         );
 
         // No location at all (iOS with iCloud off): totals are zero, not an error.
-        let unavailable = status_core(None, None, did).await.unwrap();
+        let unavailable = status_core(core, None, None, did).await.unwrap();
         assert!(unavailable.location.is_none());
         assert_eq!(unavailable.backed_up_count, 0);
     }
 
     #[test]
     fn enabled_flag_roundtrip() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:flagtest";
-        assert!(!load_enabled(did));
-        store_enabled(did, true).unwrap();
-        assert!(load_enabled(did));
-        store_enabled(did, false).unwrap();
-        assert!(!load_enabled(did));
+        assert!(!load_enabled(core, did));
+        store_enabled(core, did, true).unwrap();
+        assert!(load_enabled(core, did));
+        store_enabled(core, did, false).unwrap();
+        assert!(!load_enabled(core, did));
     }
 
     // ── Migration-drain mirror fallback ────────────────────────────────────

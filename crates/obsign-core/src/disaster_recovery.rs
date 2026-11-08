@@ -65,12 +65,12 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::handle_change::latest_full_state;
-use crate::identity_store::{IdentityStore, PerDidSignError};
+use crate::identity_store::PerDidSignError;
 use crate::migration_orchestrator::{
     ensure_phase_did, preferred_login_identifier, MigrationError, MigrationPhase,
     OutboundMigrationState,
 };
-use crate::pds_client::{PdsClient, PdsClientError};
+use crate::pds_client::PdsClientError;
 use crypto::{AuditEntry, PlcService};
 
 /// Lexicon method the offline service-auth JWT authorizes — the migration-mode
@@ -440,18 +440,12 @@ pub async fn prepare_disaster_recovery(
 /// key across attempts, like the ceremony staging slot), and a key that already IS the
 /// DID's `atproto` method reconciles to success without signing anything.
 pub async fn enroll_recovery_signing_key(
-    state: &crate::oauth::Core,
+    core: &crate::oauth::Core,
     did: String,
 ) -> Result<RecoveryEnrollment, DisasterRecoveryError> {
     tracing::info!(did = %did, "enroll_recovery_signing_key");
-    enroll_recovery_signing_key_impl(state.pds_client(), &did).await
-}
-
-async fn enroll_recovery_signing_key_impl(
-    pds_client: &PdsClient,
-    did: &str,
-) -> Result<RecoveryEnrollment, DisasterRecoveryError> {
-    let store = IdentityStore;
+    let did: &str = &did;
+    let store = core.identities();
 
     // 1. Per-DID device key (the op's signer).
     let device_pub = store.get_or_create_device_key(did).map_err(|e| {
@@ -461,8 +455,9 @@ async fn enroll_recovery_signing_key_impl(
     })?;
     let device_key_id = device_pub.key_id;
 
-    // 2. Current state from the audit log.
-    let log_json = pds_client
+    // 2. Current core from the audit log.
+    let log_json = core
+        .pds_client()
         .fetch_audit_log(did)
         .await
         .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
@@ -528,14 +523,15 @@ async fn enroll_recovery_signing_key_impl(
     guard_recovery_enroll_op(&inputs)?;
 
     // 7. Device-key-sign and submit directly to plc.directory.
-    let sign_closure = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { message } => {
-            DisasterRecoveryError::IdentityNotFound { message }
-        }
-        PerDidSignError::SigningSetupFailed { message } => {
-            DisasterRecoveryError::SigningFailed { message }
-        }
-    })?;
+    let sign_closure =
+        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
+            PerDidSignError::DeviceKeyNotFound { message } => {
+                DisasterRecoveryError::IdentityNotFound { message }
+            }
+            PerDidSignError::SigningSetupFailed { message } => {
+                DisasterRecoveryError::SigningFailed { message }
+            }
+        })?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
         inputs.proposed_rotation_keys,
@@ -554,13 +550,13 @@ async fn enroll_recovery_signing_key_impl(
             }
         })?;
 
-    pds_client
+    core.pds_client()
         .post_plc_operation(did, &signed_op)
         .await
         .map_err(|e| map_plc_fetch_error("plc.directory rejected the enroll operation", e))?;
 
     // Best-effort cache refresh so the monitor sees the wallet's own op as expected.
-    if let Ok(updated) = pds_client.fetch_audit_log(did).await {
+    if let Ok(updated) = core.pds_client().fetch_audit_log(did).await {
         let _ = store.store_plc_log(did, &updated);
     }
 
@@ -581,7 +577,7 @@ pub async fn await_recovery_key_visibility(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<RecoveryKeyStatus, DisasterRecoveryError> {
-    let store = IdentityStore;
+    let store = state.identities();
     let scalar = store
         .load_recovery_signing_key(&did)
         .map_err(|e| DisasterRecoveryError::KeychainError {
@@ -627,11 +623,13 @@ pub async fn await_recovery_key_visibility(
 
 /// Mint the service-auth JWT offline with the self-controlled signing key.
 fn mint_offline_service_auth(
+    core: &crate::oauth::Core,
     scalar: zeroize::Zeroizing<[u8; 32]>,
     did: &str,
     dest_did: &str,
 ) -> Result<String, MigrationError> {
-    let now = std::time::SystemTime::now()
+    let now = core
+        .now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| MigrationError::ServiceAuthFailed {
             message: format!("system clock is before the Unix epoch: {e}"),
@@ -680,7 +678,7 @@ pub async fn create_recovery_destination_account(
     }; // lock released
 
     let pds_client = state.pds_client();
-    let store = IdentityStore;
+    let store = state.identities();
 
     // Load the self-controlled signing key.
     let scalar = store
@@ -725,7 +723,7 @@ pub async fn create_recovery_destination_account(
                 message: format!("failed to reserve signing key: {e}"),
             })?;
     }
-    let token = mint_offline_service_auth(scalar, &did, &dest_did)?;
+    let token = mint_offline_service_auth(state, scalar, &did, &dest_did)?;
 
     let dest_client = crate::migration_orchestrator::create_destination_account_with_token(
         &token,
@@ -783,7 +781,7 @@ pub async fn recovery_transfer_repo(
         });
     };
 
-    let Some((root, _location)) = crate::blob_backup::resolve_backup_root() else {
+    let Some((root, _location)) = crate::blob_backup::resolve_backup_root(state) else {
         return Err(MigrationError::BackupUnavailable {
             message: "no backup location is available on this device (is iCloud Drive enabled?)"
                 .into(),
@@ -1048,13 +1046,14 @@ mod tests {
 
     #[test]
     fn offline_jwt_carries_the_service_auth_claims() {
+        let core = &crate::test_support::core();
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
 
         let kp = crypto::generate_p256_keypair().unwrap();
         let scalar = zeroize::Zeroizing::new(*kp.private_key_bytes);
-        let jwt =
-            mint_offline_service_auth(scalar, "did:plc:alice", "did:web:dest.example").unwrap();
+        let jwt = mint_offline_service_auth(core, scalar, "did:plc:alice", "did:web:dest.example")
+            .unwrap();
 
         let payload_b64 = jwt.split('.').nth(1).unwrap();
         let payload: serde_json::Value =

@@ -8,14 +8,13 @@
 //! exercisable. A cloud folder can also evict a file to a placeholder, which restore must
 //! download before reading.
 //!
-//! Installation follows [`keystore`](crate::keystore). An uninstalled store reports no
-//! location, so every backup surface reads "unavailable" rather than writing somewhere the
+//! [`Core`](crate::oauth::Core) owns the store (`core.backup_store()`). A store reporting no
+//! location makes every backup surface read "unavailable" rather than write somewhere the
 //! user was not told about.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::OnceLock;
 
 use serde::Serialize;
 
@@ -41,26 +40,4 @@ pub trait BackupStore: Send + Sync {
     /// the real file is at `path`. `Ok(false)` means there is no placeholder (the file is
     /// genuinely missing); `Err` means the download failed or timed out.
     fn materialize<'a>(&'a self, path: &'a Path) -> Materialize<'a>;
-}
-
-static INSTALLED: OnceLock<Box<dyn BackupStore>> = OnceLock::new();
-
-/// Install the process-wide store. The second and later calls are refused and hand the store
-/// back.
-pub fn install(store: Box<dyn BackupStore>) -> Result<(), Box<dyn BackupStore>> {
-    INSTALLED.set(store)
-}
-
-/// The installed store's root, or `None` when nothing is installed.
-pub fn root() -> Option<(PathBuf, BackupLocation)> {
-    INSTALLED.get().and_then(|store| store.root())
-}
-
-/// The installed store's [`BackupStore::materialize`]; with nothing installed there are no
-/// placeholders.
-pub async fn materialize(path: &Path) -> Result<bool, String> {
-    match INSTALLED.get() {
-        Some(store) => store.materialize(path).await,
-        None => Ok(false),
-    }
 }

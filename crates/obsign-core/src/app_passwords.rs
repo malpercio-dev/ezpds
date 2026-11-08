@@ -43,8 +43,7 @@
 
 use serde::Serialize;
 
-use crate::identity_store::IdentityStore;
-use crate::pds_client::{self, AppPasswordCreated, AppPasswordEntry, PdsClient, PdsClientError};
+use crate::pds_client::{self, AppPasswordCreated, AppPasswordEntry, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 
 // ── Errors ───────────────────────────────────────────────────────────────────
@@ -150,16 +149,11 @@ fn map_pds_error(error: PdsClientError) -> AppPasswordsError {
 
 /// Resolve the DID's full-access session (restore / refresh, or `SessionLocked`).
 async fn full_access_session(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<crate::session_provider::ActiveSession, AppPasswordsError> {
-    let now = crate::sovereign_session::unix_timestamp().map_err(|_| {
-        AppPasswordsError::NetworkError {
-            message: "system clock is unavailable".to_string(),
-        }
-    })?;
     SessionProvider
-        .full_access_client(pds_client, &IdentityStore, did, now)
+        .full_access_client(core, did)
         .await
         .map_err(map_session_error)
 }
@@ -176,7 +170,7 @@ pub async fn create_app_password(
     privileged: bool,
     personal_details: bool,
 ) -> Result<AppPasswordCreated, AppPasswordsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     pds_client::create_app_password(&session.client, &name, privileged, personal_details)
         .await
         .map_err(map_pds_error)
@@ -187,7 +181,7 @@ pub async fn list_app_passwords(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<Vec<AppPasswordEntry>, AppPasswordsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     pds_client::list_app_passwords(&session.client)
         .await
         .map_err(map_pds_error)
@@ -200,7 +194,7 @@ pub async fn revoke_app_password(
     did: String,
     name: String,
 ) -> Result<(), AppPasswordsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = full_access_session(state, &did).await?;
     pds_client::revoke_app_password(&session.client, &name)
         .await
         .map_err(map_pds_error)

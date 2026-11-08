@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::handle_change::latest_full_state;
-use crate::identity_store::{IdentityStore, PerDidSignError};
+use crate::identity_store::PerDidSignError;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crypto::PlcService;
 
@@ -299,12 +299,18 @@ async fn verify_destination_hosts(
     Err(EndpointRepairError::DestinationNotHosting { message })
 }
 
-async fn repair_hosting_endpoint_impl(
-    pds_client: &PdsClient,
-    did: &str,
-    new_endpoint: &str,
+/// Repoint the DID document's `atproto_pds` endpoint to the hosting server's new
+/// public URL: device-key-signed, submitted directly to plc.directory. The biometric
+/// gate lives in the frontend, in front of the Secure-Enclave signing.
+pub async fn repair_hosting_endpoint(
+    core: &crate::oauth::Core,
+    did: String,
+    new_endpoint: String,
 ) -> Result<EndpointRepairResult, EndpointRepairError> {
-    let store = IdentityStore;
+    tracing::info!(did = %did, new_endpoint = %new_endpoint, "repair_hosting_endpoint");
+    let did: &str = &did;
+    let new_endpoint: &str = &new_endpoint;
+    let store = core.identities();
     let new_endpoint = normalize_endpoint(new_endpoint)?;
 
     // 1. Device key (the op's signer).
@@ -315,9 +321,10 @@ async fn repair_hosting_endpoint_impl(
                 message: format!("failed to get device key: {e}"),
             })?;
 
-    // 2. Current state from the authoritative audit log (never a cached doc, and
+    // 2. Current core from the authoritative audit log (never a cached doc, and
     //    never the dead endpoint).
-    let log_json = pds_client
+    let log_json = core
+        .pds_client()
         .fetch_audit_log(did)
         .await
         .map_err(|e| map_plc_error("failed to fetch audit log", e))?;
@@ -347,7 +354,7 @@ async fn repair_hosting_endpoint_impl(
     }
 
     // 4. The new endpoint must actually host this account.
-    verify_destination_hosts(pds_client, &new_endpoint, did).await?;
+    verify_destination_hosts(core.pds_client(), &new_endpoint, did).await?;
 
     // 5. Propose: swap ONLY the atproto_pds endpoint string.
     let mut proposed_services = current.services.clone();
@@ -375,14 +382,15 @@ async fn repair_hosting_endpoint_impl(
     guard_endpoint_repair(&inputs)?;
 
     // 7. Device-key-sign and submit directly to plc.directory.
-    let sign_closure = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { message } => {
-            EndpointRepairError::IdentityNotFound { message }
-        }
-        PerDidSignError::SigningSetupFailed { message } => {
-            EndpointRepairError::SigningFailed { message }
-        }
-    })?;
+    let sign_closure =
+        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
+            PerDidSignError::DeviceKeyNotFound { message } => {
+                EndpointRepairError::IdentityNotFound { message }
+            }
+            PerDidSignError::SigningSetupFailed { message } => {
+                EndpointRepairError::SigningFailed { message }
+            }
+        })?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
         inputs.proposed_rotation_keys,
@@ -401,19 +409,20 @@ async fn repair_hosting_endpoint_impl(
             }
         })?;
 
-    pds_client
+    core.pds_client()
         .post_plc_operation(did, &signed_op)
         .await
         .map_err(|e| map_plc_error("plc.directory rejected the repair operation", e))?;
 
     // 8. Best-effort cache refresh so the home card and the monitor see the wallet's
     //    own op as expected.
-    if let Ok(updated) = pds_client.fetch_audit_log(did).await {
+    if let Ok(updated) = core.pds_client().fetch_audit_log(did).await {
         let _ = store.store_plc_log(did, &updated);
     }
-    if let Ok(resp) = pds_client
+    if let Ok(resp) = core
+        .pds_client()
         .client()
-        .get(format!("{}/{did}", pds_client.plc_directory_url()))
+        .get(format!("{}/{did}", core.pds_client().plc_directory_url()))
         .send()
         .await
     {
@@ -433,18 +442,6 @@ async fn repair_hosting_endpoint_impl(
         new_endpoint,
         op_cid: Some(signed.cid),
     })
-}
-
-/// Repoint the DID document's `atproto_pds` endpoint to the hosting server's new
-/// public URL: device-key-signed, submitted directly to plc.directory. The biometric
-/// gate lives in the frontend, in front of the Secure-Enclave signing.
-pub async fn repair_hosting_endpoint(
-    state: &crate::oauth::Core,
-    did: String,
-    new_endpoint: String,
-) -> Result<EndpointRepairResult, EndpointRepairError> {
-    tracing::info!(did = %did, new_endpoint = %new_endpoint, "repair_hosting_endpoint");
-    repair_hosting_endpoint_impl(state.pds_client(), &did, &new_endpoint).await
 }
 
 #[cfg(test)]
