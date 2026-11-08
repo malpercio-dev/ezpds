@@ -78,7 +78,7 @@
 //! PLC write is `migrate::submit_migration_op_cmd`. `MigrationError`
 //! (MIGRATION_NOT_READY, DESTINATION_UNREACHABLE, SOURCE_AUTH_FAILED,
 //! TWO_FACTOR_REQUIRED, ACCOUNT_MISMATCH, INSECURE_SOURCE_URL, RATE_LIMITED,
-//! SERVER_ERROR, SERVICE_AUTH_FAILED, ACCOUNT_CREATION_FAILED, DESTINATION_CONFLICT,
+//! SERVER_REJECTED, SERVICE_AUTH_FAILED, ACCOUNT_CREATION_FAILED, DESTINATION_CONFLICT,
 //! REPO_TRANSFER_FAILED, BLOB_TRANSFER_FAILED, BLOB_DRAIN_INCOMPLETE,
 //! BACKUP_UNAVAILABLE — recovery-specific — PREFERENCES_TRANSFER_FAILED,
 //! VERIFICATION_INCOMPLETE, ACTIVATION_FAILED, SOVEREIGN_LOGIN_FAILED,
@@ -238,8 +238,8 @@ pub enum MigrationError {
     /// The source PDS rejected the login with a non-2xx the wallet doesn't model specially.
     /// `message` is the server's own error text, shown verbatim so a third-party PDS's real reason
     /// reaches the user instead of connectivity boilerplate.
-    #[error("server error: {message}")]
-    ServerError { message: String },
+    #[error("server rejected the request: {message}")]
+    ServerRejected { message: String },
     /// Service authentication (getServiceAuth) failed
     #[error("service auth failed: {message}")]
     ServiceAuthFailed { message: String },
@@ -596,7 +596,7 @@ impl From<crate::source_login::SourceLoginError> for MigrationError {
             S::AccountMismatch => MigrationError::AccountMismatch,
             S::InsecureSourceUrl => MigrationError::InsecureSourceUrl,
             S::RateLimited { retry_after } => MigrationError::RateLimited { retry_after },
-            S::ServerError { message } => MigrationError::ServerError { message },
+            S::ServerError { message } => MigrationError::ServerRejected { message },
             S::NetworkError { message } => MigrationError::NetworkError { message },
         }
     }
@@ -2158,7 +2158,7 @@ mod tests {
             MigrationError::from(S::ServerError {
                 message: "handle is required".to_string()
             }),
-            MigrationError::ServerError { message } if message == "handle is required"
+            MigrationError::ServerRejected { message } if message == "handle is required"
         ));
         assert!(matches!(
             MigrationError::from(S::NetworkError {
@@ -2200,11 +2200,11 @@ mod tests {
 
     #[test]
     fn test_migration_error_serialization_server_error() {
-        let json = serde_json::to_value(MigrationError::ServerError {
+        let json = serde_json::to_value(MigrationError::ServerRejected {
             message: "handle is required".into(),
         })
         .unwrap();
-        assert_eq!(json["code"], "SERVER_ERROR");
+        assert_eq!(json["code"], "SERVER_REJECTED");
         assert_eq!(json["message"], "handle is required");
     }
 

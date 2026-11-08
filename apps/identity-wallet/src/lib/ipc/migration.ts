@@ -155,7 +155,7 @@ export type MigrationError =
   // The source PDS rate-limited the login (HTTP 429); `retryAfter` is the server's Retry-After.
   | { code: 'RATE_LIMITED'; retryAfter: string | null }
   // The source PDS rejected the login with a non-2xx the wallet doesn't model; `message` is verbatim.
-  | { code: 'SERVER_ERROR'; message: string }
+  | { code: 'SERVER_REJECTED'; message: string }
   | { code: 'SERVICE_AUTH_FAILED'; message: string }
   | { code: 'ACCOUNT_CREATION_FAILED'; message: string }
   | { code: 'DESTINATION_CONFLICT'; message: string }

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { authenticateBiometric } from '$lib/biometric';
+import type { SharedFailure } from './errors';
 
 // ── Repair hosting endpoint (sovereign atproto_pds PLC op) ────────────────────
 
@@ -22,10 +23,7 @@ export type EndpointRepairError =
   | { code: 'GUARD_REJECTED'; reason: string }
   | { code: 'INVALID_AUDIT_LOG'; message: string }
   | { code: 'SIGNING_FAILED'; message: string }
-  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
-  | { code: 'NETWORK_ERROR'; message: string }
-  | { code: 'IDENTITY_NOT_FOUND'; message: string };
+  | SharedFailure;
 
 /** Outcome of a hosting-endpoint repair. Matches `EndpointRepairResult` (camelCase). */
 export interface EndpointRepairResult {

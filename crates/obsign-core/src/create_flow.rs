@@ -18,6 +18,7 @@
 //! died between steps. The genesis op is signed with the global device key (`device_key`), which
 //! `register_created_identity` then aliases to the per-DID key.
 
+use crate::failure::SharedFailure;
 use crate::oauth::Core;
 use crate::signer::SignerError;
 use crate::{device_key, identity_store, rekey, share_ceremony};
@@ -916,57 +917,34 @@ pub async fn register_handle(
     }
 }
 
-/// Error returned by `get_available_user_domains`.
-///
-/// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` to match the sibling wallet error
-/// enums. Every `message` here is diagnostic only (ADR-0031): the screen keys on `code` and
-/// writes its own sentence.
-#[derive(Debug, Serialize, thiserror::Error)]
-#[serde(
-    tag = "code",
-    rename_all = "SCREAMING_SNAKE_CASE",
-    rename_all_fields = "camelCase"
-)]
-pub enum AvailableDomainsError {
-    /// The configured PDS answered `describeServer` with a non-2xx.
-    #[error("describeServer returned HTTP {status}")]
-    ServerError { status: u16 },
-    /// The response body could not be parsed as a describeServer document.
-    #[error("invalid describeServer response: {message}")]
-    InvalidResponse { message: String },
-    /// Transport failure reaching the configured PDS.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-}
-
 /// Fetch the PDS's configured handle domains (`availableUserDomains` from describeServer) so the
 /// client can build the full `{label}.{domain}` handle BEFORE the DID ceremony — ensuring the
 /// did:plc genesis op's `alsoKnownAs` carries the real, resolvable handle.
 ///
 /// Returns the (possibly empty) domain list on success; the caller decides what to do when the
-/// list is empty.
-pub async fn get_available_user_domains(
-    state: &Core,
-) -> Result<Vec<String>, AvailableDomainsError> {
+/// list is empty. Fails only with `NETWORK_ERROR`, `SERVER_ERROR`, or `INVALID_RESPONSE`.
+pub async fn get_available_user_domains(state: &Core) -> Result<Vec<String>, SharedFailure> {
     let resp = state
         .custos_client()
         .get("/xrpc/com.atproto.server.describeServer")
         .await
-        .map_err(|e| AvailableDomainsError::NetworkError {
+        .map_err(|e| SharedFailure::NetworkError {
             message: e.to_string(),
         })?;
 
     if !resp.status().is_success() {
-        return Err(AvailableDomainsError::ServerError {
-            status: resp.status().as_u16(),
+        let status = resp.status().as_u16();
+        return Err(SharedFailure::ServerError {
+            status,
+            message: format!("describeServer returned HTTP {status}"),
         });
     }
 
     let server_info: DescribeServerResponse =
         resp.json()
             .await
-            .map_err(|e| AvailableDomainsError::InvalidResponse {
-                message: e.to_string(),
+            .map_err(|e| SharedFailure::InvalidResponse {
+                message: format!("invalid describeServer response: {e}"),
             })?;
 
     Ok(server_info.available_user_domains)

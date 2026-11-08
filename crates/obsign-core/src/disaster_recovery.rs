@@ -66,7 +66,6 @@ use serde::Serialize;
 
 use crate::failure::SharedFailure;
 use crate::handle_change::latest_full_state;
-use crate::identity_store::PerDidSignError;
 use crate::migration_orchestrator::{
     ensure_phase_did, preferred_login_identifier, MigrationError, MigrationPhase,
     OutboundMigrationState,
@@ -493,15 +492,8 @@ pub async fn enroll_recovery_signing_key(
     guard_recovery_enroll_op(&inputs)?;
 
     // 7. Device-key-sign and submit directly to plc.directory.
-    let sign_closure =
-        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
-            PerDidSignError::DeviceKeyNotFound { .. } => {
-                DisasterRecoveryError::Shared(SharedFailure::IdentityNotFound)
-            }
-            PerDidSignError::SigningSetupFailed { message } => {
-                DisasterRecoveryError::SigningFailed { message }
-            }
-        })?;
+    let sign_closure = crate::identity_store::per_did_sign_closure(core.signer(), did)
+        .map_err(|e| e.classify(|message| DisasterRecoveryError::SigningFailed { message }))?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
         inputs.proposed_rotation_keys,

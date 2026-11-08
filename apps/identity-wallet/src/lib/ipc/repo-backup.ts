@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { BackupLocation } from './blob-backup';
+import type { SharedFailure } from './errors';
 
 // ── Repo backup (user-held CAR snapshot in iCloud Drive) ─────────────────────
 //
@@ -51,28 +52,19 @@ export type RepoBackupRunReport = {
  * (`#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE", rename_all_fields = "camelCase")]`) —
  * codes must match exactly.
  *
- * There is deliberately **no `SESSION_LOCKED`**: backup reads a public endpoint and
- * export reads local disk, so neither path needs a full-access session.
+ * Never `SESSION_LOCKED`: backup reads a public endpoint and export reads local disk,
+ * so neither path needs a full-access session.
  */
 export type RepoBackupError =
   // No backup location on this device — iCloud Drive is off (or the entitlement is absent).
   | { code: 'BACKUP_UNAVAILABLE' }
-  // The hosting PDS or plc.directory rate-limited the request; `retryAfter` is the server's Retry-After.
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
-  | { code: 'IDENTITY_NOT_FOUND'; message: string }
-  // plc.directory refused the hosting-PDS discovery (e.g. the DID is unknown).
-  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
-  // A server-side step failed for a non-connectivity reason; `status` is the HTTP code when
-  // the server refused the request, null for a non-HTTP failure; `message` is its own text.
-  | { code: 'SERVER_ERROR'; status: number | null; message: string }
-  | { code: 'NETWORK_ERROR'; message: string }
   // Local file I/O on the mirror failed.
   | { code: 'STORAGE_ERROR'; message: string }
   // The backup manifest is unreadable; it is preserved, never rebuilt over.
   | { code: 'MANIFEST_CORRUPT'; message: string }
   // A fetched (or stored) CAR failed validation; the prior good snapshot is left intact.
   | { code: 'CAR_INVALID'; message: string }
-  | { code: 'KEYCHAIN_ERROR'; message: string };
+  | SharedFailure;
 
 /** The backup surface's status readout: location, opt-in flag, snapshot size + rev. */
 export const getRepoBackupStatus = (did: string): Promise<RepoBackupStatus> =>

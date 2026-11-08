@@ -92,7 +92,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Serialize;
 
 use crate::failure::SharedFailure;
-use crate::identity_store::{IdentityStore, PerDidSignError};
+use crate::identity_store::IdentityStore;
 use crate::pds_client::{DeleteAccountProof, DeleteCredential, PdsClientError};
 use crate::session_provider::SessionProvider;
 
@@ -344,15 +344,8 @@ async fn build_delete_credential(
         .identities()
         .get_or_create_device_key(did)
         .map_err(SharedFailure::from)?;
-    let sign =
-        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
-            PerDidSignError::DeviceKeyNotFound { .. } => {
-                RemovalError::Shared(SharedFailure::IdentityNotFound)
-            }
-            PerDidSignError::SigningSetupFailed { message } => {
-                RemovalError::ProofSigningFailed { message }
-            }
-        })?;
+    let sign = crate::identity_store::per_did_sign_closure(core.signer(), did)
+        .map_err(|e| e.classify(|message| RemovalError::ProofSigningFailed { message }))?;
 
     let timestamp = core.unix_timestamp();
     let nonce = crate::sovereign_session::fresh_nonce();
@@ -485,15 +478,8 @@ async fn tombstone_and_wipe(core: &crate::oauth::Core, did: &str) -> Result<Stri
     }
 
     // 2. Obtain the per-DID device-key signing closure (rotationKeys[0]).
-    let sign =
-        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
-            PerDidSignError::DeviceKeyNotFound { .. } => {
-                RemovalError::Shared(SharedFailure::IdentityNotFound)
-            }
-            PerDidSignError::SigningSetupFailed { message } => {
-                RemovalError::TombstoneSigningFailed { message }
-            }
-        })?;
+    let sign = crate::identity_store::per_did_sign_closure(core.signer(), did)
+        .map_err(|e| e.classify(|message| RemovalError::TombstoneSigningFailed { message }))?;
 
     // 3. Build + sign the tombstone (prev = the head CID).
     let tombstone = crypto::build_did_plc_tombstone_op(&head_cid, sign).map_err(|e| {

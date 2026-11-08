@@ -28,7 +28,7 @@
 use serde::Serialize;
 
 use crate::failure::SharedFailure;
-use crate::identity_store::{PerDidSignError, SovereignTokenRecord};
+use crate::identity_store::SovereignTokenRecord;
 use crate::oauth_client::OAuthClient;
 
 pub use custos_client::sovereign_session::{
@@ -112,14 +112,8 @@ pub(crate) async fn login_with_nonce(
     let device_key = store
         .get_or_create_device_key(did)
         .map_err(SharedFailure::from)?;
-    let signer = crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(
-        |error| match error {
-            PerDidSignError::DeviceKeyNotFound { message }
-            | PerDidSignError::SigningSetupFailed { message } => {
-                SovereignLoginError::SigningFailed { message }
-            }
-        },
-    )?;
+    let signer = crate::identity_store::per_did_sign_closure(core.signer(), did)
+        .map_err(|e| e.classify(|message| SovereignLoginError::SigningFailed { message }))?;
     let sign = move |data: &[u8]| signer(data).map_err(|e| e.to_string());
 
     let response = custos_client::sovereign_session::sovereign_login(

@@ -55,7 +55,7 @@ use zeroize::Zeroizing;
 
 use crate::failure::SharedFailure;
 use crate::handle_change::CurrentHandleState;
-use crate::identity_store::{IdentityStoreError, PerDidSignError};
+use crate::identity_store::IdentityStoreError;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::sovereign_session;
 
@@ -1063,12 +1063,7 @@ pub async fn run_recovery_epilogue(
                 &record.new_recovery_key_id,
             );
             let sign = crate::identity_store::per_did_sign_closure(core.signer(), &record.did)
-                .map_err(|e| match e {
-                    PerDidSignError::DeviceKeyNotFound { message }
-                    | PerDidSignError::SigningSetupFailed { message } => {
-                        ShareRecoveryError::SigningFailed { message }
-                    }
-                })?;
+                .map_err(|e| e.classify(|message| ShareRecoveryError::SigningFailed { message }))?;
             let op = crypto::build_did_plc_rotation_op(
                 &current.prev_cid,
                 new_keys,

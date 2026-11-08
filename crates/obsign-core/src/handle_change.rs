@@ -69,7 +69,6 @@ use serde::Serialize;
 
 use crate::claim::ClaimResult;
 use crate::failure::SharedFailure;
-use crate::identity_store::PerDidSignError;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::session_provider::SessionProvider;
 use crypto::{AuditEntry, PlcService};
@@ -471,15 +470,8 @@ async fn build_handle_op(
     guard_handle_change(&inputs)?;
 
     // 5. Sign locally with the per-DID device key.
-    let sign_closure =
-        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
-            PerDidSignError::DeviceKeyNotFound { .. } => {
-                HandleChangeError::Shared(SharedFailure::IdentityNotFound)
-            }
-            PerDidSignError::SigningSetupFailed { message } => {
-                HandleChangeError::SigningFailed { message }
-            }
-        })?;
+    let sign_closure = crate::identity_store::per_did_sign_closure(core.signer(), did)
+        .map_err(|e| e.classify(|message| HandleChangeError::SigningFailed { message }))?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
         current.rotation_keys.clone(),

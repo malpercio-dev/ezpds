@@ -55,7 +55,7 @@
           case 'RATE_LIMITED':
             sendError = formatRateLimitMessage(err.retryAfter);
             break;
-          case 'SERVER_ERROR':
+          case 'SERVER_REJECTED':
             sendError = formatServerErrorMessage(err.message);
             break;
           case 'NETWORK_ERROR':
@@ -95,7 +95,7 @@
           case 'RATE_LIMITED':
             verifyError = formatRateLimitMessage(err.retryAfter);
             break;
-          case 'SERVER_ERROR':
+          case 'SERVER_REJECTED':
             verifyError = formatServerErrorMessage(err.message);
             break;
           case 'NETWORK_ERROR':

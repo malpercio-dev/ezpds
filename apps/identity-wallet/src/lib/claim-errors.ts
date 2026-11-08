@@ -1,7 +1,7 @@
 // Shared, presentation-only helpers for rendering claim-flow errors.
 //
 // The claim screens keep their own `switch` over `ClaimError.code` for context-specific phrasing,
-// but the two generic status-classified codes — RATE_LIMITED and SERVER_ERROR — should read the
+// but the generic codes — RATE_LIMITED, SERVER_REJECTED, SERVER_ERROR — should read the
 // same everywhere and are worth testing in isolation. These are pure string functions (no Svelte,
 // no IPC), matching the repo's tested-utility pattern (see `deadline.ts`, `appearance.ts`).
 
@@ -38,11 +38,12 @@ export function formatRateLimitMessage(retryAfter: string | null): string {
 const MAX_QUOTED_SERVER_TEXT = 240;
 
 /**
- * Text for a `SERVER_ERROR` whose `message` is declared server-quoted (ADR-0031) — the PDS's own
+ * Text for a `SERVER_REJECTED` (or another code whose `message` is declared server-quoted,
+ * ADR-0031) — the PDS's own
  * error message, shown behind an attributing lead so a third-party PDS's real reason reaches the
  * user. Falls back when the server sent no message; truncates when it sent something that isn't
  * one (a proxy's HTML error page). Only pass fields the Rust enum documents as server-quoted —
- * for the mixed-provenance buckets use {@link formatServerRefusal}.
+ * for the diagnostic `SERVER_ERROR` use {@link formatServerRefusal}.
  */
 export function formatServerErrorMessage(message: string): string {
   const trimmed = message.trim();
@@ -69,14 +70,16 @@ export function formatHandleRejection(message: string): string {
 }
 
 /**
- * Text for a `SERVER_ERROR` whose `message` is mixed-provenance and must not be quoted
- * (ADR-0031: the session-mapped buckets, where `status: null` means a failure local to
- * restoring the session). A present `status` is a real server verdict, so the sentence may
- * name the server; an absent one blames neither the server nor the user.
+ * Text for the shared `SERVER_ERROR`, whose `message` is diagnostic and must not be quoted
+ * (ADR-0040). Its `status` is always a real server verdict, so the sentence names the server.
  */
-export function formatServerRefusal(status: number | null | undefined): string {
-  if (status != null) {
-    return `Your server refused this request (HTTP ${status}). Please try again.`;
-  }
-  return 'Couldn’t restore this identity’s session. Please try again.';
+export function formatServerRefusal(status: number): string {
+  return `Your server refused this request (HTTP ${status}). Please try again.`;
 }
+
+/**
+ * Text for `DEVICE_KEY_UNUSABLE` on any signing ceremony: the identity's Secure Enclave key is
+ * gone (a backup restored onto a device). Retrying cannot help, so the sentence points at recovery.
+ */
+export const DEVICE_KEY_UNUSABLE_MESSAGE =
+  'This device no longer holds the key that signs for this identity — that happens when a backup is restored onto a device. Nothing was signed. Recover the identity to use it from this device again.';

@@ -37,4 +37,6 @@ export type SharedFailure =
   // A local Keychain failure — never the server's.
   | { code: 'KEYCHAIN_ERROR'; message: string }
   // plc.directory answered a read with an HTTP failure — an outage, not connectivity.
-  | { code: 'PLC_DIRECTORY_ERROR'; message: string };
+  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
+  // The identity's Secure Enclave key is gone (a backup restore); retrying cannot help.
+  | { code: 'DEVICE_KEY_UNUSABLE' };

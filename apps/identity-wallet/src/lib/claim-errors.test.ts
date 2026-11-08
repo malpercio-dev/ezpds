@@ -99,12 +99,4 @@ describe('formatServerRefusal', () => {
       'Your server refused this request (HTTP 500). Please try again.',
     );
   });
-
-  it('blames neither side for a local session failure (no status)', () => {
-    for (const status of [null, undefined]) {
-      const rendered = formatServerRefusal(status);
-      expect(rendered).toBe('Couldn’t restore this identity’s session. Please try again.');
-      expect(rendered.toLowerCase()).not.toContain('server');
-    }
-  });
 });

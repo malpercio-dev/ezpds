@@ -228,8 +228,8 @@ pub enum ClaimError {
     /// `message` is the server's own error text (the atproto error envelope) — server-quoted per
     /// ADR-0031, shown behind attribution so a third-party PDS's real reason reaches the user
     /// instead of connectivity boilerplate.
-    #[error("server error: {message}")]
-    ServerError { message: String },
+    #[error("server rejected the request: {message}")]
+    ServerRejected { message: String },
     /// Network error during claim flow (timeout, connection refused, etc.).
     /// `message` is diagnostic only (ADR-0031).
     #[error("network error: {message}")]
@@ -497,7 +497,7 @@ impl From<crate::source_login::SourceLoginError> for ClaimError {
             S::AccountMismatch => ClaimError::AccountMismatch,
             S::InsecureSourceUrl => ClaimError::InsecureSourceUrl,
             S::RateLimited { retry_after } => ClaimError::RateLimited { retry_after },
-            S::ServerError { message } => ClaimError::ServerError { message },
+            S::ServerError { message } => ClaimError::ServerRejected { message },
             S::NetworkError { message } => ClaimError::NetworkError { message },
         }
     }
@@ -566,7 +566,7 @@ pub async fn request_claim_verification_impl(claim_state: &ClaimState) -> Result
 /// - `401` → [`ClaimError::Unauthorized`] (the source session is no longer accepted — re-login);
 /// - a recognizable insufficient-scope refusal → [`ClaimError::InsufficientScope`] (a spec-strict
 ///   PDS refusing the op must never masquerade as "failed to send verification email");
-/// - any other server rejection → [`ClaimError::ServerError`] carrying the server's message verbatim;
+/// - any other server rejection → [`ClaimError::ServerRejected`] carrying the server's message verbatim;
 /// - a genuine transport failure → [`ClaimError::NetworkError`].
 fn classify_plc_op_error(e: crate::pds_client::PdsClientError) -> ClaimError {
     use crate::pds_client::PdsClientError;
@@ -579,11 +579,11 @@ fn classify_plc_op_error(e: crate::pds_client::PdsClientError) -> ClaimError {
         {
             ClaimError::InsufficientScope { message }
         }
-        PdsClientError::XrpcError { message, .. } => ClaimError::ServerError { message },
+        PdsClientError::XrpcError { message, .. } => ClaimError::ServerRejected { message },
         PdsClientError::NetworkError { message } => ClaimError::NetworkError { message },
         // No other PdsClientError variant is produced by a PLC-op call, but keep the mapping honest
         // if one ever reaches here — surface its text rather than dropping it.
-        other => ClaimError::ServerError {
+        other => ClaimError::ServerRejected {
             message: other.to_string(),
         },
     }
@@ -1570,14 +1570,14 @@ mod tests {
             ClaimError::Unauthorized
         ));
 
-        // An unrecognized non-2xx surfaces the server's own message as ServerError, NOT NetworkError.
+        // An unrecognized non-2xx surfaces the server's own message as ServerRejected, NOT NetworkError.
         let se = classify_plc_op_error(PdsClientError::XrpcError {
             status: 400,
             error: Some("InvalidRequest".to_string()),
             message: "handle is required".to_string(),
         });
         assert!(
-            matches!(se, ClaimError::ServerError { ref message } if message == "handle is required")
+            matches!(se, ClaimError::ServerRejected { ref message } if message == "handle is required")
         );
 
         // A genuine transport failure still classifies as NetworkError.
@@ -1620,14 +1620,14 @@ mod tests {
             }),
             ClaimError::RateLimited { .. }
         ));
-        // An unrelated server rejection surfaces as ServerError, not InvalidToken.
+        // An unrelated server rejection surfaces as ServerRejected, not InvalidToken.
         assert!(matches!(
             classify_sign_plc_error(PdsClientError::XrpcError {
                 status: 400,
                 error: Some("InvalidRequest".to_string()),
                 message: "bad shape".to_string(),
             }),
-            ClaimError::ServerError { .. }
+            ClaimError::ServerRejected { .. }
         ));
     }
 
@@ -1649,11 +1649,11 @@ mod tests {
 
     #[test]
     fn test_claim_error_server_error_serializes_with_message() {
-        let json = serde_json::to_value(ClaimError::ServerError {
+        let json = serde_json::to_value(ClaimError::ServerRejected {
             message: "handle is required".to_string(),
         })
         .unwrap();
-        assert_eq!(json["code"], "SERVER_ERROR");
+        assert_eq!(json["code"], "SERVER_REJECTED");
         assert_eq!(json["message"], "handle is required");
     }
 
@@ -1709,7 +1709,7 @@ mod tests {
             ClaimError::from(S::ServerError {
                 message: "handle is required".to_string()
             }),
-            ClaimError::ServerError { message } if message == "handle is required"
+            ClaimError::ServerRejected { message } if message == "handle is required"
         ));
         assert!(matches!(
             ClaimError::from(S::NetworkError {
@@ -1821,11 +1821,11 @@ mod tests {
         };
 
         let result = request_claim_verification_impl(&claim_state).await;
-        // A 500 is a server rejection, not a connectivity failure: it now surfaces as ServerError
+        // A 500 is a server rejection, not a connectivity failure: it now surfaces as ServerRejected
         // carrying the server's own message rather than the misleading "network error".
         assert!(
-            matches!(&result, Err(ClaimError::ServerError { message }) if message.contains("Internal Server Error")),
-            "should return ServerError carrying the server message when PDS returns 500, got {result:?}"
+            matches!(&result, Err(ClaimError::ServerRejected { message }) if message.contains("Internal Server Error")),
+            "should return ServerRejected carrying the server message when PDS returns 500, got {result:?}"
         );
     }
 

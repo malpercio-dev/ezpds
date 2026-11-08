@@ -69,7 +69,6 @@ use serde::Serialize;
 use crate::claim::OpDiff;
 use crate::failure::SharedFailure;
 use crate::handle_change::CurrentHandleState;
-use crate::identity_store::PerDidSignError;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::rekey::store_and_verify_share1;
 use crypto::PlcService;
@@ -501,14 +500,7 @@ pub async fn submit_self_held_kit(
         guard_self_held_kit_op(&inputs)?;
 
         let sign_closure = crate::identity_store::per_did_sign_closure(core.signer(), did)
-            .map_err(|e| match e {
-                PerDidSignError::DeviceKeyNotFound { .. } => {
-                    SelfHeldKitError::Shared(SharedFailure::IdentityNotFound)
-                }
-                PerDidSignError::SigningSetupFailed { message } => {
-                    SelfHeldKitError::SigningFailed { message }
-                }
-            })?;
+            .map_err(|e| e.classify(|message| SelfHeldKitError::SigningFailed { message }))?;
         let signed = crypto::build_did_plc_rotation_op(
             &current.prev_cid,
             inputs.proposed_rotation_keys,

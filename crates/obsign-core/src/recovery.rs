@@ -356,9 +356,10 @@ fn sign_recovery_op(
             PerDidSignError::DeviceKeyNotFound { message } => {
                 RecoveryError::IdentityNotFound { message }
             }
-            PerDidSignError::SigningSetupFailed { message } => {
-                RecoveryError::SigningFailed { message }
-            }
+            other @ (PerDidSignError::DeviceKeyUnusable
+            | PerDidSignError::SigningSetupFailed { .. }) => RecoveryError::SigningFailed {
+                message: other.to_string(),
+            },
         })?;
 
     crypto::build_did_plc_rotation_op(

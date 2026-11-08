@@ -58,6 +58,10 @@ pub enum SharedFailure {
     /// A local Keychain failure. Never the server's.
     #[error("keychain failure: {message}")]
     KeychainError { message: String },
+    /// The identity's device-key metadata survived but the Secure Enclave key it names did
+    /// not (an encrypted-backup restore). Retrying cannot help; recovery is the way back.
+    #[error("device key is no longer usable on this device")]
+    DeviceKeyUnusable,
     /// plc.directory answered a read with an HTTP failure — an outage or verdict, not
     /// connectivity.
     #[error("plc.directory error: {message}")]
@@ -69,6 +73,7 @@ impl From<IdentityStoreError> for SharedFailure {
         match error {
             IdentityStoreError::IdentityNotFound => Self::IdentityNotFound,
             IdentityStoreError::KeychainError { message } => Self::KeychainError { message },
+            IdentityStoreError::DeviceKeyUnusable => Self::DeviceKeyUnusable,
             other => Self::KeychainError {
                 message: other.to_string(),
             },
@@ -100,8 +105,37 @@ impl SharedFailure {
         }
     }
 
-    /// Classify a plc.directory read failure. `context` names the read for diagnostics.
-    /// Only a transport failure reads as connectivity; every other failure is the directory's.
+    /// Classify a failed read of a public sync endpoint (`getRepo`, `listBlobs`) on the
+    /// identity's hosting server. `context` names the read for diagnostics.
+    pub fn from_pds_fetch(context: &str, error: PdsClientError) -> Self {
+        match error {
+            PdsClientError::RateLimited { retry_after, .. } => Self::RateLimited { retry_after },
+            PdsClientError::DidNotFound => Self::PlcDirectoryError {
+                message: format!("{context}: DID not found in the PLC directory"),
+            },
+            PdsClientError::XrpcError {
+                status, message, ..
+            } => Self::ServerError {
+                status,
+                message: format!("{context}: {message}"),
+            },
+            PdsClientError::Unauthorized { message, .. } => Self::ServerError {
+                status: 401,
+                message: format!("{context}: {message}"),
+            },
+            PdsClientError::InvalidResponse { message } => Self::InvalidResponse {
+                message: format!("{context}: {message}"),
+            },
+            other => Self::NetworkError {
+                message: format!("{context}: {other}"),
+            },
+        }
+    }
+
+    /// Classify a plc.directory read or submit failure. `context` names the call for
+    /// diagnostics. Only a transport failure reads as connectivity; every other failure is
+    /// the directory's, including a rejection body `post_plc_operation` reports as
+    /// `InvalidResponse`.
     pub fn from_plc_fetch(context: &str, error: PdsClientError) -> Self {
         match error {
             PdsClientError::RateLimited { retry_after, .. } => Self::RateLimited { retry_after },
@@ -215,6 +249,55 @@ mod tests {
     }
 
     #[test]
+    fn unusable_device_key_keeps_its_own_code() {
+        assert_eq!(
+            SharedFailure::from(IdentityStoreError::DeviceKeyUnusable),
+            SharedFailure::DeviceKeyUnusable
+        );
+    }
+
+    #[test]
+    fn pds_fetch_keeps_the_server_verdict() {
+        assert_eq!(
+            SharedFailure::from_pds_fetch(
+                "ctx",
+                PdsClientError::RateLimited {
+                    retry_after: Some("30".into()),
+                    message: "slow down".into()
+                }
+            ),
+            SharedFailure::RateLimited {
+                retry_after: Some("30".into())
+            }
+        );
+        assert_eq!(
+            SharedFailure::from_pds_fetch("ctx", xrpc(503)),
+            SharedFailure::ServerError {
+                status: 503,
+                message: "ctx: boom".into()
+            }
+        );
+        assert!(matches!(
+            SharedFailure::from_pds_fetch(
+                "ctx",
+                PdsClientError::InvalidResponse {
+                    message: "not a CAR".into()
+                }
+            ),
+            SharedFailure::InvalidResponse { .. }
+        ));
+        assert!(matches!(
+            SharedFailure::from_pds_fetch(
+                "ctx",
+                PdsClientError::NetworkError {
+                    message: "dns".into()
+                }
+            ),
+            SharedFailure::NetworkError { .. }
+        ));
+    }
+
+    #[test]
     fn plc_fetch_transport_failures_are_network() {
         assert_eq!(
             SharedFailure::from_plc_fetch(
@@ -308,6 +391,10 @@ mod tests {
                     message: "m".into(),
                 },
                 json!({"code": "PLC_DIRECTORY_ERROR", "message": "m"}),
+            ),
+            (
+                SharedFailure::DeviceKeyUnusable,
+                json!({"code": "DEVICE_KEY_UNUSABLE"}),
             ),
         ];
         for (failure, expected) in cases {

@@ -480,9 +480,9 @@ mod tests {
                 async move {
                     attempts.fetch_add(1, Ordering::SeqCst);
                     if did == "did:plc:b" {
-                        Err(RepoBackupError::NetworkError {
+                        Err(RepoBackupError::Shared(SharedFailure::NetworkError {
                             message: "boom".to_string(),
-                        })
+                        }))
                     } else {
                         Ok(())
                     }

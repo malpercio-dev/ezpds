@@ -953,9 +953,10 @@ pub async fn build_migration_op(
             PerDidSignError::DeviceKeyNotFound { message } => {
                 MigrateError::IdentityNotFound { message }
             }
-            PerDidSignError::SigningSetupFailed { message } => {
-                MigrateError::SigningFailed { message }
-            }
+            other @ (PerDidSignError::DeviceKeyUnusable
+            | PerDidSignError::SigningSetupFailed { .. }) => MigrateError::SigningFailed {
+                message: other.to_string(),
+            },
         })?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
