@@ -69,8 +69,8 @@
 //! * `recovery-share-1` — the deprecated app-global Share 1 slot, read only by the
 //!   launch migration and the recovery auto-load fallback.
 //!
-//! Per-DID accounts follow `"{did}:suffix"` with twelve suffixes: `device-key`,
-//! `device-key-pub`, `device-key-app-label`, `did-doc`, `plc-log`, `oauth-tokens`,
+//! Per-DID accounts follow `"{did}:suffix"` with thirteen suffixes: `device-key`,
+//! `device-key-pub`, `device-key-app-label`, `did-doc`, `plc-log`, `plc-alerts`, `oauth-tokens`,
 //! `recovery-signing-key`, `delegation-seed`, `child-index` (all `identity_store`;
 //! `recovery-signing-key` written by `disaster_recovery`, `delegation-seed` by the
 //! create ceremony and by share verification), `blob-backup-enabled` (`blob_backup`),
@@ -305,6 +305,7 @@ mod tests {
             ),
             (ids::did_doc_account(d), format!("{d}:did-doc"), false),
             (ids::plc_log_account(d), format!("{d}:plc-log"), false),
+            (ids::plc_alerts_account(d), format!("{d}:plc-alerts"), false),
             (
                 ids::oauth_tokens_account(d),
                 format!("{d}:oauth-tokens"),
@@ -427,6 +428,7 @@ mod tests {
             "appearance-preference",
             &format!("{DID}:did-doc"),
             &format!("{DID}:plc-log"),
+            &format!("{DID}:plc-alerts"),
         ];
         for account in denied {
             assert!(

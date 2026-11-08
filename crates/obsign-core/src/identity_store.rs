@@ -171,6 +171,12 @@ pub fn plc_log_account(did: &str) -> String {
     format!("{did}:plc-log")
 }
 
+/// Returns the Keychain account name for a DID's standing unauthorized PLC changes
+/// (`plc_monitor::standing_changes`).
+pub fn plc_alerts_account(did: &str) -> String {
+    format!("{did}:plc-alerts")
+}
+
 /// Returns the Keychain account name for a DID's OAuth tokens.
 pub fn oauth_tokens_account(did: &str) -> String {
     format!("{did}:oauth-tokens")
@@ -401,6 +407,7 @@ impl<'a> IdentityStore<'a> {
             device_key_app_label_account(did),
             did_doc_account(did),
             plc_log_account(did),
+            plc_alerts_account(did),
             oauth_tokens_account(did),
             recovery_signing_key_account(did),
             delegation_seed_account(did),
@@ -528,83 +535,76 @@ impl<'a> IdentityStore<'a> {
         Ok(())
     }
 
-    /// Store a DID document for a managed identity.
-    ///
-    /// The document is stored as opaque JSON bytes.
+    /// Store a DID document for a managed identity, as opaque JSON.
     ///
     /// Returns `Err(IdentityNotFound)` if the DID is not registered.
     pub fn store_did_doc(&self, did: &str, doc_json: &str) -> Result<(), IdentityStoreError> {
-        if !self.is_managed(did)? {
-            return Err(IdentityStoreError::IdentityNotFound);
-        }
-
-        self.keys
-            .store_item(&did_doc_account(did), doc_json.as_bytes())
-            .map_err(|e| IdentityStoreError::KeychainError {
-                message: e.to_string(),
-            })
+        self.store_text(did, &did_doc_account(did), doc_json)
     }
 
-    /// Retrieve a DID document for a managed identity.
-    ///
-    /// Returns `Ok(None)` if the document has not been stored.
-    /// Returns `Err(IdentityNotFound)` if the DID is not registered.
+    /// Retrieve a DID document for a managed identity. `Ok(None)` if none is stored;
+    /// `Err(IdentityNotFound)` if the DID is not registered.
     pub fn get_did_doc(&self, did: &str) -> Result<Option<String>, IdentityStoreError> {
-        if !self.is_managed(did)? {
-            return Err(IdentityStoreError::IdentityNotFound);
-        }
-
-        match self.keys.get_item(&did_doc_account(did)) {
-            Ok(bytes) => {
-                let doc_json = String::from_utf8(bytes).map_err(|e| {
-                    IdentityStoreError::SerializationError {
-                        message: format!("UTF-8 error decoding DID document: {e}"),
-                    }
-                })?;
-                Ok(Some(doc_json))
-            }
-            Err(e) if crate::keystore::is_not_found(&e) => Ok(None),
-            Err(e) => Err(IdentityStoreError::KeychainError {
-                message: e.to_string(),
-            }),
-        }
+        self.get_text(did, &did_doc_account(did), "DID document")
     }
 
-    /// Store a PLC audit log for a managed identity.
-    ///
-    /// The log is stored as opaque JSON bytes.
+    /// Store a PLC audit log for a managed identity, as opaque JSON.
     ///
     /// Returns `Err(IdentityNotFound)` if the DID is not registered.
     pub fn store_plc_log(&self, did: &str, log_json: &str) -> Result<(), IdentityStoreError> {
-        if !self.is_managed(did)? {
-            return Err(IdentityStoreError::IdentityNotFound);
-        }
-
-        self.keys
-            .store_item(&plc_log_account(did), log_json.as_bytes())
-            .map_err(|e| IdentityStoreError::KeychainError {
-                message: e.to_string(),
-            })
+        self.store_text(did, &plc_log_account(did), log_json)
     }
 
-    /// Retrieve a PLC audit log for a managed identity.
-    ///
-    /// Returns `Ok(None)` if the log has not been stored.
-    /// Returns `Err(IdentityNotFound)` if the DID is not registered.
+    /// Retrieve a PLC audit log for a managed identity. `Ok(None)` if none is stored;
+    /// `Err(IdentityNotFound)` if the DID is not registered.
     pub fn get_plc_log(&self, did: &str) -> Result<Option<String>, IdentityStoreError> {
+        self.get_text(did, &plc_log_account(did), "PLC log")
+    }
+
+    /// Store a managed identity's standing unauthorized PLC changes, as opaque JSON.
+    ///
+    /// Returns `Err(IdentityNotFound)` if the DID is not registered.
+    pub fn store_plc_alerts(&self, did: &str, json: &str) -> Result<(), IdentityStoreError> {
+        self.store_text(did, &plc_alerts_account(did), json)
+    }
+
+    /// Retrieve a managed identity's standing unauthorized PLC changes. `Ok(None)` if none
+    /// are stored; `Err(IdentityNotFound)` if the DID is not registered.
+    pub fn get_plc_alerts(&self, did: &str) -> Result<Option<String>, IdentityStoreError> {
+        self.get_text(did, &plc_alerts_account(did), "PLC alerts")
+    }
+
+    /// Store `text` under a managed identity's per-DID `account`.
+    fn store_text(&self, did: &str, account: &str, text: &str) -> Result<(), IdentityStoreError> {
         if !self.is_managed(did)? {
             return Err(IdentityStoreError::IdentityNotFound);
         }
 
-        match self.keys.get_item(&plc_log_account(did)) {
-            Ok(bytes) => {
-                let log_json = String::from_utf8(bytes).map_err(|e| {
-                    IdentityStoreError::SerializationError {
-                        message: format!("UTF-8 error decoding PLC log: {e}"),
-                    }
-                })?;
-                Ok(Some(log_json))
+        self.keys.store_item(account, text.as_bytes()).map_err(|e| {
+            IdentityStoreError::KeychainError {
+                message: e.to_string(),
             }
+        })
+    }
+
+    /// Read the UTF-8 text under a managed identity's per-DID `account`; `what` names it in a
+    /// decode error.
+    fn get_text(
+        &self,
+        did: &str,
+        account: &str,
+        what: &str,
+    ) -> Result<Option<String>, IdentityStoreError> {
+        if !self.is_managed(did)? {
+            return Err(IdentityStoreError::IdentityNotFound);
+        }
+
+        match self.keys.get_item(account) {
+            Ok(bytes) => String::from_utf8(bytes).map(Some).map_err(|e| {
+                IdentityStoreError::SerializationError {
+                    message: format!("UTF-8 error decoding {what}: {e}"),
+                }
+            }),
             Err(e) if crate::keystore::is_not_found(&e) => Ok(None),
             Err(e) => Err(IdentityStoreError::KeychainError {
                 message: e.to_string(),
@@ -1491,6 +1491,7 @@ mod tests {
         let log = r#"[]"#;
         assert!(store.store_did_doc(did, doc).is_ok());
         assert!(store.store_plc_log(did, log).is_ok());
+        assert!(store.store_plc_alerts(did, log).is_ok());
 
         // Record the device key before removal so we can verify cleanup.
         let key_before = store
@@ -1504,6 +1505,7 @@ mod tests {
         assert!(store.add_identity(did).is_ok());
         assert!(store.get_did_doc(did).unwrap().is_none());
         assert!(store.get_plc_log(did).unwrap().is_none());
+        assert!(store.get_plc_alerts(did).unwrap().is_none());
 
         // A new device key should be generated (different from the old one),
         // proving the old key material was cleaned up.

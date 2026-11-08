@@ -242,7 +242,8 @@ PLC check or its notification is verified by hand:
    `e -l objc -- (void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"dev.malpercio.identitywallet.plc-check"]`,
    then continue.
 5. Expect the "Unapproved change to your identity" banner within seconds, and a background
-   sweep with one unauthorized change in Protection's history.
+   sweep with one unauthorized change in Protection's history. Tapping the banner opens the
+   app on that identity's alarm; a second simulated launch must not notify again.
 
 Without the debugger iOS picks the moment, no sooner than four hours after the last request.
 It never runs for an app the user force-quit, or with Background App Refresh or Low Power
