@@ -71,7 +71,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::claim::ClaimResult;
-use crate::identity_store::{IdentityStore, PerDidSignError};
+use crate::identity_store::PerDidSignError;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 use crypto::{AuditEntry, PlcService};
@@ -492,11 +492,11 @@ struct SignedHandleOp {
 /// already carries the requested handle — the caller reconciles that to success
 /// (idempotent: a prior attempt's op landed, or the user re-requested their handle).
 async fn build_handle_op(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     new_handle: &str,
 ) -> Result<Option<SignedHandleOp>, HandleChangeError> {
-    let store = IdentityStore;
+    let store = core.identities();
 
     // 1. Per-DID device key (rotationKeys[0] for a wallet-custodied identity).
     let device =
@@ -508,7 +508,8 @@ async fn build_handle_op(
     let device_key_id = device.key_id;
 
     // 2. Current audit log -> prev + full current state.
-    let log_json = pds_client
+    let log_json = core
+        .pds_client()
         .fetch_audit_log(did)
         .await
         .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
@@ -541,14 +542,15 @@ async fn build_handle_op(
     guard_handle_change(&inputs)?;
 
     // 5. Sign locally with the per-DID device key.
-    let sign_closure = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { message } => {
-            HandleChangeError::IdentityNotFound { message }
-        }
-        PerDidSignError::SigningSetupFailed { message } => {
-            HandleChangeError::SigningFailed { message }
-        }
-    })?;
+    let sign_closure =
+        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
+            PerDidSignError::DeviceKeyNotFound { message } => {
+                HandleChangeError::IdentityNotFound { message }
+            }
+            PerDidSignError::SigningSetupFailed { message } => {
+                HandleChangeError::SigningFailed { message }
+            }
+        })?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
         current.rotation_keys.clone(),
@@ -573,11 +575,11 @@ async fn build_handle_op(
 
 /// Submit the signed handle op to plc.directory, then refresh the local cache.
 async fn submit_handle_op(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     signed_op: &serde_json::Value,
 ) -> Result<ClaimResult, HandleChangeError> {
-    pds_client
+    core.pds_client()
         .post_plc_operation(did, signed_op)
         .await
         .map_err(|e| match e {
@@ -589,7 +591,7 @@ async fn submit_handle_op(
                 message: format!("plc.directory rejected the operation: {other}"),
             },
         })?;
-    refresh_handle_cache(pds_client, did).await
+    refresh_handle_cache(core, did).await
 }
 
 /// Re-fetch the PLC audit log + DID document from plc.directory and cache them,
@@ -597,12 +599,13 @@ async fn submit_handle_op(
 /// carries `rotationKeys`), not the W3C form — the home card's custody badge reads
 /// `rotationKeys[0]`, so the W3C shape would degrade it to "Unknown".
 async fn refresh_handle_cache(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<ClaimResult, HandleChangeError> {
-    let store = IdentityStore;
+    let store = core.identities();
 
-    let updated_log = pds_client
+    let updated_log = core
+        .pds_client()
         .fetch_audit_log(did)
         .await
         .map_err(|e| map_plc_fetch_error("failed to fetch updated audit log", e))?;
@@ -612,7 +615,8 @@ async fn refresh_handle_cache(
             message: format!("failed to cache updated PLC log: {e}"),
         })?;
 
-    let did_doc = pds_client
+    let did_doc = core
+        .pds_client()
         .fetch_plc_data_document(did)
         .await
         .map_err(|e| map_plc_fetch_error("failed to fetch DID document", e))?;
@@ -696,20 +700,14 @@ async fn call_update_handle(
 /// handle), the flow reconciles to success by refreshing the cache instead of
 /// re-POSTing a stale op.
 pub async fn change_handle(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     new_handle: &str,
 ) -> Result<ClaimResult, HandleChangeError> {
-    let now = crate::sovereign_session::unix_timestamp().map_err(|_| {
-        HandleChangeError::SigningFailed {
-            message: "system clock is unavailable".to_string(),
-        }
-    })?;
-
     // 1. Full-access session (the per-DID session-provider seam). NEEDS_UNLOCK surfaces distinctly so
     //    the frontend can run the biometric sovereign login and retry.
     let session = SessionProvider
-        .full_access_client(pds_client, &IdentityStore, did, now)
+        .full_access_client(core, did)
         .await
         .map_err(map_session_error)?;
 
@@ -719,14 +717,14 @@ pub async fn change_handle(
 
     // 3 + 4. Build + sign the alsoKnownAs op, then submit + refresh. A `None` build
     //    means the DID doc already carries this handle — reconcile to success.
-    match build_handle_op(pds_client, did, new_handle).await? {
+    match build_handle_op(core, did, new_handle).await? {
         Some(signed) => {
             tracing::info!(did = %did, op_cid = %signed.op_cid, "submitting alsoKnownAs handle op");
-            submit_handle_op(pds_client, did, &signed.signed_op).await
+            submit_handle_op(core, did, &signed.signed_op).await
         }
         None => {
             tracing::info!(did = %did, "handle already current in DID doc; reconciling cache");
-            refresh_handle_cache(pds_client, did).await
+            refresh_handle_cache(core, did).await
         }
     }
 }
@@ -828,7 +826,7 @@ pub async fn change_handle_cmd(
     did: String,
     handle: String,
 ) -> Result<ClaimResult, HandleChangeError> {
-    change_handle(state.pds_client(), &did, &handle).await
+    change_handle(state, &did, &handle).await
 }
 
 /// Tauri command: list the served handle domains offered by the DID's HOSTING PDS

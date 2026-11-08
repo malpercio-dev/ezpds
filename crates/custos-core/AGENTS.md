@@ -183,4 +183,7 @@ Spaces on, rate limiting off, loopback proxy targets allowed). A crate with a wi
 it: `pds`'s `routes::test_utils` re-exports this module and shadows each state constructor with
 one returning `AppState` (`AppState::for_test(core)`).
 
+`test_support::RecordingNotifier` is the `Notifier` fake: set it as `state.notifier` to drive a
+trigger's "a push went out" and "nothing could be sent" branches without a relay.
+
 `cargo test -p custos-core` builds neither `pds` nor any feature crate.

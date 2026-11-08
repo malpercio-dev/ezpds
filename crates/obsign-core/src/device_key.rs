@@ -1,4 +1,4 @@
-//! The wallet's global P-256 device key: [`KeyId::Global`] on the installed
+//! The wallet's global P-256 device key: [`KeyId::Global`] on the `Core`'s
 //! [`Signer`](crate::signer::Signer), whose module doc owns why every key shares one
 //! implementation. This module owns what makes the global key distinct: its frozen Keychain
 //! account names, and the two convenience calls over the signer.
@@ -13,7 +13,7 @@
 //! Changing any account name orphans existing keys; the shell's `account_names_are_pinned`
 //! test holds each one against a literal.
 
-use crate::signer::{signer, KeyId, SignerError};
+use crate::signer::{KeyId, Signer, SignerError};
 
 // ── Global device-key Keychain account names ────────────────────────────────
 //
@@ -30,40 +30,45 @@ pub const DEVICE_KEY_HARDWARE_LABEL: &str = "ezpds-device-rotation-key";
 pub use crypto::{make_device_public_key, DevicePublicKey};
 
 /// Return this device's global key, generating one on first call.
-pub fn get_or_create() -> Result<DevicePublicKey, SignerError> {
-    let compressed = signer().public_key(KeyId::Global)?;
+pub fn get_or_create(signer: &dyn Signer) -> Result<DevicePublicKey, SignerError> {
+    let compressed = signer.public_key(KeyId::Global)?;
     Ok(make_device_public_key(&compressed))
 }
 
 /// Sign `data` with this device's global key, returning raw 64-byte `r||s`.
-pub fn sign(data: &[u8]) -> Result<Vec<u8>, SignerError> {
-    (signer().signer(KeyId::Global)?)(data)
+pub fn sign(signer: &dyn Signer, data: &[u8]) -> Result<Vec<u8>, SignerError> {
+    (signer.signer(KeyId::Global)?)(data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The wiring this module owns: the global key reaches the installed signer, under these
+    /// The wiring this module owns: the global key reaches the signer, under these
     /// exact account names. Key generation and signing are covered by `signer`'s own tests.
     #[test]
-    fn the_key_round_trips_through_the_installed_signer() {
-        crate::keystore::clear_for_test();
+    fn the_key_round_trips_through_the_signer() {
+        let core = crate::test_support::core();
 
-        let key = get_or_create().expect("get_or_create must succeed");
+        let key = get_or_create(core.signer()).expect("get_or_create must succeed");
         assert!(key.key_id.starts_with("did:key:z"));
         assert_eq!(
-            get_or_create().expect("second call").multibase,
+            get_or_create(core.signer()).expect("second call").multibase,
             key.multibase,
             "the key must be idempotent across calls"
         );
 
         assert!(
-            crate::keystore::get_item(DEVICE_KEY_PRIV_ACCOUNT).is_ok(),
+            core.keys().get_item(DEVICE_KEY_PRIV_ACCOUNT).is_ok(),
             "the software path must store the scalar under the pinned account name"
         );
 
-        crate::keystore::delete_item(DEVICE_KEY_PRIV_ACCOUNT).expect("delete");
-        assert!(matches!(sign(b"no key"), Err(SignerError::NotFound { .. })));
+        core.keys()
+            .delete_item(DEVICE_KEY_PRIV_ACCOUNT)
+            .expect("delete");
+        assert!(matches!(
+            sign(core.signer(), b"no key"),
+            Err(SignerError::NotFound { .. })
+        ));
     }
 }

@@ -370,7 +370,7 @@ pub async fn create_account(
     handle: String,
 ) -> Result<CreateAccountResult, CreateAccountError> {
     // 1. Get or create the device's SE-backed (or simulator-fallback) P-256 key.
-    let device_key = device_key::get_or_create().map_err(|e| {
+    let device_key = crate::device_key::get_or_create(state.signer()).map_err(|e| {
         tracing::warn!(error = %e, "device key creation failed during account creation");
         CreateAccountError::from(e)
     })?;
@@ -411,20 +411,22 @@ pub async fn create_account(
         // 4. Store tokens in Keychain.
         // If session-token write fails, best-effort remove the already-written device-token.
         // The device key is persistent by design and is NOT cleaned up on failure.
-        crate::keystore::store_item(DEVICE_TOKEN_ACCOUNT, body.device_token.as_bytes()).map_err(
-            |_| {
+        state
+            .keys()
+            .store_item(DEVICE_TOKEN_ACCOUNT, body.device_token.as_bytes())
+            .map_err(|_| {
                 // device-token write failed — nothing to clean up; the device key is persistent by design.
                 CreateAccountError::KeychainError
-            },
-        )?;
+            })?;
 
-        crate::keystore::store_item(SESSION_TOKEN_ACCOUNT, body.session_token.as_bytes()).map_err(
-            |_| {
+        state
+            .keys()
+            .store_item(SESSION_TOKEN_ACCOUNT, body.session_token.as_bytes())
+            .map_err(|_| {
                 // Best-effort cleanup: remove the already-written device-token.
-                let _ = crate::keystore::delete_item(DEVICE_TOKEN_ACCOUNT);
+                let _ = state.keys().delete_item(DEVICE_TOKEN_ACCOUNT);
                 CreateAccountError::KeychainError
-            },
-        )?;
+            })?;
 
         Ok(CreateAccountResult {
             next_step: body.next_step,
@@ -455,12 +457,14 @@ struct DidCeremonyContext {
 }
 
 /// Load the device key and pending account token shared by both DID ceremony methods.
-fn load_did_ceremony_context() -> Result<DidCeremonyContext, DIDCeremonyError> {
-    let device_key = device_key::get_or_create().map_err(|e| {
+fn load_did_ceremony_context(
+    core: &crate::oauth::Core,
+) -> Result<DidCeremonyContext, DIDCeremonyError> {
+    let device_key = crate::device_key::get_or_create(core.signer()).map_err(|e| {
         tracing::warn!(error = %e, "device key creation failed during DID ceremony");
         DIDCeremonyError::from(e)
     })?;
-    let token_bytes = crate::keystore::get_item(SESSION_TOKEN_ACCOUNT).map_err(|e| {
+    let token_bytes = core.keys().get_item(SESSION_TOKEN_ACCOUNT).map_err(|e| {
         tracing::warn!(error = %e, "failed to retrieve session-token from keychain");
         DIDCeremonyError::KeychainError
     })?;
@@ -527,7 +531,7 @@ pub async fn perform_did_ceremony(
     handle: String,
     password: Option<String>,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {
-    let context = load_did_ceremony_context()?;
+    let context = load_did_ceremony_context(state)?;
     let device_key = context.device_key;
     let pending_token = context.pending_token;
     let pds_key = fetch_repo_signing_key(state, &pending_token).await?;
@@ -538,7 +542,7 @@ pub async fn perform_did_ceremony(
     // set (same set_id) instead of orphaning an escrow deposit. Custos only ever
     // receives Share 2.
     let pds_base_url = state.custos_client().base_url_str().to_owned();
-    let shares = share_ceremony::load_or_create(&handle, &pds_base_url).map_err(|e| {
+    let shares = share_ceremony::load_or_create(state, &handle, &pds_base_url).map_err(|e| {
         tracing::error!(error = %e, "client-side share generation failed during DID ceremony");
         DIDCeremonyError::ShareGenerationFailed
     })?;
@@ -560,7 +564,7 @@ pub async fn perform_did_ceremony(
         &handle,
         &pds_base_url,
         |data| {
-            device_key::sign(data)
+            crate::device_key::sign(state.signer(), data)
                 .map_err(|e| CryptoError::PlcOperation(format!("device signing failed: {e}")))
         },
     )
@@ -609,17 +613,19 @@ pub async fn perform_did_ceremony(
     })?;
 
     // Step 6: Overwrite session-token with the upgraded full session token.
-    crate::keystore::store_item(
-        SESSION_TOKEN_ACCOUNT,
-        create_did_resp.session_token.as_bytes(),
-    )
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to persist upgraded session-token to keychain");
-        DIDCeremonyError::KeychainError
-    })?;
+    state
+        .keys()
+        .store_item(
+            SESSION_TOKEN_ACCOUNT,
+            create_did_resp.session_token.as_bytes(),
+        )
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to persist upgraded session-token to keychain");
+            DIDCeremonyError::KeychainError
+        })?;
 
     // Step 7: Persist the DID for use in subsequent app sessions.
-    crate::keystore::store_item(LEGACY_DID_ACCOUNT, create_did_resp.did.as_bytes()).map_err(|e| {
+    state.keys().store_item(LEGACY_DID_ACCOUNT, create_did_resp.did.as_bytes()).map_err(|e| {
         tracing::error!(error = %e, did = %create_did_resp.did, "failed to persist DID to keychain");
         DIDCeremonyError::KeychainError
     })?;
@@ -636,11 +642,11 @@ pub async fn perform_did_ceremony(
     // Uses ShareStorageFailed (not KeychainError) because the DID is already committed:
     // retrying the ceremony will hit DidAlreadyExists. The frontend can surface a distinct
     // message rather than telling the user to retry the whole ceremony.
-    rekey::store_share1(&create_did_resp.did, shares.share1.as_bytes()).map_err(|e| {
+    rekey::store_share1(state, &create_did_resp.did, shares.share1.as_bytes()).map_err(|e| {
         tracing::error!(error = %e, "DID committed but recovery share 1 keychain write failed");
         DIDCeremonyError::ShareStorageFailed
     })?;
-    match rekey::read_share1_synced(&create_did_resp.did) {
+    match rekey::read_share1_synced(state, &create_did_resp.did) {
         Ok(read_back) if read_back == shares.share1.as_bytes() => {}
         Ok(_) => {
             tracing::error!("recovery share 1 read-back does not match the written value");
@@ -661,7 +667,8 @@ pub async fn perform_did_ceremony(
     // it, and "Enable agent accounts" re-provisions from the user's shares at any time.
     // Failing the ceremony here would instead strand the user on a DID that
     // `DidAlreadyExists` refuses to re-create.
-    if let Err(e) = identity_store::IdentityStore
+    if let Err(e) = state
+        .identities()
         .store_delegation_seed(&create_did_resp.did, &shares.delegation_seed)
     {
         tracing::warn!(
@@ -689,8 +696,11 @@ use crate::share_recovery::ShareBackupError;
 /// the durability check reads the exact identity just created, mirroring the re-key epilogue's
 /// `confirm_rekey`. Idempotent; called by the frontend when the Shamir backup screen's
 /// confirmation completes.
-pub fn confirm_share_backup(did: String) -> Result<(), ShareBackupError> {
-    match rekey::load_share1(&did) {
+pub fn confirm_share_backup(
+    core: &crate::oauth::Core,
+    did: String,
+) -> Result<(), ShareBackupError> {
+    match rekey::load_share1(core, &did) {
         Ok(bytes) if !bytes.is_empty() => {}
         Ok(_) => {
             tracing::error!(
@@ -709,7 +719,7 @@ pub fn confirm_share_backup(did: String) -> Result<(), ShareBackupError> {
             return Err(ShareBackupError::KeychainError);
         }
     }
-    share_ceremony::clear_staging().map_err(|e| {
+    share_ceremony::clear_staging(core).map_err(|e| {
         tracing::error!(error = %e, "failed to clear ceremony staging slot");
         ShareBackupError::KeychainError
     })
@@ -717,7 +727,7 @@ pub fn confirm_share_backup(did: String) -> Result<(), ShareBackupError> {
 
 /// Prepare the device and reserved repository keys used to compose a did:web document.
 pub async fn prepare_did_web_ceremony(state: &Core) -> Result<DidWebPreparation, DIDCeremonyError> {
-    let context = load_did_ceremony_context()?;
+    let context = load_did_ceremony_context(state)?;
     let repo_key = fetch_repo_signing_key(state, &context.pending_token).await?;
     Ok(DidWebPreparation {
         // The server validates the document's #device against the did:key's multicodec-prefixed
@@ -749,7 +759,7 @@ pub async fn complete_did_web_ceremony(
     password: Option<String>,
     enable_managed_hosting: bool,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {
-    let context = load_did_ceremony_context()?;
+    let context = load_did_ceremony_context(state)?;
     let request = CreateDidRequest {
         rotation_key_public: context.device_key.key_id,
         signed_creation_op: None,
@@ -780,9 +790,13 @@ pub async fn complete_did_web_ceremony(
     //
     // Promotion is already durable and cannot be retried. Persist every irreplaceable response
     // value before the optional hosting toggle so a transient failure cannot strand the user.
-    crate::keystore::store_item(SESSION_TOKEN_ACCOUNT, created.session_token.as_bytes())
+    state
+        .keys()
+        .store_item(SESSION_TOKEN_ACCOUNT, created.session_token.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
-    crate::keystore::store_item(LEGACY_DID_ACCOUNT, created.did.as_bytes())
+    state
+        .keys()
+        .store_item(LEGACY_DID_ACCOUNT, created.did.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
     if enable_managed_hosting {
         let hosting_result = state
@@ -828,7 +842,7 @@ pub async fn register_handle(
 
     // Step 2: Read DID and session token from Keychain.
     // Missing DID here is a post-ceremony invariant violation — error! is appropriate.
-    let did_bytes = crate::keystore::get_item(LEGACY_DID_ACCOUNT).map_err(|e| {
+    let did_bytes = state.keys().get_item(LEGACY_DID_ACCOUNT).map_err(|e| {
         tracing::error!(error = %e, "DID not found in Keychain during handle registration — ceremony invariant violated");
         RegisterHandleError::KeychainError
     })?;
@@ -837,7 +851,7 @@ pub async fn register_handle(
         RegisterHandleError::KeychainError
     })?;
 
-    let token_bytes = crate::keystore::get_item(SESSION_TOKEN_ACCOUNT).map_err(|e| {
+    let token_bytes = state.keys().get_item(SESSION_TOKEN_ACCOUNT).map_err(|e| {
         tracing::warn!(error = %e, "failed to read session-token from Keychain during handle registration");
         RegisterHandleError::KeychainError
     })?;
@@ -1026,7 +1040,7 @@ pub async fn register_created_identity(
     did: String,
     handle: String,
 ) -> Result<(), RegisterIdentityError> {
-    let store = identity_store::IdentityStore;
+    let store = state.identities();
 
     // 1. Register the DID (tolerate AlreadyExists from a prior attempt).
     if let Err(e) = store.add_identity(&did) {
@@ -1044,7 +1058,7 @@ pub async fn register_created_identity(
     }
 
     // 3. Build and store a local DID document so the card shows handle + PDS.
-    let rotation_key_id = match device_key::get_or_create() {
+    let rotation_key_id = match crate::device_key::get_or_create(state.signer()) {
         Ok(k) => k.key_id,
         Err(e) => {
             // The global device key was created earlier in the flow (perform_did_ceremony),
@@ -1377,7 +1391,8 @@ mod tests {
     // is correctly formatted (multibase base58btc) and is idempotent (stable across calls).
     #[test]
     fn device_key_contract_satisfies_pds_format() {
-        let key = crate::device_key::get_or_create()
+        let core = &crate::test_support::core();
+        let key = crate::device_key::get_or_create(core.signer())
             .expect("device_key::get_or_create must succeed — create_account depends on it");
         // The PDS expects multibase: 'z' + base58btc(33-byte compressed P-256 point).
         assert!(
@@ -1386,7 +1401,8 @@ mod tests {
             key.multibase
         );
         // Calling again returns the same key — create_account sends consistent device_public_key.
-        let key2 = crate::device_key::get_or_create().expect("second call must also succeed");
+        let key2 =
+            crate::device_key::get_or_create(core.signer()).expect("second call must also succeed");
         assert_eq!(
             key.multibase, key2.multibase,
             "device_public_key must be stable across calls (idempotent)"
@@ -1434,40 +1450,48 @@ mod tests {
     // -- confirm_share_backup teardown ordering --
     #[test]
     fn confirm_share_backup_requires_durable_share1() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:aliceceremony";
-        share_ceremony::load_or_create("alice.example.com", "https://pds.example.com").unwrap();
+        share_ceremony::load_or_create(core, "alice.example.com", "https://pds.example.com")
+            .unwrap();
 
         // Share 1 not yet in its durable per-DID slot: the staging record must survive.
         assert!(matches!(
-            confirm_share_backup(did.to_string()),
+            confirm_share_backup(core, did.to_string()),
             Err(ShareBackupError::ShareNotStored)
         ));
-        assert!(crate::keystore::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
+        assert!(core
+            .keys()
+            .get_item(share_ceremony::STAGING_ACCOUNT)
+            .is_ok());
 
         // A different identity's Share 1 must NOT satisfy this DID's durability check — the
         // teardown is gated on the exact ceremony DID's slot, not any global one.
-        crate::keystore::store_item(
-            &rekey::recovery_share1_account("did:plc:someoneelse"),
-            b"OTHER1",
-        )
-        .unwrap();
+        core.keys()
+            .store_item(
+                &rekey::recovery_share1_account("did:plc:someoneelse"),
+                b"OTHER1",
+            )
+            .unwrap();
         assert!(matches!(
-            confirm_share_backup(did.to_string()),
+            confirm_share_backup(core, did.to_string()),
             Err(ShareBackupError::ShareNotStored)
         ));
-        assert!(crate::keystore::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
+        assert!(core
+            .keys()
+            .get_item(share_ceremony::STAGING_ACCOUNT)
+            .is_ok());
 
         // Once THIS DID's Share 1 is durably stored, confirmation tears the staging slot down.
         // The synchronizable slot is what a fresh ceremony writes; the gate must see it.
-        rekey::store_share1(did, b"SHARE1ENVELOPE").unwrap();
-        confirm_share_backup(did.to_string()).expect("confirmation should succeed");
+        rekey::store_share1(core, did, b"SHARE1ENVELOPE").unwrap();
+        confirm_share_backup(core, did.to_string()).expect("confirmation should succeed");
         assert!(matches!(
-            crate::keystore::get_item(share_ceremony::STAGING_ACCOUNT),
+            core.keys().get_item(share_ceremony::STAGING_ACCOUNT),
             Err(ref e) if crate::keystore::is_not_found(e)
         ));
         // Idempotent repeat.
-        confirm_share_backup(did.to_string()).expect("repeat confirmation is a no-op");
+        confirm_share_backup(core, did.to_string()).expect("repeat confirmation is a no-op");
     }
     // -- DIDCeremonyError serialization (one test per variant) --
     #[test]

@@ -1419,6 +1419,77 @@ mod tests {
         assert_eq!(match_codes, 0);
     }
 
+    /// A hinted login whose push reached a device latches a match code, renders the number,
+    /// and keeps the number out of the payload: it is the proof the approver can see the page.
+    #[tokio::test]
+    async fn hinted_login_with_a_delivered_push_requires_the_number() {
+        let mut state = state_with_client_and_mobile_account().await;
+        let notifier = test_support::RecordingNotifier::new(1);
+        state.notifier = Some(notifier.clone());
+        let mut params = par_params();
+        params["login_hint"] = TEST_HANDLE.into();
+
+        let resp = get_authorize_via_par(state.clone(), params).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+
+        let (request_id, match_code): (String, String) = sqlx::query_as(
+            "SELECT request_id, match_code FROM pending_oauth_authorizations \
+             WHERE match_code IS NOT NULL",
+        )
+        .fetch_one(&state.db)
+        .await
+        .expect("a delivered push latches a match code");
+        assert!(
+            html.contains("id=\"match-code\""),
+            "the number panel renders"
+        );
+        assert!(
+            html.contains(&match_code),
+            "the page shows the latched number"
+        );
+
+        let sends = notifier.account_sends();
+        assert_eq!(sends.len(), 1);
+        let (did, payload) = &sends[0];
+        assert_eq!(did, DID);
+        assert_eq!(payload.kind, "login-approval");
+        let data = payload.data.as_ref().expect("routing data");
+        assert_eq!(data["requestId"], request_id.as_str());
+        assert!(
+            !serde_json::to_string(payload)
+                .unwrap()
+                .contains(&match_code),
+            "the match code must never ride in the payload"
+        );
+    }
+
+    /// A push that reached no device latches nothing, so the page asks for no number.
+    #[tokio::test]
+    async fn hinted_login_whose_push_reached_no_device_requires_no_number() {
+        let mut state = state_with_client_and_mobile_account().await;
+        let notifier = test_support::RecordingNotifier::new(0);
+        state.notifier = Some(notifier.clone());
+        let mut params = par_params();
+        params["login_hint"] = TEST_HANDLE.into();
+
+        let resp = get_authorize_via_par(state.clone(), params).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+
+        assert_eq!(notifier.account_sends().len(), 1, "the push was attempted");
+        assert!(!html.contains("id=\"match-code\""));
+        let match_codes: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_oauth_authorizations WHERE match_code IS NOT NULL",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(match_codes, 0);
+    }
+
     #[tokio::test]
     async fn get_consent_page_creates_pending_request_and_renders_wallet_path() {
         let state = state_with_client().await;

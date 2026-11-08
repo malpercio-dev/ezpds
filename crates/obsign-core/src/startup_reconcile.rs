@@ -10,12 +10,12 @@
 //! reads the same legacy `did` item the first hop keys on.
 
 use crate::create_flow::LEGACY_DID_ACCOUNT;
-use crate::{identity_store, rekey, share_recovery};
+use crate::{rekey, share_recovery};
 
 /// Run every launch hop, in order. See the module doc for why the order matters.
-pub fn run() {
-    reconcile_share1_slots();
-    reconcile_created_identity();
+pub fn run(core: &crate::oauth::Core) {
+    reconcile_share1_slots(core);
+    reconcile_created_identity(core);
 }
 
 /// Best-effort one-time migration of a pre-unification install's global `recovery-share-1` slot
@@ -28,9 +28,12 @@ pub fn run() {
 /// switches to the per-DID slot. Additive and idempotent: it never deletes the global slot and
 /// skips when the per-DID slot already holds a value. Fully best-effort — any Keychain hiccup is
 /// logged and swallowed, never blocking launch.
-fn migrate_global_share1_to_per_did() {
+fn migrate_global_share1_to_per_did(core: &crate::oauth::Core) {
     // The legacy global slot; absent on a fresh (post-unification) install — nothing to migrate.
-    let global = match crate::keystore::get_item(share_recovery::RECOVERY_SHARE1_ACCOUNT) {
+    let global = match core
+        .keys()
+        .get_item(share_recovery::RECOVERY_SHARE1_ACCOUNT)
+    {
         // Sensitive key material — wipe the in-memory copy when this scope ends.
         Ok(bytes) if !bytes.is_empty() => zeroize::Zeroizing::new(bytes),
         Ok(_) => return,
@@ -41,7 +44,7 @@ fn migrate_global_share1_to_per_did() {
         }
     };
     // The primary identity's DID (the create/did:web flow persists it under "did").
-    let did = match crate::keystore::get_item(LEGACY_DID_ACCOUNT) {
+    let did = match core.keys().get_item(LEGACY_DID_ACCOUNT) {
         Ok(bytes) if !bytes.is_empty() => match String::from_utf8(bytes) {
             Ok(did) => did,
             Err(_) => {
@@ -54,7 +57,7 @@ fn migrate_global_share1_to_per_did() {
     };
     let per_did = rekey::recovery_share1_account(&did);
     // Never clobber an already-populated per-DID slot — a newer ceremony or re-key owns it.
-    match crate::keystore::get_item(&per_did) {
+    match core.keys().get_item(&per_did) {
         Ok(bytes) if !bytes.is_empty() => return,
         Ok(_) => {}
         Err(ref e) if crate::keystore::is_not_found(e) => {}
@@ -63,7 +66,7 @@ fn migrate_global_share1_to_per_did() {
             return;
         }
     }
-    match crate::keystore::store_item(&per_did, &global) {
+    match core.keys().store_item(&per_did, &global) {
         Ok(()) => tracing::info!(
             "migrated global recovery-share-1 into the per-DID slot for the primary identity"
         ),
@@ -76,9 +79,9 @@ fn migrate_global_share1_to_per_did() {
 /// Runs the two additive hops in order, so a single launch can carry a pre-unification install
 /// all the way: app-global → per-DID device-local ([`migrate_global_share1_to_per_did`]), then
 /// per-DID device-local → per-DID iCloud-synchronizable ([`backfill_synced_share1`]).
-fn reconcile_share1_slots() {
-    migrate_global_share1_to_per_did();
-    backfill_synced_share1();
+fn reconcile_share1_slots(core: &crate::oauth::Core) {
+    migrate_global_share1_to_per_did(core);
+    backfill_synced_share1(core);
 }
 
 /// Best-effort launch repair: register the primary DID in `IdentityStore` if the create flow
@@ -104,8 +107,8 @@ fn reconcile_share1_slots() {
 /// The DID document is deliberately not rebuilt here. `IdentityListHome` already treats a
 /// missing document as a refresh trigger and re-fetches it from plc.directory on first render,
 /// which needs neither the handle nor the PDS URL at launch.
-fn reconcile_created_identity() {
-    let did = match crate::keystore::get_item(LEGACY_DID_ACCOUNT) {
+fn reconcile_created_identity(core: &crate::oauth::Core) {
+    let did = match core.keys().get_item(LEGACY_DID_ACCOUNT) {
         Ok(bytes) => match String::from_utf8(bytes) {
             Ok(did) if !did.is_empty() => did,
             Ok(_) => return,
@@ -118,7 +121,7 @@ fn reconcile_created_identity() {
         _ => return,
     };
 
-    let store = identity_store::IdentityStore;
+    let store = core.identities();
     match store.list_identities() {
         Ok(dids) if dids.contains(&did) => return,
         Ok(_) => {}
@@ -180,11 +183,11 @@ fn reconcile_created_identity() {
 /// helped and stays on Share 2 + Share 3 for the life of that identity. And with iCloud
 /// Keychain switched off, the item is written carrying the attribute and propagates nowhere;
 /// enabling it later syncs it with no further involvement from this app.
-fn backfill_synced_share1() {
-    for did in share1_backfill_dids() {
+fn backfill_synced_share1(core: &crate::oauth::Core) {
+    for did in share1_backfill_dids(core) {
         // Never overwrite a populated synchronizable slot — a ceremony, re-key, or recovery
         // epilogue owns it, and it is by definition at least as current as the local one.
-        match rekey::read_share1_synced(&did) {
+        match rekey::read_share1_synced(core, &did) {
             Ok(bytes) if !bytes.is_empty() => continue,
             Ok(_) => {}
             Err(ref e) if crate::keystore::is_not_found(e) => {}
@@ -194,7 +197,7 @@ fn backfill_synced_share1() {
             }
         }
         // Sensitive key material — wipe the in-memory copy when this scope ends.
-        let local = match crate::keystore::get_item(&rekey::recovery_share1_account(&did)) {
+        let local = match core.keys().get_item(&rekey::recovery_share1_account(&did)) {
             Ok(bytes) if !bytes.is_empty() => zeroize::Zeroizing::new(bytes),
             Ok(_) => continue,
             Err(ref e) if crate::keystore::is_not_found(e) => continue,
@@ -207,7 +210,7 @@ fn backfill_synced_share1() {
             tracing::debug!("share1 backfill: local slot is not a v2 Share 1 envelope; skipping");
             continue;
         }
-        match rekey::store_share1(&did, &local) {
+        match rekey::store_share1(core, &did, &local) {
             Ok(()) => tracing::info!("backfilled Share 1 into the iCloud-synchronizable slot"),
             Err(e) => tracing::warn!(error = %e, "share1 backfill: synced slot write failed"),
         }
@@ -217,14 +220,12 @@ fn backfill_synced_share1() {
 /// The DIDs the backfill sweeps: every identity in `IdentityStore`, plus the legacy primary
 /// DID under the `"did"` account. The union matters because a pre-unification install may hold
 /// a share for a DID that was never registered in the managed-DIDs index.
-fn share1_backfill_dids() -> Vec<String> {
-    let mut dids = identity_store::IdentityStore
-        .list_identities()
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "share1 backfill: managed-DID index unreadable");
-            Vec::new()
-        });
-    if let Ok(bytes) = crate::keystore::get_item(LEGACY_DID_ACCOUNT) {
+fn share1_backfill_dids(core: &crate::oauth::Core) -> Vec<String> {
+    let mut dids = core.identities().list_identities().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "share1 backfill: managed-DID index unreadable");
+        Vec::new()
+    });
+    if let Ok(bytes) = core.keys().get_item(LEGACY_DID_ACCOUNT) {
         if let Ok(did) = String::from_utf8(bytes) {
             if !did.is_empty() && !dids.contains(&did) {
                 dids.push(did);
@@ -242,58 +243,67 @@ mod tests {
     // -- legacy global -> per-DID Share 1 migration --
     #[test]
     fn migrate_global_share1_copies_into_primary_per_did_slot() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:legacyprimary";
 
         // Pre-unification install: Share 1 in the global slot, primary DID under "did", and no
         // per-DID slot yet.
-        crate::keystore::store_item("recovery-share-1", b"LEGACY1").unwrap();
-        crate::keystore::store_item("did", did.as_bytes()).unwrap();
+        core.keys()
+            .store_item("recovery-share-1", b"LEGACY1")
+            .unwrap();
+        core.keys().store_item("did", did.as_bytes()).unwrap();
 
-        migrate_global_share1_to_per_did();
+        migrate_global_share1_to_per_did(core);
 
         // The per-DID slot now mirrors the global one; the global slot is left intact.
         assert_eq!(
-            crate::keystore::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            core.keys()
+                .get_item(&rekey::recovery_share1_account(did))
+                .unwrap(),
             b"LEGACY1"
         );
         assert_eq!(
-            crate::keystore::get_item("recovery-share-1").unwrap(),
+            core.keys().get_item("recovery-share-1").unwrap(),
             b"LEGACY1"
         );
     }
 
     #[test]
     fn migrate_global_share1_never_clobbers_existing_per_did_slot() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:legacyprimary";
 
         // A per-DID slot already populated by a fresh ceremony/re-key must win over any stale
         // global slot left behind.
-        crate::keystore::store_item("recovery-share-1", b"STALE_GLOBAL").unwrap();
-        crate::keystore::store_item("did", did.as_bytes()).unwrap();
-        crate::keystore::store_item(&rekey::recovery_share1_account(did), b"CURRENT_PER_DID")
+        core.keys()
+            .store_item("recovery-share-1", b"STALE_GLOBAL")
+            .unwrap();
+        core.keys().store_item("did", did.as_bytes()).unwrap();
+        core.keys()
+            .store_item(&rekey::recovery_share1_account(did), b"CURRENT_PER_DID")
             .unwrap();
 
-        migrate_global_share1_to_per_did();
+        migrate_global_share1_to_per_did(core);
 
         assert_eq!(
-            crate::keystore::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            core.keys()
+                .get_item(&rekey::recovery_share1_account(did))
+                .unwrap(),
             b"CURRENT_PER_DID"
         );
     }
 
     #[test]
     fn migrate_global_share1_noop_without_global_slot() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:freshinstall";
-        crate::keystore::store_item("did", did.as_bytes()).unwrap();
+        core.keys().store_item("did", did.as_bytes()).unwrap();
 
         // Fresh (post-unification) install has no global slot: nothing is written.
-        migrate_global_share1_to_per_did();
+        migrate_global_share1_to_per_did(core);
 
         assert!(matches!(
-            crate::keystore::get_item(&rekey::recovery_share1_account(did)),
+            core.keys().get_item(&rekey::recovery_share1_account(did)),
             Err(ref e) if crate::keystore::is_not_found(e)
         ));
     }
@@ -302,98 +312,118 @@ mod tests {
 
     /// A real v2 index-1 Share 1 envelope, produced the way the ceremony produces one.
     /// The backfill only copies bytes that decode as such, so fixtures must be genuine.
-    fn ceremony_share1() -> String {
+    fn ceremony_share1(core: &crate::oauth::Core) -> String {
         let set =
-            share_ceremony::load_or_create("alice.example.com", "https://pds.example.com").unwrap();
+            share_ceremony::load_or_create(core, "alice.example.com", "https://pds.example.com")
+                .unwrap();
         let share1 = set.share1.to_string();
-        share_ceremony::clear_staging().unwrap();
+        share_ceremony::clear_staging(core).unwrap();
         share1
     }
 
     #[test]
     fn backfill_copies_local_share1_into_the_synced_slot_and_keeps_the_local_one() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:preSyncInstall";
-        let share1 = ceremony_share1();
+        let share1 = ceremony_share1(core);
 
         // A build from before the synchronizable write path: Share 1 exists, but only in the
         // device-local store, where it can never reach a replacement device.
-        identity_store::IdentityStore.add_identity(did).unwrap();
-        crate::keystore::store_item(&rekey::recovery_share1_account(did), share1.as_bytes())
+        core.identities().add_identity(did).unwrap();
+        core.keys()
+            .store_item(&rekey::recovery_share1_account(did), share1.as_bytes())
             .unwrap();
-        assert!(rekey::read_share1_synced(did).is_err());
+        assert!(rekey::read_share1_synced(core, did).is_err());
 
-        backfill_synced_share1();
+        backfill_synced_share1(core);
 
-        assert_eq!(rekey::read_share1_synced(did).unwrap(), share1.as_bytes());
+        assert_eq!(
+            rekey::read_share1_synced(core, did).unwrap(),
+            share1.as_bytes()
+        );
         // Copy, never move: the local slot may be the share's only surviving copy.
         assert_eq!(
-            crate::keystore::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            core.keys()
+                .get_item(&rekey::recovery_share1_account(did))
+                .unwrap(),
             share1.as_bytes()
         );
 
         // Idempotent: a second launch changes nothing.
-        backfill_synced_share1();
-        assert_eq!(rekey::read_share1_synced(did).unwrap(), share1.as_bytes());
+        backfill_synced_share1(core);
+        assert_eq!(
+            rekey::read_share1_synced(core, did).unwrap(),
+            share1.as_bytes()
+        );
     }
 
     #[test]
     fn backfill_never_overwrites_a_populated_synced_slot() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:alreadysynced";
 
         // A re-key or recovery epilogue owns the synchronizable slot; a stale local copy from
         // before that rotation must not be allowed to overwrite it.
-        identity_store::IdentityStore.add_identity(did).unwrap();
-        rekey::store_share1(did, ceremony_share1().as_bytes()).unwrap();
-        let current = rekey::read_share1_synced(did).unwrap();
-        crate::keystore::store_item(&rekey::recovery_share1_account(did), b"STALE_LOCAL").unwrap();
+        core.identities().add_identity(did).unwrap();
+        rekey::store_share1(core, did, ceremony_share1(core).as_bytes()).unwrap();
+        let current = rekey::read_share1_synced(core, did).unwrap();
+        core.keys()
+            .store_item(&rekey::recovery_share1_account(did), b"STALE_LOCAL")
+            .unwrap();
 
-        backfill_synced_share1();
+        backfill_synced_share1(core);
 
-        assert_eq!(rekey::read_share1_synced(did).unwrap(), current);
+        assert_eq!(rekey::read_share1_synced(core, did).unwrap(), current);
     }
 
     #[test]
     fn backfill_skips_a_local_slot_that_is_not_a_v2_share1_envelope() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:bareshareinstall";
 
         // did:web ceremonies stored a bare base32 share, which the recovery ceremony's
         // auto-load cannot use anyway — syncing it would spend an iCloud secret for nothing.
-        identity_store::IdentityStore.add_identity(did).unwrap();
-        crate::keystore::store_item(&rekey::recovery_share1_account(did), b"NOTANENVELOPE")
+        core.identities().add_identity(did).unwrap();
+        core.keys()
+            .store_item(&rekey::recovery_share1_account(did), b"NOTANENVELOPE")
             .unwrap();
 
-        backfill_synced_share1();
+        backfill_synced_share1(core);
 
         assert!(matches!(
-            rekey::read_share1_synced(did),
+            rekey::read_share1_synced(core, did),
             Err(ref e) if crate::keystore::is_not_found(e)
         ));
     }
 
     #[test]
     fn backfill_reaches_a_legacy_primary_did_absent_from_the_managed_index() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:legacyprimaryonly";
-        let share1 = ceremony_share1();
+        let share1 = ceremony_share1(core);
 
         // Pre-unification install: the global slot plus a primary DID that was never
         // registered in `managed-dids`. One launch must carry it through both hops.
-        crate::keystore::store_item("recovery-share-1", share1.as_bytes()).unwrap();
-        crate::keystore::store_item("did", did.as_bytes()).unwrap();
+        core.keys()
+            .store_item("recovery-share-1", share1.as_bytes())
+            .unwrap();
+        core.keys().store_item("did", did.as_bytes()).unwrap();
 
-        reconcile_share1_slots();
+        reconcile_share1_slots(core);
 
-        assert_eq!(rekey::read_share1_synced(did).unwrap(), share1.as_bytes());
+        assert_eq!(
+            rekey::read_share1_synced(core, did).unwrap(),
+            share1.as_bytes()
+        );
         // Neither source slot is disturbed.
         assert_eq!(
-            crate::keystore::get_item("recovery-share-1").unwrap(),
+            core.keys().get_item("recovery-share-1").unwrap(),
             share1.as_bytes()
         );
         assert_eq!(
-            crate::keystore::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            core.keys()
+                .get_item(&rekey::recovery_share1_account(did))
+                .unwrap(),
             share1.as_bytes()
         );
     }
@@ -402,84 +432,75 @@ mod tests {
 
     #[test]
     fn reconcile_registers_a_created_identity_missing_from_the_managed_index() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:strandedcreate";
 
         // The state the reported bug leaves behind: the ceremony persisted the DID, but
         // `register_created_identity` never landed, so the home screen lists nothing.
-        crate::keystore::store_item("did", did.as_bytes()).unwrap();
-        assert!(identity_store::IdentityStore
-            .list_identities()
-            .unwrap()
-            .is_empty());
+        core.keys().store_item("did", did.as_bytes()).unwrap();
+        assert!(core.identities().list_identities().unwrap().is_empty());
 
-        reconcile_created_identity();
+        reconcile_created_identity(core);
 
         assert_eq!(
-            identity_store::IdentityStore.list_identities().unwrap(),
+            core.identities().list_identities().unwrap(),
             vec![did.to_string()]
         );
     }
 
     #[test]
     fn reconcile_never_resurrects_a_deliberately_forgotten_identity() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:forgottenonpurpose";
 
         // Forgetting an identity locally leaves the legacy "did" slot untouched, so the
         // tombstone is the only thing standing between the user's decision and a relaunch
         // putting the identity straight back on the home screen.
-        crate::keystore::store_item("did", did.as_bytes()).unwrap();
-        identity_store::IdentityStore.add_identity(did).unwrap();
-        identity_store::IdentityStore.remove_identity(did).unwrap();
+        core.keys().store_item("did", did.as_bytes()).unwrap();
+        core.identities().add_identity(did).unwrap();
+        core.identities().remove_identity(did).unwrap();
 
-        reconcile_created_identity();
+        reconcile_created_identity(core);
 
-        assert!(identity_store::IdentityStore
-            .list_identities()
-            .unwrap()
-            .is_empty());
+        assert!(core.identities().list_identities().unwrap().is_empty());
     }
 
     #[test]
     fn reconcile_is_idempotent_and_never_duplicates() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:idempotentreconcile";
-        crate::keystore::store_item("did", did.as_bytes()).unwrap();
+        core.keys().store_item("did", did.as_bytes()).unwrap();
 
-        reconcile_created_identity();
-        reconcile_created_identity();
+        reconcile_created_identity(core);
+        reconcile_created_identity(core);
 
         assert_eq!(
-            identity_store::IdentityStore.list_identities().unwrap(),
+            core.identities().list_identities().unwrap(),
             vec![did.to_string()]
         );
     }
 
     #[test]
     fn reconcile_is_a_no_op_without_a_primary_did() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
 
         // A fresh install, or an import-only wallet: nothing to reconcile from.
-        reconcile_created_identity();
+        reconcile_created_identity(core);
 
-        assert!(identity_store::IdentityStore
-            .list_identities()
-            .unwrap()
-            .is_empty());
+        assert!(core.identities().list_identities().unwrap().is_empty());
     }
 
     #[test]
     fn reconcile_leaves_an_already_registered_identity_alone() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:alreadyregistered";
-        crate::keystore::store_item("did", did.as_bytes()).unwrap();
-        identity_store::IdentityStore.add_identity(did).unwrap();
+        core.keys().store_item("did", did.as_bytes()).unwrap();
+        core.identities().add_identity(did).unwrap();
 
-        reconcile_created_identity();
+        reconcile_created_identity(core);
 
         assert_eq!(
-            identity_store::IdentityStore.list_identities().unwrap(),
+            core.identities().list_identities().unwrap(),
             vec![did.to_string()]
         );
     }

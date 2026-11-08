@@ -5,11 +5,11 @@
 //! re-arms it each time the job fires, and drops it on [`cancel`]. When a job fires the
 //! platform calls [`run`] on the app's async runtime.
 //!
-//! Installation follows [`keystore`](crate::keystore). With no scheduler installed (desktop,
-//! the Simulator, tests) requests are dropped: background work is a device concern, and every
-//! job also runs in the foreground (the app-open backup pass, the PLC monitor's timer).
+//! [`Core`](crate::oauth::Core) owns the scheduler (`core.schedule`, `core.cancel_job`). A
+//! `Core` without one (desktop, the Simulator) drops requests: background work is a device
+//! concern, and every job also runs in the foreground (the app-open backup pass, the PLC
+//! monitor's timer).
 
-use std::sync::OnceLock;
 use std::time::Duration;
 
 /// The background work the core asks the platform to run.
@@ -42,29 +42,6 @@ pub trait Scheduler: Send + Sync {
 
     /// Withdraw any pending request for `job`.
     fn cancel(&self, job: BackgroundJob);
-}
-
-static INSTALLED: OnceLock<Box<dyn Scheduler>> = OnceLock::new();
-
-/// Install the process-wide scheduler. The second and later calls are refused and hand the
-/// scheduler back.
-pub fn install(scheduler: Box<dyn Scheduler>) -> Result<(), Box<dyn Scheduler>> {
-    INSTALLED.set(scheduler)
-}
-
-/// Submit `request` to the installed scheduler, if any.
-pub fn schedule(request: JobRequest) {
-    match INSTALLED.get() {
-        Some(scheduler) => scheduler.schedule(request),
-        None => tracing::debug!(job = ?request.job, "no scheduler installed; request dropped"),
-    }
-}
-
-/// Withdraw `job` from the installed scheduler, if any.
-pub fn cancel(job: BackgroundJob) {
-    if let Some(scheduler) = INSTALLED.get() {
-        scheduler.cancel(job);
-    }
 }
 
 /// Whether a run of `request` should be skipped because it would happen on a metered link.

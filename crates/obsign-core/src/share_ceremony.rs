@@ -158,8 +158,12 @@ impl Drop for StagingRecord {
 /// exists, else generate a fresh set and stage it — always BEFORE the caller makes any
 /// network call, so a mid-ceremony failure retries with the identical set (same
 /// `set_id`).
-pub fn load_or_create(handle: &str, pds_url: &str) -> Result<CeremonyShareSet, ShareCeremonyError> {
-    load_or_create_in_account(STAGING_ACCOUNT, handle, pds_url)
+pub fn load_or_create(
+    core: &crate::oauth::Core,
+    handle: &str,
+    pds_url: &str,
+) -> Result<CeremonyShareSet, ShareCeremonyError> {
+    load_or_create_in_account(core, STAGING_ACCOUNT, handle, pds_url)
 }
 
 /// Load-or-create for a self-held kit: same generation/reload semantics as
@@ -167,8 +171,11 @@ pub fn load_or_create(handle: &str, pds_url: &str) -> Result<CeremonyShareSet, S
 /// [`self_held_kit_staging_account`]), and DID-discriminated for the same reason — the set can
 /// already be bound to a landed PLC op, so nothing that can change under a live identity may
 /// be allowed to look like a different ceremony.
-pub fn load_or_create_for_self_held_kit(did: &str) -> Result<CeremonyShareSet, ShareCeremonyError> {
-    load_or_create_in_account(&self_held_kit_staging_account(did), did, did)
+pub fn load_or_create_for_self_held_kit(
+    core: &crate::oauth::Core,
+    did: &str,
+) -> Result<CeremonyShareSet, ShareCeremonyError> {
+    load_or_create_in_account(core, &self_held_kit_staging_account(did), did, did)
 }
 
 /// Load-or-create for a re-key ceremony: same generation/reload semantics as
@@ -183,8 +190,11 @@ pub fn load_or_create_for_self_held_kit(did: &str) -> Result<CeremonyShareSet, S
 /// confirmation look like "different ceremony, regenerate" — which would install a *second*
 /// recovery key and orphan the shares for the first. The DID cannot change under an identity,
 /// so passing it twice makes the set stable for exactly as long as it must be.
-pub fn load_or_create_for_rekey(did: &str) -> Result<CeremonyShareSet, ShareCeremonyError> {
-    load_or_create_in_account(&rekey_staging_account(did), did, did)
+pub fn load_or_create_for_rekey(
+    core: &crate::oauth::Core,
+    did: &str,
+) -> Result<CeremonyShareSet, ShareCeremonyError> {
+    load_or_create_in_account(core, &rekey_staging_account(did), did, did)
 }
 
 /// Shared implementation: load the staged set from `account` (bound to the
@@ -195,11 +205,12 @@ pub fn load_or_create_for_rekey(did: &str) -> Result<CeremonyShareSet, ShareCere
     reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
 )]
 fn load_or_create_in_account(
+    core: &crate::oauth::Core,
     account: &str,
     discriminator_a: &str,
     discriminator_b: &str,
 ) -> Result<CeremonyShareSet, ShareCeremonyError> {
-    if let Some(staged) = load_staged(account, discriminator_a, discriminator_b)? {
+    if let Some(staged) = load_staged(core, account, discriminator_a, discriminator_b)? {
         return Ok(staged);
     }
 
@@ -237,7 +248,7 @@ fn load_or_create_in_account(
         })
         .expect("staging record serialization cannot fail"),
     );
-    crate::keystore::store_item(account, record.as_bytes())?;
+    core.keys().store_item(account, record.as_bytes())?;
 
     Ok(CeremonyShareSet {
         recovery_key_id: recovery.key_id.0,
@@ -263,11 +274,12 @@ fn load_or_create_in_account(
 /// unrelated shares would permanently destroy the recovery seed. The slot is
 /// preserved for a later retry or manual inspection.
 fn load_staged(
+    core: &crate::oauth::Core,
     account: &str,
     discriminator_a: &str,
     discriminator_b: &str,
 ) -> Result<Option<CeremonyShareSet>, ShareCeremonyError> {
-    let bytes = match crate::keystore::get_item(account) {
+    let bytes = match core.keys().get_item(account) {
         Ok(bytes) => Zeroizing::new(bytes),
         Err(e) if crate::keystore::is_not_found(&e) => return Ok(None),
         Err(e) => {
@@ -357,18 +369,24 @@ fn load_staged(
 
 /// Tear down the *create*-ceremony staging slot — the seed material's last transient
 /// home. Idempotent: an absent slot is success (the teardown already happened).
-pub fn clear_staging() -> Result<(), crate::keystore::KeyStoreError> {
-    clear_staging_account(STAGING_ACCOUNT)
+pub fn clear_staging(core: &crate::oauth::Core) -> Result<(), crate::keystore::KeyStoreError> {
+    clear_staging_account(core, STAGING_ACCOUNT)
 }
 
 /// Tear down the per-DID re-key staging slot. Idempotent, like [`clear_staging`].
-pub fn clear_rekey_staging(did: &str) -> Result<(), crate::keystore::KeyStoreError> {
-    clear_staging_account(&rekey_staging_account(did))
+pub fn clear_rekey_staging(
+    core: &crate::oauth::Core,
+    did: &str,
+) -> Result<(), crate::keystore::KeyStoreError> {
+    clear_staging_account(core, &rekey_staging_account(did))
 }
 
 /// Tear down the per-DID self-held-kit staging slot. Idempotent, like [`clear_staging`].
-pub fn clear_self_held_kit_staging(did: &str) -> Result<(), crate::keystore::KeyStoreError> {
-    clear_staging_account(&self_held_kit_staging_account(did))
+pub fn clear_self_held_kit_staging(
+    core: &crate::oauth::Core,
+    did: &str,
+) -> Result<(), crate::keystore::KeyStoreError> {
+    clear_staging_account(core, &self_held_kit_staging_account(did))
 }
 
 /// Whether a per-DID self-held-kit staging slot exists — i.e. a kit was started for this DID
@@ -377,8 +395,10 @@ pub fn clear_self_held_kit_staging(did: &str) -> Result<(), crate::keystore::Key
 /// already shows the recovery key) but before Share 1 or the user's confirmation completed. A
 /// transient keychain read error reads as "not in progress" — fail-open for a prompt is safe,
 /// since the identity is never worse off un-prompted.
-pub fn self_held_kit_staging_exists(did: &str) -> bool {
-    crate::keystore::get_item(&self_held_kit_staging_account(did)).is_ok()
+pub fn self_held_kit_staging_exists(core: &crate::oauth::Core, did: &str) -> bool {
+    core.keys()
+        .get_item(&self_held_kit_staging_account(did))
+        .is_ok()
 }
 
 /// Whether a per-DID re-key staging slot exists — i.e. a re-key was started for this DID and has
@@ -386,12 +406,15 @@ pub fn self_held_kit_staging_exists(did: &str) -> bool {
 /// re-key was interrupted after its PLC op landed (so the identity already reads as new-model) but
 /// before escrow/Share 1/confirmation completed. A transient keychain read error reads as "not in
 /// progress" (fail-open for a prompt is safe — the account is never worse off un-prompted).
-pub fn rekey_staging_exists(did: &str) -> bool {
-    crate::keystore::get_item(&rekey_staging_account(did)).is_ok()
+pub fn rekey_staging_exists(core: &crate::oauth::Core, did: &str) -> bool {
+    core.keys().get_item(&rekey_staging_account(did)).is_ok()
 }
 
-fn clear_staging_account(account: &str) -> Result<(), crate::keystore::KeyStoreError> {
-    match crate::keystore::delete_item(account) {
+fn clear_staging_account(
+    core: &crate::oauth::Core,
+    account: &str,
+) -> Result<(), crate::keystore::KeyStoreError> {
+    match core.keys().delete_item(account) {
         Ok(()) => Ok(()),
         Err(e) if crate::keystore::is_not_found(&e) => Ok(()),
         Err(e) => Err(e),
@@ -407,8 +430,8 @@ mod tests {
 
     #[test]
     fn generates_and_stages_a_valid_set() {
-        crate::keystore::clear_for_test();
-        let set = load_or_create(HANDLE, PDS).unwrap();
+        let core = &crate::test_support::core();
+        let set = load_or_create(core, HANDLE, PDS).unwrap();
 
         // All three envelopes decode, share the same set_id, and carry their indices.
         let env1 = crypto::ShareEnvelope::decode_share(&set.share1).unwrap();
@@ -433,8 +456,8 @@ mod tests {
 
     #[test]
     fn delegation_seed_derives_from_the_sets_recovery_seed_and_survives_a_retry() {
-        crate::keystore::clear_for_test();
-        let first = load_or_create(HANDLE, PDS).unwrap();
+        let core = &crate::test_support::core();
+        let first = load_or_create(core, HANDLE, PDS).unwrap();
 
         // It is exactly the HKDF of the seed the user's own shares reconstruct — the
         // property that lets "Enable agent accounts" re-derive it years later.
@@ -448,15 +471,15 @@ mod tests {
 
         // A retry reloads from staging and must reach the identical seed, or a child
         // minted on a prior attempt would be orphaned by the attempt that finishes.
-        let second = load_or_create(HANDLE, PDS).unwrap();
+        let second = load_or_create(core, HANDLE, PDS).unwrap();
         assert_eq!(*first.delegation_seed, *second.delegation_seed);
     }
 
     #[test]
     fn retry_reuses_the_staged_set() {
-        crate::keystore::clear_for_test();
-        let first = load_or_create(HANDLE, PDS).unwrap();
-        let second = load_or_create(HANDLE, PDS).unwrap();
+        let core = &crate::test_support::core();
+        let first = load_or_create(core, HANDLE, PDS).unwrap();
+        let second = load_or_create(core, HANDLE, PDS).unwrap();
         assert_eq!(*first.share1, *second.share1, "retry must reuse Share 1");
         assert_eq!(*first.share2, *second.share2, "retry must reuse Share 2");
         assert_eq!(*first.share3, *second.share3, "retry must reuse Share 3");
@@ -471,9 +494,9 @@ mod tests {
 
     #[test]
     fn changed_ceremony_inputs_regenerate() {
-        crate::keystore::clear_for_test();
-        let first = load_or_create(HANDLE, PDS).unwrap();
-        let other = load_or_create("bob.example.com", PDS).unwrap();
+        let core = &crate::test_support::core();
+        let first = load_or_create(core, HANDLE, PDS).unwrap();
+        let other = load_or_create(core, "bob.example.com", PDS).unwrap();
         assert_ne!(
             *first.share2, *other.share2,
             "a different ceremony must not reuse the old set"
@@ -482,18 +505,20 @@ mod tests {
 
     #[test]
     fn corrupt_staging_record_fails_closed_and_preserves_the_slot() {
-        crate::keystore::clear_for_test();
-        load_or_create(HANDLE, PDS).unwrap();
-        crate::keystore::store_item(STAGING_ACCOUNT, b"not json").unwrap();
+        let core = &crate::test_support::core();
+        load_or_create(core, HANDLE, PDS).unwrap();
+        core.keys()
+            .store_item(STAGING_ACCOUNT, b"not json")
+            .unwrap();
         // A present-but-unreadable record must never be overwritten with fresh
         // material — it may be the set a prior attempt already escrowed.
         // (CeremonyShareSet has no Debug — share material must not be printable.)
-        let err = load_or_create(HANDLE, PDS)
+        let err = load_or_create(core, HANDLE, PDS)
             .map(|_| ())
             .expect_err("corrupt staging must fail closed");
         assert!(matches!(err, ShareCeremonyError::StagingCorrupt(_)));
         assert_eq!(
-            crate::keystore::get_item(STAGING_ACCOUNT).unwrap(),
+            core.keys().get_item(STAGING_ACCOUNT).unwrap(),
             b"not json".to_vec(),
             "the staging slot must be preserved for inspection/retry"
         );
@@ -501,8 +526,8 @@ mod tests {
 
     #[test]
     fn tampered_staged_share_fails_closed() {
-        crate::keystore::clear_for_test();
-        let first = load_or_create(HANDLE, PDS).unwrap();
+        let core = &crate::test_support::core();
+        let first = load_or_create(core, HANDLE, PDS).unwrap();
         // Corrupt one envelope inside an otherwise valid record: the checksum check
         // must fail the load closed rather than regenerate. Flip share2's first
         // character to a different base32 character (deterministic corruption).
@@ -513,19 +538,21 @@ mod tests {
         };
         let mut corrupt_share2 = first.share2.to_string();
         corrupt_share2.replace_range(0..1, flipped_first);
-        let bytes = crate::keystore::get_item(STAGING_ACCOUNT).unwrap();
+        let bytes = core.keys().get_item(STAGING_ACCOUNT).unwrap();
         let tampered = String::from_utf8(bytes)
             .unwrap()
             .replace(&*first.share2, &corrupt_share2);
-        crate::keystore::store_item(STAGING_ACCOUNT, tampered.as_bytes()).unwrap();
+        core.keys()
+            .store_item(STAGING_ACCOUNT, tampered.as_bytes())
+            .unwrap();
         assert!(matches!(
-            load_or_create(HANDLE, PDS),
+            load_or_create(core, HANDLE, PDS),
             Err(ShareCeremonyError::StagingCorrupt(_))
         ));
         // The envelope-validation failure path preserves the slot exactly like the
         // JSON-corruption path — the record is never overwritten with fresh material.
         assert_eq!(
-            crate::keystore::get_item(STAGING_ACCOUNT).unwrap(),
+            core.keys().get_item(STAGING_ACCOUNT).unwrap(),
             tampered.as_bytes().to_vec(),
             "the tampered staging record must be preserved for inspection/retry"
         );
@@ -533,14 +560,14 @@ mod tests {
 
     #[test]
     fn clear_staging_is_idempotent() {
-        crate::keystore::clear_for_test();
-        load_or_create(HANDLE, PDS).unwrap();
-        clear_staging().unwrap();
+        let core = &crate::test_support::core();
+        load_or_create(core, HANDLE, PDS).unwrap();
+        clear_staging(core).unwrap();
         assert!(matches!(
-            crate::keystore::get_item(STAGING_ACCOUNT),
+            core.keys().get_item(STAGING_ACCOUNT),
             Err(ref e) if crate::keystore::is_not_found(e)
         ));
-        clear_staging().unwrap();
+        clear_staging(core).unwrap();
     }
 
     const DID_A: &str = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -548,14 +575,14 @@ mod tests {
 
     #[test]
     fn rekey_staging_is_scoped_per_did() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         // Two identities re-keying concurrently must not share a staging slot: each
         // reloads its own set, and neither abandons the other's.
-        let a = load_or_create_for_rekey(DID_A).unwrap();
-        let b = load_or_create_for_rekey(DID_B).unwrap();
+        let a = load_or_create_for_rekey(core, DID_A).unwrap();
+        let b = load_or_create_for_rekey(core, DID_B).unwrap();
         assert_ne!(*a.share2, *b.share2, "distinct DIDs get distinct sets");
 
-        let a_again = load_or_create_for_rekey(DID_A).unwrap();
+        let a_again = load_or_create_for_rekey(core, DID_A).unwrap();
         assert_eq!(
             *a.share2, *a_again.share2,
             "DID A's set survives DID B's re-key staging"
@@ -565,18 +592,18 @@ mod tests {
 
     #[test]
     fn rekey_staging_does_not_collide_with_create_staging() {
-        crate::keystore::clear_for_test();
-        let create = load_or_create(HANDLE, PDS).unwrap();
-        let rekey = load_or_create_for_rekey(DID_A).unwrap();
+        let core = &crate::test_support::core();
+        let create = load_or_create(core, HANDLE, PDS).unwrap();
+        let rekey = load_or_create_for_rekey(core, DID_A).unwrap();
         assert_ne!(
             *create.share2, *rekey.share2,
             "create and re-key ceremonies use independent slots"
         );
         // Clearing the re-key slot leaves the create slot intact and vice versa.
-        clear_rekey_staging(DID_A).unwrap();
-        assert!(crate::keystore::get_item(STAGING_ACCOUNT).is_ok());
+        clear_rekey_staging(core, DID_A).unwrap();
+        assert!(core.keys().get_item(STAGING_ACCOUNT).is_ok());
         assert_eq!(
-            *load_or_create(HANDLE, PDS).unwrap().share2,
+            *load_or_create(core, HANDLE, PDS).unwrap().share2,
             *create.share2,
             "create staging is untouched by re-key teardown"
         );
@@ -587,32 +614,32 @@ mod tests {
     /// picked up and completed by the other.
     #[test]
     fn self_held_kit_staging_is_independent_of_the_rekey_slot() {
-        crate::keystore::clear_for_test();
-        let rekey = load_or_create_for_rekey(DID_A).unwrap();
-        let kit = load_or_create_for_self_held_kit(DID_A).unwrap();
+        let core = &crate::test_support::core();
+        let rekey = load_or_create_for_rekey(core, DID_A).unwrap();
+        let kit = load_or_create_for_self_held_kit(core, DID_A).unwrap();
         assert_ne!(
             *rekey.share2, *kit.share2,
             "one DID's two ceremonies must not share a staged set"
         );
-        assert!(self_held_kit_staging_exists(DID_A));
+        assert!(self_held_kit_staging_exists(core, DID_A));
 
         // Tearing down the kit leaves the re-key's set intact, and vice versa.
-        clear_self_held_kit_staging(DID_A).unwrap();
-        assert!(!self_held_kit_staging_exists(DID_A));
+        clear_self_held_kit_staging(core, DID_A).unwrap();
+        assert!(!self_held_kit_staging_exists(core, DID_A));
         assert_eq!(
-            *load_or_create_for_rekey(DID_A).unwrap().share2,
+            *load_or_create_for_rekey(core, DID_A).unwrap().share2,
             *rekey.share2
         );
     }
 
     #[test]
     fn self_held_kit_staging_is_scoped_per_did_and_resumes() {
-        crate::keystore::clear_for_test();
-        let a = load_or_create_for_self_held_kit(DID_A).unwrap();
-        let b = load_or_create_for_self_held_kit(DID_B).unwrap();
+        let core = &crate::test_support::core();
+        let a = load_or_create_for_self_held_kit(core, DID_A).unwrap();
+        let b = load_or_create_for_self_held_kit(core, DID_B).unwrap();
         assert_ne!(*a.share2, *b.share2, "distinct DIDs get distinct sets");
 
-        let a_again = load_or_create_for_self_held_kit(DID_A).unwrap();
+        let a_again = load_or_create_for_self_held_kit(core, DID_A).unwrap();
         assert_eq!(*a.share2, *a_again.share2, "a resumed kit reuses its set");
         assert_eq!(a.recovery_key_id, a_again.recovery_key_id);
     }
@@ -621,8 +648,8 @@ mod tests {
     /// hands the user both renderings of one share, and a mismatch would hand them two.
     #[test]
     fn share2_words_encode_the_same_envelope() {
-        crate::keystore::clear_for_test();
-        let set = load_or_create_for_self_held_kit(DID_A).unwrap();
+        let core = &crate::test_support::core();
+        let set = load_or_create_for_self_held_kit(core, DID_A).unwrap();
         let from_base32 = crypto::ShareEnvelope::decode_share(&set.share2).unwrap();
         let from_words = crypto::ShareEnvelope::decode_share_words(&set.share2_words).unwrap();
         assert_eq!(from_words.index(), 2);
@@ -645,39 +672,41 @@ mod tests {
     /// recovery key and leave the user holding shares for neither.
     #[test]
     fn a_hosting_endpoint_change_never_abandons_a_staged_set() {
-        crate::keystore::clear_for_test();
-        let kit = load_or_create_for_self_held_kit(DID_A).unwrap();
-        let rekey = load_or_create_for_rekey(DID_B).unwrap();
+        let core = &crate::test_support::core();
+        let kit = load_or_create_for_self_held_kit(core, DID_A).unwrap();
+        let rekey = load_or_create_for_rekey(core, DID_B).unwrap();
 
         // Whatever the account's PDS endpoint does between attempts, the set is the DID's.
         assert_eq!(
-            *load_or_create_for_self_held_kit(DID_A).unwrap().share2,
+            *load_or_create_for_self_held_kit(core, DID_A)
+                .unwrap()
+                .share2,
             *kit.share2
         );
         assert_eq!(
-            *load_or_create_for_rekey(DID_B).unwrap().share2,
+            *load_or_create_for_rekey(core, DID_B).unwrap().share2,
             *rekey.share2
         );
     }
 
     #[test]
     fn clear_self_held_kit_staging_is_idempotent() {
-        crate::keystore::clear_for_test();
-        load_or_create_for_self_held_kit(DID_A).unwrap();
-        clear_self_held_kit_staging(DID_A).unwrap();
-        assert!(!self_held_kit_staging_exists(DID_A));
-        clear_self_held_kit_staging(DID_A).unwrap();
+        let core = &crate::test_support::core();
+        load_or_create_for_self_held_kit(core, DID_A).unwrap();
+        clear_self_held_kit_staging(core, DID_A).unwrap();
+        assert!(!self_held_kit_staging_exists(core, DID_A));
+        clear_self_held_kit_staging(core, DID_A).unwrap();
     }
 
     #[test]
     fn clear_rekey_staging_is_idempotent() {
-        crate::keystore::clear_for_test();
-        load_or_create_for_rekey(DID_A).unwrap();
-        clear_rekey_staging(DID_A).unwrap();
+        let core = &crate::test_support::core();
+        load_or_create_for_rekey(core, DID_A).unwrap();
+        clear_rekey_staging(core, DID_A).unwrap();
         assert!(matches!(
-            crate::keystore::get_item(&rekey_staging_account(DID_A)),
+            core.keys().get_item(&rekey_staging_account(DID_A)),
             Err(ref e) if crate::keystore::is_not_found(e)
         ));
-        clear_rekey_staging(DID_A).unwrap();
+        clear_rekey_staging(core, DID_A).unwrap();
     }
 }

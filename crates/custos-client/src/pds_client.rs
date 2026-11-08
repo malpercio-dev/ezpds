@@ -359,7 +359,8 @@ fn default_client() -> Client {
 
 /// PDS client for discovery and OAuth operations against arbitrary PDS endpoints.
 ///
-/// Stateless except for the HTTP client which pools connections.
+/// Stateless except for the HTTP client which pools connections; a clone shares the pool.
+#[derive(Clone)]
 pub struct PdsClient {
     client: Client,
     plc_directory_url: String,

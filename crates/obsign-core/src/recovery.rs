@@ -26,8 +26,7 @@
 //! match.
 
 use crate::claim::{ChangeType, ClaimResult, OpDiff, ServiceChange};
-use crate::identity_store::{IdentityStore, PerDidSignError};
-use crate::pds_client::PdsClient;
+use crate::identity_store::PerDidSignError;
 use chrono::{DateTime, Duration, Utc};
 use crypto::{AuditEntry, DidKeyUri, PlcService};
 use serde::Serialize;
@@ -251,7 +250,10 @@ pub fn build_op_diff(
 ///
 /// Returns `Ok(())` if recovery is still possible, or `Err(RecoveryWindowExpired)` if
 /// the 72-hour deadline has passed.
-pub fn check_recovery_window(unauthorized_op_created_at: &str) -> Result<(), RecoveryError> {
+pub fn check_recovery_window(
+    core: &crate::oauth::Core,
+    unauthorized_op_created_at: &str,
+) -> Result<(), RecoveryError> {
     let op_time = DateTime::parse_from_rfc3339(unauthorized_op_created_at)
         .map_err(|e| RecoveryError::SigningFailed {
             message: format!("Failed to parse operation timestamp: {e}"),
@@ -260,7 +262,7 @@ pub fn check_recovery_window(unauthorized_op_created_at: &str) -> Result<(), Rec
 
     let deadline = op_time + Duration::hours(RECOVERY_WINDOW_HOURS);
 
-    if Utc::now() > deadline {
+    if core.utc_now() > deadline {
         return Err(RecoveryError::RecoveryWindowExpired);
     }
 
@@ -275,15 +277,15 @@ pub fn check_recovery_window(unauthorized_op_created_at: &str) -> Result<(), Rec
 ///
 /// For multiple sequential unauthorized ops, targets the earliest fork point.
 pub async fn build_recovery_override(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     unauthorized_op_cid: &str,
 ) -> Result<SignedRecoveryOp, RecoveryError> {
-    let store = IdentityStore;
+    let store = core.identities();
 
     // 1. Fetch the current full audit log from plc.directory.
     let audit_log_json =
-        pds_client
+        core.pds_client()
             .fetch_audit_log(did)
             .await
             .map_err(|e| RecoveryError::NetworkError {
@@ -301,7 +303,7 @@ pub async fn build_recovery_override(
         .find(|e| e.cid == unauthorized_op_cid)
         .ok_or(RecoveryError::UnauthorizedChangeNotFound)?;
 
-    check_recovery_window(&unauthorized_entry.created_at)?;
+    check_recovery_window(core, &unauthorized_entry.created_at)?;
 
     // 3. Get the device key for this DID.
     let device_pub =
@@ -326,7 +328,7 @@ pub async fn build_recovery_override(
     // 6. Sign with the per-DID device key.
     //    On macOS/simulator: read private key bytes from Keychain, sign with P-256.
     //    On real iOS: use Secure Enclave via the app label in Keychain.
-    let signed_op = sign_recovery_op(did, &fork_entry.cid, &fork_state)?;
+    let signed_op = sign_recovery_op(core, did, &fork_entry.cid, &fork_state)?;
 
     Ok(SignedRecoveryOp {
         diff,
@@ -344,16 +346,20 @@ pub async fn build_recovery_override(
 /// - macOS/simulator: reads private key bytes from Keychain, creates P-256 signing closure
 /// - Real iOS: reads SE app label from Keychain, signs via Secure Enclave
 fn sign_recovery_op(
+    core: &crate::oauth::Core,
     did: &str,
     prev_cid: &str,
     fork_state: &crypto::VerifiedPlcOp,
 ) -> Result<crypto::SignedPlcOperation, RecoveryError> {
-    let sign_closure = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { message } => {
-            RecoveryError::IdentityNotFound { message }
-        }
-        PerDidSignError::SigningSetupFailed { message } => RecoveryError::SigningFailed { message },
-    })?;
+    let sign_closure =
+        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
+            PerDidSignError::DeviceKeyNotFound { message } => {
+                RecoveryError::IdentityNotFound { message }
+            }
+            PerDidSignError::SigningSetupFailed { message } => {
+                RecoveryError::SigningFailed { message }
+            }
+        })?;
 
     crypto::build_did_plc_rotation_op(
         prev_cid,
@@ -373,14 +379,14 @@ fn sign_recovery_op(
 /// Reads the signed op from RecoveryState (set by build_recovery_override),
 /// POSTs it to plc.directory, and updates the cached PLC audit log.
 pub async fn submit_recovery_override(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     signed_op: &serde_json::Value,
 ) -> Result<ClaimResult, RecoveryError> {
-    let store = IdentityStore;
+    let store = core.identities();
 
     // 1. POST the signed operation to plc.directory.
-    pds_client
+    core.pds_client()
         .post_plc_operation(did, signed_op)
         .await
         .map_err(|e| RecoveryError::PlcDirectoryError {
@@ -389,7 +395,7 @@ pub async fn submit_recovery_override(
 
     // 2. Re-fetch the audit log to update the cache.
     let updated_log =
-        pds_client
+        core.pds_client()
             .fetch_audit_log(did)
             .await
             .map_err(|e| RecoveryError::NetworkError {
@@ -407,13 +413,13 @@ pub async fn submit_recovery_override(
     // cache expects the PLC shape (`rotationKeys`, `services` map) — the W3C form
     // has neither, and caching it degrades the home card's custody badge to
     // "Unknown".
-    let did_doc =
-        pds_client
-            .fetch_plc_data_document(did)
-            .await
-            .map_err(|e| RecoveryError::NetworkError {
-                message: format!("Failed to fetch DID document: {e}"),
-            })?;
+    let did_doc = core
+        .pds_client()
+        .fetch_plc_data_document(did)
+        .await
+        .map_err(|e| RecoveryError::NetworkError {
+            message: format!("Failed to fetch DID document: {e}"),
+        })?;
 
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
@@ -434,7 +440,7 @@ pub async fn build_recovery_override_cmd(
     did: String,
     operation_cid: String,
 ) -> Result<SignedRecoveryOp, RecoveryError> {
-    let result = build_recovery_override(state.pds_client(), &did, &operation_cid).await?;
+    let result = build_recovery_override(state, &did, &operation_cid).await?;
 
     // Store in RecoveryState for submit_recovery_override_cmd.
     let mut recovery = state.recovery_state.lock().await;
@@ -468,7 +474,7 @@ pub async fn submit_recovery_override_cmd(
     let signed_op = recovery_state.signed_op.clone();
     drop(recovery); // Release lock before network calls.
 
-    let result = submit_recovery_override(state.pds_client(), &did, &signed_op).await?;
+    let result = submit_recovery_override(state, &did, &signed_op).await?;
 
     // Clear recovery state on success.
     let mut recovery = state.recovery_state.lock().await;
@@ -705,56 +711,62 @@ mod tests {
 
     #[test]
     fn test_check_recovery_window_expired() {
+        let core = &crate::test_support::core();
         // Create a timestamp 73 hours in the past (beyond the 72-hour window)
-        let expired_time = Utc::now() - Duration::hours(73);
+        let expired_time = chrono::Utc::now() - Duration::hours(73);
         let expired_timestamp = expired_time.to_rfc3339();
 
-        let result = check_recovery_window(&expired_timestamp);
+        let result = check_recovery_window(core, &expired_timestamp);
         assert!(matches!(result, Err(RecoveryError::RecoveryWindowExpired)));
     }
 
     #[test]
     fn test_check_recovery_window_at_boundary() {
+        let core = &crate::test_support::core();
         // Create a timestamp 71.5 hours in the past (well within the window)
         // We use 71.5 hours instead of exactly 72 to avoid race conditions
         // in the test where the calculation happens between two system calls
-        let boundary_time = Utc::now() - Duration::hours(71) - Duration::minutes(30);
+        let boundary_time = chrono::Utc::now() - Duration::hours(71) - Duration::minutes(30);
         let boundary_timestamp = boundary_time.to_rfc3339();
 
         // Should be OK since we're within the 72-hour window
-        let result = check_recovery_window(&boundary_timestamp);
+        let result = check_recovery_window(core, &boundary_timestamp);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_check_recovery_window_valid() {
+        let core = &crate::test_support::core();
         // Create a timestamp 1 hour in the past (well within the window)
-        let valid_time = Utc::now() - Duration::hours(1);
+        let valid_time = chrono::Utc::now() - Duration::hours(1);
         let valid_timestamp = valid_time.to_rfc3339();
 
-        let result = check_recovery_window(&valid_timestamp);
+        let result = check_recovery_window(core, &valid_timestamp);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_check_recovery_window_very_recent() {
+        let core = &crate::test_support::core();
         // Create a timestamp just 1 minute in the past
-        let recent_time = Utc::now() - Duration::minutes(1);
+        let recent_time = chrono::Utc::now() - Duration::minutes(1);
         let recent_timestamp = recent_time.to_rfc3339();
 
-        let result = check_recovery_window(&recent_timestamp);
+        let result = check_recovery_window(core, &recent_timestamp);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_check_recovery_window_invalid_timestamp() {
-        let result = check_recovery_window("not a valid timestamp");
+        let core = &crate::test_support::core();
+        let result = check_recovery_window(core, "not a valid timestamp");
         assert!(matches!(result, Err(RecoveryError::SigningFailed { .. })));
     }
 
     #[test]
     fn test_check_recovery_window_malformed_rfc3339() {
-        let result = check_recovery_window("2026-03-31T12:00");
+        let core = &crate::test_support::core();
+        let result = check_recovery_window(core, "2026-03-31T12:00");
         assert!(matches!(result, Err(RecoveryError::SigningFailed { .. })));
     }
 
@@ -995,18 +1007,21 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_build_recovery_override_signs_with_device_key() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did = "did:plc:ac73build";
 
         // Setup identity with IdentityStore (pattern from plc_monitor.rs)
-        let store = IdentityStore;
+        let store = core.identities();
         let _ = store.remove_identity(did);
         store.add_identity(did).expect("add_identity");
         let device_pub = store
             .get_or_create_device_key(did)
             .expect("device key generation failed");
-        let device_priv_bytes: [u8; 32] = crate::keystore::get_item(&format!("{did}:device-key"))
+        let device_priv_bytes: [u8; 32] = core
+            .keys()
+            .get_item(&format!("{did}:device-key"))
             .expect("device key retrieval")
             .try_into()
             .expect("device key 32 bytes");
@@ -1040,8 +1055,8 @@ mod tests {
         });
 
         // Build audit log JSON with dynamic timestamps within the 72-hour recovery window
-        let genesis_time = (Utc::now() - Duration::hours(2)).to_rfc3339();
-        let unauth_time = (Utc::now() - Duration::hours(1)).to_rfc3339();
+        let genesis_time = (chrono::Utc::now() - Duration::hours(2)).to_rfc3339();
+        let unauth_time = (chrono::Utc::now() - Duration::hours(1)).to_rfc3339();
 
         let audit_log_json = serde_json::json!([
             {
@@ -1063,6 +1078,7 @@ mod tests {
         // Setup mock server
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
+        let core = &core.with_pds_client(client);
 
         // Mock GET /{did}/log/audit — returns audit log with genesis + unauthorized op
         mock_server.mock(|when, then| {
@@ -1073,7 +1089,7 @@ mod tests {
         });
 
         // Execute build_recovery_override
-        let signed_recovery = build_recovery_override(&client, did, "bafy_unauthorized")
+        let signed_recovery = build_recovery_override(core, did, "bafy_unauthorized")
             .await
             .expect("build_recovery_override should succeed");
 
@@ -1166,12 +1182,13 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_submit_recovery_override() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did = "did:plc:ac74submit";
 
         // Setup identity with device key
-        let store = IdentityStore;
+        let store = core.identities();
         let _ = store.remove_identity(did);
         store.add_identity(did).expect("add_identity");
         let device_pub = store
@@ -1181,10 +1198,13 @@ mod tests {
         // Start mock server
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
+        let core = &core.with_pds_client(client);
 
         // Generate a test genesis operation
-        let device_priv_bytes =
-            crate::keystore::get_item(&format!("{did}:device-key")).expect("device key retrieval");
+        let device_priv_bytes = core
+            .keys()
+            .get_item(&format!("{did}:device-key"))
+            .expect("device key retrieval");
         let device_priv_array: [u8; 32] =
             device_priv_bytes.try_into().expect("device key 32 bytes");
         let rotation_key = crypto::generate_p256_keypair().expect("rotation key generation");
@@ -1239,7 +1259,7 @@ mod tests {
             serde_json::from_str(&recovery_op.signed_op_json).expect("parse recovery op json");
 
         // Updated audit log (after recovery operation is applied)
-        let genesis_time = (Utc::now() - Duration::hours(2)).to_rfc3339();
+        let genesis_time = (chrono::Utc::now() - Duration::hours(2)).to_rfc3339();
 
         let updated_audit_log_json = serde_json::json!([
             {
@@ -1291,7 +1311,7 @@ mod tests {
         });
 
         // Execute submit_recovery_override
-        let result = submit_recovery_override(&client, did, &recovery_signed_op_value)
+        let result = submit_recovery_override(core, did, &recovery_signed_op_value)
             .await
             .expect("submit_recovery_override should succeed");
 

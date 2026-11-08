@@ -13,13 +13,11 @@
 //! can tell "this key does not exist here" (reported by [`Signer::signer`]) from "the key
 //! refused to sign" (reported by the returned function).
 //!
-//! Installation follows [`keystore`](crate::keystore): the shell calls [`install`] once at
-//! startup, every call fails with [`SignerError::NotInstalled`] until then, and the
-//! `test-support` feature (or this crate's own tests) falls back to [`SoftwareSigner`] instead.
-//! A device that silently fell back to a software key would mint keys that are not the ones
-//! its DID documents name, so production never falls back.
+//! [`Core`](crate::oauth::Core) owns the signer the shell hands it (`core.signer()`). A device
+//! that silently fell back to a software key would mint keys that are not the ones its DID
+//! documents name, so a device shell never hands it [`SoftwareSigner`].
 
-use std::sync::OnceLock;
+use std::sync::Arc;
 
 use p256::ecdsa::signature::Signer as _;
 use p256::ecdsa::{Signature, SigningKey};
@@ -28,7 +26,7 @@ use crate::device_key;
 use crate::identity_store::{
     device_key_account, device_key_app_label_account, device_key_pub_account,
 };
-use crate::keystore;
+use crate::keystore::{self, KeyStore, Keys};
 
 /// Which device key a [`Signer`] call addresses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,9 +94,6 @@ pub enum SignerError {
     /// The key refused to produce a signature.
     #[error("{message}")]
     Signing { message: String },
-    /// The shell never called [`install`].
-    #[error("no signer installed")]
-    NotInstalled,
 }
 
 /// Signs one message with a device key: a raw 64-byte `r||s` ECDSA signature, low-S
@@ -118,53 +113,24 @@ pub trait Signer: Send + Sync {
     fn is_hardware_bound(&self) -> bool;
 }
 
-static INSTALLED: OnceLock<Box<dyn Signer>> = OnceLock::new();
-
-/// Install the process-wide signer. The second and later calls are refused and hand the
-/// signer back.
-pub fn install(signer: Box<dyn Signer>) -> Result<(), Box<dyn Signer>> {
-    INSTALLED.set(signer)
+/// A software P-256 key per [`KeyId`], its private scalar stored in `keys` under the key's
+/// `private_scalar` account. Signs with RFC 6979 deterministic ECDSA.
+pub struct SoftwareSigner {
+    keys: Arc<dyn KeyStore>,
 }
 
-/// The installed signer.
-pub fn signer() -> &'static dyn Signer {
-    match INSTALLED.get() {
-        Some(signer) => signer.as_ref(),
-        None => &UNINSTALLED,
+impl SoftwareSigner {
+    pub fn new(keys: Arc<dyn KeyStore>) -> Self {
+        Self { keys }
     }
 }
-
-#[cfg(not(any(test, feature = "test-support")))]
-const UNINSTALLED: Uninstalled = Uninstalled;
-#[cfg(any(test, feature = "test-support"))]
-const UNINSTALLED: SoftwareSigner = SoftwareSigner;
-
-#[cfg(not(any(test, feature = "test-support")))]
-struct Uninstalled;
-
-#[cfg(not(any(test, feature = "test-support")))]
-impl Signer for Uninstalled {
-    fn public_key(&self, _: KeyId<'_>) -> Result<Vec<u8>, SignerError> {
-        Err(SignerError::NotInstalled)
-    }
-    fn signer(&self, _: KeyId<'_>) -> Result<SignFn, SignerError> {
-        Err(SignerError::NotInstalled)
-    }
-    fn is_hardware_bound(&self) -> bool {
-        false
-    }
-}
-
-/// A software P-256 key per [`KeyId`], its private scalar stored in the installed
-/// [`KeyStore`](crate::keystore::KeyStore) under the key's `private_scalar` account. Signs
-/// with RFC 6979 deterministic ECDSA.
-pub struct SoftwareSigner;
 
 impl Signer for SoftwareSigner {
     fn public_key(&self, key: KeyId<'_>) -> Result<Vec<u8>, SignerError> {
         let account = key.accounts().private_scalar;
+        let keys = Keys::new(self.keys.as_ref());
 
-        let private_bytes = match keystore::get_item(&account) {
+        let private_bytes = match keys.get_item(&account) {
             Ok(bytes) => bytes,
             Err(e) if keystore::is_not_found(&e) => {
                 let keypair = crypto::generate_p256_keypair().map_err(|e| {
@@ -172,9 +138,10 @@ impl Signer for SoftwareSigner {
                     SignerError::GenerationFailed
                 })?;
                 let bytes = keypair.private_key_bytes.to_vec();
-                keystore::store_item(&account, &bytes).map_err(|e| SignerError::Storage {
-                    message: e.to_string(),
-                })?;
+                keys.store_item(&account, &bytes)
+                    .map_err(|e| SignerError::Storage {
+                        message: e.to_string(),
+                    })?;
                 bytes
             }
             Err(e) => {
@@ -200,7 +167,8 @@ impl Signer for SoftwareSigner {
     fn signer(&self, key: KeyId<'_>) -> Result<SignFn, SignerError> {
         // Zeroizing, so the raw scalar is scrubbed once `signing_key` is rebuilt from it.
         let account = key.accounts().private_scalar;
-        let private_bytes = zeroize::Zeroizing::new(keystore::get_item(&account).map_err(|e| {
+        let keys = Keys::new(self.keys.as_ref());
+        let private_bytes = zeroize::Zeroizing::new(keys.get_item(&account).map_err(|e| {
             if keystore::is_not_found(&e) {
                 SignerError::NotFound {
                     message: "device key not found in Keychain".to_string(),
@@ -231,8 +199,14 @@ impl Signer for SoftwareSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::MemKeyStore;
     use p256::ecdsa::signature::Verifier;
     use p256::ecdsa::VerifyingKey;
+
+    fn software() -> (Arc<MemKeyStore>, SoftwareSigner) {
+        let keys = Arc::new(MemKeyStore::default());
+        (keys.clone(), SoftwareSigner::new(keys))
+    }
 
     const DID: &str = "did:plc:signer0123456789abcdefgh";
     const KEY: KeyId<'static> = KeyId::Identity(DID);
@@ -263,23 +237,25 @@ mod tests {
     /// The global key is its own key, not an alias of any identity's.
     #[test]
     fn global_and_per_did_keys_are_distinct() {
-        keystore::clear_for_test();
-        let global = SoftwareSigner.public_key(KeyId::Global).unwrap();
-        assert_eq!(global, SoftwareSigner.public_key(KeyId::Global).unwrap());
-        assert_ne!(global, SoftwareSigner.public_key(KEY).unwrap());
+        let (keys, signer) = software();
+        let global = signer.public_key(KeyId::Global).unwrap();
+        assert_eq!(global, signer.public_key(KeyId::Global).unwrap());
+        assert_ne!(global, signer.public_key(KEY).unwrap());
         assert!(
-            keystore::get_item(device_key::DEVICE_KEY_PRIV_ACCOUNT).is_ok(),
+            Keys::new(keys.as_ref())
+                .get_item(device_key::DEVICE_KEY_PRIV_ACCOUNT)
+                .is_ok(),
             "the global scalar lands under its frozen account"
         );
     }
 
     #[test]
     fn software_key_is_stable_and_verifies_low_s() {
-        keystore::clear_for_test();
-        let public = SoftwareSigner.public_key(KEY).unwrap();
-        assert_eq!(public, SoftwareSigner.public_key(KEY).unwrap());
+        let (_, signer) = software();
+        let public = signer.public_key(KEY).unwrap();
+        assert_eq!(public, signer.public_key(KEY).unwrap());
 
-        let signature = (SoftwareSigner.signer(KEY).unwrap())(b"op").unwrap();
+        let signature = (signer.signer(KEY).unwrap())(b"op").unwrap();
         let signature = Signature::from_slice(&signature).unwrap();
         assert!(
             signature.normalize_s() == signature,
@@ -293,9 +269,9 @@ mod tests {
 
     #[test]
     fn signing_never_mints_a_key() {
-        keystore::clear_for_test();
+        let (_, signer) = software();
         assert!(matches!(
-            SoftwareSigner.signer(KEY),
+            signer.signer(KEY),
             Err(SignerError::NotFound { .. })
         ));
     }

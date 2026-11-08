@@ -1,6 +1,6 @@
 //! The Secure Enclave [`Signer`]: on a real iOS device, every device key — each identity's,
 //! and the app-global one — is an enclave key that never leaves the hardware. The wallet
-//! installs [`EnclaveSigner`] there and `obsign_core::signer::SoftwareSigner` everywhere else
+//! hands its `Core` an [`EnclaveSigner`] there and `obsign_core::signer::SoftwareSigner` everywhere else
 //! (macOS, the Simulator). Which Keychain accounts a key occupies is the core's decision
 //! (`KeyId::accounts`); this module only reads and writes them.
 //!
@@ -11,7 +11,7 @@
 //! [`resolve_se_fast_path`] feeds it one key's reads. Both are free of `cfg` and
 //! Security.framework so they are unit-tested on every host.
 
-use obsign_core::keystore;
+use obsign_core::keystore::{self, Keys};
 use obsign_core::signer::{KeyAccounts, SignerError};
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
 use obsign_core::signer::{KeyId, SignFn, Signer};
@@ -75,8 +75,8 @@ pub(crate) fn classify_se_fast_path(
 /// Normalize a Keychain read into the `classify_se_fast_path` input.
 // Reached only through `resolve_se_fast_path`, which the host lib build does not call.
 #[allow(dead_code)]
-fn read_metadata(account: &str) -> MetadataItem {
-    match keystore::get_item(account) {
+fn read_metadata(keys: Keys<'_>, account: &str) -> MetadataItem {
+    match keys.get_item(account) {
         Ok(bytes) => MetadataItem::Present(bytes),
         Err(e) if keystore::is_not_found(&e) => MetadataItem::Absent,
         Err(e) => MetadataItem::Failed(e.to_string()),
@@ -88,12 +88,13 @@ fn read_metadata(account: &str) -> MetadataItem {
 // alone has no caller.
 #[allow(dead_code)]
 pub(crate) fn resolve_se_fast_path(
+    keys: Keys<'_>,
     accounts: &KeyAccounts,
     enclave_holds: impl FnOnce(&[u8]) -> Result<bool, String>,
 ) -> Result<SeFastPath, SignerError> {
     classify_se_fast_path(
-        read_metadata(&accounts.public_key),
-        read_metadata(&accounts.application_label),
+        read_metadata(keys, &accounts.public_key),
+        read_metadata(keys, &accounts.application_label),
         enclave_holds,
     )
 }
@@ -107,7 +108,20 @@ pub use device::EnclaveSigner;
 mod device {
     use super::*;
 
-    pub struct EnclaveSigner;
+    /// Its metadata accounts live in `keys`, the same store the `Core` holds.
+    pub struct EnclaveSigner {
+        keys: std::sync::Arc<dyn obsign_core::keystore::KeyStore>,
+    }
+
+    impl EnclaveSigner {
+        pub fn new(keys: std::sync::Arc<dyn obsign_core::keystore::KeyStore>) -> Self {
+            Self { keys }
+        }
+
+        fn keys(&self) -> Keys<'_> {
+            Keys::new(self.keys.as_ref())
+        }
+    }
 
     /// Ask the enclave whether it still holds the private key `app_label` names — the same
     /// `ItemSearchOptions` lookup signing performs, minus the signature. `Ok(false)` means
@@ -173,7 +187,7 @@ mod device {
 
             // Fast path: read both metadata accounts, then confirm the enclave still holds
             // the key the label names before reporting it (see the module doc).
-            let verdict = resolve_se_fast_path(&accounts, |app_label| {
+            let verdict = resolve_se_fast_path(self.keys(), &accounts, |app_label| {
                 if enclave_probe_cached(label_account) {
                     return Ok(true);
                 }
@@ -236,9 +250,11 @@ mod device {
 
             // Store the compressed public key for the fast path on future calls.
             let pub_account = &accounts.public_key;
-            keystore::store_item(pub_account, &compressed).map_err(|e| SignerError::Storage {
-                message: e.to_string(),
-            })?;
+            self.keys()
+                .store_item(pub_account, &compressed)
+                .map_err(|e| SignerError::Storage {
+                    message: e.to_string(),
+                })?;
 
             // Get and store application_label. Roll back pub_account if this fails.
             let app_label = priv_key.application_label().ok_or_else(|| {
@@ -246,18 +262,20 @@ mod device {
                     key = ?key,
                     "SE key created but application_label returned None"
                 );
-                let _ = keystore::delete_item(pub_account);
+                let _ = self.keys().delete_item(pub_account);
                 SignerError::Storage {
                     message: "SE key created but application_label returned None; do not retry"
                         .into(),
                 }
             })?;
-            keystore::store_item(label_account, &app_label).map_err(|e| {
-                let _ = keystore::delete_item(pub_account);
-                SignerError::Storage {
-                    message: e.to_string(),
-                }
-            })?;
+            self.keys()
+                .store_item(label_account, &app_label)
+                .map_err(|e| {
+                    let _ = self.keys().delete_item(pub_account);
+                    SignerError::Storage {
+                        message: e.to_string(),
+                    }
+                })?;
 
             // The key was just created in this process, so the fast path may trust it for
             // the rest of the launch without re-querying.
@@ -269,17 +287,20 @@ mod device {
         fn signer(&self, key: KeyId<'_>) -> Result<SignFn, SignerError> {
             use p256::ecdsa::Signature;
 
-            let app_label = keystore::get_item(&key.accounts().application_label).map_err(|e| {
-                if keystore::is_not_found(&e) {
-                    SignerError::NotFound {
-                        message: "device key app label not found in Keychain".to_string(),
+            let app_label = self
+                .keys()
+                .get_item(&key.accounts().application_label)
+                .map_err(|e| {
+                    if keystore::is_not_found(&e) {
+                        SignerError::NotFound {
+                            message: "device key app label not found in Keychain".to_string(),
+                        }
+                    } else {
+                        SignerError::Storage {
+                            message: format!("Keychain error: {e}"),
+                        }
                     }
-                } else {
-                    SignerError::Storage {
-                        message: format!("Keychain error: {e}"),
-                    }
-                }
-            })?;
+                })?;
 
             Ok(Box::new(move |data: &[u8]| {
                 use security_framework::item::{
@@ -323,6 +344,7 @@ mod device {
 mod tests {
     use super::*;
     use obsign_core::signer::KeyId;
+    use obsign_core::test_support::MemKeyStore;
 
     // The enclave branch itself compiles only for a real iOS device; these cover
     // the decision it delegates here, on every host.
@@ -414,11 +436,14 @@ mod tests {
     #[test]
     fn global_key_restored_without_its_enclave_key_is_unusable() {
         use obsign_core::device_key::{DEVICE_KEY_APP_LABEL_ACCOUNT, DEVICE_KEY_PUB_ACCOUNT};
-        keystore::clear_for_test();
-        keystore::store_item(DEVICE_KEY_PUB_ACCOUNT, &[0x02; 33]).unwrap();
-        keystore::store_item(DEVICE_KEY_APP_LABEL_ACCOUNT, b"restored-label").unwrap();
+        let store = MemKeyStore::default();
+        let keys = Keys::new(&store);
+        keys.store_item(DEVICE_KEY_PUB_ACCOUNT, &[0x02; 33])
+            .unwrap();
+        keys.store_item(DEVICE_KEY_APP_LABEL_ACCOUNT, b"restored-label")
+            .unwrap();
 
-        let result = resolve_se_fast_path(&KeyId::Global.accounts(), |label| {
+        let result = resolve_se_fast_path(keys, &KeyId::Global.accounts(), |label| {
             assert_eq!(label, b"restored-label");
             Ok(false)
         });
@@ -434,14 +459,18 @@ mod tests {
     #[test]
     fn per_did_key_does_not_read_the_global_metadata() {
         use obsign_core::device_key::{DEVICE_KEY_APP_LABEL_ACCOUNT, DEVICE_KEY_PUB_ACCOUNT};
-        keystore::clear_for_test();
-        keystore::store_item(DEVICE_KEY_PUB_ACCOUNT, &[0x02; 33]).unwrap();
-        keystore::store_item(DEVICE_KEY_APP_LABEL_ACCOUNT, b"global-label").unwrap();
+        let store = MemKeyStore::default();
+        let keys = Keys::new(&store);
+        keys.store_item(DEVICE_KEY_PUB_ACCOUNT, &[0x02; 33])
+            .unwrap();
+        keys.store_item(DEVICE_KEY_APP_LABEL_ACCOUNT, b"global-label")
+            .unwrap();
 
-        let result =
-            resolve_se_fast_path(&KeyId::Identity("did:plc:someoneelse").accounts(), |_| {
-                panic!("a per-DID key must not probe with the global key's label")
-            });
+        let result = resolve_se_fast_path(
+            keys,
+            &KeyId::Identity("did:plc:someoneelse").accounts(),
+            |_| panic!("a per-DID key must not probe with the global key's label"),
+        );
 
         assert_eq!(result.unwrap(), SeFastPath::Generate);
     }

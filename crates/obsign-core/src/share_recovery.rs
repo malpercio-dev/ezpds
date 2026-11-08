@@ -49,14 +49,12 @@
 //! `ShareRecoveryError` serializes as `{ code: "SCREAMING_SNAKE_CASE" }` with
 //! camelCase fields.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::handle_change::CurrentHandleState;
-use crate::identity_store::{IdentityStore, IdentityStoreError, PerDidSignError};
+use crate::identity_store::{IdentityStoreError, PerDidSignError};
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::sovereign_session;
 
@@ -87,17 +85,20 @@ pub fn decode_share1_envelope(bytes: &[u8]) -> Option<crypto::ShareEnvelope> {
 
 /// Read a **device-local** Keychain slot as an index-1 v2 share envelope, or `None` if the
 /// slot is absent, unreadable, or holds anything else.
-fn load_share1_envelope(account: &str) -> Option<crypto::ShareEnvelope> {
+fn load_share1_envelope(core: &crate::oauth::Core, account: &str) -> Option<crypto::ShareEnvelope> {
     // Sensitive key material — wipe the in-memory copy when this scope ends.
-    let bytes = zeroize::Zeroizing::new(crate::keystore::get_item(account).ok()?);
+    let bytes = zeroize::Zeroizing::new(core.keys().get_item(account).ok()?);
     decode_share1_envelope(&bytes)
 }
 
 /// Read the **iCloud-synchronizable** slot as an index-1 v2 share envelope. This is the slot
 /// that can arrive on a device that never ran the ceremony.
-fn load_share1_envelope_synced(account: &str) -> Option<crypto::ShareEnvelope> {
+fn load_share1_envelope_synced(
+    core: &crate::oauth::Core,
+    account: &str,
+) -> Option<crypto::ShareEnvelope> {
     // Sensitive key material — wipe the in-memory copy when this scope ends.
-    let bytes = zeroize::Zeroizing::new(crate::keystore::get_item_synced(account).ok()?);
+    let bytes = zeroize::Zeroizing::new(core.keys().get_item_synced(account).ok()?);
     decode_share1_envelope(&bytes)
 }
 
@@ -113,11 +114,11 @@ fn load_share1_envelope_synced(account: &str) -> Option<crypto::ShareEnvelope> {
 ///
 /// Each tier is validated independently, so a damaged higher tier cannot shadow a good lower
 /// one.
-fn auto_load_share1(did: &str) -> Option<crypto::ShareEnvelope> {
+fn auto_load_share1(core: &crate::oauth::Core, did: &str) -> Option<crypto::ShareEnvelope> {
     let per_did = crate::rekey::recovery_share1_account(did);
-    load_share1_envelope_synced(&per_did)
-        .or_else(|| load_share1_envelope(&per_did))
-        .or_else(|| load_share1_envelope(RECOVERY_SHARE1_ACCOUNT))
+    load_share1_envelope_synced(core, &per_did)
+        .or_else(|| load_share1_envelope(core, &per_did))
+        .or_else(|| load_share1_envelope(core, RECOVERY_SHARE1_ACCOUNT))
 }
 
 /// Bumped only on a breaking epilogue-record format change; a mismatched version reads
@@ -363,17 +364,12 @@ type StateSlot = tokio::sync::Mutex<Option<ShareRecoveryState>>;
 /// reads the authoritative current state from plc.directory, and auto-loads Share 1
 /// from the first Keychain slot holding a valid v2 envelope (see `auto_load_share1`).
 pub async fn start_share_recovery(
-    state: &crate::oauth::Core,
+    core: &crate::oauth::Core,
     identifier: String,
 ) -> Result<RecoveryTarget, ShareRecoveryError> {
-    start_impl(state.pds_client(), &state.share_recovery_state, &identifier).await
-}
-
-pub async fn start_impl(
-    pds: &PdsClient,
-    slot: &StateSlot,
-    identifier: &str,
-) -> Result<RecoveryTarget, ShareRecoveryError> {
+    let pds: &PdsClient = core.pds_client();
+    let slot: &StateSlot = &core.share_recovery_state;
+    let identifier: &str = &identifier;
     let identifier = identifier.trim();
     let did = if identifier.starts_with("did:plc:") {
         identifier.to_string()
@@ -401,7 +397,7 @@ pub async fn start_impl(
     // Share 1 auto-load across the three slots it may occupy (see `auto_load_share1`).
     // A valid v2 index-1 envelope joins the session.
     let mut shares = Vec::new();
-    let share1_loaded = match auto_load_share1(&did) {
+    let share1_loaded = match auto_load_share1(core, &did) {
         Some(env) => {
             shares.push(StoredShare::from_envelope(&env));
             true
@@ -447,13 +443,8 @@ pub async fn add_recovery_share(
     state: &crate::oauth::Core,
     share: String,
 ) -> Result<CollectedShare, ShareRecoveryError> {
-    add_share_impl(&state.share_recovery_state, &share).await
-}
-
-pub async fn add_share_impl(
-    slot: &StateSlot,
-    share: &str,
-) -> Result<CollectedShare, ShareRecoveryError> {
+    let slot: &StateSlot = &state.share_recovery_state;
+    let share: &str = &share;
     let trimmed = share.trim();
     if trimmed.is_empty() {
         return Err(ShareRecoveryError::ShareFormat {
@@ -501,10 +492,8 @@ pub async fn add_share_impl(
 /// Ask the account's PDS to email a release OTP. Always succeeds server-side for any
 /// identifier (no enumeration), so success here only means "the request was sent".
 pub async fn initiate_escrow_release(state: &crate::oauth::Core) -> Result<(), ShareRecoveryError> {
-    initiate_impl(state.pds_client(), &state.share_recovery_state).await
-}
-
-pub async fn initiate_impl(pds: &PdsClient, slot: &StateSlot) -> Result<(), ShareRecoveryError> {
+    let pds: &PdsClient = state.pds_client();
+    let slot: &StateSlot = &state.share_recovery_state;
     let (did, pds_url) = escrow_target(slot).await?;
     let url = format!("{}/v1/recovery/initiate", pds_url.trim_end_matches('/'));
     let response = pds
@@ -533,22 +522,8 @@ pub async fn request_escrow_release(
     state: &crate::oauth::Core,
     otp: Option<String>,
 ) -> Result<EscrowReleaseStatus, ShareRecoveryError> {
-    release_impl(state.pds_client(), &state.share_recovery_state, otp).await
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ReleaseResponse {
-    status: String,
-    available_at: Option<String>,
-    share: Option<String>,
-}
-
-pub async fn release_impl(
-    pds: &PdsClient,
-    slot: &StateSlot,
-    otp: Option<String>,
-) -> Result<EscrowReleaseStatus, ShareRecoveryError> {
+    let pds: &PdsClient = state.pds_client();
+    let slot: &StateSlot = &state.share_recovery_state;
     let (did, pds_url) = escrow_target(slot).await?;
     let url = format!("{}/v1/recovery/release", pds_url.trim_end_matches('/'));
     let mut body = serde_json::json!({ "identifier": did });
@@ -634,6 +609,14 @@ pub async fn release_impl(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleaseResponse {
+    status: String,
+    available_at: Option<String>,
+    share: Option<String>,
+}
+
 async fn escrow_target(slot: &StateSlot) -> Result<(String, String), ShareRecoveryError> {
     let guard = slot.lock().await;
     let session = guard
@@ -664,15 +647,10 @@ fn rate_limited(response: &reqwest::Response) -> ShareRecoveryError {
 /// derived public key against the DID's authoritative current `rotationKeys` from
 /// plc.directory. Nothing is signed before this check passes.
 pub async fn verify_recovery_shares(
-    state: &crate::oauth::Core,
+    core: &crate::oauth::Core,
 ) -> Result<RecoveredIdentity, ShareRecoveryError> {
-    verify_impl(state.pds_client(), &state.share_recovery_state).await
-}
-
-pub async fn verify_impl(
-    pds: &PdsClient,
-    slot: &StateSlot,
-) -> Result<RecoveredIdentity, ShareRecoveryError> {
+    let pds: &PdsClient = core.pds_client();
+    let slot: &StateSlot = &core.share_recovery_state;
     // Derive under the lock, then drop it for the network fetch.
     let (did, handle, seed, recovery_key_id) = {
         let guard = slot.lock().await;
@@ -720,7 +698,10 @@ pub async fn verify_impl(
     // because it is the one the DID's existing children were minted against, and
     // recovery's job is to give the user their identity back either way.
     let delegation_seed = crypto::derive_delegation_seed(&seed);
-    if let Err(e) = IdentityStore.store_delegation_seed(&did, &delegation_seed) {
+    if let Err(e) = core
+        .identities()
+        .store_delegation_seed(&did, &delegation_seed)
+    {
         tracing::warn!(did = %did, error = %e, "delegation seed not persisted during share verification");
     }
 
@@ -752,15 +733,10 @@ pub async fn verify_impl(
 /// the PDS happens in the epilogue's re-escrow step, keeping the fully-sovereign path
 /// free of PDS contact until then.
 pub async fn recover_identity(
-    state: &crate::oauth::Core,
+    core: &crate::oauth::Core,
 ) -> Result<RecoveryAnchor, ShareRecoveryError> {
-    recover_impl(state.pds_client(), &state.share_recovery_state).await
-}
-
-pub async fn recover_impl(
-    pds: &PdsClient,
-    slot: &StateSlot,
-) -> Result<RecoveryAnchor, ShareRecoveryError> {
+    let pds: &PdsClient = core.pds_client();
+    let slot: &StateSlot = &core.share_recovery_state;
     let (did, seed, recovery_key_id) = {
         let guard = slot.lock().await;
         let session = guard
@@ -777,7 +753,7 @@ pub async fn recover_impl(
         )
     };
 
-    let store = IdentityStore;
+    let store = core.identities();
     match store.add_identity(&did) {
         Ok(()) | Err(IdentityStoreError::IdentityAlreadyExists) => {}
         Err(e) => return Err(map_store_error(e)),
@@ -823,11 +799,11 @@ pub async fn recover_impl(
         (Some(op.cid), false)
     };
 
-    refresh_identity_cache(pds, &store, &did).await?;
+    refresh_identity_cache(core, &did).await?;
 
     // Stage the mandatory rotation epilogue durably BEFORE returning: from here on
     // the lost device's share world must be voided even if the app dies right now.
-    stage_epilogue(&did, &recovery_key_id)?;
+    stage_epilogue(core, &did, &recovery_key_id)?;
 
     Ok(RecoveryAnchor {
         did,
@@ -896,19 +872,23 @@ async fn fetch_current_state(
 /// Refresh the per-identity caches with the PLC *data* document (never the W3C form,
 /// which carries no `rotationKeys` and degrades the home badge to "Unknown").
 async fn refresh_identity_cache(
-    pds: &PdsClient,
-    store: &IdentityStore,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<(), ShareRecoveryError> {
-    let updated_log = pds.fetch_audit_log(did).await.map_err(map_pds_error)?;
-    store
+    let updated_log = core
+        .pds_client()
+        .fetch_audit_log(did)
+        .await
+        .map_err(map_pds_error)?;
+    core.identities()
         .store_plc_log(did, &updated_log)
         .map_err(map_store_error)?;
-    let did_doc = pds
+    let did_doc = core
+        .pds_client()
         .fetch_plc_data_document(did)
         .await
         .map_err(map_pds_error)?;
-    store
+    core.identities()
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(map_store_error)?;
     Ok(())
@@ -948,8 +928,12 @@ impl Drop for EpilogueRecord {
 /// Generate the epilogue's fresh share world (new seed, new set_id, new recovery
 /// key) and persist it durably. Reuses an existing record for the same DID (a retry
 /// must not orphan an already-escrowed set); refuses to clobber one for another DID.
-fn stage_epilogue(did: &str, old_recovery_key_id: &str) -> Result<(), ShareRecoveryError> {
-    if let Some(existing) = load_epilogue()? {
+fn stage_epilogue(
+    core: &crate::oauth::Core,
+    did: &str,
+    old_recovery_key_id: &str,
+) -> Result<(), ShareRecoveryError> {
+    if let Some(existing) = load_epilogue(core)? {
         if existing.did == did {
             return Ok(());
         }
@@ -998,25 +982,30 @@ fn stage_epilogue(did: &str, old_recovery_key_id: &str) -> Result<(), ShareRecov
         escrow_skipped: false,
         share1_written: false,
     };
-    save_epilogue(&record)
+    save_epilogue(core, &record)
 }
 
 #[allow(
     clippy::expect_used,
     reason = "serde_json serializes a plain derive(Serialize) struct infallibly"
 )]
-fn save_epilogue(record: &EpilogueRecord) -> Result<(), ShareRecoveryError> {
+fn save_epilogue(
+    core: &crate::oauth::Core,
+    record: &EpilogueRecord,
+) -> Result<(), ShareRecoveryError> {
     let json = Zeroizing::new(
         serde_json::to_string(record).expect("epilogue record serialization cannot fail"),
     );
-    crate::keystore::store_item(EPILOGUE_ACCOUNT, json.as_bytes()).map_err(map_keychain_error)
+    core.keys()
+        .store_item(EPILOGUE_ACCOUNT, json.as_bytes())
+        .map_err(map_keychain_error)
 }
 
 /// Read the epilogue record. Fail-closed contract: only a genuinely absent slot is
 /// `Ok(None)`; a present-but-unreadable record errors and is preserved — it may hold
 /// the only copy of a share set the swap op already bound to the DID.
-fn load_epilogue() -> Result<Option<EpilogueRecord>, ShareRecoveryError> {
-    let bytes = match crate::keystore::get_item(EPILOGUE_ACCOUNT) {
+fn load_epilogue(core: &crate::oauth::Core) -> Result<Option<EpilogueRecord>, ShareRecoveryError> {
+    let bytes = match core.keys().get_item(EPILOGUE_ACCOUNT) {
         Ok(bytes) => Zeroizing::new(bytes),
         Err(e) if crate::keystore::is_not_found(&e) => return Ok(None),
         Err(e) => {
@@ -1039,8 +1028,10 @@ fn load_epilogue() -> Result<Option<EpilogueRecord>, ShareRecoveryError> {
 
 /// Report a pending (interrupted) rotation epilogue, if any — the launch-time resume
 /// hook. A corrupt record errors (and stays put) rather than reading as absent.
-pub fn get_pending_recovery_epilogue() -> Result<Option<PendingEpilogue>, ShareRecoveryError> {
-    Ok(load_epilogue()?.map(|record| PendingEpilogue {
+pub fn get_pending_recovery_epilogue(
+    core: &crate::oauth::Core,
+) -> Result<Option<PendingEpilogue>, ShareRecoveryError> {
+    Ok(load_epilogue(core)?.map(|record| PendingEpilogue {
         did: record.did.clone(),
         op_submitted: record.op_submitted,
         escrow_deposited: record.escrow_deposited,
@@ -1056,44 +1047,12 @@ pub fn get_pending_recovery_epilogue() -> Result<Option<PendingEpilogue>, ShareR
 /// an app restart. `skip_escrow` records an explicit opt-out of the re-escrow step
 /// (the fully-sovereign posture when the PDS is gone or untrusted).
 pub async fn run_recovery_epilogue(
-    state: &crate::oauth::Core,
+    core: &crate::oauth::Core,
     skip_escrow: Option<bool>,
 ) -> Result<EpilogueResult, ShareRecoveryError> {
-    epilogue_impl(state.pds_client(), skip_escrow.unwrap_or(false)).await
-}
-
-/// Does the recovered identity's current host actually offer escrow?
-///
-/// A self-held identity (the escrow-less kit, or any account on a spec-compliant non-Custos
-/// PDS) has no `/v1/recovery/escrow-share` route to deposit into. Attempting it there fails the
-/// epilogue on a leg that was never going to succeed, stranding the resumable record and
-/// blocking the Share 1 write that follows — so the epilogue reads the host's advertised
-/// capabilities and skips the leg as a fact about the server rather than a failure.
-///
-/// A host that could NOT be asked (`reached == false`) is deliberately not skipped: that is a
-/// transient outage, and silently dropping the escrow leg because the network blinked would
-/// quietly downgrade a Custos account's recovery posture. The deposit is attempted, and its own
-/// failure is retryable.
-async fn host_offers_escrow(pds: &PdsClient, did: &str) -> Result<bool, ShareRecoveryError> {
-    let current = fetch_current_state(pds, did).await?;
-    let Some(pds_url) = current
-        .services
-        .get("atproto_pds")
-        .map(|service| service.endpoint.clone())
-        .filter(|endpoint| !endpoint.is_empty())
-    else {
-        return Ok(false);
-    };
-    let capabilities = crate::pds_capabilities::probe(pds, &pds_url).await;
-    Ok(!capabilities.reached || capabilities.escrow())
-}
-
-pub async fn epilogue_impl(
-    pds: &PdsClient,
-    skip_escrow: bool,
-) -> Result<EpilogueResult, ShareRecoveryError> {
-    let mut record = load_epilogue()?.ok_or(ShareRecoveryError::NoPendingEpilogue)?;
-    let store = IdentityStore;
+    let pds: &PdsClient = core.pds_client();
+    let skip_escrow: bool = skip_escrow.unwrap_or(false);
+    let mut record = load_epilogue(core)?.ok_or(ShareRecoveryError::NoPendingEpilogue)?;
 
     // Step 1 — swap the recovery slot. The new device key (rotationKeys[0] after the
     // re-anchor) signs. A doc already carrying the new recovery key marks the step
@@ -1112,8 +1071,8 @@ pub async fn epilogue_impl(
                 &record.old_recovery_key_id,
                 &record.new_recovery_key_id,
             );
-            let sign =
-                crate::identity_store::per_did_sign_closure(&record.did).map_err(|e| match e {
+            let sign = crate::identity_store::per_did_sign_closure(core.signer(), &record.did)
+                .map_err(|e| match e {
                     PerDidSignError::DeviceKeyNotFound { message }
                     | PerDidSignError::SigningSetupFailed { message } => {
                         ShareRecoveryError::SigningFailed { message }
@@ -1143,8 +1102,8 @@ pub async fn epilogue_impl(
                 })?;
             record.op_submitted = true;
         }
-        save_epilogue(&record)?;
-        refresh_identity_cache(pds, &store, &record.did).await?;
+        save_epilogue(core, &record)?;
+        refresh_identity_cache(core, &record.did).await?;
     }
 
     // Step 2 — re-escrow the new Share 2 over a sovereign session. This is the first
@@ -1153,12 +1112,12 @@ pub async fn epilogue_impl(
     if !record.escrow_deposited && !record.escrow_skipped {
         if skip_escrow || !host_offers_escrow(pds, &record.did).await? {
             record.escrow_skipped = true;
-            save_epilogue(&record)?;
+            save_epilogue(core, &record)?;
         } else {
-            let (pds_url, access_jwt) = ensure_session(pds, &store, &record.did).await?;
+            let (pds_url, access_jwt) = ensure_session(core, &record.did).await?;
             deposit_escrow_share(pds, &pds_url, &access_jwt, &record.share2).await?;
             record.escrow_deposited = true;
-            save_epilogue(&record)?;
+            save_epilogue(core, &record)?;
         }
     }
 
@@ -1168,17 +1127,17 @@ pub async fn epilogue_impl(
     // create-flow ceremony's invariant). Recovery is exactly when the new Share 1 must be able
     // to outlive this device, so it is written synchronizable from the start.
     if !record.share1_written {
-        crate::rekey::store_share1(&record.did, record.share1.as_bytes())
+        crate::rekey::store_share1(core, &record.did, record.share1.as_bytes())
             .map_err(map_keychain_error)?;
         let read_back =
-            crate::rekey::read_share1_synced(&record.did).map_err(map_keychain_error)?;
+            crate::rekey::read_share1_synced(core, &record.did).map_err(map_keychain_error)?;
         if read_back != record.share1.as_bytes() {
             return Err(ShareRecoveryError::KeychainError {
                 message: "Share 1 read-back verification failed".to_string(),
             });
         }
         record.share1_written = true;
-        save_epilogue(&record)?;
+        save_epilogue(core, &record)?;
     }
 
     let envelope3 =
@@ -1191,20 +1150,42 @@ pub async fn epilogue_impl(
     })
 }
 
+/// Does the recovered identity's current host actually offer escrow?
+///
+/// A self-held identity (the escrow-less kit, or any account on a spec-compliant non-Custos
+/// PDS) has no `/v1/recovery/escrow-share` route to deposit into. Attempting it there fails the
+/// epilogue on a leg that was never going to succeed, stranding the resumable record and
+/// blocking the Share 1 write that follows — so the epilogue reads the host's advertised
+/// capabilities and skips the leg as a fact about the server rather than a failure.
+///
+/// A host that could NOT be asked (`reached == false`) is deliberately not skipped: that is a
+/// transient outage, and silently dropping the escrow leg because the network blinked would
+/// quietly downgrade a Custos account's recovery posture. The deposit is attempted, and its own
+/// failure is retryable.
+async fn host_offers_escrow(pds: &PdsClient, did: &str) -> Result<bool, ShareRecoveryError> {
+    let current = fetch_current_state(pds, did).await?;
+    let Some(pds_url) = current
+        .services
+        .get("atproto_pds")
+        .map(|service| service.endpoint.clone())
+        .filter(|endpoint| !endpoint.is_empty())
+    else {
+        return Ok(false);
+    };
+    let capabilities = crate::pds_capabilities::probe(pds, &pds_url).await;
+    Ok(!capabilities.reached || capabilities.escrow())
+}
+
 /// A usable full-access session for the epilogue's escrow deposit: a persisted
 /// record with a live access token, else a fresh device-key sovereign login (the new
 /// device key is a current rotation key the moment the re-anchor op lands, so the
 /// recovered wallet authenticates passwordlessly).
 async fn ensure_session(
-    pds: &PdsClient,
-    store: &IdentityStore,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<(String, String), ShareRecoveryError> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    if let Ok(Some(record)) = store.load_oauth_tokens(did) {
+    let now = u64::try_from(core.unix_timestamp()).unwrap_or(0);
+    if let Ok(Some(record)) = core.identities().load_oauth_tokens(did) {
         if record
             .access_expires_at
             .is_some_and(|exp| exp > now.saturating_add(60))
@@ -1212,17 +1193,13 @@ async fn ensure_session(
             return Ok((record.pds_url, record.access_jwt));
         }
     }
-    let nonce = sovereign_session::fresh_nonce();
-    let timestamp =
-        sovereign_session::unix_timestamp().map_err(|e| ShareRecoveryError::SessionFailed {
-            message: e.to_string(),
-        })?;
-    sovereign_session::sovereign_login_impl(pds, store, did, timestamp, &nonce)
+    sovereign_session::sovereign_login(core, did.to_string())
         .await
         .map_err(|e| ShareRecoveryError::SessionFailed {
             message: e.to_string(),
         })?;
-    let record = store
+    let record = core
+        .identities()
         .load_oauth_tokens(did)
         .map_err(map_store_error)?
         .ok_or_else(|| ShareRecoveryError::SessionFailed {
@@ -1262,11 +1239,14 @@ async fn deposit_escrow_share(
 /// durably in its slot, then destroys the epilogue record (the new seed material's
 /// last transient home) and the in-memory ceremony session. Idempotent.
 pub async fn confirm_recovery_backup(state: &crate::oauth::Core) -> Result<(), ShareBackupError> {
-    confirm_backup_core(&state.share_recovery_state).await
+    confirm_backup_core(state, &state.share_recovery_state).await
 }
 
-pub async fn confirm_backup_core(slot: &StateSlot) -> Result<(), ShareBackupError> {
-    let record = match load_epilogue() {
+pub async fn confirm_backup_core(
+    core: &crate::oauth::Core,
+    slot: &StateSlot,
+) -> Result<(), ShareBackupError> {
+    let record = match load_epilogue(core) {
         Ok(Some(record)) => record,
         // Already confirmed (or never staged) — nothing to tear down.
         Ok(None) => {
@@ -1275,7 +1255,7 @@ pub async fn confirm_backup_core(slot: &StateSlot) -> Result<(), ShareBackupErro
         }
         Err(_) => return Err(ShareBackupError::KeychainError),
     };
-    match crate::rekey::load_share1(&record.did) {
+    match crate::rekey::load_share1(core, &record.did) {
         Ok(bytes) if bytes == record.share1.as_bytes() => {}
         Ok(_) => return Err(ShareBackupError::ShareNotStored),
         // A missing slot means the durable write never landed; an operational Keychain
@@ -1286,7 +1266,7 @@ pub async fn confirm_backup_core(slot: &StateSlot) -> Result<(), ShareBackupErro
         }
         Err(_) => return Err(ShareBackupError::KeychainError),
     }
-    match crate::keystore::delete_item(EPILOGUE_ACCOUNT) {
+    match core.keys().delete_item(EPILOGUE_ACCOUNT) {
         Ok(()) => {}
         Err(e) if crate::keystore::is_not_found(&e) => {}
         Err(_) => return Err(ShareBackupError::KeychainError),
@@ -1323,18 +1303,28 @@ mod tests {
         (envelopes, keypair.key_id.0)
     }
 
-    fn fresh_slot(did: &str, pds_url: Option<String>) -> StateSlot {
-        tokio::sync::Mutex::new(Some(ShareRecoveryState {
+    /// A `Core` over `core`'s fakes, talking to `pds`, with a ceremony already started for `did`.
+    fn fresh_slot(
+        core: &crate::oauth::Core,
+        pds: &PdsClient,
+        did: &str,
+        pds_url: Option<String>,
+    ) -> crate::oauth::Core {
+        let slot = core.with_pds_client(pds.clone());
+        *slot.share_recovery_state.try_lock().unwrap() = Some(ShareRecoveryState {
             did: did.to_string(),
             handle: Some("alice.example.com".to_string()),
             pds_url,
             shares: Vec::new(),
             verified: None,
-        }))
+        });
+        slot
     }
 
-    async fn push_share(slot: &StateSlot, env: &crypto::ShareEnvelope) {
-        add_share_impl(slot, &env.encode_share()).await.unwrap();
+    async fn push_share(slot: &crate::oauth::Core, env: &crypto::ShareEnvelope) {
+        add_recovery_share(slot, env.encode_share().to_string())
+            .await
+            .unwrap();
     }
 
     fn audit_log_json(rotation_keys: &[&str], pds_endpoint: &str, prev_cid: &str) -> String {
@@ -1365,15 +1355,22 @@ mod tests {
     /// so it must win over a device-local slot of the same name whenever both exist.
     #[test]
     fn auto_load_prefers_the_synchronizable_slot() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let (synced, _) = make_split(0xAAAA_AAAA);
         let (local, _) = make_split(0xBBBB_BBBB);
         let account = crate::rekey::recovery_share1_account(DID);
 
-        crate::keystore::store_item(&account, local[0].encode_share().as_bytes()).unwrap();
-        crate::keystore::store_item_synced(&account, synced[0].encode_share().as_bytes()).unwrap();
+        core.keys()
+            .store_item(&account, local[0].encode_share().as_bytes())
+            .unwrap();
+        core.keys()
+            .store_item_synced(&account, synced[0].encode_share().as_bytes())
+            .unwrap();
 
-        assert_eq!(auto_load_share1(DID).unwrap().set_id(), synced[0].set_id());
+        assert_eq!(
+            auto_load_share1(core, DID).unwrap().set_id(),
+            synced[0].set_id()
+        );
     }
 
     /// The lower tiers still answer on the device that holds them: a device-local slot when
@@ -1381,49 +1378,65 @@ mod tests {
     /// identity. A damaged higher tier must not shadow a good lower one.
     #[test]
     fn auto_load_falls_through_to_local_then_global() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let (local, _) = make_split(0xCCCC_CCCC);
         let (global, _) = make_split(0xDDDD_DDDD);
         let account = crate::rekey::recovery_share1_account(DID);
 
-        crate::keystore::store_item(RECOVERY_SHARE1_ACCOUNT, global[0].encode_share().as_bytes())
+        core.keys()
+            .store_item(RECOVERY_SHARE1_ACCOUNT, global[0].encode_share().as_bytes())
             .unwrap();
-        assert_eq!(auto_load_share1(DID).unwrap().set_id(), global[0].set_id());
+        assert_eq!(
+            auto_load_share1(core, DID).unwrap().set_id(),
+            global[0].set_id()
+        );
 
-        crate::keystore::store_item(&account, local[0].encode_share().as_bytes()).unwrap();
-        assert_eq!(auto_load_share1(DID).unwrap().set_id(), local[0].set_id());
+        core.keys()
+            .store_item(&account, local[0].encode_share().as_bytes())
+            .unwrap();
+        assert_eq!(
+            auto_load_share1(core, DID).unwrap().set_id(),
+            local[0].set_id()
+        );
 
         // A synchronizable slot holding unusable bytes falls through rather than blocking.
-        crate::keystore::store_item_synced(&account, b"NOTANENVELOPE").unwrap();
-        assert_eq!(auto_load_share1(DID).unwrap().set_id(), local[0].set_id());
+        core.keys()
+            .store_item_synced(&account, b"NOTANENVELOPE")
+            .unwrap();
+        assert_eq!(
+            auto_load_share1(core, DID).unwrap().set_id(),
+            local[0].set_id()
+        );
     }
 
     /// Nothing anywhere, or a Share 2/3 envelope in the slot, reads as "not loaded" — the
     /// ceremony falls back to manual entry rather than seeding a wrong share.
     #[test]
     fn auto_load_reports_nothing_when_no_slot_holds_a_share1_envelope() {
-        crate::keystore::clear_for_test();
-        assert!(auto_load_share1(DID).is_none());
+        let core = &crate::test_support::core();
+        assert!(auto_load_share1(core, DID).is_none());
 
         let (set, _) = make_split(0xEEEE_EEEE);
-        crate::keystore::store_item_synced(
-            &crate::rekey::recovery_share1_account(DID),
-            set[1].encode_share().as_bytes(),
-        )
-        .unwrap();
-        assert!(auto_load_share1(DID).is_none());
+        core.keys()
+            .store_item_synced(
+                &crate::rekey::recovery_share1_account(DID),
+                set[1].encode_share().as_bytes(),
+            )
+            .unwrap();
+        assert!(auto_load_share1(core, DID).is_none());
     }
 
     // ── Share collection: distinct, human-legible failures before any combine ──
 
     #[tokio::test]
     async fn add_share_surfaces_checksum_set_mismatch_and_duplicate_distinctly() {
+        let core = &crate::test_support::core();
         let (set_a, _) = make_split(0x1111_1111);
         let (set_b, _) = make_split(0x2222_2222);
-        let slot = fresh_slot(DID, None);
+        let slot = fresh_slot(core, core.pds_client(), DID, None);
 
         // Word-phrase entry works and reports metadata.
-        let collected = add_share_impl(&slot, &set_a[2].encode_share_words())
+        let collected = add_recovery_share(&slot, set_a[2].encode_share_words().to_string())
             .await
             .unwrap();
         assert_eq!(collected.index, 3);
@@ -1437,18 +1450,18 @@ mod tests {
         let mut corrupt = share1.to_string();
         corrupt.replace_range(20..21, flipped);
         assert!(matches!(
-            add_share_impl(&slot, &corrupt).await,
+            add_recovery_share(&slot, corrupt.clone()).await,
             Err(ShareRecoveryError::ShareChecksum)
         ));
 
         // Garbage is a format error, not a checksum error.
         assert!(matches!(
-            add_share_impl(&slot, "not-a-share").await,
+            add_recovery_share(&slot, "not-a-share".to_string()).await,
             Err(ShareRecoveryError::ShareFormat { .. })
         ));
 
         // A share from another split generation is a set mismatch, named by set_id.
-        match add_share_impl(&slot, &set_b[0].encode_share()).await {
+        match add_recovery_share(&slot, set_b[0].encode_share().to_string()).await {
             Err(ShareRecoveryError::ShareSetMismatch {
                 expected_set_id,
                 got_set_id,
@@ -1461,7 +1474,7 @@ mod tests {
 
         // The same index twice is a duplicate.
         assert!(matches!(
-            add_share_impl(&slot, &set_a[2].encode_share()).await,
+            add_recovery_share(&slot, set_a[2].encode_share().to_string()).await,
             Err(ShareRecoveryError::DuplicateShare { index: 3 })
         ));
     }
@@ -1470,6 +1483,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_accepts_matching_shares_and_rejects_foreign_ones() {
+        let core = &crate::test_support::core();
         let (set_a, recovery_key) = make_split(0x3333_3333);
 
         let plc = MockServer::start();
@@ -1484,29 +1498,29 @@ mod tests {
         });
         let pds = crate::pds_client::new_for_test(plc.base_url());
 
-        let slot = fresh_slot(DID, None);
+        let slot = fresh_slot(core, &pds, DID, None);
         push_share(&slot, &set_a[0]).await;
         push_share(&slot, &set_a[2]).await;
 
-        let verified = verify_impl(&pds, &slot).await.unwrap();
+        let verified = verify_recovery_shares(&slot).await.unwrap();
         assert_eq!(verified.recovery_key_id, recovery_key);
         assert_eq!(verified.did, DID);
 
         // Different shares (a different identity's split) fail the pubkey check
         // loudly, before anything would be signed.
         let (foreign, _) = make_split(0x4444_4444);
-        let slot2 = fresh_slot(DID, None);
+        let slot2 = fresh_slot(core, &pds, DID, None);
         push_share(&slot2, &foreign[0]).await;
         push_share(&slot2, &foreign[2]).await;
         assert!(matches!(
-            verify_impl(&pds, &slot2).await,
+            verify_recovery_shares(&slot2).await,
             Err(ShareRecoveryError::SharesDoNotMatchIdentity)
         ));
     }
 
     #[tokio::test]
     async fn verify_persists_the_delegation_seed_derived_from_the_recovered_seed() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let (set_a, recovery_key) = make_split(0x7777_0001);
 
         let plc = MockServer::start();
@@ -1521,17 +1535,17 @@ mod tests {
         });
         let pds = crate::pds_client::new_for_test(plc.base_url());
 
-        assert!(!IdentityStore.is_delegation_provisioned(DID).unwrap());
+        assert!(!core.identities().is_delegation_provisioned(DID).unwrap());
 
-        let slot = fresh_slot(DID, None);
+        let slot = fresh_slot(core, &pds, DID, None);
         push_share(&slot, &set_a[0]).await;
         push_share(&slot, &set_a[2]).await;
-        verify_impl(&pds, &slot).await.unwrap();
+        verify_recovery_shares(&slot).await.unwrap();
 
         // Provisioning is a pure function of the shares the user just supplied.
         let seed = crypto::combine_envelopes(&set_a[0], &set_a[2]).unwrap();
         assert_eq!(
-            IdentityStore
+            core.identities()
                 .load_delegation_seed(DID)
                 .unwrap()
                 .unwrap()
@@ -1540,10 +1554,10 @@ mod tests {
         );
 
         // Re-verifying the same shares is idempotent, not a conflict.
-        let slot2 = fresh_slot(DID, None);
+        let slot2 = fresh_slot(core, &pds, DID, None);
         push_share(&slot2, &set_a[0]).await;
         push_share(&slot2, &set_a[1]).await;
-        verify_impl(&pds, &slot2).await.unwrap();
+        verify_recovery_shares(&slot2).await.unwrap();
     }
 
     /// A re-key installs a new recovery seed. Verifying against the *newer* share set
@@ -1551,7 +1565,7 @@ mod tests {
     /// children were minted from — and must still hand the user their identity back.
     #[tokio::test]
     async fn verify_keeps_the_stored_delegation_seed_when_shares_are_from_a_newer_set() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let (set_a, recovery_key) = make_split(0x7777_0002);
 
         let plc = MockServer::start();
@@ -1567,19 +1581,19 @@ mod tests {
         let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let incumbent = [0xab_u8; 32];
-        IdentityStore
+        core.identities()
             .store_delegation_seed(DID, &incumbent)
             .unwrap();
 
-        let slot = fresh_slot(DID, None);
+        let slot = fresh_slot(core, &pds, DID, None);
         push_share(&slot, &set_a[0]).await;
         push_share(&slot, &set_a[2]).await;
-        verify_impl(&pds, &slot)
+        verify_recovery_shares(&slot)
             .await
             .expect("recovery is never blocked by the conflict");
 
         assert_eq!(
-            IdentityStore
+            core.identities()
                 .load_delegation_seed(DID)
                 .unwrap()
                 .unwrap()
@@ -1590,12 +1604,13 @@ mod tests {
 
     #[tokio::test]
     async fn verify_requires_two_shares() {
+        let core = &crate::test_support::core();
         let pds = crate::pds_client::new_for_test("http://127.0.0.1:1".to_string());
         let (set_a, _) = make_split(1);
-        let slot = fresh_slot(DID, None);
+        let slot = fresh_slot(core, &pds, DID, None);
         push_share(&slot, &set_a[0]).await;
         assert!(matches!(
-            verify_impl(&pds, &slot).await,
+            verify_recovery_shares(&slot).await,
             Err(ShareRecoveryError::SharesIncomplete)
         ));
     }
@@ -1604,6 +1619,7 @@ mod tests {
 
     #[tokio::test]
     async fn release_flow_handles_pending_released_and_unauthorized() {
+        let core = &crate::test_support::core();
         let (set_a, _) = make_split(0x5555_5555);
         let custos = MockServer::start();
 
@@ -1618,11 +1634,11 @@ mod tests {
             }));
         });
 
-        let slot = fresh_slot(DID, Some(custos.base_url()));
-        push_share(&slot, &set_a[0]).await;
         let pds = crate::pds_client::new_for_test(custos.base_url());
+        let slot = fresh_slot(core, &pds, DID, Some(custos.base_url()));
+        push_share(&slot, &set_a[0]).await;
 
-        let status = release_impl(&pds, &slot, Some("123456".to_string()))
+        let status = request_escrow_release(&slot, Some("123456".to_string()))
             .await
             .unwrap();
         assert_eq!(status.status, "pending");
@@ -1639,13 +1655,13 @@ mod tests {
                 "share": set_a[1].encode_share().to_string()
             }));
         });
-        let status = release_impl(&pds, &slot, None).await.unwrap();
+        let status = request_escrow_release(&slot, None).await.unwrap();
         assert_eq!(status.status, "released");
         assert_eq!(status.share.as_ref().unwrap().index, 2);
         assert_eq!(released.calls(), 1);
         released.delete();
         {
-            let guard = slot.lock().await;
+            let guard = slot.share_recovery_state.lock().await;
             let session = guard.as_ref().unwrap();
             assert_eq!(session.shares.len(), 2);
         }
@@ -1659,13 +1675,14 @@ mod tests {
                 .json_body(serde_json::json!({ "error": "Unauthorized" }));
         });
         assert!(matches!(
-            release_impl(&pds, &slot, None).await,
+            request_escrow_release(&slot, None).await,
             Err(ShareRecoveryError::ReleaseUnauthorized)
         ));
     }
 
     #[tokio::test]
     async fn released_share_from_wrong_set_is_a_set_mismatch() {
+        let core = &crate::test_support::core();
         let (set_a, _) = make_split(0x6666_6666);
         let (set_b, _) = make_split(0x7777_7777);
         let custos = MockServer::start();
@@ -1677,11 +1694,11 @@ mod tests {
                 "share": set_b[1].encode_share().to_string()
             }));
         });
-        let slot = fresh_slot(DID, Some(custos.base_url()));
-        push_share(&slot, &set_a[0]).await;
         let pds = crate::pds_client::new_for_test(custos.base_url());
+        let slot = fresh_slot(core, &pds, DID, Some(custos.base_url()));
+        push_share(&slot, &set_a[0]).await;
         assert!(matches!(
-            release_impl(&pds, &slot, Some("123456".to_string())).await,
+            request_escrow_release(&slot, Some("123456".to_string())).await,
             Err(ShareRecoveryError::ShareSetMismatch { .. })
         ));
     }
@@ -1690,7 +1707,7 @@ mod tests {
 
     #[tokio::test]
     async fn recover_identity_is_zero_custos_and_stages_the_epilogue() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let (set_a, recovery_key) = make_split(0x8888_8888);
 
         // A PDS mock with a catch-all: the sovereign path must never touch it
@@ -1729,12 +1746,12 @@ mod tests {
         });
         let pds = crate::pds_client::new_for_test(plc.base_url());
 
-        let slot = fresh_slot(DID, Some(custos.base_url()));
+        let slot = fresh_slot(core, &pds, DID, Some(custos.base_url()));
         push_share(&slot, &set_a[0]).await;
         push_share(&slot, &set_a[2]).await;
-        verify_impl(&pds, &slot).await.unwrap();
+        verify_recovery_shares(&slot).await.unwrap();
 
-        let anchor = recover_impl(&pds, &slot).await.unwrap();
+        let anchor = recover_identity(&slot).await.unwrap();
         assert!(!anchor.already_anchored);
         assert!(anchor.op_cid.is_some());
         assert_eq!(post_op.calls(), 1, "exactly one re-anchor op submitted");
@@ -1745,19 +1762,19 @@ mod tests {
         );
 
         // The mandatory rotation epilogue is staged durably before returning.
-        let pending = get_pending_recovery_epilogue().unwrap().unwrap();
+        let pending = get_pending_recovery_epilogue(core).unwrap().unwrap();
         assert_eq!(pending.did, DID);
         assert!(!pending.op_submitted);
     }
 
     #[tokio::test]
     async fn recover_identity_retry_after_landed_op_is_idempotent() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let (set_a, recovery_key) = make_split(0x9999_9999);
 
         // Register the identity first so the device key exists and can be read back
         // as the already-anchored rotationKeys[0].
-        let store = IdentityStore;
+        let store = core.identities();
         store.add_identity(DID).unwrap();
         let device = store.get_or_create_device_key(DID).unwrap();
 
@@ -1787,12 +1804,12 @@ mod tests {
         });
         let pds = crate::pds_client::new_for_test(plc.base_url());
 
-        let slot = fresh_slot(DID, None);
+        let slot = fresh_slot(core, &pds, DID, None);
         push_share(&slot, &set_a[0]).await;
         push_share(&slot, &set_a[2]).await;
-        verify_impl(&pds, &slot).await.unwrap();
+        verify_recovery_shares(&slot).await.unwrap();
 
-        let anchor = recover_impl(&pds, &slot).await.unwrap();
+        let anchor = recover_identity(&slot).await.unwrap();
         assert!(anchor.already_anchored);
         assert!(anchor.op_cid.is_none());
         assert_eq!(
@@ -1845,8 +1862,8 @@ mod tests {
 
     /// Register the identity + device key and stage an epilogue, returning the plc
     /// mock preloaded with the swap-op surface.
-    fn stage_for_epilogue(recovery_key: &str) -> (MockServer, String) {
-        stage_for_epilogue_hosted_at(recovery_key, None)
+    fn stage_for_epilogue(core: &crate::oauth::Core, recovery_key: &str) -> (MockServer, String) {
+        stage_for_epilogue_hosted_at(core, recovery_key, None)
     }
 
     /// Stage an epilogue whose DID document points at `host` (default: the plc mock itself,
@@ -1854,14 +1871,15 @@ mod tests {
     /// the escrow leg is attempted, the historical behavior — and, unlike a public hostname,
     /// resolves nothing over the network).
     fn stage_for_epilogue_hosted_at(
+        core: &crate::oauth::Core,
         recovery_key: &str,
         host: Option<&str>,
     ) -> (MockServer, String) {
         crate::pds_capabilities::clear_for_test();
-        let store = IdentityStore;
+        let store = core.identities();
         store.add_identity(DID).unwrap();
         let device = store.get_or_create_device_key(DID).unwrap();
-        stage_epilogue(DID, recovery_key).unwrap();
+        stage_epilogue(core, DID, recovery_key).unwrap();
 
         let plc = MockServer::start();
         let audit = audit_log_json(
@@ -1885,37 +1903,41 @@ mod tests {
 
     #[tokio::test]
     async fn interrupted_epilogue_resumes_without_resubmitting_or_regenerating() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let (_, old_recovery_key) = make_split(0xaaaa_aaaa);
-        let (plc, _) = stage_for_epilogue(&old_recovery_key);
+        let (plc, _) = stage_for_epilogue(core, &old_recovery_key);
         let post_op = plc.mock(|when, then| {
             when.method(httpmock::Method::POST).path(format!("/{DID}"));
             then.status(200).json_body(serde_json::json!({}));
         });
         let pds = crate::pds_client::new_for_test(plc.base_url());
 
-        let staged_before = load_epilogue().unwrap().unwrap();
+        let staged_before = load_epilogue(core).unwrap().unwrap();
         let new_key_before = staged_before.new_recovery_key_id.clone();
         let share1_before = staged_before.share1.clone();
 
         // First run: the swap op lands, then the escrow step fails (no session and
         // no reachable PDS) — the interruption case.
-        let err = epilogue_impl(&pds, false).await.unwrap_err();
+        let err = run_recovery_epilogue(&core.with_pds_client(pds.clone()), Some(false))
+            .await
+            .unwrap_err();
         assert!(matches!(err, ShareRecoveryError::SessionFailed { .. }));
         assert_eq!(post_op.calls(), 1);
-        let pending = get_pending_recovery_epilogue().unwrap().unwrap();
+        let pending = get_pending_recovery_epilogue(core).unwrap().unwrap();
         assert!(pending.op_submitted, "swap-op progress must be durable");
         assert!(!pending.share1_written);
 
         // Resume (as after an app restart): same record, no re-submit, no
         // regeneration — and the user may explicitly skip escrow.
-        let result = epilogue_impl(&pds, true).await.unwrap();
+        let result = run_recovery_epilogue(&core.with_pds_client(pds.clone()), Some(true))
+            .await
+            .unwrap();
         assert!(result.escrow_skipped);
         assert!(!result.escrow_deposited);
         assert!(!result.share3_words.is_empty());
         assert_eq!(post_op.calls(), 1, "resume must not re-submit the swap op");
 
-        let staged_after = load_epilogue().unwrap().unwrap();
+        let staged_after = load_epilogue(core).unwrap().unwrap();
         assert_eq!(
             staged_after.new_recovery_key_id, new_key_before,
             "resume must reuse the staged share set, not regenerate"
@@ -1925,26 +1947,31 @@ mod tests {
         // The new Share 1 reached the per-DID slot in the iCloud-synchronizable store — the
         // only store that can carry it to a replacement device — and the teardown verifies it.
         assert_eq!(
-            crate::rekey::read_share1_synced(DID).unwrap(),
+            crate::rekey::read_share1_synced(core, DID).unwrap(),
             share1_before.as_bytes()
         );
         assert!(
-            crate::keystore::get_item(&crate::rekey::recovery_share1_account(DID))
+            core.keys()
+                .get_item(&crate::rekey::recovery_share1_account(DID))
                 .is_err_and(|e| crate::keystore::is_not_found(&e)),
             "the epilogue writes the synchronizable slot, not the device-local one"
         );
-        let slot = fresh_slot(DID, None);
-        confirm_backup_core(&slot).await.unwrap();
-        assert!(get_pending_recovery_epilogue().unwrap().is_none());
+        let slot = fresh_slot(core, &pds, DID, None);
+        confirm_backup_core(core, &slot.share_recovery_state)
+            .await
+            .unwrap();
+        assert!(get_pending_recovery_epilogue(core).unwrap().is_none());
         // Idempotent re-confirm.
-        confirm_backup_core(&slot).await.unwrap();
+        confirm_backup_core(core, &slot.share_recovery_state)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn epilogue_deposits_new_share2_over_the_stored_session() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let (_, old_recovery_key) = make_split(0xbbbb_bbbb);
-        let (plc, _) = stage_for_epilogue(&old_recovery_key);
+        let (plc, _) = stage_for_epilogue(core, &old_recovery_key);
         plc.mock(|when, then| {
             when.method(httpmock::Method::POST).path(format!("/{DID}"));
             then.status(200).json_body(serde_json::json!({}));
@@ -1964,9 +1991,9 @@ mod tests {
             refresh_expires_at: Some(u64::MAX),
             stored_at: 0,
         };
-        IdentityStore.store_oauth_tokens(DID, &record).unwrap();
+        core.identities().store_oauth_tokens(DID, &record).unwrap();
 
-        let staged = load_epilogue().unwrap().unwrap();
+        let staged = load_epilogue(core).unwrap().unwrap();
         let share2 = staged.share2.clone();
         let deposit = custos.mock(move |when, then| {
             when.method(httpmock::Method::PUT)
@@ -1977,7 +2004,9 @@ mod tests {
                 .json_body(serde_json::json!({ "status": "deposited" }));
         });
 
-        let result = epilogue_impl(&pds, false).await.unwrap();
+        let result = run_recovery_epilogue(&core.with_pds_client(pds.clone()), Some(false))
+            .await
+            .unwrap();
         assert!(result.escrow_deposited);
         assert!(!result.escrow_skipped);
         assert_eq!(deposit.calls(), 1, "the NEW Share 2 must be re-escrowed");
@@ -1989,7 +2018,7 @@ mod tests {
     /// Share 1 write.
     #[tokio::test]
     async fn epilogue_skips_reescrow_on_a_host_without_the_escrow_capability() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let host = MockServer::start();
         let describe = host.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -2002,14 +2031,15 @@ mod tests {
         });
 
         let (_, old_recovery_key) = make_split(0xcccc_cccc);
-        let (plc, _) = stage_for_epilogue_hosted_at(&old_recovery_key, Some(&host.base_url()));
+        let (plc, _) =
+            stage_for_epilogue_hosted_at(core, &old_recovery_key, Some(&host.base_url()));
         plc.mock(|when, then| {
             when.method(httpmock::Method::POST).path(format!("/{DID}"));
             then.status(200).json_body(serde_json::json!({}));
         });
         // A live, unexpired session record exists — so the skip is decided by the host's
         // capabilities, not by the absence of a session to deposit with.
-        IdentityStore
+        core.identities()
             .store_oauth_tokens(
                 DID,
                 &crate::identity_store::SovereignTokenRecord {
@@ -2025,9 +2055,12 @@ mod tests {
             )
             .unwrap();
 
-        let result = epilogue_impl(&crate::pds_client::new_for_test(plc.base_url()), false)
-            .await
-            .unwrap();
+        let result = run_recovery_epilogue(
+            &core.with_pds_client(crate::pds_client::new_for_test(plc.base_url())),
+            Some(false),
+        )
+        .await
+        .unwrap();
         assert!(result.escrow_skipped, "no escrow route means no escrow leg");
         assert!(!result.escrow_deposited);
         assert!(describe.calls() >= 1, "the host must actually be asked");
@@ -2035,6 +2068,8 @@ mod tests {
         // The skip is not a stall: the epilogue ran to completion and Share 1 is durable, so
         // the recovered identity ends fully re-anchored on shares it holds itself.
         assert!(!result.share3_words.is_empty());
-        assert!(!crate::rekey::read_share1_synced(DID).unwrap().is_empty());
+        assert!(!crate::rekey::read_share1_synced(core, DID)
+            .unwrap()
+            .is_empty());
     }
 }
