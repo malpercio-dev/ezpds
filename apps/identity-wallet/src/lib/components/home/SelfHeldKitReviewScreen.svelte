@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { DEVICE_KEY_UNUSABLE_MESSAGE } from '$lib/claim-errors';
   import { onMount } from 'svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -66,6 +67,8 @@
         return 'The identity directory had a problem. Please try again shortly.';
       case 'NETWORK_ERROR':
         return 'Couldn’t reach the directory. Check your connection.';
+      case 'DEVICE_KEY_UNUSABLE':
+        return DEVICE_KEY_UNUSABLE_MESSAGE;
       default:
         return 'Something went wrong. Please try again.';
     }

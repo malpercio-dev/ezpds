@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { DEVICE_KEY_UNUSABLE_MESSAGE } from '$lib/claim-errors';
   import { onMount, tick } from 'svelte';
   import {
     previewOAuthConsent,
@@ -125,6 +126,8 @@
           title: 'Too many attempts',
           body: 'Your server paused sign-in checks for a few minutes. Wait, then try again.',
         };
+      case 'DEVICE_KEY_UNUSABLE':
+        return { title: 'This device can’t sign for this identity', body: DEVICE_KEY_UNUSABLE_MESSAGE };
       default:
         return {
           title: 'Could not complete the request',

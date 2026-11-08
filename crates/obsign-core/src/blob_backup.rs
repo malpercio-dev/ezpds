@@ -46,7 +46,7 @@ use sha2::{Digest, Sha256};
 
 use crate::failure::SharedFailure;
 use crate::oauth_client::OAuthClient;
-use crate::pds_client::{self, PdsClient, PdsClientError};
+use crate::pds_client::{self, PdsClient};
 use crate::session_provider::SessionProvider;
 
 /// Dev/test override for the backup root directory. When set, backups land there
@@ -92,40 +92,6 @@ pub enum BlobBackupError {
     #[serde(untagged)]
     #[error(transparent)]
     Shared(#[from] SharedFailure),
-}
-
-/// Map a plc.directory / PDS read failure into the blob-backup surface: a throttle is
-/// retryable (`RateLimited`), an HTTP verdict names the server's reason, and only a
-/// transport failure is `NetworkError`.
-fn map_fetch_error(context: &str, error: PdsClientError) -> BlobBackupError {
-    match error {
-        PdsClientError::RateLimited { retry_after, .. } => {
-            BlobBackupError::Shared(SharedFailure::RateLimited { retry_after })
-        }
-        PdsClientError::DidNotFound => BlobBackupError::Shared(SharedFailure::PlcDirectoryError {
-            message: format!("{context}: DID not found in the PLC directory"),
-        }),
-        PdsClientError::XrpcError {
-            status, message, ..
-        } => BlobBackupError::Shared(SharedFailure::ServerError {
-            status,
-            message: format!("{context}: {message}"),
-        }),
-        PdsClientError::Unauthorized { message, .. } => {
-            BlobBackupError::Shared(SharedFailure::ServerError {
-                status: 401,
-                message: format!("{context}: {message}"),
-            })
-        }
-        PdsClientError::InvalidResponse { message } => {
-            BlobBackupError::Shared(SharedFailure::InvalidResponse {
-                message: format!("{context}: {message}"),
-            })
-        }
-        other => BlobBackupError::Shared(SharedFailure::NetworkError {
-            message: format!("{context}: {other}"),
-        }),
-    }
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -471,7 +437,7 @@ pub async fn run_backup_core(
             .pds_client()
             .list_blobs(pds_url, did, cursor.as_deref())
             .await
-            .map_err(|e| map_fetch_error("failed to list blobs", e))?;
+            .map_err(|e| SharedFailure::from_pds_fetch("failed to list blobs", e))?;
         let page_len = page.cids.len();
         remote_cids.extend(page.cids);
         match page.cursor {
@@ -882,43 +848,6 @@ mod tests {
     }
 
     // ── Error mapping ──────────────────────────────────────────────────────
-
-    #[test]
-    fn fetch_error_mapping_keeps_the_server_reason() {
-        let throttled = map_fetch_error(
-            "ctx",
-            PdsClientError::RateLimited {
-                retry_after: Some("30".into()),
-                message: "slow down".into(),
-            },
-        );
-        assert!(
-            matches!(throttled, BlobBackupError::Shared(SharedFailure::RateLimited { retry_after: Some(ref s) }) if s == "30")
-        );
-
-        let verdict = map_fetch_error(
-            "ctx",
-            PdsClientError::XrpcError {
-                status: 503,
-                error: None,
-                message: "maintenance".into(),
-            },
-        );
-        assert!(
-            matches!(verdict, BlobBackupError::Shared(SharedFailure::ServerError { status: 503, ref message }) if message.contains("maintenance"))
-        );
-
-        let transport = map_fetch_error(
-            "ctx",
-            PdsClientError::NetworkError {
-                message: "dns".into(),
-            },
-        );
-        assert!(matches!(
-            transport,
-            BlobBackupError::Shared(SharedFailure::NetworkError { .. })
-        ));
-    }
 
     #[test]
     fn error_serialization_shape() {

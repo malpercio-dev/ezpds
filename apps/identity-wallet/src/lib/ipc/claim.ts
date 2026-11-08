@@ -122,7 +122,7 @@ export type ClaimError =
   | { code: 'RATE_LIMITED'; retryAfter: string | null }
   // A non-2xx the wallet doesn't model specially; `message` is the server's own error text, shown
   // verbatim rather than as connectivity boilerplate.
-  | { code: 'SERVER_ERROR'; message: string }
+  | { code: 'SERVER_REJECTED'; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
 // ── Claim flow IPC wrappers ────────────────────────────────────────────────

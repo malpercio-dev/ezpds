@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { DEVICE_KEY_UNUSABLE_MESSAGE } from '$lib/claim-errors';
   import { onMount } from 'svelte';
   import {
     getIdentityRemovalRoute,
@@ -199,6 +200,8 @@
           return 'The server is busy. Wait a moment and try again.';
         case 'NETWORK_ERROR':
           return 'Couldn’t reach the server. Check your connection and try again.';
+        case 'DEVICE_KEY_UNUSABLE':
+          return DEVICE_KEY_UNUSABLE_MESSAGE;
         default:
           return 'Something went wrong. Please try again.';
       }

@@ -61,13 +61,19 @@ and screens still choose the sentence by `code`.
   `KEYCHAIN_ERROR` rather than "identity not found".
 - `custos-client`'s `sovereign_login` passes discovery failures up unclassified
   (`SovereignLoginError::Discovery`), so that classification also happens once.
-- Not yet migrated, because none of them held one of the copied mappers: `repo_backup`
-  (its own `RATE_LIMITED`/`NETWORK_ERROR`/`PLC_DIRECTORY_ERROR`/`KEYCHAIN_ERROR` and a
-  `SERVER_ERROR { status: null }`), `endpoint_repair`'s directory mapping, the
-  `SERVER_ERROR` variants in `claim`, `migration_orchestrator`, and `create_flow`, and
-  the per-module `PerDidSignError` match. A device key the Secure Enclave reports
-  unusable still reaches most ceremonies as `KEYCHAIN_ERROR` rather than its own code.
-  Each should move onto `SharedFailure` (or gain its own code) when next touched.
+- The enums left out of the first pass have since moved too. `repo_backup` and
+  `endpoint_repair` embed `SharedFailure`; repo and blob backup share
+  `SharedFailure::from_pds_fetch`, and endpoint repair uses `from_plc_fetch` (its own
+  mapper differed only in sending unmodelled client errors to `NETWORK_ERROR`).
+  `get_available_user_domains` returns `SharedFailure` directly. The claim and migration
+  `SERVER_ERROR` variants carried server-quoted text, so they became `SERVER_REJECTED`,
+  matching the password unlock. `PerDidSignError::classify` is the one mapping from a
+  per-DID signing-setup failure, used by every enum that embeds `SharedFailure`.
+- A device key the Secure Enclave reports unusable is the shared `DEVICE_KEY_UNUSABLE`
+  (from both the identity store and the signing seam), not `KEYCHAIN_ERROR` or a signing
+  failure: retrying cannot help, so the home-screen ceremonies say so and point at
+  recovery. `recovery` and `migrate` do not embed `SharedFailure` and still report it as
+  their own `SIGNING_FAILED`.
 
 ## Alternatives considered
 

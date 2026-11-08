@@ -43,7 +43,6 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 
 use crate::failure::SharedFailure;
-use crate::identity_store::PerDidSignError;
 use crate::pds_client::PdsClient;
 use crate::sovereign_session::fresh_nonce;
 
@@ -266,14 +265,8 @@ pub(crate) async fn confirm_with_nonce(
         .identities()
         .get_or_create_device_key(did)
         .map_err(SharedFailure::from)?;
-    let signer = crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(
-        |error| match error {
-            PerDidSignError::DeviceKeyNotFound { message }
-            | PerDidSignError::SigningSetupFailed { message } => {
-                ConsentError::SigningFailed { message }
-            }
-        },
-    )?;
+    let signer = crate::identity_store::per_did_sign_closure(core.signer(), did)
+        .map_err(|e| e.classify(|message| ConsentError::SigningFailed { message }))?;
 
     let pds_url = resolve_safe_pds(core.pds_client(), did).await?;
     let server = core

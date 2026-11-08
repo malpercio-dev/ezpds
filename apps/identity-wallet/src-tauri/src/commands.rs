@@ -50,7 +50,7 @@ commands! {
     [async state] register_created_identity = obsign_core::create_flow::register_created_identity(did: String, handle: String) -> Result<(), obsign_core::create_flow::RegisterIdentityError>;
     [async state] import_did_web_identity = obsign_core::import_did_web::import_did_web_identity(input: String) -> Result<obsign_core::import_did_web::ImportedDidWebIdentity, obsign_core::import_did_web::ImportDidWebError>;
     [async state] check_handle_resolution = obsign_core::create_flow::check_handle_resolution(handle: String, expected_did: String) -> Result<bool, String>;
-    [async state] get_available_user_domains = obsign_core::create_flow::get_available_user_domains() -> Result<Vec<String>, obsign_core::create_flow::AvailableDomainsError>;
+    [async state] get_available_user_domains = obsign_core::create_flow::get_available_user_domains() -> Result<Vec<String>, obsign_core::failure::SharedFailure>;
     [sync state] list_identities = obsign_core::identity_store::list_identities() -> Result<Vec<String>, obsign_core::identity_store::IdentityStoreError>;
     [sync state] get_stored_did_doc = obsign_core::identity_store::get_stored_did_doc(did: String) -> Result<Option<serde_json::Value>, obsign_core::identity_store::IdentityStoreError>;
     [async state] refresh_did_doc = obsign_core::identity_store::refresh_did_doc(did: String) -> Result<serde_json::Value, obsign_core::identity_store::RefreshDidDocError>;

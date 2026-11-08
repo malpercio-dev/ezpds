@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { DEVICE_KEY_UNUSABLE_MESSAGE } from '$lib/claim-errors';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -56,6 +57,8 @@
         return 'The directory rejected the repair. Please try again.';
       case 'NETWORK_ERROR':
         return 'Couldn’t reach the directory. Check your connection.';
+      case 'DEVICE_KEY_UNUSABLE':
+        return DEVICE_KEY_UNUSABLE_MESSAGE;
       default:
         return 'Something went wrong. Please try again.';
     }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { DEVICE_KEY_UNUSABLE_MESSAGE } from '$lib/claim-errors';
   import { onMount } from 'svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -58,6 +59,8 @@
         return 'Couldn’t reach the server. Check your connection.';
       case 'NO_PENDING_ROTATION':
         return 'The prepared rotation expired. Go back and try again.';
+      case 'DEVICE_KEY_UNUSABLE':
+        return DEVICE_KEY_UNUSABLE_MESSAGE;
       default:
         return 'Something went wrong. Please try again.';
     }

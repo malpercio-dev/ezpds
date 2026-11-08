@@ -45,6 +45,7 @@
 //! All Keychain operations use the shared `keychain::SERVICE` prefix.
 
 use crate::device_key::DevicePublicKey;
+use crate::failure::SharedFailure;
 use crate::keystore::Keys;
 use crate::signer::{KeyId, Signer, SignerError};
 use serde::{Deserialize, Serialize};
@@ -873,17 +874,31 @@ impl From<SignerError> for IdentityStoreError {
 
 /// Error from constructing a per-DID device-key signing closure.
 ///
-/// Neutral to any one command's error enum so a single implementation can serve
-/// both `recovery.rs` and `migrate.rs`; each caller translates this into its own
-/// module error. The two variants preserve the only distinction the callers make:
-/// a missing device key (a benign "identity not found") versus any other failure
-/// while loading the key or preparing the signer (a genuine signing failure).
-#[derive(Debug)]
+/// Neutral to any one command's error enum; [`PerDidSignError::classify`] is the one
+/// translation for enums that embed [`SharedFailure`].
+#[derive(Debug, thiserror::Error)]
 pub enum PerDidSignError {
     /// The DID's device-key material is absent from the Keychain.
+    #[error("{message}")]
     DeviceKeyNotFound { message: String },
+    /// The key's metadata survived but the Secure Enclave key did not.
+    #[error("device key is no longer usable on this device")]
+    DeviceKeyUnusable,
     /// Loading the key or preparing the signer failed for any other reason.
+    #[error("{message}")]
     SigningSetupFailed { message: String },
+}
+
+impl PerDidSignError {
+    /// A missing key is `IDENTITY_NOT_FOUND` and a dead one `DEVICE_KEY_UNUSABLE`; any other
+    /// setup failure is the command's own signing failure, built by `signing_failed`.
+    pub fn classify<E: From<SharedFailure>>(self, signing_failed: impl FnOnce(String) -> E) -> E {
+        match self {
+            Self::DeviceKeyNotFound { .. } => SharedFailure::IdentityNotFound.into(),
+            Self::DeviceKeyUnusable => SharedFailure::DeviceKeyUnusable.into(),
+            Self::SigningSetupFailed { message } => signing_failed(message),
+        }
+    }
 }
 
 /// Build a signing closure over a managed identity's per-DID device key: a raw 64-byte
@@ -897,6 +912,7 @@ pub fn per_did_sign_closure(
 ) -> Result<impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError>, PerDidSignError> {
     let sign = signer.signer(KeyId::Identity(did)).map_err(|e| match e {
         SignerError::NotFound { message } => PerDidSignError::DeviceKeyNotFound { message },
+        SignerError::Unusable => PerDidSignError::DeviceKeyUnusable,
         other => PerDidSignError::SigningSetupFailed {
             message: other.to_string(),
         },

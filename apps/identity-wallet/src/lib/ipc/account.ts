@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { SharedFailure } from './errors';
 
 // ── create_account ──────────────────────────────────────────────────────────
 
@@ -210,13 +211,13 @@ export const getAvailableUserDomains = (): Promise<string[]> =>
   invoke('get_available_user_domains');
 
 /**
- * Error returned by the `get_available_user_domains` Rust command. Every `message` is
- * diagnostic only (ADR-0031): key on `code` and write the screen's own sentence.
+ * Error returned by the `get_available_user_domains` Rust command: the three
+ * {@link SharedFailure} codes it can produce. Every `message` is diagnostic only (ADR-0031).
  */
-export type AvailableDomainsError =
-  | { code: 'SERVER_ERROR'; status: number }
-  | { code: 'INVALID_RESPONSE'; message: string }
-  | { code: 'NETWORK_ERROR'; message: string };
+export type AvailableDomainsError = Extract<
+  SharedFailure,
+  { code: 'SERVER_ERROR' | 'INVALID_RESPONSE' | 'NETWORK_ERROR' }
+>;
 
 /**
  * Error returned by the `register_created_identity` Rust command.

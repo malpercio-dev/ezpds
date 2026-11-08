@@ -26,8 +26,7 @@
 //!
 //! `EndpointRepairError` (WALLET_NOT_AUTHORIZED, INVALID_ENDPOINT,
 //! DESTINATION_UNREACHABLE, DESTINATION_NOT_HOSTING, GUARD_REJECTED,
-//! INVALID_AUDIT_LOG, SIGNING_FAILED, PLC_DIRECTORY_ERROR, RATE_LIMITED,
-//! NETWORK_ERROR, IDENTITY_NOT_FOUND) serializes as
+//! INVALID_AUDIT_LOG, SIGNING_FAILED, plus the shared codes in [`SharedFailure`]) serializes as
 //! `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase fields. The frontend gates
 //! `repairHostingEndpoint` behind `authenticateBiometric()`; the screen is reached
 //! from the Advanced tools "Repair hosting endpoint" row, behind the vestibule
@@ -37,9 +36,9 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use crate::failure::SharedFailure;
 use crate::handle_change::latest_full_state;
-use crate::identity_store::PerDidSignError;
-use crate::pds_client::{PdsClient, PdsClientError};
+use crate::pds_client::PdsClient;
 use crypto::PlcService;
 
 // ── Errors ───────────────────────────────────────────────────────────────────
@@ -77,49 +76,10 @@ pub enum EndpointRepairError {
     /// Local signing failed.
     #[error("signing failed: {message}")]
     SigningFailed { message: String },
-    /// plc.directory rejected a request with an HTTP verdict.
-    #[error("PLC directory error: {message}")]
-    PlcDirectoryError { message: String },
-    /// plc.directory or the new endpoint rate-limited the request.
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
-    /// A network / transport call failed.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-    /// The DID's device key or identity record could not be found.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
-}
-
-/// Map a plc.directory read/submit failure into the repair surface: a throttle is
-/// retryable (`RateLimited`), an HTTP verdict is the directory's problem
-/// (`PlcDirectoryError`), and only a transport failure is `NetworkError`.
-fn map_plc_error(context: &str, error: PdsClientError) -> EndpointRepairError {
-    match error {
-        PdsClientError::RateLimited { retry_after, .. } => {
-            EndpointRepairError::RateLimited { retry_after }
-        }
-        PdsClientError::XrpcError {
-            status, message, ..
-        } => EndpointRepairError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP {status}: {message}"),
-        },
-        // A 404 on the audit log is the directory's definite "no such DID" verdict.
-        PdsClientError::DidNotFound => EndpointRepairError::PlcDirectoryError {
-            message: format!("{context}: plc.directory has no record of this DID"),
-        },
-        // `post_plc_operation` reports a non-429 rejection body as InvalidResponse —
-        // that is the directory refusing the operation, not a connectivity problem.
-        PdsClientError::InvalidResponse { message, .. } => EndpointRepairError::PlcDirectoryError {
-            message: format!("{context}: {message}"),
-        },
-        PdsClientError::Unauthorized { .. } => EndpointRepairError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP 401"),
-        },
-        other => EndpointRepairError::NetworkError {
-            message: format!("{context}: {other}"),
-        },
-    }
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -292,7 +252,7 @@ async fn verify_destination_hosts(
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        return Err(EndpointRepairError::RateLimited { retry_after });
+        return Err(SharedFailure::RateLimited { retry_after }.into());
     }
     let body = resp.text().await.unwrap_or_default();
     let message = format!("getRepoStatus returned HTTP {status}: {body}");
@@ -314,12 +274,9 @@ pub async fn repair_hosting_endpoint(
     let new_endpoint = normalize_endpoint(new_endpoint)?;
 
     // 1. Device key (the op's signer).
-    let device_pub =
-        store
-            .get_or_create_device_key(did)
-            .map_err(|e| EndpointRepairError::IdentityNotFound {
-                message: format!("failed to get device key: {e}"),
-            })?;
+    let device_pub = store
+        .get_or_create_device_key(did)
+        .map_err(SharedFailure::from)?;
 
     // 2. Current core from the authoritative audit log (never a cached doc, and
     //    never the dead endpoint).
@@ -327,7 +284,7 @@ pub async fn repair_hosting_endpoint(
         .pds_client()
         .fetch_audit_log(did)
         .await
-        .map_err(|e| map_plc_error("failed to fetch audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch audit log", e))?;
     let audit_log =
         crypto::parse_audit_log(&log_json).map_err(|e| EndpointRepairError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
@@ -382,15 +339,8 @@ pub async fn repair_hosting_endpoint(
     guard_endpoint_repair(&inputs)?;
 
     // 7. Device-key-sign and submit directly to plc.directory.
-    let sign_closure =
-        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
-            PerDidSignError::DeviceKeyNotFound { message } => {
-                EndpointRepairError::IdentityNotFound { message }
-            }
-            PerDidSignError::SigningSetupFailed { message } => {
-                EndpointRepairError::SigningFailed { message }
-            }
-        })?;
+    let sign_closure = crate::identity_store::per_did_sign_closure(core.signer(), did)
+        .map_err(|e| e.classify(|message| EndpointRepairError::SigningFailed { message }))?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
         inputs.proposed_rotation_keys,
@@ -412,7 +362,9 @@ pub async fn repair_hosting_endpoint(
     core.pds_client()
         .post_plc_operation(did, &signed_op)
         .await
-        .map_err(|e| map_plc_error("plc.directory rejected the repair operation", e))?;
+        .map_err(|e| {
+            SharedFailure::from_plc_fetch("plc.directory rejected the repair operation", e)
+        })?;
 
     // 8. Best-effort cache refresh so the home card and the monitor see the wallet's
     //    own op as expected.
@@ -596,46 +548,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn map_plc_error_classifies_verdicts_not_transport() {
-        // A rejection body from post_plc_operation (InvalidResponse) is the directory's
-        // verdict on the operation, never a connectivity problem.
-        assert!(matches!(
-            map_plc_error(
-                "ctx",
-                PdsClientError::InvalidResponse {
-                    message: "plc.directory rejected operation: bad prev".to_string(),
-                }
-            ),
-            EndpointRepairError::PlcDirectoryError { .. }
-        ));
-        assert!(matches!(
-            map_plc_error("ctx", PdsClientError::DidNotFound),
-            EndpointRepairError::PlcDirectoryError { .. }
-        ));
-        assert!(matches!(
-            map_plc_error(
-                "ctx",
-                PdsClientError::RateLimited {
-                    retry_after: Some("30".to_string()),
-                    message: "slow down".to_string(),
-                }
-            ),
-            EndpointRepairError::RateLimited {
-                retry_after: Some(_)
-            }
-        ));
-        assert!(matches!(
-            map_plc_error(
-                "ctx",
-                PdsClientError::NetworkError {
-                    message: "connection reset".to_string(),
-                }
-            ),
-            EndpointRepairError::NetworkError { .. }
-        ));
-    }
-
     #[tokio::test]
     async fn destination_probe_accepts_a_hosting_server() {
         let server = httpmock::MockServer::start();
@@ -684,7 +596,7 @@ mod tests {
             .await
             .expect_err("429 probe must fail");
         match err {
-            EndpointRepairError::RateLimited { retry_after } => {
+            EndpointRepairError::Shared(SharedFailure::RateLimited { retry_after }) => {
                 assert_eq!(retry_after.as_deref(), Some("17"));
             }
             other => panic!("expected RateLimited, got {other:?}"),

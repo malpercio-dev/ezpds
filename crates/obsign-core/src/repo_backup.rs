@@ -49,7 +49,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::blob_backup::{resolve_backup_root, sanitize_did, BackupLocation};
-use crate::pds_client::{PdsClient, PdsClientError};
+use crate::failure::SharedFailure;
+use crate::pds_client::PdsClient;
 
 /// Manifest schema version (bump on breaking layout changes).
 const MANIFEST_VERSION: u32 = 1;
@@ -73,9 +74,9 @@ const REPO_VERSION: i128 = 3;
 /// Errors from the repo-backup commands.
 ///
 /// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` to match the sibling wallet error
-/// enums (`BlobBackupError`, `HandleChangeError`, `SharedFailure`). Note there is deliberately
-/// **no `SESSION_LOCKED`** variant: backup reads a public endpoint and export reads local disk,
-/// so neither path needs a full-access session.
+/// enums (`BlobBackupError`, `HandleChangeError`, `SharedFailure`). It never produces
+/// `SESSION_LOCKED`: backup reads a public endpoint and export reads local disk, so neither
+/// path needs a full-access session.
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(
     tag = "code",
@@ -87,28 +88,6 @@ pub enum RepoBackupError {
     /// must not silently land somewhere that doesn't survive the device).
     #[error("no backup location is available (is iCloud Drive enabled?)")]
     BackupUnavailable,
-    /// The hosting PDS or plc.directory rate limited the request.
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
-    /// The DID is not registered in this wallet / not found in the PLC directory.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
-    /// A plc.directory read failed with an HTTP verdict (the hosting-PDS discovery).
-    #[error("PLC directory error: {message}")]
-    PlcDirectoryError { message: String },
-    /// A server-side step failed for a non-connectivity reason (an XRPC refusal or a malformed
-    /// response). `status` is `Some` only for a real HTTP verdict; because the `None` bucket
-    /// includes a locally-detected malformed response, `message` is mixed-provenance and
-    /// therefore diagnostic only (ADR-0031): the screen keys on `code` + `status` and never
-    /// quotes it.
-    #[error("server error: {message}")]
-    ServerError {
-        status: Option<u16>,
-        message: String,
-    },
-    /// A network / transport call failed.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
     /// Local file I/O on the mirror failed.
     #[error("storage error: {message}")]
     StorageError { message: String },
@@ -121,40 +100,10 @@ pub enum RepoBackupError {
     /// is unsigned, or a broken MST walk. The prior good snapshot (if any) is left in place.
     #[error("repo snapshot failed validation: {message}")]
     CarInvalid { message: String },
-    /// The opt-in flag could not be read from / written to the Keychain.
-    #[error("keychain error: {message}")]
-    KeychainError { message: String },
-}
-
-/// Map a plc.directory / PDS read failure into the repo-backup surface: a throttle is retryable
-/// (`RateLimited`), an HTTP verdict names the server's reason, and only a transport failure is
-/// `NetworkError`.
-fn map_fetch_error(context: &str, error: PdsClientError) -> RepoBackupError {
-    match error {
-        PdsClientError::RateLimited { retry_after, .. } => {
-            RepoBackupError::RateLimited { retry_after }
-        }
-        PdsClientError::DidNotFound => RepoBackupError::PlcDirectoryError {
-            message: format!("{context}: DID not found in the PLC directory"),
-        },
-        PdsClientError::XrpcError {
-            status, message, ..
-        } => RepoBackupError::ServerError {
-            status: Some(status),
-            message: format!("{context}: {message}"),
-        },
-        PdsClientError::Unauthorized { message, .. } => RepoBackupError::ServerError {
-            status: Some(401),
-            message: format!("{context}: {message}"),
-        },
-        PdsClientError::InvalidResponse { message } => RepoBackupError::ServerError {
-            status: None,
-            message: format!("{context}: {message}"),
-        },
-        other => RepoBackupError::NetworkError {
-            message: format!("{context}: {other}"),
-        },
-    }
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 fn storage_error(context: &str, e: std::io::Error) -> RepoBackupError {
@@ -552,8 +501,10 @@ fn store_enabled(
     let value: &[u8] = if enabled { b"true" } else { b"false" };
     core.keys()
         .store_item(&backup_enabled_account(did), value)
-        .map_err(|e| RepoBackupError::KeychainError {
-            message: e.to_string(),
+        .map_err(|e| {
+            RepoBackupError::Shared(SharedFailure::KeychainError {
+                message: e.to_string(),
+            })
         })
 }
 
@@ -651,7 +602,7 @@ pub async fn run_backup_core(
         .pds_client()
         .fetch_repo_car(pds_url, did)
         .await
-        .map_err(|e| map_fetch_error("failed to fetch repo snapshot", e))?;
+        .map_err(|e| SharedFailure::from_pds_fetch("failed to fetch repo snapshot", e))?;
     let validated = validate_repo_car(&car, did)?;
 
     let unchanged = car_present && existing.as_ref().is_some_and(|m| m.rev == validated.rev);
@@ -735,7 +686,7 @@ async fn hosting_pds_url(pds_client: &PdsClient, did: &str) -> Result<String, Re
     let (pds_url, _doc) = pds_client
         .discover_pds(did)
         .await
-        .map_err(|e| map_fetch_error("failed to discover hosting PDS", e))?;
+        .map_err(SharedFailure::from_discovery)?;
     Ok(pds_url)
 }
 
@@ -1033,44 +984,6 @@ mod tests {
     }
 
     // ── Error mapping / serialization ─────────────────────────────────────────
-
-    #[test]
-    fn fetch_error_mapping_keeps_the_server_reason() {
-        let throttled = map_fetch_error(
-            "ctx",
-            PdsClientError::RateLimited {
-                retry_after: Some("30".into()),
-                message: "slow down".into(),
-            },
-        );
-        assert!(
-            matches!(throttled, RepoBackupError::RateLimited { retry_after: Some(ref s) } if s == "30")
-        );
-
-        let verdict = map_fetch_error(
-            "ctx",
-            PdsClientError::XrpcError {
-                status: 503,
-                error: None,
-                message: "maintenance".into(),
-            },
-        );
-        assert!(matches!(
-            verdict,
-            RepoBackupError::ServerError {
-                status: Some(503),
-                ..
-            }
-        ));
-
-        let transport = map_fetch_error(
-            "ctx",
-            PdsClientError::NetworkError {
-                message: "dns".into(),
-            },
-        );
-        assert!(matches!(transport, RepoBackupError::NetworkError { .. }));
-    }
 
     #[test]
     fn error_serialization_shape() {

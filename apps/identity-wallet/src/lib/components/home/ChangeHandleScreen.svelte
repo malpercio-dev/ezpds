@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { DEVICE_KEY_UNUSABLE_MESSAGE } from '$lib/claim-errors';
   import { onMount } from 'svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
@@ -147,6 +148,8 @@
         return 'The server couldn’t complete this step. Please try again.';
       case 'NETWORK_ERROR':
         return 'Couldn’t reach the server. Check your connection.';
+      case 'DEVICE_KEY_UNUSABLE':
+        return DEVICE_KEY_UNUSABLE_MESSAGE;
       default:
         return 'Something went wrong. Please try again.';
     }
