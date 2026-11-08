@@ -55,7 +55,7 @@ carries over from ADR-0013 unchanged.
 - The no-`cfg` rule can be checked. A wasm build of `obsign-core` in CI proves it
   and keeps it proved, and the same build can back the browser harness in place
   of its hand-written fake. `just wasm-check` has done the first half since
-  2026-11-08: `cargo check` for `wasm32-unknown-unknown` in the Linux gate, which
+  2026-11-08: `cargo build` for `wasm32-unknown-unknown` in the Linux gate, which
   also forced the workspace's `tokio` default down to the portable feature set and
   the core's mirror file I/O into one `fs` module. It checks that the core compiles
   there, not that it runs; the harness build is still open.

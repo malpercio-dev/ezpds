@@ -300,7 +300,7 @@ checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check
 # or fails on the first `cfg(target_os)` branch, Apple crate, or OS-only tokio feature. With
 # `test-support`, so the in-memory `KeyStore` and the fakes a shell-less core runs over are in.
 wasm-check:
-    cargo check -p obsign-core --features test-support --target wasm32-unknown-unknown --locked
+    cargo build -p obsign-core --features test-support --target wasm32-unknown-unknown --locked
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy wasm-check test audit deny
