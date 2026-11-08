@@ -214,10 +214,6 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
 
 ## Open items
 
-- **`unsafe` FFI without `// SAFETY:` comments.** `apps/identity-wallet/src-tauri/src/apns.rs`
-  (APNs delegate registration) and the vendored `apple.rs` in
-  `apps/identity-wallet/vendor/tauri-plugin-auth-session/src/` both carry
-  `unsafe` Objective-C interop blocks with no `// SAFETY:` justification.
 - **DIDs are typed as raw `String`, not a validated newtype.** Structural
   validity is enforced at specific call sites (e.g.
   `crates/custos-core/src/identity/handle.rs`, `did.rs`) rather than at the type

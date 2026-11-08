@@ -17,6 +17,12 @@ The `guest-js/` npm API is intentionally NOT vendored — the app invokes
 
 - `Cargo.toml`: added `publish = false` (this is a private fork that must never be released to
   crates.io under the upstream's name/metadata).
+- `src/apple.rs`: a `// SAFETY:` comment on every `unsafe` block, and three blocks replaced with
+  safe code: the presentation anchor takes its `MainThreadMarker` from `self.mtm()`, the iOS
+  scene lookup uses a checked `downcast_ref::<UIWindowScene>()` instead of an unchecked pointer
+  cast, and the macOS refocus uses the checked `MainThreadMarker::new()`. The plugin is not a
+  workspace member, so clippy's `undocumented_unsafe_blocks` never reaches it — a re-vendor has
+  to carry these by hand.
 
 To update: re-copy from a newer pinned commit, re-apply the local modifications above, and
 re-audit `src/apple.rs` + `src/lib.rs`.
