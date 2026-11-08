@@ -12,9 +12,9 @@ use axum::{extract::State, http::HeaderMap, http::StatusCode};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extract_bearer_token;
-use crate::auth::jwt::{parse_scope, verify_refresh_token_allow_expired, AuthScope};
-use crate::no_input::NoInputBody;
+use custos_core::auth::extract_bearer_token;
+use custos_core::auth::jwt::{parse_scope, verify_refresh_token_allow_expired, AuthScope};
+use custos_core::no_input::NoInputBody;
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ pub async fn delete_session(
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "invalid refresh token"))?;
 
     // --- Look up the token — no expiry filter, revocation must always work ---
-    let session_id = crate::db::refresh_tokens::session_id_for_jti(&state.db, &jti).await?;
+    let session_id = custos_db::refresh_tokens::session_id_for_jti(&state.db, &jti).await?;
 
     // Idempotent: token not found means already revoked — logout already done.
     let Some(session_id) = session_id else {

@@ -11,11 +11,11 @@
 //! authenticated the space owner.
 
 use crate::db::spaces::SpaceRow;
-use crate::lexicon::RecordValidation;
 use crate::space_record_write::SpaceCommitOutcome;
-use crate::space_uri::SpaceRef;
-use crate::SpacesState;
 use common::{ApiError, ApiResultExt, ErrorCode};
+use custos_core::lexicon::RecordValidation;
+use custos_core::space_uri::SpaceRef;
+use custos_core::CoreState;
 
 /// Parse the `space` a request named.
 ///
@@ -24,7 +24,7 @@ use common::{ApiError, ApiResultExt, ErrorCode};
 /// is also the only way the `(authority, type, skey)` triple is obtained, so nothing downstream
 /// can be handed a URI that was never checked.
 pub fn parse_space(space: &str) -> Result<SpaceRef, ApiError> {
-    crate::space_uri::parse_space_ref(space).ok_or_else(|| {
+    custos_core::space_uri::parse_space_ref(space).ok_or_else(|| {
         ApiError::new(
             ErrorCode::InvalidRequest,
             format!("not a space uri: {space}"),
@@ -45,9 +45,9 @@ pub fn validate_record(
     record: &serde_json::Value,
     validate: Option<bool>,
 ) -> Result<Option<RecordValidation>, ApiError> {
-    crate::lexicon::registry()
+    custos_core::lexicon::registry()
         .validate_record(collection, rkey, record, validate)
-        .map_err(crate::lexicon::record_validation_error)
+        .map_err(custos_core::lexicon::record_validation_error)
 }
 
 /// The `{uri, cid, validationStatus}` body a single-record write answers with.
@@ -100,7 +100,7 @@ fn decode_error(e: impl std::fmt::Display) -> ApiError {
 /// reply a space this host has never heard of gets — whether some other authority's space
 /// happens to have a repo here is not a fact this surface discloses.
 pub async fn require_local_authority(
-    state: &crate::SpacesState,
+    state: &CoreState,
     space: &SpaceRef,
 ) -> Result<SpaceRow, ApiError> {
     crate::db::spaces::get_space(&state.db, &space.uri)
@@ -126,7 +126,7 @@ pub fn lex_bytes(bytes: &[u8]) -> serde_json::Value {
 /// space. That does not distinguish a member who has never written from a non-member: a repo
 /// host tracks writers, not membership.
 pub async fn load_repo(
-    state: &crate::SpacesState,
+    state: &CoreState,
     space_uri: &str,
     did: &str,
 ) -> Result<crate::db::space_repos::SpaceRepoRow, ApiError> {
@@ -148,7 +148,7 @@ pub async fn load_repo(
 /// The signature deliberately does not cover the hash — that deniability is the whole point,
 /// and it is why this cannot be a cached artifact.
 pub async fn sign_current_commit(
-    state: &crate::SpacesState,
+    state: &CoreState,
     space: &SpaceRef,
     did: &str,
     repo: &crate::db::space_repos::SpaceRepoRow,
@@ -174,7 +174,7 @@ pub async fn sign_current_commit(
             )
         })?;
     let signing_key =
-        crate::auth::signing_key::load_repo_signing_key(&state.db, did, master_key).await?;
+        custos_core::auth::signing_key::load_repo_signing_key(&state.db, did, master_key).await?;
 
     crypto::sign_space_commit(
         &crypto::SpaceCommitCtx {
@@ -211,7 +211,7 @@ pub fn commit_json(commit: &crypto::SignedSpaceCommit) -> serde_json::Value {
 /// `listBlobs` pages in.
 // ponytail: O(records in repo) per call — a derived-refs table if space repos outgrow this fleet.
 pub async fn space_blob_cids(
-    state: &crate::SpacesState,
+    state: &CoreState,
     space_uri: &str,
     did: &str,
     since: Option<&str>,
@@ -316,8 +316,10 @@ pub fn policy_from_lex(
 /// `did` string format already uses, rather than a second prefix check that would drift from it.
 fn is_service_identifier(value: &str) -> bool {
     match value.split_once('#') {
-        Some((did, fragment)) => !fragment.is_empty() && crate::identity::did::is_valid_did(did),
-        None => crate::identity::did::is_valid_did(value),
+        Some((did, fragment)) => {
+            !fragment.is_empty() && custos_core::identity::did::is_valid_did(did)
+        }
+        None => custos_core::identity::did::is_valid_did(value),
     }
 }
 
@@ -434,7 +436,7 @@ pub enum MembershipAction {
 /// member row can never land after a concurrent `deleteSpace` has already wiped the list. Both
 /// operations are idempotent (an upsert / a no-op DELETE).
 pub async fn write_membership(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRef,
     did: &str,
     action: MembershipAction,

@@ -8,9 +8,9 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
-use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 
 const DEFAULT_LIMIT: usize = 50;
@@ -40,7 +40,7 @@ pub async fn list_records(
     // The lexicon's `repo` format is `at-identifier` (DID or handle), but this route resolves
     // only DIDs directly — a stricter, deliberate restriction the lexicon layer doesn't cover, so
     // it stays a handler-level check rather than being subsumed by `LexiconParams`.
-    if !crate::identity::did::is_valid_did(did) {
+    if !custos_core::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
@@ -51,7 +51,7 @@ pub async fn list_records(
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     // Look up the repo root CID.
-    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    let root_cid_str = custos_db::accounts::get_repo_root_cid(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query repo root CID");

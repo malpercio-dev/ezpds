@@ -9,8 +9,8 @@ use common::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::identity::resolution::resolve_handle_to_did;
-use crate::lexicon::LexiconParams;
+use custos_core::identity::resolution::resolve_handle_to_did;
+use custos_core::lexicon::LexiconParams;
 
 #[derive(Deserialize)]
 pub struct ResolveHandleQuery {
@@ -48,9 +48,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
-    use crate::identity::dns::{DnsError, TxtResolver};
-    use crate::identity::well_known::{WellKnownError, WellKnownResolver};
     use crate::routes::test_utils::{seed_handle, state_with_txt_records as state_with_dns};
+    use custos_core::identity::dns::{DnsError, TxtResolver};
+    use custos_core::identity::well_known::{WellKnownError, WellKnownResolver};
 
     // ── Test doubles ──────────────────────────────────────────────────────────
 

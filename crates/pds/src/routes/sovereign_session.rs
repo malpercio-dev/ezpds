@@ -25,11 +25,11 @@ use common::{ApiError, ApiResultExt, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS}
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::auth::signed_proof::{decode_canonical_base64url, NONCE_BYTES, SIGNATURE_BYTES};
-use crate::db::accounts::active_local_account_exists;
 use crate::db::sovereign_session_nonces::insert_nonce_if_absent;
-use crate::identity::authority::{authorized_signing_keys, AuthorityError};
 use crate::session_issuer::{issue_session_in_transaction, SessionKind};
+use custos_core::auth::signed_proof::{decode_canonical_base64url, NONCE_BYTES, SIGNATURE_BYTES};
+use custos_core::identity::authority::{authorized_signing_keys, AuthorityError};
+use custos_db::accounts::active_local_account_exists;
 
 const REJECTION_MESSAGE: &str = "sovereign session proof rejected";
 
@@ -85,7 +85,7 @@ fn unix_timestamp() -> Result<i64, ApiError> {
 /// Method-agnostic: a `did:plc` account's authority is its current PLC rotation set (a Custos-held
 /// rotation key qualifies under exactly the same PLC semantics as any other, granting Custos no
 /// additional power over an account it already hosts), and a self-hosted `did:web` account's is its
-/// published `#device` key. See [`crate::identity::authority`] for the policy and its rationale.
+/// published `#device` key. See [`custos_core::identity::authority`] for the policy and its rationale.
 pub async fn create_sovereign_session(
     State(state): State<AppState>,
     Json(request): Json<SovereignSessionRequest>,
@@ -252,11 +252,11 @@ mod tests {
 
     use super::*;
     use crate::app::{app, test_state_with_plc_url, AppState};
-    use crate::auth::extractors::authenticate_bearer;
-    use crate::auth::jwt::AuthScope;
     use crate::routes::test_utils::{
         body_json, mount_owner_audit_log as mount_audit_log, seed_owner_account_with_handle,
     };
+    use custos_core::auth::extractors::authenticate_bearer;
+    use custos_core::auth::jwt::AuthScope;
 
     type SignFn = Box<dyn Fn(&[u8]) -> String + Send + Sync>;
 
@@ -658,7 +658,7 @@ mod tests {
     async fn sovereign_endpoint_has_a_per_ip_session_creation_limit() {
         let plc = MockServer::start().await;
         let mut state = state_with_plc(&plc).await;
-        state.core.rate_limiter = Arc::new(crate::rate_limit::RateLimiterState::new(
+        state.core.rate_limiter = Arc::new(custos_core::rate_limit::RateLimiterState::new(
             &common::RateLimitConfig {
                 enabled: true,
                 global_ip_per_5min: 100,

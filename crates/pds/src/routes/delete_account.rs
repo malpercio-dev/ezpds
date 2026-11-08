@@ -36,14 +36,14 @@ use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 
 use crate::account_delete::purge_account;
 use crate::app::AppState;
-use crate::auth::password::{verify_password, VerifyResult};
-use crate::auth::signed_proof::{decode_canonical_base64url, NONCE_BYTES, SIGNATURE_BYTES};
-use crate::auth::token::hash_bearer_token;
 use crate::db::account_deletion_tokens::consume_account_deletion_token;
-use crate::db::accounts::account_password_hash;
 use crate::db::sovereign_session_nonces::insert_nonce_if_absent;
-use crate::identity::authority::{authorized_signing_keys, AuthorityError};
-use crate::lexicon::LexiconInput;
+use custos_core::auth::password::{verify_password, VerifyResult};
+use custos_core::auth::signed_proof::{decode_canonical_base64url, NONCE_BYTES, SIGNATURE_BYTES};
+use custos_core::auth::token::hash_bearer_token;
+use custos_core::identity::authority::{authorized_signing_keys, AuthorityError};
+use custos_core::lexicon::LexiconInput;
+use custos_db::accounts::account_password_hash;
 
 #[derive(Deserialize)]
 pub struct DeleteAccountRequest {
@@ -103,7 +103,7 @@ async fn verify_delete_proof(
     if decode_canonical_base64url(&proof.nonce, NONCE_BYTES).is_none() {
         return Err(invalid_credentials());
     }
-    let now = crate::time::unix_now_secs();
+    let now = custos_core::time::unix_now_secs();
     if now.abs_diff(proof.timestamp) > SOVEREIGN_TIMESTAMP_WINDOW_SECS as u64 {
         return Err(invalid_credentials());
     }
@@ -261,12 +261,12 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
-    use crate::auth::token::generate_token;
     use crate::db::account_deletion_tokens::insert_account_deletion_token;
-    use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{
         body_json, insert_account_with_password, post_req as shared_post_req,
     };
+    use custos_core::auth::token::generate_token;
+    use custos_core::firehose::FirehoseEvent;
 
     const URI: &str = "/xrpc/com.atproto.server.deleteAccount";
 
@@ -355,7 +355,7 @@ mod tests {
         insert_account_with_password(&db, did, "del3.example.com", "del3@example.com", "hunter2")
             .await;
         // A syntactically valid but never-issued token (base64url of 32 bytes hashes cleanly).
-        let bogus = crate::auth::token::generate_token().plaintext;
+        let bogus = custos_core::auth::token::generate_token().plaintext;
 
         let response = app(state)
             .oneshot(post_req(serde_json::json!({
@@ -481,7 +481,7 @@ mod tests {
             nonce_fill: u8,
         ) -> Value {
             let nonce = URL_SAFE_NO_PAD.encode([nonce_fill; NONCE_BYTES]);
-            let timestamp = crate::time::unix_now_secs();
+            let timestamp = custos_core::time::unix_now_secs();
             let envelope = crypto::encode_account_delete_envelope(
                 &state.config.resolve_server_did(),
                 envelope_did,
@@ -550,7 +550,7 @@ mod tests {
             seed_passwordless_account(&db, DID).await;
             mount_audit_log(&plc, DID, &[&key.did]).await;
             let token = seed_token(&db, DID).await;
-            let bogus = crate::auth::token::generate_token().plaintext;
+            let bogus = custos_core::auth::token::generate_token().plaintext;
 
             let mut body = proof_body(&state, &key, DID, DID, &bogus, 2);
             let first = app(state.clone())
@@ -689,7 +689,8 @@ mod tests {
             let token = seed_token(&db, DID).await;
 
             let mut body = proof_body(&state, &key, DID, DID, &token, 6);
-            let stale = crate::time::unix_now_secs() - common::SOVEREIGN_TIMESTAMP_WINDOW_SECS - 10;
+            let stale =
+                custos_core::time::unix_now_secs() - common::SOVEREIGN_TIMESTAMP_WINDOW_SECS - 10;
             let nonce = body["custos"]["proof"]["nonce"]
                 .as_str()
                 .unwrap()

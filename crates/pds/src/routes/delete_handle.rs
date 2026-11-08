@@ -29,9 +29,9 @@ use axum::{
 };
 
 use crate::app::AppState;
-use crate::auth::guards::require_session;
-use crate::db::dids::{fetch_also_known_as, update_also_known_as};
 use common::{ApiError, ErrorCode};
+use custos_core::auth::guards::require_session;
+use custos_db::dids::{fetch_also_known_as, update_also_known_as};
 
 pub async fn delete_handle_handler(
     State(state): State<AppState>,
@@ -40,7 +40,7 @@ pub async fn delete_handle_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&headers, &state.db).await?;
 
-    let owner_did = crate::db::handles::resolve_handle(&state.db, &handle)
+    let owner_did = custos_db::handles::resolve_handle(&state.db, &handle)
         .await?
         .ok_or_else(|| ApiError::new(ErrorCode::HandleNotFound, "handle not found"))?;
 
@@ -128,12 +128,12 @@ pub async fn delete_handle_handler(
 #[cfg(test)]
 mod tests {
     use crate::app::test_state;
-    use crate::auth::token::generate_token;
     use crate::routes::test_utils::{seed_handle, state_with_err_dns, state_with_ok_dns};
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
+    use custos_core::auth::token::generate_token;
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -394,7 +394,7 @@ mod tests {
             .await
             .expect("identity frame was emitted")
             .expect("receiver not closed");
-        let crate::firehose::FirehoseEvent::Identity(identity) = event else {
+        let custos_core::firehose::FirehoseEvent::Identity(identity) = event else {
             panic!("expected an #identity frame, got {event:?}");
         };
         assert_eq!(identity.did, did);

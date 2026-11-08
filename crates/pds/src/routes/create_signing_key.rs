@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::{require_admin_json, AdminActor};
-use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
+use custos_core::auth::guards::{require_admin_json, AdminActor};
+use custos_db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]

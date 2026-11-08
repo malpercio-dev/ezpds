@@ -5,14 +5,14 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, Uri};
 use axum::response::Json;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::{authenticate_space_caller, require_space_grant};
 use crate::db::spaces::{create_space, NewSpace};
-use crate::lexicon::LexiconInput;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::auth::oauth_scopes::{RepoAction, SpaceOp};
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +35,7 @@ pub struct CreateSpaceInput {
 /// unions are open: an unimplemented member is refused (`UnsupportedPolicy` /
 /// `UnsupportedAppAccess`) before anything is stored.
 pub async fn simplespace_create_space(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

@@ -15,11 +15,11 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::password::hash_password;
 use crate::db::app_passwords::{insert_app_password, InsertOutcome};
-use crate::lexicon::LexiconInput;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::password::hash_password;
+use custos_core::lexicon::LexiconInput;
 
 /// Maximum accepted app-password name length (characters). A generous bound that rejects
 /// obviously abusive input without constraining normal use.

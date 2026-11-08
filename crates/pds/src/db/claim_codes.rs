@@ -168,7 +168,7 @@ async fn mint_claim_codes_with_generator(
         let codes = generate_unique_codes(count as usize, &mut generate);
         match insert_claim_codes(db, &codes, expires_in_hours).await {
             Ok(()) => return Ok(codes),
-            Err(e) if super::is_unique_violation(&e) => {
+            Err(e) if custos_db::is_unique_violation(&e) => {
                 tracing::warn!(attempt, "claim code uniqueness conflict; retrying");
             }
             Err(e) => return Err(MintClaimCodesError::Store(e)),
@@ -210,7 +210,7 @@ async fn insert_claim_codes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
+    use custos_db::{open_pool, run_migrations};
 
     async fn test_db() -> SqlitePool {
         let db = open_pool("sqlite::memory:").await.expect("test pool");

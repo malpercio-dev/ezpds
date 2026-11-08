@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use axum::extract::FromRef;
 use custos_core::CoreState;
-use custos_spaces::SpacesState;
 
 /// The state every `pds` handler extracts: the shared [`CoreState`] plus the fields only `pds`'s
 /// features read. Core helpers take `&CoreState`; a `&AppState` reaches them through [`Deref`].
@@ -54,12 +53,6 @@ impl Deref for AppState {
 impl FromRef<AppState> for CoreState {
     fn from_ref(state: &AppState) -> CoreState {
         state.core.clone()
-    }
-}
-
-impl FromRef<AppState> for SpacesState {
-    fn from_ref(state: &AppState) -> SpacesState {
-        SpacesState::new(state.core.clone())
     }
 }
 

@@ -6,15 +6,15 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::extract_bearer_token;
-use crate::auth::jwt::peek_jwt_iss;
-use crate::auth::service_auth::verify_service_auth_resolving_key;
 use crate::auth::space::unix_now;
-use crate::lexicon::LexiconInput;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::auth::extract_bearer_token;
+use custos_core::auth::jwt::peek_jwt_iss;
+use custos_core::auth::service_auth::verify_service_auth_resolving_key;
+use custos_core::lexicon::LexiconInput;
 
 const LXM: &str = "com.atproto.space.notifyWrite";
 
@@ -34,7 +34,7 @@ pub struct NotifyWriteInput {
 /// POST /xrpc/com.atproto.space.notifyWrite
 ///
 /// Service-auth authenticated, but deliberately **not** through
-/// [`crate::auth::service_auth::require_service_auth`]: that guard requires the issuer to be an
+/// [`custos_core::auth::service_auth::require_service_auth`]: that guard requires the issuer to be an
 /// account hosted here, and the whole point of this method is that the issuer is somewhere else.
 /// The issuer's key is resolved from the network instead, and it must be one of the two parties
 /// entitled to speak about this write — the repo whose head moved (a repo host reporting its own
@@ -48,7 +48,7 @@ pub struct NotifyWriteInput {
 /// host's clock than [`MAX_REV_SKEW_SECS`] is refused (`FutureRev`): such a revision would pin
 /// the repo's writer-set entry ahead of every honest update.
 pub async fn space_notify_write(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     headers: HeaderMap,
     LexiconInput(input): LexiconInput<NotifyWriteInput>,
 ) -> Result<impl IntoResponse, ApiError> {

@@ -10,7 +10,6 @@ mod account_genesis;
 mod account_reaper;
 mod admin_nonce_sweep;
 mod app;
-mod auth;
 mod capabilities;
 mod db;
 mod email;
@@ -45,12 +44,6 @@ mod uniqueness;
 mod xrpc_dispatch;
 
 use common::code_gen;
-// Modules that moved to custos-core, aliased at the crate root so `crate::identity::…` and its
-// siblings keep resolving.
-use custos_core::{
-    blob_store, crawler, firehose, identity, lexicon, metrics, no_input, rate_limit, request_host,
-    sweep, sweep_status, time,
-};
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
 ///
@@ -167,10 +160,10 @@ async fn run_rewrap(config_path: Option<PathBuf>) -> anyhow::Result<()> {
 
     let config = load_config_auto(config_path)?;
     let db_url = to_sqlite_url(&config.database_url);
-    let pool = db::open_pool(&db_url)
+    let pool = custos_db::open_pool(&db_url)
         .await
         .with_context(|| format!("failed to open database at {}", config.database_url))?;
-    db::run_migrations(&pool)
+    custos_db::run_migrations(&pool)
         .await
         .with_context(|| "failed to run database migrations")?;
 
@@ -201,10 +194,10 @@ async fn run_notification_keys(
     use db::notifications as store;
 
     let config = load_config_auto(config_path)?;
-    let pool = db::open_pool(&to_sqlite_url(&config.database_url))
+    let pool = custos_db::open_pool(&to_sqlite_url(&config.database_url))
         .await
         .with_context(|| format!("failed to open database at {}", config.database_url))?;
-    db::run_migrations(&pool).await?;
+    custos_db::run_migrations(&pool).await?;
 
     match command {
         NotificationKeysCommand::List => {
@@ -301,12 +294,15 @@ async fn run() -> anyhow::Result<()> {
     // Canonicalize the operator-configured agent scope tokens so scope clamping matches them by
     // exact string; a mistyped/unsupported token fails fast here instead of silently dropping the
     // capability when an agent assertion is minted.
-    config.agent_auth.granted_scopes =
-        auth::oauth_scopes::canonicalize_agent_scopes(&config.agent_auth.granted_scopes)
-            .map_err(|e| anyhow::anyhow!("invalid [agent_auth] granted_scopes: {e}"))?;
+    config.agent_auth.granted_scopes = custos_core::auth::oauth_scopes::canonicalize_agent_scopes(
+        &config.agent_auth.granted_scopes,
+    )
+    .map_err(|e| anyhow::anyhow!("invalid [agent_auth] granted_scopes: {e}"))?;
     config.agent_auth.pre_claim_scopes =
-        auth::oauth_scopes::canonicalize_agent_scopes(&config.agent_auth.pre_claim_scopes)
-            .map_err(|e| anyhow::anyhow!("invalid [agent_auth] pre_claim_scopes: {e}"))?;
+        custos_core::auth::oauth_scopes::canonicalize_agent_scopes(
+            &config.agent_auth.pre_claim_scopes,
+        )
+        .map_err(|e| anyhow::anyhow!("invalid [agent_auth] pre_claim_scopes: {e}"))?;
 
     tracing::info!(
         bind_address = %config.bind_address,
@@ -324,7 +320,7 @@ async fn run() -> anyhow::Result<()> {
     // keeping both functions general-purpose.
     let db_url = to_sqlite_url(&config.database_url);
 
-    let pool = db::open_pool(&db_url)
+    let pool = custos_db::open_pool(&db_url)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "fatal: failed to open database pool");
@@ -332,7 +328,7 @@ async fn run() -> anyhow::Result<()> {
         })
         .with_context(|| format!("failed to open database at {}", config.database_url))?;
 
-    db::run_migrations(&pool)
+    custos_db::run_migrations(&pool)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "fatal: failed to run database migrations");
@@ -358,7 +354,7 @@ async fn run() -> anyhow::Result<()> {
         );
     }
 
-    let oauth_signing_keypair = auth::load_or_create_oauth_signing_key(
+    let oauth_signing_keypair = custos_core::auth::load_or_create_oauth_signing_key(
         &pool,
         config.signing_key_master_key.as_ref().map(|s| &*s.0),
     )
@@ -379,11 +375,11 @@ async fn run() -> anyhow::Result<()> {
     // Lexicon-authority permission-set record): redirects disabled + a DNS resolver that
     // re-checks the public-address allowlist at connect time. `false` (never `allow_loopback`) in
     // production.
-    let hardened_http_client = identity::proxy::build_hardened_client(false)
+    let hardened_http_client = custos_core::identity::proxy::build_hardened_client(false)
         .context("failed to build hardened HTTP client")?;
 
-    let txt_resolver: Option<Arc<dyn identity::dns::TxtResolver>> =
-        match identity::dns::HickoryTxtResolver::from_system_conf() {
+    let txt_resolver: Option<Arc<dyn custos_core::identity::dns::TxtResolver>> =
+        match custos_core::identity::dns::HickoryTxtResolver::from_system_conf() {
             Ok(r) => {
                 tracing::info!("DNS TXT resolver initialised (handle resolution fallback enabled)");
                 Some(Arc::new(r))
@@ -397,16 +393,20 @@ async fn run() -> anyhow::Result<()> {
             }
         };
 
-    let well_known_resolver: Option<Arc<dyn identity::well_known::WellKnownResolver>> =
-        Some(Arc::new(identity::well_known::HttpWellKnownResolver::new(
-            hardened_http_client.clone(),
-        )));
+    let well_known_resolver: Option<Arc<dyn custos_core::identity::well_known::WellKnownResolver>> =
+        Some(Arc::new(
+            custos_core::identity::well_known::HttpWellKnownResolver::new(
+                hardened_http_client.clone(),
+            ),
+        ));
 
     // Dynamic-trust JWKS cache for the auth.md `identity_assertion` flow: reuses the shared HTTP
     // client and the operator-configured cache TTL + refetch cooldown (the anti-amplification
     // bound for the public agent-auth endpoints). The static-PEM trust path never touches it.
-    let jwks_cache = Arc::new(auth::jwks::JwksCache::new(
-        Arc::new(auth::jwks::HttpJwksFetcher::new(http_client.clone())),
+    let jwks_cache = Arc::new(custos_core::auth::jwks::JwksCache::new(
+        Arc::new(custos_core::auth::jwks::HttpJwksFetcher::new(
+            http_client.clone(),
+        )),
         std::time::Duration::from_secs(config.agent_auth.jwks_cache_ttl_secs),
         std::time::Duration::from_secs(config.agent_auth.jwks_refetch_cooldown_secs),
     ));
@@ -416,15 +416,15 @@ async fn run() -> anyhow::Result<()> {
     // SSRF-hardened client rather than the plain one, since a client's `jwks_uri` is supplied by
     // whoever registers the client rather than operator-typed config. See `auth::jwks`'s module
     // doc for why this doesn't share `jwks_cache` above.
-    let oauth_client_jwks_cache = Arc::new(auth::jwks::JwksCache::new(
-        Arc::new(auth::jwks::HttpJwksFetcher::new(
+    let oauth_client_jwks_cache = Arc::new(custos_core::auth::jwks::JwksCache::new(
+        Arc::new(custos_core::auth::jwks::HttpJwksFetcher::new(
             hardened_http_client.clone().into_inner(),
         )),
         std::time::Duration::from_secs(config.oauth.client_jwks_cache_ttl_secs),
         std::time::Duration::from_secs(config.oauth.client_jwks_refetch_cooldown_secs),
     ));
 
-    let jwt_secret = auth::load_or_create_jwt_secret(
+    let jwt_secret = custos_core::auth::load_or_create_jwt_secret(
         &pool,
         config.signing_key_master_key.as_ref().map(|s| &*s.0),
     )
@@ -437,7 +437,7 @@ async fn run() -> anyhow::Result<()> {
     // is fatal — if the operator asked for the tunnel, starting without it would silently
     // drop a configured capability.
     let iroh = if config.iroh.enabled {
-        let secret = auth::load_or_create_iroh_secret_key(
+        let secret = custos_core::auth::load_or_create_iroh_secret_key(
             &pool,
             config.signing_key_master_key.as_ref().map(|s| &*s.0),
         )
@@ -456,13 +456,13 @@ async fn run() -> anyhow::Result<()> {
     // and before the subsystems that record through it (notify worker, crawler, firehose) are
     // constructed. A broken exporter is fatal here rather than failing every scrape at runtime.
     let metrics = Arc::new(if config.telemetry.metrics_enabled {
-        let m = metrics::Metrics::new(&config.telemetry.service_name)
+        let m = custos_core::metrics::Metrics::new(&config.telemetry.service_name)
             .with_context(|| "failed to build metrics pipeline")?;
         tracing::info!("metrics enabled: serving Prometheus exposition at /metrics");
         m
     } else {
         tracing::info!("metrics disabled: /metrics is not registered");
-        metrics::Metrics::disabled()
+        custos_core::metrics::Metrics::disabled()
     });
 
     // The notification relay's outbound leg. Dials from the same endpoint the tunnel accepts
@@ -498,9 +498,9 @@ async fn run() -> anyhow::Result<()> {
 
     // Crawler notifier: after each commit, ping the configured relays/BGSes via requestCrawl.
     // The hostname advertised to crawlers is derived from the relay's public URL.
-    let crawler_hostname = crawler::host_from_url(&config.public_url);
+    let crawler_hostname = custos_core::crawler::host_from_url(&config.public_url);
     let crawlers = Arc::new({
-        let mut c = crawler::CrawlerNotifier::new(
+        let mut c = custos_core::crawler::CrawlerNotifier::new(
             http_client.clone(),
             crawler_hostname,
             &config.crawlers.urls,
@@ -531,7 +531,7 @@ async fn run() -> anyhow::Result<()> {
     // relay — the `#account`/`#identity`/`#sync` lifecycle frames are precisely the ones a dropped
     // subscription must not miss.
     let firehose = Arc::new({
-        let mut f = firehose::Firehose::new(pool.clone())
+        let mut f = custos_core::firehose::Firehose::new(pool.clone())
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "fatal: failed to initialise firehose sequencer");
@@ -566,7 +566,9 @@ async fn run() -> anyhow::Result<()> {
     }
 
     // Build the rate limiter from config before `config` is moved into the AppState's Arc.
-    let rate_limiter = Arc::new(rate_limit::RateLimiterState::new(&config.rate_limit));
+    let rate_limiter = Arc::new(custos_core::rate_limit::RateLimiterState::new(
+        &config.rate_limit,
+    ));
     if config.rate_limit.enabled {
         tracing::info!(
             global_ip_per_5min = config.rate_limit.global_ip_per_5min,
@@ -590,16 +592,18 @@ async fn run() -> anyhow::Result<()> {
         oauth_client_jwks_cache,
         jwt_secret,
         oauth_signing_keypair,
-        dpop_nonces: Arc::new(auth::DpopNonceRotator::from_jwt_secret(&jwt_secret)),
-        permission_set_cache: auth::new_permission_set_cache(),
-        did_document_cache: identity::resolution::new_did_document_cache(),
+        dpop_nonces: Arc::new(custos_core::auth::DpopNonceRotator::from_jwt_secret(
+            &jwt_secret,
+        )),
+        permission_set_cache: custos_core::auth::new_permission_set_cache(),
+        did_document_cache: custos_core::identity::resolution::new_did_document_cache(),
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         rate_limiter,
         allow_loopback_proxy_targets: false,
         metrics,
-        sweeps: Arc::new(sweep_status::SweepStatus::default()),
+        sweeps: Arc::new(custos_core::sweep_status::SweepStatus::default()),
         started_at,
-        poll_tracker: auth::new_claim_poll_tracker(),
+        poll_tracker: custos_core::auth::new_claim_poll_tracker(),
         notifier: None,
         space_type_cache: custos_core::scope_display::new_space_type_cache(),
         firehose,
@@ -626,7 +630,7 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!(address = %addr, "listening");
 
     // Every periodic sweep runs under one scheduler, which stops them at shutdown.
-    let mut sweeps = sweep::Scheduler::new(state.clone());
+    let mut sweeps = custos_core::sweep::Scheduler::new(state.clone());
 
     custos_blobs::spawn_sweeps(&mut sweeps, &state.config, blob_mirror);
 

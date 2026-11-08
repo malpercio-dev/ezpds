@@ -57,27 +57,27 @@
 
 use axum::http::{HeaderMap, Method, Uri};
 use common::{ApiError, ApiResultExt, ErrorCode};
+use custos_core::CoreState;
 use serde_json::Value;
 
-use crate::db::accounts::{active_local_account_exists, AccountLifecycle};
 use crate::db::space_jti::{insert_jti_if_absent, SpaceJtiScope};
 use crate::db::spaces::{self, SpaceRow};
-use crate::identity::resolution::{
+use custos_core::identity::resolution::{
     atproto_verification_key, dedicated_space_verification_key,
     refresh_did_document_after_signature_mismatch, resolve_did_document, service_endpoint,
     space_verification_key,
 };
-use crate::space_uri::SpaceRef;
-use crate::SpacesState;
+use custos_core::space_uri::SpaceRef;
+use custos_db::accounts::{active_local_account_exists, AccountLifecycle};
 
-use super::bearer::{extract_access_token, extract_space_credential};
-use super::extractors::AuthenticatedUser;
 use super::http_signature::{verify_space_signature, SignedFor};
-use super::jwt::{
+use custos_core::auth::bearer::{extract_access_token, extract_space_credential};
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::{
     peek_jwt_iss, peek_jwt_typ, random_jti, sign_jwt, verify_did_key_jwt, AuthScope, DidKeyJwt,
     ServiceAuthError,
 };
-use super::oauth_scopes::{self, SpaceOp, SpaceRequest};
+use custos_core::auth::oauth_scopes::{self, SpaceOp, SpaceRequest};
 
 /// JWT `typ` of a delegation token.
 pub const DELEGATION_TOKEN_TYP: &str = "atproto-space-delegation+jwt";
@@ -114,18 +114,12 @@ pub fn space_host_aud(space: &SpaceRef) -> String {
 /// gate below. Every account-credential arm of every space and simplespace seam routes
 /// through here, so this is the one place the gate has to hold.
 pub async fn authenticate_space_caller(
-    state: &SpacesState,
+    state: &CoreState,
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
 ) -> Result<AuthenticatedUser, ApiError> {
-    let user = crate::auth::authenticate_access(headers, method, uri, state)?;
-    if !user.scope.is_access() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "access token required",
-        ));
-    }
+    let user = custos_core::auth::authenticate_access(headers, method, uri, state)?;
 
     require_serviceable_caller(state, &user.did).await?;
     Ok(user)
@@ -144,8 +138,8 @@ pub async fn authenticate_space_caller(
 /// Called from [`authenticate_space_caller`], and directly by `getDelegationToken` — the one
 /// space route that authenticates through the bare `AuthenticatedUser` extractor, because it
 /// names a space this server need not host.
-pub async fn require_serviceable_caller(state: &SpacesState, did: &str) -> Result<(), ApiError> {
-    match crate::db::accounts::account_lifecycle(&state.db, did).await? {
+pub async fn require_serviceable_caller(state: &CoreState, did: &str) -> Result<(), ApiError> {
+    match custos_db::accounts::account_lifecycle(&state.db, did).await? {
         Some(AccountLifecycle::Active | AccountLifecycle::Deactivated) => Ok(()),
         _ => {
             tracing::warn!(did = %did, "space call: account missing or in a moderation state");
@@ -160,7 +154,7 @@ pub async fn require_serviceable_caller(state: &SpacesState, did: &str) -> Resul
 /// issues to syncers, never a licence to write into someone else's repo — so there is no second
 /// credential branch here, unlike [`authenticate_space_read`].
 pub async fn authenticate_space_write(
-    state: &SpacesState,
+    state: &CoreState,
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
@@ -206,7 +200,7 @@ pub enum SpaceReader {
 ///   deactivated or taken-down owner's repo reads as `RepoNotFound` here, where the owner could
 ///   still read it.
 pub async fn authenticate_space_read(
-    state: &SpacesState,
+    state: &CoreState,
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
@@ -251,7 +245,7 @@ pub async fn authenticate_space_read(
 /// [`authenticate_space_caller`]), so a deactivated authority can still manage its own spaces
 /// through the migration window.
 pub async fn authenticate_space_access(
-    state: &SpacesState,
+    state: &CoreState,
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
@@ -284,7 +278,7 @@ pub async fn authenticate_space_access(
 ///
 /// Writes are not checked here — `space_record_write`'s choke point reads the same row inside
 /// its commit transaction, where a concurrent takedown cannot land between check and commit.
-pub async fn require_space_servable(state: &SpacesState, space: &SpaceRef) -> Result<(), ApiError> {
+pub async fn require_space_servable(state: &CoreState, space: &SpaceRef) -> Result<(), ApiError> {
     let taken_down = spaces::get_space(&state.db, &space.uri)
         .await
         .map_err(|e| {
@@ -306,7 +300,7 @@ pub async fn require_space_servable(state: &SpacesState, space: &SpaceRef) -> Re
 /// Every other failure "means nothing", which is exactly the right thing for a state that can
 /// be reversed.
 pub async fn require_serviceable_authority(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRef,
 ) -> Result<(), ApiError> {
     if active_local_account_exists(&state.db, &space.authority).await? {
@@ -327,7 +321,7 @@ pub async fn require_serviceable_authority(
 /// grant learns `InsufficientScope` whether or not the space is its user's. Not the
 /// authority is `NotSpaceOwner` — a precondition failure, not an authentication one.
 pub async fn authenticate_space_owner(
-    state: &SpacesState,
+    state: &CoreState,
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
@@ -374,7 +368,7 @@ fn presented_space_credential(headers: &HeaderMap) -> Result<Option<&str>, ApiEr
 /// audience equal to `audience` — the DID this request is for. No nonce and no replay store:
 /// the audience is the binding, and reuse against it is allowed until the credential expires.
 async fn authenticate_space_credential(
-    state: &SpacesState,
+    state: &CoreState,
     headers: &HeaderMap,
     token: &str,
     space: &SpaceRef,
@@ -418,8 +412,8 @@ async fn authenticate_space_credential(
         .inspect_err(|_| {
             state.metrics.rate_limit_rejections.add(
                 1,
-                &[crate::metrics::label(
-                    crate::metrics::names::LABEL_LIMITER,
+                &[custos_core::metrics::label(
+                    custos_core::metrics::names::LABEL_LIMITER,
                     "space_credential",
                 )],
             );
@@ -443,7 +437,7 @@ pub fn repo_not_found(repo: &str) -> ApiError {
 /// there is nothing to evaluate; they are bounded instead by the repo-ownership check above,
 /// which is exactly how the reference bounds them. Only an OAuth grant reaches the matcher.
 pub async fn require_space_grant(
-    state: &SpacesState,
+    state: &CoreState,
     user: &AuthenticatedUser,
     space: &SpaceRef,
     op: SpaceOp<'_>,
@@ -558,7 +552,7 @@ pub struct VerifiedDelegation {
 /// PLC directory unreachable) keeps its own code and status, so an upstream outage never reads
 /// as the client's fault.
 pub async fn verify_delegation_token(
-    state: &SpacesState,
+    state: &CoreState,
     token: &str,
     space: &SpaceRef,
     now: u64,
@@ -686,7 +680,7 @@ pub struct VerifiedCredential {
 /// Only [`authenticate_space_credential`] may call this — the proof-of-possession check that
 /// makes a verified credential usable lives there; this function is private to hold that.
 async fn verify_space_credential(
-    state: &SpacesState,
+    state: &CoreState,
     token: &str,
     now: u64,
 ) -> Result<VerifiedCredential, ApiError> {
@@ -726,7 +720,7 @@ async fn verify_space_credential(
     let space = claims
         .get("sub")
         .and_then(Value::as_str)
-        .and_then(crate::space_uri::parse_space_ref)
+        .and_then(custos_core::space_uri::parse_space_ref)
         .ok_or_else(|| invalid("space credential sub is not a space reference"))?;
     if space.authority != iss {
         return Err(invalid(
@@ -792,7 +786,7 @@ async fn verify_space_credential(
 /// admits anyone, `member-list` consults `space_members`, and `managing-app` hands the decision
 /// to the app the config names.
 pub async fn authorize_credential_request(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRow,
     user_did: &str,
     client_id: Option<&str>,
@@ -832,7 +826,7 @@ pub async fn authorize_credential_request(
 /// Whether the authority tracks and forwards `repo_did`'s write notifications, per the space's
 /// **write** policy. The authority's own repo always passes, mirroring the read side.
 pub async fn authorize_write_notification(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRow,
     repo_did: &str,
 ) -> Result<bool, ApiError> {
@@ -871,7 +865,7 @@ impl Access {
 /// `space_members` (the read or write bit per `access`), and `managing-app` hands the decision
 /// to the app the config names.
 async fn policy_admits(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRow,
     policy: Option<&str>,
     managing_app: Option<&str>,
@@ -921,7 +915,7 @@ const CHECK_USER_ACCESS_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// account is served by its PDS. The `aud` is the identifier as published, fragment and all, so
 /// a multi-service app can tell which of its services was addressed.
 async fn check_managing_app(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRow,
     managing_app: Option<&str>,
     access: Access,
@@ -965,7 +959,7 @@ async fn check_managing_app(
     let Ok(now) = unix_now() else {
         return deny("system clock is before the epoch");
     };
-    let Ok(token) = crate::auth::signing_key::mint_account_service_auth(
+    let Ok(token) = custos_core::auth::signing_key::mint_account_service_auth(
         &state.db,
         master_key,
         &space.authority_did,
@@ -996,7 +990,7 @@ async fn check_managing_app(
     // caller-influenced: the hardened client is what decides which address this reaches.
     let response = state
         .hardened_http_client
-        .get(&crate::identity::proxy::CallerUrl::new(url))
+        .get(&custos_core::identity::proxy::CallerUrl::new(url))
         .bearer_auth(token)
         .timeout(CHECK_USER_ACCESS_TIMEOUT)
         .send()
@@ -1027,7 +1021,7 @@ async fn check_managing_app(
 /// stands — as does a refresh the per-DID cool-down suppressed. Verification failures are
 /// `InvalidToken`; callers re-code those alone.
 async fn verify_did_jwt_resolving_key(
-    state: &SpacesState,
+    state: &CoreState,
     token: &str,
     iss: &str,
     pick_key: &(dyn Fn(&Value) -> Option<crypto::DidKeyUri> + Sync),
@@ -1080,21 +1074,20 @@ fn peek_jwt_segment(token: &str, index: usize) -> Option<Value> {
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(b64).ok()?).ok()
 }
 
-pub(crate) use crate::time::unix_now;
+pub(crate) use custos_core::time::unix_now;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::dids::seed_did_document;
     use crate::db::spaces::{insert_space, NewSpace};
-    use crate::space_uri::parse_space_ref;
     use crate::test_support::{
         access_jwt, app_pass_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
         SpaceSigKey,
     };
-    use crate::SpacesState;
     use axum::http::{header::AUTHORIZATION, HeaderValue};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use custos_core::space_uri::parse_space_ref;
+    use custos_db::dids::seed_did_document;
 
     const AUTHORITY: &str = "did:plc:abc234567abc234567abc234";
     const ALICE: &str = "did:plc:alice";
@@ -1132,7 +1125,7 @@ mod tests {
 
     /// Seed a local account with a repo key and a cached DID document carrying that key.
     async fn seed_identity(
-        state: &SpacesState,
+        state: &CoreState,
         did: &str,
         with_space_key: bool,
     ) -> repo_engine::CommitSigner {
@@ -1166,7 +1159,7 @@ mod tests {
 
     /// Run the read seam for `repo` with `headers`, as a `getRecord` call.
     async fn read(
-        state: &SpacesState,
+        state: &CoreState,
         headers: &HeaderMap,
         repo: &str,
     ) -> Result<SpaceReader, ApiError> {
@@ -1246,7 +1239,7 @@ mod tests {
                 .code(),
             &ErrorCode::InvalidDelegationToken
         );
-        let service_auth = super::super::jwt::mint_service_auth_jwt(
+        let service_auth = custos_core::auth::jwt::mint_service_auth_jwt(
             |b| alice.sign(b),
             ALICE,
             &space_host_aud(&space()),
@@ -1900,7 +1893,7 @@ mod tests {
         };
 
         async fn refusal(
-            state: &SpacesState,
+            state: &CoreState,
             row: &crate::db::spaces::SpaceRow,
             did: &str,
             client: Option<&str>,

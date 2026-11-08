@@ -14,10 +14,10 @@ use serde_json::Value;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::db::accounts::{account_lifecycle, AccountLifecycle};
 use crate::db::preferences::get_preferences;
 use crate::routes::preference_scope::is_full_access_only_pref;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_db::accounts::{account_lifecycle, AccountLifecycle};
 
 #[derive(Serialize)]
 pub struct GetPreferencesResponse {
@@ -42,12 +42,6 @@ pub async fn get_preferences_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
 ) -> Result<Json<GetPreferencesResponse>, ApiError> {
-    if !user.scope.is_access() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "access token required",
-        ));
-    }
     let can_manage_personal_details = user.can_manage_personal_details();
 
     // A valid JWT is not enough: reject tokens for a removed account or one in a moderation

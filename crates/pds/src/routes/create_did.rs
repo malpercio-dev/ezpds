@@ -43,11 +43,11 @@ use crate::account_genesis::{
     announce_active_account, insert_account_row, stage_genesis_repo, GenesisRepo, NewAccountRow,
 };
 use crate::app::AppState;
-use crate::auth::guards::require_pending_session;
-use crate::auth::password::resolve_password;
-use crate::auth::token::generate_token;
-use crate::identity::resolution::fragment_id_matches;
 use common::{ApiError, ApiResultExt, ErrorCode};
+use custos_core::auth::guards::require_pending_session;
+use custos_core::auth::password::resolve_password;
+use custos_core::auth::token::generate_token;
+use custos_core::identity::resolution::fragment_id_matches;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,7 +107,7 @@ pub async fn create_did_handler(
     // The per-account repo signing key must have been issued (GET /v1/repo-signing-key)
     // before the ceremony, because the op publishes it as #atproto and the PDS signs
     // repo commits with the matching private key.
-    let repo_key = crate::db::repo_keys::get_pending_repo_key(&state.db, &session.account_id)
+    let repo_key = custos_db::repo_keys::get_pending_repo_key(&state.db, &session.account_id)
         .await
         .or_internal_as("failed to load pending repo signing key", "failed to load signing key")?
         .ok_or_else(|| {
@@ -190,7 +190,7 @@ pub async fn create_did_handler(
     ) {
         (Some(signed_op), None) => {
             let (verified, signed_op_str) =
-                crate::identity::genesis::verify_and_validate_genesis_op(
+                custos_core::identity::genesis::verify_and_validate_genesis_op(
                     &payload.rotation_key_public,
                     signed_op,
                     &pending.handle,
@@ -220,7 +220,7 @@ pub async fn create_did_handler(
                     ));
                 }
             }
-            let document = crate::identity::genesis::build_did_document(&verified)?;
+            let document = custos_core::identity::genesis::build_did_document(&verified)?;
             (verified.did, document, Some(signed_op_str))
         }
         (None, Some(document_bytes)) => {
@@ -239,7 +239,8 @@ pub async fn create_did_handler(
                 &state.config.public_url,
             )?;
             let resolved =
-                crate::identity::resolution::resolve_web_did_document_bytes(&state, &did).await?;
+                custos_core::identity::resolution::resolve_web_did_document_bytes(&state, &did)
+                    .await?;
             if resolved.as_bytes() != document_bytes.as_bytes() {
                 return Err(ApiError::new(
                     ErrorCode::InvalidClaim,
@@ -291,12 +292,13 @@ pub async fn create_did_handler(
     // Every block `build_genesis_repo` wrote is reachable from `genesis_root` (there is no
     // previous commit to diff against), so the genesis `#commit` frame's CARv1 payload can be
     // built directly from these in-memory blocks — no block-store round trip needed.
-    let genesis_car = crate::identity::genesis::build_genesis_car(genesis_root, &genesis_blocks);
+    let genesis_car =
+        custos_core::identity::genesis::build_genesis_car(genesis_root, &genesis_blocks);
     // A `#sync` state assertion carrying just the signed genesis commit block, staged atomically
     // with the account so a relay can anchor to this fresh host's head (Sync v1.1). The commit
     // block is always in the freshly-built genesis blocks, so `None` is an internal invariant break.
     let genesis_sync_car =
-        crate::identity::genesis::build_commit_block_car(genesis_root, &genesis_blocks)
+        custos_core::identity::genesis::build_commit_block_car(genesis_root, &genesis_blocks)
             .ok_or_else(|| {
                 tracing::error!(did = %did, "genesis commit block missing from built blocks");
                 ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
@@ -319,7 +321,7 @@ pub async fn create_did_handler(
     // later retry (e.g. one whose promotion transaction failed) can skip it. did:web has no
     // plc.directory log (`signed_op_str` is None), so it neither posts nor stamps.
     if let Some(signed_op) = signed_op_str.as_deref().filter(|_| !plc_registered) {
-        crate::identity::genesis::post_to_plc_directory(
+        custos_core::identity::genesis::post_to_plc_directory(
             &state.http_client,
             &state.config.plc_directory_url,
             &did,
@@ -602,7 +604,7 @@ async fn mark_plc_registered(db: &sqlx::SqlitePool, account_id: &str) -> Result<
 
 /// Check if the DID is already fully promoted (Step 8).
 async fn check_already_promoted(db: &sqlx::SqlitePool, did: &str) -> Result<(), ApiError> {
-    if crate::db::accounts::account_exists(db, did).await? {
+    if custos_db::accounts::account_exists(db, did).await? {
         return Err(ApiError::new(
             ErrorCode::DidAlreadyExists,
             "DID is already fully promoted",
@@ -626,7 +628,7 @@ struct PendingAccountPromotion<'a> {
     /// passwordless account (the `optionalPassword` capability), which stores NULL — the same
     /// column state migration-mode `createAccount` has always written for OAuth-only accounts.
     password_hash: Option<&'a str>,
-    repo_key: &'a crate::db::repo_keys::RepoSigningKey,
+    repo_key: &'a custos_db::repo_keys::RepoSigningKey,
     genesis_root: &'a str,
     genesis_rev: &'a str,
     genesis_blocks: &'a [(repo_engine::Cid, Vec<u8>)],
@@ -700,7 +702,7 @@ async fn promote_account(state: &AppState, p: PendingAccountPromotion<'_>) -> Re
     // rolls back atomically — so the upsert's UPDATE branch is dead code here, same as
     // new-account mode in `create_account_xrpc`. Reused rather than hand-writing a fail-on-conflict
     // INSERT to keep one write path for `did_documents`.
-    crate::db::dids::upsert_did_document(&mut *tx, did, p.did_document).await?;
+    custos_db::dids::upsert_did_document(&mut *tx, did, p.did_document).await?;
 
     sqlx::query(
         "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
@@ -716,7 +718,7 @@ async fn promote_account(state: &AppState, p: PendingAccountPromotion<'_>) -> Re
 
     // Move the per-account repo signing key from the pending account into signing_keys
     // (DID-keyed), atomically with promotion. The PDS loads it to sign repo commits.
-    crate::db::repo_keys::insert_did_signing_key(&mut *tx, did, p.repo_key)
+    custos_db::repo_keys::insert_did_signing_key(&mut *tx, did, p.repo_key)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
@@ -772,11 +774,11 @@ async fn promote_account(state: &AppState, p: PendingAccountPromotion<'_>) -> Re
 mod tests {
     use super::*;
     use crate::app::test_state_with_plc_url;
-    use crate::auth::token::generate_token;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
+    use custos_core::auth::token::generate_token;
     use tower::ServiceExt; // for `.oneshot()`
     use uuid::Uuid;
     use wiremock::{
@@ -968,10 +970,10 @@ mod tests {
             &crate::routes::test_utils::test_master_key(),
         )
         .expect("encrypt repo key");
-        crate::db::repo_keys::set_pending_repo_key(
+        custos_db::repo_keys::set_pending_repo_key(
             db,
             &account_id,
-            &crate::db::repo_keys::RepoSigningKey {
+            &custos_db::repo_keys::RepoSigningKey {
                 key_id: repo_kp.key_id.to_string(),
                 public_key: repo_kp.public_key.clone(),
                 private_key_encrypted,
@@ -1143,7 +1145,7 @@ mod tests {
         // A fresh account must self-announce — genesis #commit, a Sync v1.1 #sync head assertion,
         // then #account (active) sequenced to the firehose, so a never-crawled host doesn't stay
         // invisible to the relay until its first record write.
-        use crate::firehose::FirehoseEvent;
+        use custos_core::firehose::FirehoseEvent;
         let FirehoseEvent::Commit(commit_event) = fh_rx
             .try_recv()
             .expect("a genesis #commit event must be emitted")
@@ -1282,7 +1284,7 @@ mod tests {
 
         // session row created with correct did and matching token_hash
         let session_token_str = body["session_token"].as_str().unwrap();
-        let expected_hash = crate::auth::token::hash_bearer_token(session_token_str).unwrap();
+        let expected_hash = custos_core::auth::token::hash_bearer_token(session_token_str).unwrap();
         let session_row: Option<(String,)> =
             sqlx::query_as("SELECT did FROM sessions WHERE token_hash = ?")
                 .bind(&expected_hash)

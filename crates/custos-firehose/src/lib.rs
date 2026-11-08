@@ -14,11 +14,6 @@ use axum::extract::FromRef;
 use custos_core::sweep::Scheduler;
 use custos_core::CoreState;
 
-// Modules custos-core owns, aliased at the crate root so `crate::firehose::…` and its siblings
-// resolve as they did in `pds`.
-use custos_core::{auth, crawler, firehose, metrics, sweep, sweep_status, time};
-
-mod db;
 mod firehose_gc;
 mod relay_status;
 mod router;

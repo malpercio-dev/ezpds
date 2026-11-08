@@ -5,11 +5,11 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 1000;
@@ -34,7 +34,7 @@ pub struct SpaceListRecordsParams {
 /// Throws `RepoNotFound` when the account holds no repo in the space. That does not distinguish
 /// a member who has never written from a non-member: a repo host tracks writers, not membership.
 pub async fn space_list_records(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -117,7 +117,7 @@ fn parse_cursor(cursor: &str) -> Result<(String, String), ApiError> {
 /// Without this an unwritten repo would answer with an empty page, which reads to a syncer as
 /// "this repo is empty" rather than "there is no such repo" — the two are different facts, and
 /// only the second means stop.
-async fn require_repo(state: &SpacesState, space_uri: &str, did: &str) -> Result<(), ApiError> {
+async fn require_repo(state: &CoreState, space_uri: &str, did: &str) -> Result<(), ApiError> {
     let repo = crate::db::space_repos::get_repo(&state.db, space_uri, did)
         .await
         .map_err(|e| {

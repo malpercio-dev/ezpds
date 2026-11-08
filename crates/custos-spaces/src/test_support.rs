@@ -1,7 +1,6 @@
 //! Fixtures for tests that drive the Spaces surface: everything in `custos_core::test_support`
-//! (re-exported below) with the state constructors returning a [`SpacesState`], the router the
-//! tests send through ([`test_app`]), the space request signer ([`SpaceSigKey`]), and the
-//! request builders and record bodies the space test modules share.
+//! (re-exported below), the router the tests send through ([`test_app`]), the space request
+//! signer ([`SpaceSigKey`]), and the request builders and record bodies the space test modules share.
 //!
 //! What stays file-local on purpose, because it genuinely differs rather than merely being
 //! spelled differently: each module's `setup()` (different fixtures per surface), `write_one`
@@ -14,40 +13,15 @@ use axum::http::{self, Request, StatusCode};
 use axum::Router;
 use custos_core::test_support as core;
 pub use custos_core::test_support::*;
+use custos_core::CoreState;
 use tower::ServiceExt;
-
-use crate::SpacesState;
 
 /// Both Spaces routers over `state`, wrapped as `pds` wraps them (see
 /// [`custos_core::test_support::test_app`]).
-pub fn test_app(state: SpacesState) -> Router {
+pub fn test_app(state: CoreState) -> Router {
     let config = &state.config.spaces;
     let (public, internal) = (crate::router(config), crate::internal_router(config));
     core::test_app(public, internal, state)
-}
-
-// ── `SpacesState` versions of the core state constructors ──────────────────
-//
-// Each shadows the glob-imported `CoreState` constructor of the same name.
-
-/// The default test state (spaces enabled, no master key).
-pub async fn test_state() -> SpacesState {
-    SpacesState::new(core::test_state().await)
-}
-
-/// `test_state()` resolving DIDs against `plc_directory_url`.
-pub async fn test_state_with_plc_url(plc_directory_url: String) -> SpacesState {
-    SpacesState::new(core::test_state_with_plc_url(plc_directory_url).await)
-}
-
-/// `test_state()` with the signing-key master key configured (see [`test_master_key`]).
-pub async fn state_with_master_key() -> SpacesState {
-    SpacesState::new(core::state_with_master_key().await)
-}
-
-/// `state` with a [`FixedTxtResolver`] wired in, answering every TXT lookup with `records`.
-pub fn state_with_txt_records(state: SpacesState, records: Vec<String>) -> SpacesState {
-    SpacesState::new(core::state_with_txt_records(state.core, records))
 }
 
 /// A P-256 key a space client binds its credential to, plus the RFC 9421 `atproto-space`
@@ -136,14 +110,14 @@ pub fn xrpc_post(method: &str, token: &str, body: serde_json::Value) -> Request<
 }
 
 /// Run a request through the real router and decode the JSON response body.
-pub async fn send(state: &SpacesState, request: Request<Body>) -> (StatusCode, serde_json::Value) {
+pub async fn send(state: &CoreState, request: Request<Body>) -> (StatusCode, serde_json::Value) {
     let response = test_app(state.clone()).oneshot(request).await.unwrap();
     let status = response.status();
     (status, body_json(response).await)
 }
 
 /// `send`, keeping only the status — for call sites that never read the body.
-pub async fn send_status(state: &SpacesState, request: Request<Body>) -> StatusCode {
+pub async fn send_status(state: &CoreState, request: Request<Body>) -> StatusCode {
     send(state, request).await.0
 }
 

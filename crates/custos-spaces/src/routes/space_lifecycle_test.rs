@@ -15,11 +15,10 @@
 
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
+use custos_core::CoreState;
 use tower::ServiceExt;
 
 use crate::auth::space::{mint_space_credential, unix_now};
-use crate::db::dids::seed_did_document;
-use crate::space_uri::parse_space_ref;
 use crate::test_support::{
     access_jwt, body_json, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
     SpaceSigKey,
@@ -27,7 +26,8 @@ use crate::test_support::{
 use crate::test_support::{
     send_status as send, space_record_body, xrpc_get as get, xrpc_post as post,
 };
-use crate::SpacesState;
+use custos_core::space_uri::parse_space_ref;
+use custos_db::dids::seed_did_document;
 
 const DID: &str = "did:plc:spacelifecycleaaaaaaaaa";
 const SPACE: &str = "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main";
@@ -38,7 +38,7 @@ const GRANT: &str =
     "atproto space:org.example.bucket?authority=did:plc:authorityaaaaaaaaaaaaaaa&skey=main\
 &collection=org.example.note&action=create&action=update&action=delete&action=read_self";
 
-async fn setup() -> SpacesState {
+async fn setup() -> CoreState {
     let state = state_with_master_key().await;
     seed_account_with_repo(&state.db, DID).await;
     state
@@ -49,7 +49,7 @@ fn create_body(rkey: &str, text: &str) -> serde_json::Value {
 }
 
 /// `createSpace` for `at://{DID}/space/org.example.bucket/main`, open to everyone.
-async fn create_own_space(state: &SpacesState, token: &str) {
+async fn create_own_space(state: &CoreState, token: &str) {
     assert_eq!(
         send(
             state,
@@ -71,7 +71,7 @@ async fn create_own_space(state: &SpacesState, token: &str) {
 }
 
 /// Put `did` into one lifecycle state by setting the column that derives it.
-async fn set_lifecycle(state: &SpacesState, did: &str, column: &str) {
+async fn set_lifecycle(state: &CoreState, did: &str, column: &str) {
     sqlx::query(&format!(
         "UPDATE accounts SET {column} = datetime('now') WHERE did = ?"
     ))
@@ -264,7 +264,7 @@ async fn a_credential_stops_being_served_when_the_authority_is_not_active() {
 #[tokio::test]
 async fn credential_requests_are_rate_limited_per_bound_key() {
     let mut state = state_with_master_key().await;
-    state.core.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
+    state.rate_limiter = std::sync::Arc::new(custos_core::rate_limit::RateLimiterState::new(
         &common::RateLimitConfig {
             space_credential_per_5min: 1,
             ..common::RateLimitConfig::default()
@@ -332,8 +332,8 @@ fn get_space_signed(space: &str, key: &SpaceSigKey, credential: &str) -> Request
 /// Export a space repo from `source` and import it into `destination`, returning the import's
 /// HTTP status and body.
 async fn migrate(
-    source: &SpacesState,
-    destination: &SpacesState,
+    source: &CoreState,
+    destination: &CoreState,
     token: &str,
 ) -> (StatusCode, serde_json::Value) {
     let export = crate::test_support::test_app(source.clone())

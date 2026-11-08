@@ -387,7 +387,7 @@ async fn admin_token_not_configured_returns_401() {
 
 // ── Procedures whose lexicon defines no input ─────────────────────────────────
 
-/// A procedure guarded by `crate::no_input::NoInputBody`.
+/// A procedure guarded by `custos_core::no_input::NoInputBody`.
 struct NoInputRoute {
     path: &'static str,
     /// The table this route mints a single-use token into, for the routes that mail one. A

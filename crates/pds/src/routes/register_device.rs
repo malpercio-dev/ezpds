@@ -16,8 +16,8 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::token::generate_token;
 use crate::platform::Platform;
+use custos_core::auth::token::generate_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,7 +40,7 @@ pub async fn register_device(
     Json(payload): Json<RegisterDeviceRequest>,
 ) -> Result<(StatusCode, Json<RegisterDeviceResponse>), ApiError> {
     // --- Validate device_public_key ---
-    crate::auth::validation::validate_device_public_key(&payload.device_public_key)
+    custos_core::auth::validation::validate_device_public_key(&payload.device_public_key)
         .map_err(|msg| ApiError::new(ErrorCode::InvalidClaim, msg))?;
 
     // --- Generate device credentials ---
@@ -377,7 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_hash_is_sha256_of_token() {
-        use crate::auth::token::hash_bearer_token;
+        use custos_core::auth::token::hash_bearer_token;
 
         let state = test_state().await;
         let db = state.db.clone();
@@ -650,7 +650,8 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_public_key_returns_400() {
-        let oversized_key = "A".repeat(crate::auth::validation::MAX_DEVICE_PUBLIC_KEY_LEN + 1);
+        let oversized_key =
+            "A".repeat(custos_core::auth::validation::MAX_DEVICE_PUBLIC_KEY_LEN + 1);
         let body = format!(
             r#"{{"claimCode":"ABC123","devicePublicKey":"{oversized_key}","platform":"ios"}}"#
         );

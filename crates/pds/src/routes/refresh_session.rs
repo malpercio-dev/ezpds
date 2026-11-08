@@ -16,12 +16,12 @@ use uuid::Uuid;
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extract_bearer_token;
-use crate::auth::jwt::{
+use custos_core::auth::extract_bearer_token;
+use custos_core::auth::jwt::{
     app_pass_scope, issue_access_jwt, issue_refresh_jwt, parse_scope, verify_refresh_token,
     AuthScope, SCOPE_ACCESS,
 };
-use crate::no_input::NoInputBody;
+use custos_core::no_input::NoInputBody;
 
 // ── Response type ────────────────────────────────────────────────────────────
 
@@ -67,12 +67,12 @@ pub async fn refresh_session(
     // `next_jti IS NULL` is not checked here — we need the row regardless to detect replays.
     // `app_password_name` carries the app-pass identity forward so the rotated session keeps its
     // (limited) scope rather than silently escalating to full access.
-    let crate::db::refresh_tokens::ActiveRefreshToken {
+    let custos_db::refresh_tokens::ActiveRefreshToken {
         did,
         session_id,
         next_jti,
         app_password_name,
-    } = crate::db::refresh_tokens::get_active_refresh_token(&state.db, &jti)
+    } = custos_db::refresh_tokens::get_active_refresh_token(&state.db, &jti)
         .await?
         .ok_or_else(|| {
             ApiError::new(

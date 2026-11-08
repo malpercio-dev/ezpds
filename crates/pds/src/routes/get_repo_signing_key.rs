@@ -16,8 +16,8 @@ use serde::Serialize;
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_pending_session;
-use crate::db::repo_keys::{get_pending_repo_key, set_pending_repo_key, RepoSigningKey};
+use custos_core::auth::guards::require_pending_session;
+use custos_db::repo_keys::{get_pending_repo_key, set_pending_repo_key, RepoSigningKey};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,7 +120,7 @@ mod tests {
     /// Seed a claim code, pending account, device, and pending session.
     /// Returns (account_id, session_token_plaintext).
     async fn seed_pending_session(pool: &SqlitePool) -> (String, String) {
-        use crate::auth::token::generate_token;
+        use custos_core::auth::token::generate_token;
         use uuid::Uuid;
 
         let claim_code = format!("TEST-{}", Uuid::new_v4());
@@ -222,7 +222,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_repo_signer_reconstructs_the_stored_key() {
-        use crate::db::repo_keys::{insert_did_signing_key, RepoSigningKey};
+        use custos_db::repo_keys::{insert_did_signing_key, RepoSigningKey};
         use repo_engine::CommitSigner;
 
         let state = test_state().await;
@@ -252,14 +252,15 @@ mod tests {
         .unwrap();
 
         // The loaded signer must be the SAME key — deterministic RFC6979 sigs match.
-        let loaded = crate::auth::signing_key::load_repo_signer(&state.db, did, &master)
+        let loaded = custos_core::auth::signing_key::load_repo_signer(&state.db, did, &master)
             .await
             .unwrap();
         let direct = CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
         assert_eq!(loaded.sign(b"commit bytes"), direct.sign(b"commit bytes"));
 
         // A wrong master key must fail (auth-tag mismatch), not return a bogus signer.
-        let wrong = crate::auth::signing_key::load_repo_signer(&state.db, did, &[0u8; 32]).await;
+        let wrong =
+            custos_core::auth::signing_key::load_repo_signer(&state.db, did, &[0u8; 32]).await;
         assert!(wrong.is_err());
     }
 }

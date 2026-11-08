@@ -21,7 +21,7 @@
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::db::accounts::{deactivate_account, AccountStateChange};
+use custos_db::accounts::{deactivate_account, AccountStateChange};
 
 /// The firehose `#account` status reported for a permanent deletion.
 const STATUS_DELETED: &str = "deleted";
@@ -192,7 +192,7 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
-    crate::db::blocks::delete_unowned_unprotected_blocks_in_tx(&mut tx, &block_cids)
+    custos_db::blocks::delete_unowned_unprotected_blocks_in_tx(&mut tx, &block_cids)
         .await
         .map_err(map_err)?;
 
@@ -201,7 +201,7 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
     // another account still references keeps its row and its on-disk file. The reclaim list is
     // captured by the same transaction that removes the rows, so a racing upload can't slip a
     // blob past it. Files are removed after the transaction commits (below).
-    let blob_files = crate::db::blobs::delete_owners_and_unowned_blobs_in_tx(&mut tx, did)
+    let blob_files = custos_db::blobs::delete_owners_and_unowned_blobs_in_tx(&mut tx, did)
         .await
         .map_err(map_err)?;
 
@@ -271,7 +271,8 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
     // Step 4: reclaim the on-disk blob files (best-effort; the DB row and firehose frame are the
     // source of truth for "deleted", so a stray file is a leak to clean up, not a failure).
     for (cid, storage_path) in &blob_files {
-        match crate::blob_store::delete_blob_file(&state.config.data_dir, storage_path).await {
+        match custos_core::blob_store::delete_blob_file(&state.config.data_dir, storage_path).await
+        {
             Ok(true) => {}
             Ok(false) => tracing::warn!(
                 did = %did,
@@ -297,8 +298,8 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{seed_account_with_repo, test_master_key};
+    use custos_core::firehose::FirehoseEvent;
     use std::sync::Arc;
 
     /// Test state with a real on-disk `data_dir` (so blob-file deletes are observable) and the
@@ -517,14 +518,14 @@ mod tests {
         seed_account_with_repo(&state.db, did).await;
 
         // Store a blob on disk + its metadata row.
-        let stored = crate::blob_store::store_blob(
+        let stored = custos_core::blob_store::store_blob(
             &state.config.data_dir,
             b"blob to reclaim",
             "application/octet-stream",
         )
         .await
         .unwrap();
-        crate::db::blobs::insert_blob(
+        custos_db::blobs::insert_blob(
             &state.db,
             &stored.cid,
             did,
@@ -559,7 +560,7 @@ mod tests {
         seed_account_with_repo(&state.db, other).await;
 
         // Both accounts upload the same bytes → one file, one physical row, two owner rows.
-        let stored = crate::blob_store::store_blob(
+        let stored = custos_core::blob_store::store_blob(
             &state.config.data_dir,
             b"shared blob bytes",
             "application/octet-stream",
@@ -567,7 +568,7 @@ mod tests {
         .await
         .unwrap();
         for owner in [did, other] {
-            crate::db::blobs::insert_blob(
+            custos_db::blobs::insert_blob(
                 &state.db,
                 &stored.cid,
                 owner,

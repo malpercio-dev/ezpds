@@ -24,8 +24,8 @@ use serde::Serialize;
 use common::{ApiError, ApiResultExt};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin;
 use crate::db::recovery_escrow::list_pending_releases;
+use custos_core::auth::guards::require_admin;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,8 +83,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::app;
-    use crate::db::accounts::insert_bare_account as seed_account;
     use crate::routes::test_utils::test_state_with_admin_token;
+    use custos_db::accounts::insert_bare_account as seed_account;
 
     async fn get(router: axum::Router, token: Option<&str>) -> (StatusCode, serde_json::Value) {
         let mut builder = Request::builder().uri("/v1/admin/recovery-releases");

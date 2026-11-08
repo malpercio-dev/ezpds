@@ -17,13 +17,13 @@ use serde::Deserialize;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes;
-use crate::auth::token::hash_bearer_token;
-use crate::db::accounts::{get_session_account, update_account_email, EmailUpdateOutcome};
 use crate::db::email_tokens::{consume_email_token, EmailTokenPurpose};
-use crate::lexicon::LexiconInput;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes;
+use custos_core::auth::token::hash_bearer_token;
+use custos_core::lexicon::LexiconInput;
+use custos_db::accounts::{get_session_account, update_account_email, EmailUpdateOutcome};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,11 +102,11 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::auth::token::generate_token;
     use crate::db::email_tokens::{insert_email_token, EmailTokenPurpose};
     use crate::routes::test_utils::{
         access_jwt, body_json, post_req as shared_post_req, seed_account_with_signing_key,
     };
+    use custos_core::auth::token::generate_token;
 
     const URI: &str = "/xrpc/com.atproto.server.updateEmail";
 

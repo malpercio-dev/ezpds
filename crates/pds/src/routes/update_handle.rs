@@ -31,14 +31,14 @@ use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes;
-use crate::db::dids::{fetch_also_known_as, update_also_known_as, upsert_did_document};
-use crate::db::repo_keys::get_signing_key_by_did;
-use crate::identity::plc::{build_did_document_from_op, fetch_current_plc_state};
-use crate::lexicon::LexiconInput;
 use common::{ApiError, ApiResultExt, ErrorCode};
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes;
+use custos_core::identity::plc::{build_did_document_from_op, fetch_current_plc_state};
+use custos_core::lexicon::LexiconInput;
+use custos_db::dids::{fetch_also_known_as, update_also_known_as, upsert_did_document};
+use custos_db::repo_keys::get_signing_key_by_did;
 
 struct CustodiedPlcUpdate {
     signed_operation: String,
@@ -75,7 +75,7 @@ pub async fn update_handle_handler(
 
     // Checked before external resolution, so a caller updating to a handle they already
     // own never pays for an external resolver round trip.
-    let existing_owner = crate::db::handles::resolve_handle(&state.db, &payload.handle).await?;
+    let existing_owner = custos_db::handles::resolve_handle(&state.db, &payload.handle).await?;
 
     if let Some(owner_did) = existing_owner {
         if owner_did != *did {
@@ -99,8 +99,10 @@ pub async fn update_handle_handler(
         // once we insert it — skip external resolution. Because this branch skips
         // the resolution proof, the infrastructure-name reservation must gate here
         // (registration paths get it via validate_handle).
-        if crate::identity::handle::is_reserved_name(handle.name(), &state.config.reserved_handles)
-        {
+        if custos_core::identity::handle::is_reserved_name(
+            handle.name(),
+            &state.config.reserved_handles,
+        ) {
             return Err(ApiError::new(
                 ErrorCode::InvalidHandle,
                 "this handle name is reserved",
@@ -132,7 +134,7 @@ pub async fn update_handle_handler(
     // re-resolve would then silently revert the user's handle change. A failed POST returns here
     // before any local mutation, leaving the old handle intact.
     if let Some(plc_update) = &plc_update {
-        crate::identity::genesis::post_to_plc_directory(
+        custos_core::identity::genesis::post_to_plc_directory(
             &state.http_client,
             &state.config.plc_directory_url,
             did,
@@ -169,7 +171,7 @@ pub async fn update_handle_handler(
             .execute(&mut *tx)
             .await
             .map_err(|e| {
-                if crate::db::is_unique_violation(&e) {
+                if custos_db::is_unique_violation(&e) {
                     // Race: another request inserted this handle between our check and insert.
                     return ApiError::new(ErrorCode::HandleTaken, "handle was taken concurrently");
                 }
@@ -325,7 +327,7 @@ async fn resolve_handle_for_update(
     handle: &str,
 ) -> Result<Option<String>, ApiError> {
     // 1. Check local handles table.
-    let row = crate::db::handles::resolve_handle(&state.db, handle).await?;
+    let row = custos_db::handles::resolve_handle(&state.db, handle).await?;
 
     if let Some(did) = row {
         return Ok(Some(did));
@@ -388,11 +390,11 @@ mod tests {
     };
 
     use crate::app::{app, test_state, AppState};
-    use crate::identity::well_known::{WellKnownError, WellKnownResolver};
     use crate::routes::test_utils::{
         seed_account_with_signing_key, state_with_master_key,
         state_with_txt_records as state_with_txt,
     };
+    use custos_core::identity::well_known::{WellKnownError, WellKnownResolver};
 
     struct FixedWellKnownResolver {
         did: Option<String>,
@@ -427,7 +429,7 @@ mod tests {
     }
 
     async fn insert_session(db: &sqlx::SqlitePool, did: &str) -> String {
-        use crate::auth::token::generate_token;
+        use custos_core::auth::token::generate_token;
 
         let token = generate_token();
         sqlx::query(
@@ -623,7 +625,7 @@ mod tests {
             .await
             .expect("identity frame was emitted")
             .expect("receiver not closed");
-        let crate::firehose::FirehoseEvent::Identity(identity) = event else {
+        let custos_core::firehose::FirehoseEvent::Identity(identity) = event else {
             panic!("expected an #identity frame, got {event:?}");
         };
         assert_eq!(identity.did, ts.did);
@@ -738,13 +740,13 @@ mod tests {
 
         // The handle swap committed despite the cache-write failure.
         assert_eq!(
-            crate::db::handles::resolve_handle(&db, &new_handle)
+            custos_db::handles::resolve_handle(&db, &new_handle)
                 .await
                 .unwrap()
                 .as_deref(),
             Some(did)
         );
-        assert!(crate::db::handles::resolve_handle(&db, &old_handle)
+        assert!(custos_db::handles::resolve_handle(&db, &old_handle)
             .await
             .unwrap()
             .is_none());
@@ -789,7 +791,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            crate::db::handles::resolve_handle(&db, &new_handle)
+            custos_db::handles::resolve_handle(&db, &new_handle)
                 .await
                 .unwrap()
                 .as_deref(),
@@ -830,7 +832,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            crate::db::handles::resolve_handle(&db, &handle)
+            custos_db::handles::resolve_handle(&db, &handle)
                 .await
                 .unwrap()
                 .as_deref(),
@@ -871,13 +873,13 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(
-            crate::db::handles::resolve_handle(&db, &old_handle)
+            custos_db::handles::resolve_handle(&db, &old_handle)
                 .await
                 .unwrap()
                 .as_deref(),
             Some(did)
         );
-        assert!(crate::db::handles::resolve_handle(&db, &new_handle)
+        assert!(custos_db::handles::resolve_handle(&db, &new_handle)
             .await
             .unwrap()
             .is_none());

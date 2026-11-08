@@ -26,11 +26,11 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::guards::{require_admin_json, AdminActor};
-use crate::auth::jwt::AuthScope;
-use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 use crate::db::claim_codes::{mint_claim_codes, MintClaimCodesError};
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::guards::{require_admin_json, AdminActor};
+use custos_core::auth::jwt::AuthScope;
+use custos_db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
 const MAX_INVITE_CODE_COUNT: u32 = 10;
 const INVITE_CODE_EXPIRES_IN_HOURS: u32 = 24;
@@ -165,7 +165,7 @@ pub async fn create_invite_code(
     // Lexicon input validation runs after auth (matching the reference PDS's order) and as a
     // plain call rather than the `LexiconInput` extractor, because the admin-device signature
     // above must verify over the raw body bytes.
-    let validated = crate::lexicon::validate_procedure_body(
+    let validated = custos_core::lexicon::validate_procedure_body(
         "com.atproto.server.createInviteCode",
         &headers,
         &body,
@@ -214,7 +214,7 @@ pub async fn create_invite_codes(
 
     // Same post-auth lexicon validation as `create_invite_code` (the signature covers the
     // raw bytes, so the extractor can't be used here either).
-    let validated = crate::lexicon::validate_procedure_body(
+    let validated = custos_core::lexicon::validate_procedure_body(
         "com.atproto.server.createInviteCodes",
         &headers,
         &body,
@@ -309,7 +309,7 @@ pub async fn check_handle_availability(
     State(state): State<AppState>,
     Query(params): Query<CheckHandleAvailabilityParams>,
 ) -> Result<Json<CheckHandleAvailabilityResponse>, ApiError> {
-    let available = crate::identity::handle::validate_handle(
+    let available = custos_core::identity::handle::validate_handle(
         &params.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,

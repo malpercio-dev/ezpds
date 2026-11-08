@@ -19,8 +19,9 @@ depends on no HTTP stack and on nothing above it.
   here when more than one feature reads its tables; a feature-local one stays with its feature
   (`crates/pds/src/db/` today) until a second crate needs it.
 
-`pds` re-exports all of the above from `crates/pds/src/db/mod.rs`, so `crate::db::…` paths in
-`pds` resolve unchanged. Pool and migration entry points exist only here.
+Every consumer, `pds` included, imports these as `custos_db::…`; `pds` has no re-export shim
+(`crate::db` holds only the query modules `pds` alone reads). Pool and migration entry points
+exist only here.
 
 ## Contracts
 

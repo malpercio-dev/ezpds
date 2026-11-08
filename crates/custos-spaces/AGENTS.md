@@ -21,20 +21,19 @@ This file is a map; mechanism and invariants live in each module's `//!` doc.
 
 | Export | Use in `pds` |
 |---|---|
-| `SpacesState` (`core: CoreState`, `Deref<Target = CoreState>`; no feature fields yet) | projected from `AppState.core` by `impl FromRef<AppState> for SpacesState` |
+| (state) | handlers extract `State<CoreState>`; the feature owns no state of its own |
 | `router` / `internal_router` | merged unconditionally in `app.rs` before the layer stack. `router` is empty unless `[spaces] enabled`; `internal_router` always carries `/v1/admin/spaces{,/takedown}` (the operator's takedown governs data already stored, ADR-0035) and adds `/v1/space/import-repo` only when enabled |
 | `spawn_sweeps(&mut Scheduler, &SpacesConfig)` | `main.rs`; registers both sweeps on `pds`'s scheduler only when enabled, so graceful shutdown covers them |
 | `CAPABILITY` | listed in `pds`'s `CAPABILITIES` between `appPasswordPersonalDetails` and `waitlist`; `enabled` must mirror the router gate plus the master key |
 | `purge_account_rows` / `PURGE_ACCOUNT_SQL` | `account_delete::purge_account` runs it inside its transaction; its schema-walking FK test reads `PURGE_ACCOUNT_SQL`. Which rows go (and that `spaces` survives) is tested here, beside a walk of the `space*` tables' account FKs |
 | `space_record_write` | `pds`'s blob-GC test, which seeds a space record |
-| `test_support` (`test-support` feature) | `test_app(state)`, the `SpacesState` constructors, `SpaceSigKey`, request builders |
+| `test_support` (`test-support` feature) | `test_app(state)` (plus everything in `custos_core::test_support`), `SpaceSigKey`, request builders |
 
 ## Module Map
 
 ```
 src/
-  lib.rs           — the exports above; aliases `custos_core`'s modules at the crate root so `crate::identity::…` resolves as it did in `pds`
-  state.rs         — `SpacesState`; `FromRef<SpacesState> for CoreState`
+  lib.rs           — the exports above
   router.rs        — the route table and the `[spaces] enabled` gate (`scripts/bruno-parity.sh` reads its `.route(` literals)
   capability.rs    — `CAPABILITY`, the `spaces` entry of the `describeServer` table
   space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append → writer-set row, all one transaction; a write into the writer's own space needs that space created first, and a commit that empties a repo deletes it (empty ≡ nonexistent); blob refs are GC-derived, and the notification fan-out is spawned from here post-commit so no write path can skip it. `SpaceWriteAdmission` is the one knob on its account-lifecycle guard: `Import` admits the deactivated state migration runs in (and skips write-point charging), `Active` is everything else — see module doc
@@ -43,8 +42,8 @@ src/
   space_oplog_sweep.rs — hourly `space_repo_ops` compaction sweep (7-day retention): the oplog is droppable by spec, and a syncer whose `since` predates the window heals via `getRepo` — see module doc
   views.rs         — shared handler-free support for the space + simplespace routes: space-ref parsing, the `validate`-flag record check, stored-block decoding, the write-result shape, repo-head load + per-serving commit signing (`load_repo`/`sign_current_commit`/`commit_json`), blob-reference derivation (`space_blob_cids`), and the simplespace config's lexicon-union ↔ column mapping
   test_support.rs  — `test-support` feature (and this crate's own tests): `test_app` merges both routers under the same layers `pds` applies (shared stack, XRPC error dialect, CORS), so a path no Spaces route claims is a plain 404 here — tests that need `pds`'s `/xrpc/{method}` catch-all stay in `pds`
-  auth/            — the space authorization seam (table below); `custos_core::auth` is re-exported here
-  db/              — the space query modules (table below); `custos_db`'s cross-feature modules are re-exported here crate-privately
+  auth/            — the space authorization seam (table below); the verification core is named at `custos_core::auth::…`
+  db/              — the space query modules (table below); the shared tables are named at `custos_db::…`
   routes/          — one file per endpoint; `routes/mod.rs` re-exports handler functions only
 ```
 

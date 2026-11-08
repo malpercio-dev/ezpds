@@ -5,11 +5,11 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::ApiError;
+use custos_core::lexicon::LexiconParams;
 
 #[derive(Deserialize)]
 pub struct SpaceGetLatestCommitParams {
@@ -23,7 +23,7 @@ pub struct SpaceGetLatestCommitParams {
 /// artifact. `RepoNotFound` covers the member who has never written, too: with no rev and no
 /// state there is no commit to sign, and the lexicon says so explicitly.
 pub async fn space_get_latest_commit(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

@@ -30,11 +30,11 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin_json;
-use crate::db::accounts::{set_account_takedown, TakedownStateChange};
-use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
-use crate::identity::did::is_valid_did;
 use crate::routes::admin_subject_defs::{RepoRefView, StatusAttrView};
+use custos_core::auth::guards::require_admin_json;
+use custos_core::identity::did::is_valid_did;
+use custos_db::accounts::{set_account_takedown, TakedownStateChange};
+use custos_db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
 /// `subject` is a lexicon union (`com.atproto.admin.defs#repoRef` | `com.atproto.repo.strongRef`
 /// | `com.atproto.repo.strongRef` blob variant); `$type` is the discriminant. ezpds only
@@ -102,7 +102,7 @@ pub async fn update_subject_status(
     // Lexicon input validation runs after auth (matching the reference PDS's order) and as a
     // plain call rather than the `LexiconInput` extractor, because the admin-device signature
     // above must verify over the raw body bytes.
-    let validated = crate::lexicon::validate_procedure_body(
+    let validated = custos_core::lexicon::validate_procedure_body(
         "com.atproto.admin.updateSubjectStatus",
         &headers,
         &body,
@@ -247,10 +247,10 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::app;
-    use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{
         body_json, insert_account_with_email as insert_account, test_state_with_admin_token,
     };
+    use custos_core::firehose::FirehoseEvent;
 
     fn request(body: &str, bearer: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()

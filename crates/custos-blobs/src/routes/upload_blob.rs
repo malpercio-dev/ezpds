@@ -26,11 +26,13 @@ use serde::Serialize;
 
 use common::{ApiError, ApiResultExt, ErrorCode};
 
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::service_auth::{is_service_auth_request, require_service_auth, ServiceAuthUser};
-use crate::db::blobs;
-use crate::{auth::oauth_scopes, blob_store};
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::service_auth::{
+    is_service_auth_request, require_service_auth, ServiceAuthUser,
+};
 use custos_core::CoreState;
+use custos_core::{auth::oauth_scopes, blob_store};
+use custos_db::blobs;
 
 /// The lexicon method a service-auth token must authorize to upload a blob. The official video
 /// flow mints a token with `lxm = com.atproto.repo.uploadBlob`, which `video.bsky.app` presents
@@ -113,17 +115,6 @@ pub async fn upload_blob(
     //    session/OAuth access token.
     let uploader = resolve_uploader(&state, &mut parts).await?;
 
-    // An access-token caller must carry an access-level scope. A service token is bound to
-    // uploadBlob by construction, so it has no separate scope gate here.
-    if let BlobUploader::Access(user) = &uploader {
-        if !user.scope.is_access() {
-            return Err(ApiError::new(
-                ErrorCode::InvalidToken,
-                "access token required",
-            ));
-        }
-    }
-
     // 3. Read the full request body, enforcing max size.
     let bytes = collect_body_with_limit(body, max_size).await?;
     // Resolve the stored MIME type from the declared Content-Type reconciled against a content
@@ -134,7 +125,7 @@ pub async fn upload_blob(
     // Granular blob-scope enforcement applies only to OAuth access tokens (which carry a granular
     // scope claim). Service tokens are already narrowed to this one method.
     if let BlobUploader::Access(user) = &uploader {
-        if user.scope == crate::auth::jwt::AuthScope::Access {
+        if user.scope == custos_core::auth::jwt::AuthScope::Access {
             oauth_scopes::require_blob(&user.scope_claim, &mime_type)?;
         }
     }
@@ -225,12 +216,12 @@ pub async fn upload_blob(
             "size": stored.size_bytes,
         })
         .to_string();
-        crate::db::agent_audit::insert_agent_audit_event(
+        custos_db::agent_audit::insert_agent_audit_event(
             &state.db,
             &uuid::Uuid::new_v4().to_string(),
             registration_id,
             Some(did),
-            crate::db::agent_audit::AgentAuditEventType::BlobUpload,
+            custos_db::agent_audit::AgentAuditEventType::BlobUpload,
             Some(&detail),
         )
         .await?;
@@ -295,7 +286,7 @@ async fn resolve_uploader(state: &CoreState, parts: &mut Parts) -> Result<BlobUp
             state,
             &parts.headers,
             UPLOAD_BLOB_LXM,
-            crate::time::unix_now()?,
+            custos_core::time::unix_now()?,
         )
         .await?;
         Ok(BlobUploader::Service(user))
@@ -375,7 +366,7 @@ mod tests {
     fn issue_test_jwt_with_scope(state: &CoreState, did: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
-        let now = crate::time::unix_now_secs() as u64;
+        let now = custos_core::time::unix_now_secs() as u64;
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
@@ -423,7 +414,7 @@ mod tests {
     async fn seed_account_with_atproto_key(state: &CoreState, did: &str, kp: &crypto::P256Keypair) {
         seed_account(state, did).await;
         let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
-        crate::db::dids::seed_did_document(
+        custos_db::dids::seed_did_document(
             &state.db,
             did,
             serde_json::json!({
@@ -444,8 +435,8 @@ mod tests {
     fn service_auth_token(kp: &crypto::P256Keypair, iss: &str, aud: &str, lxm: &str) -> String {
         let key = *kp.private_key_bytes;
         let signer = repo_engine::CommitSigner::from_bytes(&key).unwrap();
-        let now = crate::time::unix_now_secs() as u64;
-        crate::auth::jwt::mint_service_auth_jwt(
+        let now = custos_core::time::unix_now_secs() as u64;
+        custos_core::auth::jwt::mint_service_auth_jwt(
             |b| signer.sign(b),
             iss,
             aud,
@@ -568,7 +559,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let events =
-            crate::db::agent_audit::list_agent_audit_events(&state.db, "reg_blob_audit", None, 10)
+            custos_db::agent_audit::list_agent_audit_events(&state.db, "reg_blob_audit", None, 10)
                 .await
                 .unwrap();
         assert_eq!(events.len(), 1);

@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! `GET /metrics` — Prometheus text exposition of the instrument set in `crate::metrics`.
+//! `GET /metrics` — Prometheus text exposition of the instrument set in `custos_core::metrics`.
 //!
 //! Registered by `app()` only when `[telemetry] metrics_enabled` (the default); when off,
 //! the path 404s and no meter exists. The route is added *after* the router's layer stack,
@@ -16,7 +16,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin;
+use custos_core::auth::guards::require_admin;
 
 /// Prometheus text exposition content type (the format `TextEncoder` produces).
 const TEXT_EXPOSITION: &str = "text/plain; version=0.0.4";
@@ -121,7 +121,7 @@ mod tests {
         let state = crate::app::AppState {
             core: custos_core::CoreState {
                 config: Arc::new(config),
-                metrics: Arc::new(crate::metrics::Metrics::disabled()),
+                metrics: Arc::new(custos_core::metrics::Metrics::disabled()),
                 ..base.core
             },
             ..base

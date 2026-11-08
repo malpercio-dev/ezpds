@@ -10,7 +10,7 @@ license.workspace = true
 # sibling feature (see AGENTS.md).
 
 [features]
-# `test_support`: `test_app`, the `SpacesState` constructors, and the space request builders, for
+# `test_support`: `test_app`, and the space request builders, for
 # other crates' tests. Enable only under `[dev-dependencies]`.
 test-support = ["custos-core/test-support", "dep:tower"]
 

@@ -26,7 +26,7 @@ use serde::Serialize;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin;
+use custos_core::auth::guards::require_admin;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,7 +100,7 @@ pub async fn account_storage(
     require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     // Existence check (operator view: deactivated accounts still report storage).
-    crate::db::accounts::get_account_overview(&state.db, &did)
+    custos_db::accounts::get_account_overview(&state.db, &did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to load account overview");
@@ -108,7 +108,7 @@ pub async fn account_storage(
         })?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "account not found"))?;
 
-    let (blob_count, total_bytes) = crate::db::blobs::account_blob_metrics(&state.db, &did)
+    let (blob_count, total_bytes) = custos_db::blobs::account_blob_metrics(&state.db, &did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to load blob metrics");
@@ -116,14 +116,14 @@ pub async fn account_storage(
         })?;
 
     let (uploaded_blob_count, uploaded_blob_bytes) =
-        crate::db::blobs::account_uploaded_blob_metrics(&state.db, &did)
+        custos_db::blobs::account_uploaded_blob_metrics(&state.db, &did)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, did = %did, "failed to load uploaded blob metrics");
                 ApiError::new(ErrorCode::InternalError, "failed to load account storage")
             })?;
 
-    let largest_blob = crate::db::blobs::account_largest_blob(&state.db, &did)
+    let largest_blob = custos_db::blobs::account_largest_blob(&state.db, &did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to load largest blob");
@@ -185,7 +185,7 @@ mod tests {
     }
 
     async fn insert_blob(db: &sqlx::SqlitePool, did: &str, cid: &str, size: i64) {
-        crate::db::blobs::insert_blob(
+        custos_db::blobs::insert_blob(
             db,
             cid,
             did,
@@ -236,11 +236,11 @@ mod tests {
 
     #[tokio::test]
     async fn signed_device_request_reads_storage() {
-        use crate::auth::guards::{
+        use custos_core::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use custos_db::admin_devices::{insert_device, NewAdminDevice};
 
         // A state with NO master token: proves the device path is independent of it.
         let state = crate::app::test_state().await;
@@ -263,7 +263,7 @@ mod tests {
         insert_blob(&state.db, did, "bafdevblob", 250).await;
 
         let path = format!("/v1/accounts/{did}/storage");
-        let ts = crate::time::unix_now_secs();
+        let ts = custos_core::time::unix_now_secs();
         let nonce = "storage-nonce-1";
         let sign_string = admin_request_sign_string("GET", &path, ts, nonce, b"");
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());

@@ -29,11 +29,10 @@ This file is a map; mechanism and invariants live in each module's `//!` doc.
 
 ```
 src/
-  lib.rs            — the exports above; aliases `custos_core`'s `auth`, `crawler`, `firehose`, `metrics`, `sweep`, `sweep_status`, `time` at the crate root so the moved files' `crate::…` paths resolve
+  lib.rs            — the exports above; `custos_core` modules are imported by full path, no root aliases
   router.rs         — both route tables (`scripts/bruno-parity.sh` and `scripts/generate-docs-reference.mjs` read its `.route(` literals)
   firehose_gc.rs    — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
   relay_status.rs   — inbound `com.atproto.sync.getHostStatus` client (total, never fatal) backing `GET /v1/admin/relay-status` — see section below
-  db.rs             — `custos_db`, re-exported crate-privately
   routes/           — one file per endpoint (table below); private, only handler functions leave it
   test_support.rs   — `test-support` feature (and this crate's own tests): `test_app` wraps both routers in the layers `pds` applies
 ```

@@ -446,7 +446,7 @@ async fn didweb_account_migrates_onto_custos_without_custos_serving_did_json() {
     // (`resolve_did_document_force_refresh` → `rewrite_did_document`) does after re-resolving the
     // edited external did.json.
     let rewrote =
-        crate::db::dids::rewrite_did_document(&custos_state.db, MIGRATING_DID, &post_edit_doc)
+        custos_db::dids::rewrite_did_document(&custos_state.db, MIGRATING_DID, &post_edit_doc)
             .await
             .unwrap();
     assert!(

@@ -15,12 +15,12 @@ use std::time::Duration;
 use anyhow::Context;
 use uuid::Uuid;
 
-use crate::db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
-use crate::db::agent_auth::{expire_pending_agent_claim_attempts, expired_pending_claim_attempts};
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
 use axum::extract::FromRef;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 use custos_core::CoreState;
+use custos_db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
+use custos_db::agent_auth::{expire_pending_agent_claim_attempts, expired_pending_claim_attempts};
 
 /// Expire every lapsed pending attempt and audit each expiry once per `interval`.
 ///
@@ -78,7 +78,7 @@ where
         state
             .metrics
             .agent_claim_sweep_last_run_timestamp
-            .record(crate::metrics::unix_now(), &[]);
+            .record(custos_core::metrics::unix_now(), &[]);
         Ok(Pass::swept(expired))
     }
 }
@@ -86,9 +86,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::accounts::insert_bare_account as seed_account;
-    use crate::sweep::run_once;
     use crate::test_support::test_state;
+    use custos_core::sweep::run_once;
+    use custos_db::accounts::insert_bare_account as seed_account;
 
     fn sweep() -> AgentClaimSweep {
         AgentClaimSweep {
@@ -156,14 +156,14 @@ mod tests {
         // Each expiry landed one attributed audit event; the NULL-did anonymous registration is
         // audited too.
         let events =
-            crate::db::agent_audit::list_agent_audit_events(&state.db, "reg_lapsed", None, 10)
+            custos_db::agent_audit::list_agent_audit_events(&state.db, "reg_lapsed", None, 10)
                 .await
                 .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "claim_expired");
         assert_eq!(events[0].did.as_deref(), Some("did:plc:sweepowner"));
         let anon_events =
-            crate::db::agent_audit::list_agent_audit_events(&state.db, "reg_anon", None, 10)
+            custos_db::agent_audit::list_agent_audit_events(&state.db, "reg_anon", None, 10)
                 .await
                 .unwrap();
         assert_eq!(anon_events.len(), 1);
@@ -198,7 +198,7 @@ mod tests {
         seed_attempt(&state.db, "cla_gone", "reg_gone", "2020-01-01 00:00:00").await;
         run_once(&sweep(), &state).await;
 
-        let completed = crate::db::agent_auth::complete_agent_claim_attempt(&state.db, "cla_gone")
+        let completed = custos_db::agent_auth::complete_agent_claim_attempt(&state.db, "cla_gone")
             .await
             .unwrap();
         assert!(!completed, "an expired attempt must not complete");

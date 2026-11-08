@@ -5,14 +5,14 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::authenticate_space_owner;
 use crate::db::spaces::{set_space_config, PolicyColumns};
-use crate::lexicon::LexiconInput;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::auth::oauth_scopes::{RepoAction, SpaceOp};
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,7 +29,7 @@ pub struct UpdateSpaceInput {
 /// an omitted one is left alone. Unimplemented union members are refused before the row is
 /// touched, so a space can never end up carrying a config this host does not enforce.
 pub async fn simplespace_update_space(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

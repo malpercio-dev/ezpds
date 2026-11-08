@@ -12,7 +12,7 @@
 use common::ApiError;
 use sqlx::{Row, SqlitePool};
 
-use super::is_unique_violation;
+use custos_db::is_unique_violation;
 
 /// Outcome of a signup insert. Both arms are a 200 to the caller — the distinction
 /// exists so the route can log/count without leaking "this email was already here".
@@ -93,7 +93,7 @@ pub(crate) async fn count_signups(db: &SqlitePool) -> Result<i64, sqlx::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::test_pool;
+    use custos_db::test_pool;
 
     #[tokio::test]
     async fn insert_is_idempotent_per_email() {

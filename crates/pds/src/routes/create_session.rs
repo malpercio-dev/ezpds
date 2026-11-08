@@ -16,12 +16,12 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::password::{verify_password, VerifyResult};
-use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
-use crate::db::accounts::resolve_identifier;
 use crate::db::app_passwords::list_verify_candidates;
-use crate::lexicon::LexiconInput;
 use crate::session_issuer::{issue_session, SessionKind};
+use custos_core::auth::password::{verify_password, VerifyResult};
+use custos_core::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
+use custos_core::lexicon::LexiconInput;
+use custos_db::accounts::resolve_identifier;
 
 // ── Request / Response types ─────────────────────────────────────────────────
 
@@ -86,7 +86,7 @@ pub async fn create_session(
     // --- Rate limit gate ---
     // Check before any DB work to shed load on targeted accounts.
     {
-        let mut attempts = crate::auth::validation::lock_failed_login_attempts(
+        let mut attempts = custos_core::auth::validation::lock_failed_login_attempts(
             &state.failed_login_attempts,
             None,
         )?;
@@ -134,10 +134,11 @@ pub async fn create_session(
                             },
                         ),
                         None => {
-                            let mut attempts = crate::auth::validation::lock_failed_login_attempts(
-                                &state.failed_login_attempts,
-                                None,
-                            )?;
+                            let mut attempts =
+                                custos_core::auth::validation::lock_failed_login_attempts(
+                                    &state.failed_login_attempts,
+                                    None,
+                                )?;
                             record_failure(&mut attempts, &payload.identifier);
                             return Err(ApiError::new(
                                 ErrorCode::AuthenticationRequired,
@@ -149,7 +150,7 @@ pub async fn create_session(
             }
         }
         None => {
-            let mut attempts = crate::auth::validation::lock_failed_login_attempts(
+            let mut attempts = custos_core::auth::validation::lock_failed_login_attempts(
                 &state.failed_login_attempts,
                 None,
             )?;
@@ -199,8 +200,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
     use crate::routes::test_utils::{body_json, insert_account_with_password, seed_app_password};
+    use custos_core::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

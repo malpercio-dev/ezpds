@@ -50,11 +50,11 @@
 
 use std::time::Duration;
 
-use crate::db::firehose_seq;
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
 use axum::extract::FromRef;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 use custos_core::CoreState;
+use custos_db::firehose_seq;
 
 /// Tally of what one retention pass did, for logging and tests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -137,7 +137,7 @@ pub async fn run_firehose_gc(state: &CoreState) -> GcStats {
     state
         .metrics
         .firehose_gc_last_run_timestamp
-        .record(crate::metrics::unix_now(), &[]);
+        .record(custos_core::metrics::unix_now(), &[]);
     // The backfill window is how far back a reconnecting subscriber's cursor still replays
     // exactly. Refreshed here (post-prune) rather than on every emit: the sweep is the only
     // thing that shrinks the window, and emits only ever extend it by seconds.
@@ -337,7 +337,7 @@ mod tests {
         for _ in 0..n {
             state
                 .firehose
-                .emit_commit(crate::firehose::CommitInput {
+                .emit_commit(custos_core::firehose::CommitInput {
                     repo: "did:plc:gc".to_string(),
                     commit: VALID_CID.to_string(),
                     rev: "3krev".to_string(),
@@ -370,7 +370,7 @@ mod tests {
         assert!(!stats.failed, "disabled retention is a benign no-op");
         assert_eq!(stats.pruned, 0);
         assert_eq!(
-            crate::db::firehose_seq::max_seq(&state.db).await.unwrap(),
+            custos_db::firehose_seq::max_seq(&state.db).await.unwrap(),
             5,
             "nothing pruned"
         );
@@ -401,7 +401,7 @@ mod tests {
         assert!(stats.failed, "a config overflow is an operational failure");
         assert_eq!(stats.pruned, 0);
         assert_eq!(
-            crate::db::firehose_seq::max_seq(&state.db).await.unwrap(),
+            custos_db::firehose_seq::max_seq(&state.db).await.unwrap(),
             3
         );
 
@@ -434,7 +434,7 @@ mod tests {
         assert!(!stats.skipped);
 
         // The retained suffix is exactly the newest 3 rows; the frontier (seq 10) is preserved.
-        let rows = crate::db::firehose_seq::events_in_range(&state.db, 0, 10, 100)
+        let rows = custos_db::firehose_seq::events_in_range(&state.db, 0, 10, 100)
             .await
             .unwrap();
         let seqs: Vec<i64> = rows.iter().map(|r| r.seq).collect();
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(stats.pruned, 4);
         assert!(!stats.skipped);
 
-        let rows = crate::db::firehose_seq::events_in_range(&state.db, 0, 5, 100)
+        let rows = custos_db::firehose_seq::events_in_range(&state.db, 0, 5, 100)
             .await
             .unwrap();
         let seqs: Vec<i64> = rows.iter().map(|r| r.seq).collect();
@@ -478,7 +478,7 @@ mod tests {
         assert!(stats.skipped);
         assert_eq!(stats.pruned, 0);
         assert_eq!(
-            crate::db::firehose_seq::events_in_range(&state.db, 0, 3, 100)
+            custos_db::firehose_seq::events_in_range(&state.db, 0, 3, 100)
                 .await
                 .unwrap()
                 .len(),
@@ -512,7 +512,7 @@ mod tests {
         // No row is retained by age (everything is 2020) → age contributes `max_seq` (5), clamped
         // to the frontier (5-1=4) → prune <=4. The frontier (seq 5) is kept; 1..=4 pruned.
         assert_eq!(stats.pruned, 4, "frontier (seq 5) is kept; 1..=4 pruned");
-        let rows = crate::db::firehose_seq::events_in_range(&state.db, 0, 5, 100)
+        let rows = custos_db::firehose_seq::events_in_range(&state.db, 0, 5, 100)
             .await
             .unwrap();
         let seqs: Vec<i64> = rows.iter().map(|r| r.seq).collect();
@@ -539,7 +539,7 @@ mod tests {
         // <=7, keep the newest 3 rows {8, 9, 10}.
         assert_eq!(stats.pruned, 7);
         assert!(!stats.skipped);
-        let rows = crate::db::firehose_seq::events_in_range(&state.db, 0, 10, 100)
+        let rows = custos_db::firehose_seq::events_in_range(&state.db, 0, 10, 100)
             .await
             .unwrap();
         let seqs: Vec<i64> = rows.iter().map(|r| r.seq).collect();
@@ -572,7 +572,7 @@ mod tests {
         // age: no row retained by age → contribution `max_seq` (10); count = 10 - 8 = 2.
         // max(10, 2) = 10, clamped by the frontier guard to 9 → prune <=9, keep only {frontier}.
         assert_eq!(stats.pruned, 9);
-        let rows = crate::db::firehose_seq::events_in_range(&state.db, 0, 10, 100)
+        let rows = custos_db::firehose_seq::events_in_range(&state.db, 0, 10, 100)
             .await
             .unwrap();
         let seqs: Vec<i64> = rows.iter().map(|r| r.seq).collect();
@@ -613,12 +613,12 @@ mod tests {
 
         // The subscriber-facing contract: subscribe_from cannot replay a pruned prefix, but it
         // must replay the full retained suffix for a cursor inside it and reach the frontier.
-        let crate::firehose::SubscribeOutcome::Subscribed(sub) =
+        let custos_core::firehose::SubscribeOutcome::Subscribed(sub) =
             state.firehose.subscribe_from(Some(7)).await.unwrap()
         else {
             panic!("cursor 7 is inside the retained window");
         };
-        let seqs = crate::firehose::collect_replay_seqs(sub.replay)
+        let seqs = custos_core::firehose::collect_replay_seqs(sub.replay)
             .await
             .unwrap();
         assert_eq!(
@@ -642,7 +642,7 @@ mod tests {
         emit_n(&state, 10).await; // seq 1..=10
 
         // Attach a cursor subscription and hold its replay reader UNDRAINED across the sweep.
-        let crate::firehose::SubscribeOutcome::Subscribed(sub) =
+        let custos_core::firehose::SubscribeOutcome::Subscribed(sub) =
             state.firehose.subscribe_from(Some(0)).await.unwrap()
         else {
             panic!("expected a subscription");

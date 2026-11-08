@@ -8,8 +8,8 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct DeleteRecordBody {
@@ -45,7 +45,10 @@ pub async fn delete_record(
 
     repo_engine::validate_record_path(collection, rkey)
         .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key"))?;
-    authorized.require_repo(collection, crate::auth::oauth_scopes::RepoAction::Delete)?;
+    authorized.require_repo(
+        collection,
+        custos_core::auth::oauth_scopes::RepoAction::Delete,
+    )?;
 
     let mut locked = authorized.lock(&state).await?;
     let mst_key = format!("{collection}/{rkey}");
@@ -80,8 +83,8 @@ pub async fn delete_record(
             ApiError::new(ErrorCode::InternalError, "failed to delete record")
         })?;
 
-    let op = crate::firehose::RepoOp {
-        action: crate::firehose::OpAction::Delete,
+    let op = custos_core::firehose::RepoOp {
+        action: custos_core::firehose::OpAction::Delete,
         collection: collection.clone(),
         rkey: rkey.clone(),
         cid: None,
@@ -338,7 +341,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_record_emits_firehose_delete_op() {
-        use crate::firehose::{FirehoseEvent, OpAction};
+        use custos_core::firehose::{FirehoseEvent, OpAction};
 
         let state = state_with_master_key().await;
         let did = "did:plc:delrec".to_string();

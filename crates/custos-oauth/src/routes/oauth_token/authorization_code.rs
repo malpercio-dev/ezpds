@@ -17,13 +17,13 @@ use super::{
     cleanup_expired_state, issue_access_token, token_response_headers, TokenRequestForm,
     TokenResponse,
 };
-use crate::auth::token::generate_token;
-use crate::db::oauth::{
-    delete_authorization_code, get_authorization_code, store_initial_oauth_refresh_token,
-};
 use crate::oauth_dpop::token_endpoint_dpop;
 use crate::oauth_errors::{require, OAuthTokenError};
+use custos_core::auth::token::generate_token;
 use custos_core::CoreState;
+use custos_db::oauth::{
+    delete_authorization_code, get_authorization_code, store_initial_oauth_refresh_token,
+};
 
 /// Verify the PKCE S256 code challenge.
 fn verify_pkce_s256(code_verifier: &str, stored_challenge: &str) -> bool {
@@ -96,7 +96,7 @@ pub(super) async fn handle_authorization_code(
 
     // Hash the presented code for DB lookup.
     let code_hash = match URL_SAFE_NO_PAD.decode(code) {
-        Ok(bytes) => crate::auth::token::sha256_hex(&bytes),
+        Ok(bytes) => custos_core::auth::token::sha256_hex(&bytes),
         Err(_) => {
             return OAuthTokenError::new("invalid_grant", "authorization code invalid or expired")
                 .into_response();
@@ -242,11 +242,11 @@ mod tests {
     use tower::ServiceExt;
 
     use super::super::test_support::{json_body, post_token, post_token_with_dpop};
-    use crate::auth::token::{generate_token, sha256_hex};
-    use crate::db::oauth::{register_oauth_client, store_authorization_code};
     use crate::test_support;
     use crate::test_support::{test_app, test_state};
+    use custos_core::auth::token::{generate_token, sha256_hex};
     use custos_core::CoreState;
+    use custos_db::oauth::{register_oauth_client, store_authorization_code};
 
     /// Seed the DB with a test client + account + authorization code.
     async fn seed_auth_code(state: &CoreState, code_hash: &str, code_challenge: &str) {
@@ -342,7 +342,7 @@ mod tests {
             "POST",
             "https://wrong-url.example.com/oauth/token",
             Some(&nonce),
-            Some(crate::time::unix_now_secs()),
+            Some(custos_core::time::unix_now_secs()),
         );
 
         let resp = test_app(state)
@@ -367,7 +367,7 @@ mod tests {
             "POST",
             "https://test.example.com/oauth/token",
             Some(&nonce),
-            Some(crate::time::unix_now_secs() - 120),
+            Some(custos_core::time::unix_now_secs() - 120),
         );
 
         let resp = test_app(state)
@@ -416,7 +416,7 @@ mod tests {
             "POST",
             "https://test.example.com/oauth/token",
             Some("fabricated-nonce-that-was-never-issued"),
-            Some(crate::time::unix_now_secs()),
+            Some(custos_core::time::unix_now_secs()),
         );
 
         let resp = test_app(state)
@@ -453,7 +453,7 @@ mod tests {
             "POST",
             "https://test.example.com/oauth/token",
             Some(&nonce),
-            Some(crate::time::unix_now_secs()),
+            Some(custos_core::time::unix_now_secs()),
         );
 
         let body = format!(
@@ -603,7 +603,7 @@ mod tests {
             "POST",
             "https://test.example.com/oauth/token",
             Some(&nonce2),
-            Some(crate::time::unix_now_secs()),
+            Some(custos_core::time::unix_now_secs()),
         );
         let resp2 = test_app(state2)
             .oneshot(post_token_with_dpop(&body, &dpop2))

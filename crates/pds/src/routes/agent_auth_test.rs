@@ -115,7 +115,7 @@ fn make_set(priv_pem: &str, iss: &str, sub: &str) -> String {
     }
     let mut events = serde_json::Map::new();
     events.insert(
-        crate::auth::issuer_trust::REVOKED_EVENT_TYPE.to_string(),
+        custos_core::auth::issuer_trust::REVOKED_EVENT_TYPE.to_string(),
         json!({}),
     );
     let claims = SetClaims {

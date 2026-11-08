@@ -12,9 +12,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
-use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::export_record_proof_car;
 
 #[derive(Deserialize)]
@@ -40,7 +40,7 @@ pub async fn sync_get_record(
     let did = &params.did;
 
     // Look up the repo root CID from the accounts table.
-    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    let root_cid_str = custos_db::accounts::get_repo_root_cid(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query repo root CID");

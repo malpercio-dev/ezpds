@@ -15,9 +15,9 @@ authorization server ([`custos-oauth`](../custos-oauth/AGENTS.md)), the auth.md 
 ([`custos-blobs`](../custos-blobs/AGENTS.md)), the firehose serving side
 ([`custos-firehose`](../custos-firehose/AGENTS.md)), and the Atproto Spaces surface
 ([`custos-spaces`](../custos-spaces/AGENTS.md)). `app.rs` merges each crate's `router`
-unconditionally, with the feature gate inside the crate. `main.rs` aliases the modules that moved to `custos-core` at the crate root, so
-`crate::identity::…`, `crate::time::…`, and their siblings resolve to it; `auth/mod.rs`
-re-exports `custos_core::auth` the same way.
+unconditionally, with the feature gate inside the crate. There are no re-export shims: modules that moved
+to `custos-core` are imported as `custos_core::identity::…`, `custos_core::auth::…`, and so on, and
+cross-feature queries as `custos_db::…`, so a path names the crate that owns it.
 
 This file is a map. Each entry is what the module is plus the fact or two an agent needs
 before opening it; mechanism and invariants live in the module's own `//!` doc.
@@ -29,7 +29,7 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; `[telemetry]` config incl. `log_format = "json"` — see module doc
   app.rs           — router construction (route table; each group is wrapped by `custos_core::public_surface` / `internal_surface`); re-exports `AppState` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged. Each feature crate's `router`/`internal_router` merges in unconditionally before the layer stack; the feature gate lives inside the crate
-  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` and `SpacesState` (built from `AppState.core`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
+  state.rs         — the composite `AppState`: `core: CoreState` plus the fields only `pds`'s features read (iroh, notify sender, email, repo write locks). `Deref<Target = CoreState>` for field reads, `FromRef<AppState>` for `CoreState` (feature crates extract `State<CoreState>`); writes go through `state.core`. `set_notify_sender` is the one switch that turns notifications on: it sets `notify_sender` and installs `notifications::RelayNotifier` as `CoreState.notifier`. `#[cfg(test)]`: `AppState::for_test(core)` and the `test_state` constructors
   rate_limit_test.rs — the rate-limit middleware tests that need the full `app()` router (CORS on a 429, the `getRepo` exemption, per-endpoint caps); the limiter's unit tests are in `custos_core::rate_limit`
   xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (`xrpc_handler` at `/xrpc/{method}`): upstream resolution for the three proxied namespaces + the read-after-write branch — see module doc
   email.rs         — pluggable outbound email (`Arc<dyn EmailSender>`: log default, SMTP, Mailtrap HTTPS) behind the token-delivery flows; `[email]` / `EZPDS_EMAIL_*` — see module doc
@@ -68,13 +68,14 @@ rev-comparison selection, the five-rung fallback ladder, the 10 MiB buffering ca
 `[appview]` config keys (`EZPDS_APPVIEW_URL`/`_DID`/`_CDN_URL`). Submodules: `munge.rs`
 (per-NSID munges), `viewer.rs` (`LocalViewer` hydration), `types.rs` (`LocalRecords`).
 
-### `auth/`
+### `auth`
 
-`auth/mod.rs` only re-exports [`custos_core::auth`](../custos-core/AGENTS.md) (the verification
-core and the auth.md agent machinery), so `crate::auth::…` paths resolve to it. The OAuth server's
-response mode moved with the server to [`custos-oauth`](../custos-oauth/AGENTS.md).
+`pds` has no `auth` module: the verification core and the auth.md agent machinery are
+[`custos_core::auth`](../custos-core/AGENTS.md), and the OAuth server's response mode lives in
+[`custos-oauth`](../custos-oauth/AGENTS.md). An `AuthenticatedUser` is never refresh-scoped
+(`authenticate_access` rejects it), so handlers do not re-check `scope.is_access()`.
 
-**Rule:** `auth/` has no knowledge of specific routes. Route handlers call into `auth/`; `auth/` never imports from `routes/`.
+**Rule:** auth has no knowledge of specific routes. Route handlers call into it; it never imports from `routes/`.
 
 ### `db/`
 
@@ -86,8 +87,8 @@ the cross-feature modules (`accounts`, `dids`, `handles`, `blobs`, `blocks`, `ke
 `admin_audit`, `sessions`, `refresh_tokens`, `server_stats`, `oauth`, `agent_auth`,
 `agent_audit`, plus `admin_devices`, `iroh_identity`, `jwt_secret`, `repo_keys`, `transfers`,
 which the auth guards and signing-key loaders read) live in
-[`crates/custos-db`](../custos-db/AGENTS.md); `db/mod.rs` re-exports those `pds` still reads, so
-`db::accounts::…` paths resolve unchanged. The table below lists only what stays in `pds`.
+[`crates/custos-db`](../custos-db/AGENTS.md); import them as `custos_db::…`; `db/mod.rs` only
+declares the modules below. The table below lists only what stays in `pds`.
 
 | File | Contents |
 |---|---|

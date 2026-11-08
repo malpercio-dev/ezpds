@@ -34,12 +34,12 @@ consent page's `space:` labels, `custos_core::scope_display`).
 
 ```
 src/
-  lib.rs            — the exports above; aliases `custos_core`'s `identity`, `rate_limit`, `time` and `common::code_gen` at the crate root so the moved files' `crate::…` paths resolve
+  lib.rs            — the exports above; `custos_core` modules are imported by full path, no root aliases
   router.rs         — the route table (`scripts/bruno-parity.sh` and `scripts/generate-docs-reference.mjs` read its `.route(` literals)
   capability.rs     — `CAPABILITY`, the `walletConsent` entry of the `describeServer` table
   oauth_templates.rs, oauth_errors.rs, oauth_dpop.rs — handler-free support shared by the routes (table below)
-  auth/             — `oauth_response_mode.rs`: `ResponseMode` (`query` | `fragment`), validated at PAR, threaded through both consent paths, read back off the pending row; `custos_core::auth` is re-exported here
-  db/               — `pending_oauth_authorizations.rs`: the wallet-confirmed consent primitive (V056 + V060) and the append-only consent audit trail; `custos_db`'s `oauth`, `accounts`, `handles`, and agent modules are re-exported here crate-privately
+  auth/             — `oauth_response_mode.rs`: `ResponseMode` (`query` | `fragment`), validated at PAR, threaded through both consent paths, read back off the pending row; the verification core is named at `custos_core::auth::…`
+  db/               — `pending_oauth_authorizations.rs`: the wallet-confirmed consent primitive (V056 + V060) and the append-only consent audit trail; the shared tables are named at `custos_db::…`
   routes/           — one file per endpoint (table below); private, only handler functions leave it
   test_support.rs   — `test-support` feature (and this crate's own tests): `test_app` wraps `router()` in the layers `pds` applies to its public group, so a path no OAuth route claims is a plain 404 here — tests that call a `pds` route with an OAuth-issued token live in `pds`
 ```

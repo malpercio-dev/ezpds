@@ -25,11 +25,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::auth::guards::authenticate_owner;
-use crate::db::dids::{
+use common::{ApiError, ErrorCode};
+use custos_core::auth::guards::authenticate_owner;
+use custos_db::dids::{
     did_document_exists, did_web_hosting_enabled, rewrite_did_document, set_did_web_hosting,
 };
-use common::{ApiError, ErrorCode};
 
 /// Reject a non-`did:web` caller: managed hosting and direct document edits are only for
 /// user-owned-domain `did:web` identities. A `did:plc` account repoints through PLC operations.
@@ -168,8 +168,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
-    use crate::auth::token::generate_token;
     use crate::routes::test_utils::{cnf_bound_access_jwt, DpopProofKey};
+    use custos_core::auth::token::generate_token;
 
     struct TestOwner {
         did: String,
@@ -191,7 +191,7 @@ mod tests {
 
         if hosting_enabled {
             // Flip the opt-in through the real parameterized toggle rather than an inlined column.
-            crate::db::dids::set_did_web_hosting(&state.db, &did, true)
+            custos_db::dids::set_did_web_hosting(&state.db, &did, true)
                 .await
                 .expect("enable hosting");
         }
@@ -476,7 +476,7 @@ mod tests {
             .await
             .expect("identity frame was emitted")
             .expect("receiver not closed");
-        let crate::firehose::FirehoseEvent::Identity(identity) = event else {
+        let custos_core::firehose::FirehoseEvent::Identity(identity) = event else {
             panic!("expected an #identity frame, got {event:?}");
         };
         assert_eq!(identity.did, owner.did);

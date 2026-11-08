@@ -75,13 +75,13 @@ const READ_AFTER_WRITE_NSIDS: [&str; 6] = [
 pub async fn xrpc_handler(
     State(state): State<AppState>,
     Path(method): Path<String>,
-    auth: Result<crate::auth::extractors::AuthenticatedUser, ApiError>,
+    auth: Result<custos_core::auth::extractors::AuthenticatedUser, ApiError>,
     req: axum::extract::Request,
 ) -> Response {
-    use crate::auth::jwt::AuthScope;
-    use crate::auth::oauth_scopes;
-    use crate::identity::proxy::resolve_atproto_proxy_target;
     use crate::routes::service_proxy::{proxy_xrpc, Upstream};
+    use custos_core::auth::jwt::AuthScope;
+    use custos_core::auth::oauth_scopes;
+    use custos_core::identity::proxy::resolve_atproto_proxy_target;
 
     let upstream = if method.starts_with("app.bsky.") {
         Some(ProxyUpstream::AppView)
@@ -147,9 +147,6 @@ pub async fn xrpc_handler(
             ProxyUpstream::Moderation => unreachable!("missing header returned above"),
         },
     };
-    if !user.scope.is_access() {
-        return ApiError::new(ErrorCode::InvalidToken, "access token required").into_response();
-    }
     if user.scope == AuthScope::Access {
         if let Err(err) = oauth_scopes::require_rpc(
             &user.scope_claim,
@@ -247,10 +244,10 @@ fn count_proxy_request(state: &AppState, upstream: &'static str, status: u16) {
     state.metrics.proxy_requests.add(
         1,
         &[
-            crate::metrics::label(crate::metrics::names::LABEL_UPSTREAM, upstream),
-            crate::metrics::label(
-                crate::metrics::names::LABEL_STATUS_CLASS,
-                crate::metrics::status_class(status),
+            custos_core::metrics::label(custos_core::metrics::names::LABEL_UPSTREAM, upstream),
+            custos_core::metrics::label(
+                custos_core::metrics::names::LABEL_STATUS_CLASS,
+                custos_core::metrics::status_class(status),
             ),
         ],
     );

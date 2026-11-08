@@ -33,8 +33,8 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::db::waitlist::insert_signup;
-use crate::identity::handle::validate_handle_structure;
 use crate::uniqueness::{is_plausible_email, normalize_email};
+use custos_core::identity::handle::validate_handle_structure;
 
 /// Upper bound on a stored email address (RFC 5321's 320-octet path ceiling, rounded).
 /// Anything longer is garbage or abuse, not a mailbox.

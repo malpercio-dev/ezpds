@@ -7,9 +7,9 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
-use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 
 /// The ATProto sentinel handle used when an account has no valid handle.
@@ -31,14 +31,14 @@ pub async fn describe_repo(
     LexiconParams(params): LexiconParams<DescribeRepoParams>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Accept either a handle or a DID, mirroring the `at-identifier` the lexicon allows.
-    let account = crate::db::accounts::resolve_identifier(&state.db, &params.repo)
+    let account = custos_db::accounts::resolve_identifier(&state.db, &params.repo)
         .await?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "repo not found"))?;
     let did = account.did;
 
     // Local DID document. The lexicon requires `didDoc` and its `unknown` type still means a JSON
     // object, so an account whose document was never cached is represented by an empty object.
-    let did_doc = crate::db::dids::get_did_document(&state.db, &did)
+    let did_doc = custos_db::dids::get_did_document(&state.db, &did)
         .await?
         .unwrap_or_else(|| serde_json::json!({}));
 
@@ -74,7 +74,7 @@ pub async fn describe_repo(
 /// Open the repo and list its distinct collections, returning `[]` when the account
 /// has no repo root yet (genesis not created or already empty).
 async fn list_collections(state: &AppState, did: &str) -> Result<Vec<String>, ApiError> {
-    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    let root_cid_str = custos_db::accounts::get_repo_root_cid(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query repo root CID");

@@ -32,8 +32,8 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin;
-use crate::db::accounts::AccountLifecycle;
+use custos_core::auth::guards::require_admin;
+use custos_db::accounts::AccountLifecycle;
 
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 100;
@@ -158,7 +158,7 @@ pub async fn list_accounts(
     // A blank search box means "no filter", not "match the empty substring everywhere".
     let q = params.q.as_deref().map(str::trim).filter(|t| !t.is_empty());
 
-    let rows = crate::db::accounts::list_accounts_admin(&state.db, cursor, limit, status, q)
+    let rows = custos_db::accounts::list_accounts_admin(&state.db, cursor, limit, status, q)
         .await
         .or_internal("failed to list accounts")?;
 
@@ -171,7 +171,7 @@ pub async fn list_accounts(
         })
         .flatten();
 
-    let flagged_total = crate::db::accounts::count_accounts_admin_flagged(&state.db, status, q)
+    let flagged_total = custos_db::accounts::count_accounts_admin_flagged(&state.db, status, q)
         .await
         .or_internal_as(
             "failed to count flagged accounts",
@@ -291,7 +291,7 @@ mod tests {
         let state = test_state_with_admin_token().await;
         insert_account(&state.db, "did:web:hosted.example").await;
         insert_account(&state.db, "did:web:unhosted.example").await;
-        crate::db::dids::set_did_web_hosting(&state.db, "did:web:hosted.example", true)
+        custos_db::dids::set_did_web_hosting(&state.db, "did:web:hosted.example", true)
             .await
             .unwrap();
         let app = crate::app::app(state);
@@ -324,7 +324,7 @@ mod tests {
             .execute(&state.db)
             .await
             .unwrap();
-        crate::db::blobs::insert_blob(
+        custos_db::blobs::insert_blob(
             &state.db,
             "bafalablob",
             "did:plc:ala_one",
@@ -501,11 +501,11 @@ mod tests {
 
     #[tokio::test]
     async fn signed_device_request_lists_accounts() {
-        use crate::auth::guards::{
+        use custos_core::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use custos_db::admin_devices::{insert_device, NewAdminDevice};
 
         // A state with NO master token: proves the device path is independent of it.
         let state = crate::app::test_state().await;
@@ -527,7 +527,7 @@ mod tests {
         // The signature covers the bare path only — the query string can vary per page
         // without re-signing, matching how the companion app appends cursor/filter params.
         let path = "/v1/admin/accounts";
-        let ts = crate::time::unix_now_secs();
+        let ts = custos_core::time::unix_now_secs();
         let nonce = "list-accounts-nonce-1";
         let sign_string = admin_request_sign_string("GET", path, ts, nonce, b"");
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());

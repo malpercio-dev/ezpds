@@ -15,9 +15,9 @@
 use std::time::Duration;
 
 use crate::app::AppState;
-use crate::db::admin_devices::sweep_stale_nonces;
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
+use custos_db::admin_devices::sweep_stale_nonces;
 
 /// Delete every `admin_nonces` row older than `max_age_secs` once per `interval`.
 pub struct AdminNonceSweep {
@@ -50,7 +50,7 @@ impl Sweep<AppState> for AdminNonceSweep {
         state
             .metrics
             .admin_nonce_sweep_last_run_timestamp
-            .record(crate::metrics::unix_now(), &[]);
+            .record(custos_core::metrics::unix_now(), &[]);
         Ok(Pass::swept(swept))
     }
 }
@@ -59,7 +59,7 @@ impl Sweep<AppState> for AdminNonceSweep {
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::sweep::run_once;
+    use custos_core::sweep::run_once;
 
     fn sweep() -> AdminNonceSweep {
         AdminNonceSweep {
@@ -81,9 +81,9 @@ mod tests {
     }
 
     async fn seed_device(db: &sqlx::SqlitePool, id: &str) {
-        crate::db::admin_devices::insert_device(
+        custos_db::admin_devices::insert_device(
             db,
-            &crate::db::admin_devices::NewAdminDevice {
+            &custos_db::admin_devices::NewAdminDevice {
                 id,
                 label: "Operator iPhone",
                 public_key: "did:key:zTestNonceSweep",
@@ -99,7 +99,7 @@ mod tests {
         let state = test_state().await;
         seed_device(&state.db, "dev-nonce-sweep").await;
         insert_stale_nonce(&state.db, "dev-nonce-sweep", "stale-1").await;
-        crate::db::admin_devices::insert_nonce_if_absent(&state.db, "fresh-1", "dev-nonce-sweep")
+        custos_db::admin_devices::insert_nonce_if_absent(&state.db, "fresh-1", "dev-nonce-sweep")
             .await
             .unwrap();
 

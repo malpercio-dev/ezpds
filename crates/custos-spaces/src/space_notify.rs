@@ -31,6 +31,7 @@
 //! from its 30-second per-crawler rate limit, which collapses a burst into one notification;
 //! a space's writes must each be reported, so there is nothing to collapse here.)
 
+use custos_core::CoreState;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -39,9 +40,10 @@ use tokio::sync::Semaphore;
 
 use crate::auth::space::unix_now;
 use crate::db::space_notify::WriterRevs;
-use crate::identity::resolution::{resolve_did_document, service_endpoint, space_host_endpoint};
-use crate::space_uri::SpaceRef;
-use crate::SpacesState;
+use custos_core::identity::resolution::{
+    resolve_did_document, service_endpoint, space_host_endpoint,
+};
+use custos_core::space_uri::SpaceRef;
 
 /// How long a write-notification registration lives before it must be renewed. Long enough that
 /// a syncer polling on any human cadence stays subscribed across a weekend outage; short enough
@@ -57,7 +59,7 @@ const MAX_SUBSCRIBERS: i64 = 100;
 /// between waits is the one SQLite connection the request handlers share.
 const MAX_CONCURRENT_FANOUTS: usize = 8;
 
-/// The permits behind [`MAX_CONCURRENT_FANOUTS`]. Process-global rather than an `SpacesState`
+/// The permits behind [`MAX_CONCURRENT_FANOUTS`]. Process-global rather than a `CoreState`
 /// field because the resource being rationed — this process's sockets and its single database
 /// connection — is process-global too, and nothing about the bound varies per request.
 ///
@@ -92,7 +94,7 @@ const NOTIFY_SPACE_DELETED: &str = "com.atproto.space.notifySpaceDeleted";
 /// [`JoinHandle`](tokio::task::JoinHandle) is returned so a test can await the effects;
 /// production callers discard it, since a commit must never wait on delivery.
 pub fn report_write(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRef,
     repo_did: &str,
     repo_rev: &str,
@@ -107,7 +109,7 @@ pub fn report_write(
 ///
 /// Returns like [`report_write`].
 pub fn forward_write(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRef,
     repo_did: &str,
     repo_rev: &str,
@@ -119,7 +121,7 @@ pub fn forward_write(
 
 /// The task behind [`report_write`] (`revs: None`) and [`forward_write`].
 fn spawn_write(
-    state: &SpacesState,
+    state: &CoreState,
     space: &SpaceRef,
     repo_did: &str,
     repo_rev: &str,
@@ -201,7 +203,7 @@ fn spawn_write(
 ///
 /// The subscriber list is captured by the caller *before* the deletion transaction drops the
 /// registrations — the rows are gone by the time this task runs.
-pub fn fan_out_space_deleted(state: &SpacesState, space: &SpaceRef, subscribers: Vec<String>) {
+pub fn fan_out_space_deleted(state: &CoreState, space: &SpaceRef, subscribers: Vec<String>) {
     if subscribers.is_empty() {
         return;
     }
@@ -224,7 +226,7 @@ pub fn fan_out_space_deleted(state: &SpacesState, space: &SpaceRef, subscribers:
 
 /// Deliver one notification to each subscriber in turn, skipping `origin`'s own service.
 async fn deliver_all(
-    state: &SpacesState,
+    state: &CoreState,
     subscribers: Vec<String>,
     origin: &str,
     signer_did: &str,
@@ -257,7 +259,7 @@ fn split_service(service: &str) -> (&str, Option<&str>) {
 /// 429 Too Many Requests. A document with no matching service entry, or any other 4xx, is
 /// permanent: retrying an argument the recipient has already rejected only wastes its capacity.
 async fn deliver(
-    state: &SpacesState,
+    state: &CoreState,
     did: &str,
     fragment: Option<&str>,
     signer_did: &str,
@@ -271,7 +273,7 @@ async fn deliver(
         .map(|s| &*s.0)
         .ok_or_else(|| "signing key master key not configured".to_string())?;
     let now = unix_now().map_err(|e| e.to_string())?;
-    let token = crate::auth::signing_key::mint_account_service_auth(
+    let token = custos_core::auth::signing_key::mint_account_service_auth(
         &state.db,
         master_key,
         signer_did,
@@ -308,10 +310,10 @@ enum Failure {
 /// One delivery attempt. `url` caches the resolved endpoint across attempts, so a retry after a
 /// failed POST does not fetch the DID document again.
 async fn attempt_delivery(
-    state: &SpacesState,
+    state: &CoreState,
     did: &str,
     fragment: Option<&str>,
-    url: &mut Option<crate::identity::proxy::CallerUrl>,
+    url: &mut Option<custos_core::identity::proxy::CallerUrl>,
     token: &str,
     body: &Value,
     lxm: &str,
@@ -322,7 +324,7 @@ async fn attempt_delivery(
             .map_err(|e| Failure::Transient(e.to_string()))?;
         let endpoint = endpoint_in(&doc, fragment)
             .ok_or_else(|| Failure::Permanent(format!("no service endpoint for {did}")))?;
-        *url = Some(crate::identity::proxy::CallerUrl::new(format!(
+        *url = Some(custos_core::identity::proxy::CallerUrl::new(format!(
             "{}/xrpc/{lxm}",
             endpoint.trim_end_matches('/')
         )));
@@ -373,7 +375,7 @@ fn endpoint_in(doc: &Value, fragment: Option<&str>) -> Option<String> {
 /// endpoint — `registerNotify`'s `ServiceNotResolvable` check. Run at registration so a typo is
 /// reported to the syncer that made it, rather than silently producing a subscription that never
 /// delivers.
-pub async fn service_is_resolvable(state: &SpacesState, service: &str) -> bool {
+pub async fn service_is_resolvable(state: &CoreState, service: &str) -> bool {
     let (did, fragment) = split_service(service);
     resolve_service_endpoint(state, did, fragment)
         .await
@@ -381,7 +383,7 @@ pub async fn service_is_resolvable(state: &SpacesState, service: &str) -> bool {
 }
 
 async fn resolve_service_endpoint(
-    state: &SpacesState,
+    state: &CoreState,
     did: &str,
     fragment: Option<&str>,
 ) -> Option<String> {
@@ -397,12 +399,12 @@ mod tests {
     //! retry ladder — is only observable here, against a wiremock standing in for that host.
 
     use super::*;
-    use crate::db::dids::seed_did_document;
     use crate::db::space_notify::upsert_registration;
     use crate::db::spaces::{insert_space, NewSpace};
-    use crate::space_uri::parse_space_ref;
     use crate::test_support::{seed_account_with_repo, state_with_master_key};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use custos_core::space_uri::parse_space_ref;
+    use custos_db::dids::seed_did_document;
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -415,7 +417,7 @@ mod tests {
 
     /// A host that is the space's authority, holding the repo signing key every
     /// authority-side notification is minted against.
-    async fn authority_state() -> SpacesState {
+    async fn authority_state() -> CoreState {
         let state = state_with_master_key().await;
         seed_account_with_repo(&state.db, AUTHORITY).await;
         seed_space(&state, Some("public")).await;
@@ -424,7 +426,7 @@ mod tests {
 
     /// The space's row: with a policy this host is its authority, without one it only keeps
     /// repos in it.
-    async fn seed_space(state: &SpacesState, policy: Option<&str>) {
+    async fn seed_space(state: &CoreState, policy: Option<&str>) {
         insert_space(
             &state.db,
             &NewSpace {
@@ -445,7 +447,7 @@ mod tests {
     }
 
     /// A subscriber's DID document, publishing exactly one service entry.
-    async fn seed_host(state: &SpacesState, did: &str, fragment: &str, endpoint: &str) {
+    async fn seed_host(state: &CoreState, did: &str, fragment: &str, endpoint: &str) {
         seed_did_document(
             &state.db,
             did,
@@ -461,7 +463,7 @@ mod tests {
         .await;
     }
 
-    async fn register(state: &SpacesState, service: &str) {
+    async fn register(state: &CoreState, service: &str) {
         upsert_registration(&state.db, SPACE, service, REGISTRATION_TTL_SECS)
             .await
             .unwrap();
@@ -759,10 +761,10 @@ mod tests {
             .config
             .signing_key_master_key
             .clone();
-        let state = SpacesState::new(custos_core::CoreState {
+        let state = custos_core::CoreState {
             config: std::sync::Arc::new(config),
-            ..base.core.clone()
-        });
+            ..base.clone()
+        };
         seed_account_with_repo(&state.db, AUTHORITY).await;
         let body = serde_json::json!({ "space": SPACE });
 

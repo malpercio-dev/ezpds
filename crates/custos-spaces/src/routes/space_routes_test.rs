@@ -15,6 +15,7 @@
 
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
+use custos_core::CoreState;
 use tower::ServiceExt;
 
 use crate::test_support::{
@@ -22,7 +23,6 @@ use crate::test_support::{
     state_with_master_key,
 };
 use crate::test_support::{space_record_body, xrpc_get as get, xrpc_post as post};
-use crate::SpacesState;
 
 const DID: &str = "did:plc:spaceroutesaaaaaaaaaaaaa";
 const SPACE: &str = "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main";
@@ -34,7 +34,7 @@ const GRANT: &str =
     "atproto space:org.example.bucket?authority=did:plc:authorityaaaaaaaaaaaaaaa&skey=main\
 &collection=org.example.note&action=create&action=update&action=delete&action=read_self";
 
-async fn setup() -> SpacesState {
+async fn setup() -> CoreState {
     let state = state_with_master_key().await;
     seed_account_with_repo(&state.db, DID).await;
     state

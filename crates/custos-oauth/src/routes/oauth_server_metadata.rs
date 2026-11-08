@@ -105,7 +105,7 @@ pub async fn oauth_server_metadata(State(state): State<CoreState>) -> impl IntoR
         revocation_endpoint: format!("{base}/oauth/revoke"),
         pushed_authorization_request_endpoint: format!("{base}/oauth/par"),
         jwks_uri: format!("{base}/oauth/jwks"),
-        scopes_supported: crate::auth::oauth_scopes::supported_scopes()
+        scopes_supported: custos_core::auth::oauth_scopes::supported_scopes()
             .into_iter()
             .map(String::from)
             .collect(),
@@ -149,7 +149,7 @@ pub async fn oauth_server_metadata(State(state): State<CoreState>) -> impl IntoR
                     "urn:ietf:params:oauth:token-type:id-jag".to_string()
                 ],
             },
-            events_supported: vec![crate::auth::issuer_trust::REVOKED_EVENT_TYPE.to_string()],
+            events_supported: vec![custos_core::auth::issuer_trust::REVOKED_EVENT_TYPE.to_string()],
             child_provisioning: true,
         },
     })
@@ -192,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn metadata_document_matches_expected_shape() {
         let json = metadata_json().await;
-        let scopes_supported: Vec<String> = crate::auth::oauth_scopes::supported_scopes()
+        let scopes_supported: Vec<String> = custos_core::auth::oauth_scopes::supported_scopes()
             .into_iter()
             .map(String::from)
             .collect();

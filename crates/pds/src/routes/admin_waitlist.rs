@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin;
 use crate::db::waitlist::{count_signups, list_signups};
+use custos_core::auth::guards::require_admin;
 
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 100;

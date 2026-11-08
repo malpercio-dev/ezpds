@@ -325,7 +325,7 @@ pub fn app(state: AppState) -> Router {
     // feature crates get the same layer from `custos_core::test_support::test_app`.
     #[cfg(test)]
     let public = public.layer(axum::middleware::from_fn(
-        crate::lexicon::validate_xrpc_output,
+        custos_core::lexicon::validate_xrpc_output,
     ));
     let public = custos_core::public_surface(public, &state);
 
@@ -551,7 +551,7 @@ mod tests {
         // the Access-Control-Allow-Origin header a cross-origin client needs to read the 429. If
         // CORS is ever moved inside the shared stack, the throttled response loses it and this fails.
         let mut state = test_state().await;
-        state.core.rate_limiter = Arc::new(crate::rate_limit::RateLimiterState::new(
+        state.core.rate_limiter = Arc::new(custos_core::rate_limit::RateLimiterState::new(
             &common::RateLimitConfig {
                 enabled: true,
                 global_ip_per_5min: 1,

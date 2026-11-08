@@ -17,9 +17,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use super::BlobMirror;
-use crate::blob_store;
-use crate::db::blobs;
+use custos_core::blob_store;
 use custos_core::CoreState;
+use custos_db::blobs;
 
 const FAKE_BUCKET: &str = "testbucket";
 const FAKE_PAGE_SIZE: usize = 2;

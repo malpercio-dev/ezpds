@@ -83,7 +83,7 @@ where
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::db::accounts::insert_bare_account as seed_account;
+    use custos_db::accounts::insert_bare_account as seed_account;
 
     #[tokio::test]
     async fn insert_round_trips_every_variant() {

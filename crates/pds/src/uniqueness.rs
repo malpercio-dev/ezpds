@@ -44,8 +44,8 @@ mod tests {
 
     #[tokio::test]
     async fn email_taken_matches_regardless_of_case() {
-        let db = crate::db::open_pool("sqlite::memory:").await.unwrap();
-        crate::db::run_migrations(&db).await.unwrap();
+        let db = custos_db::open_pool("sqlite::memory:").await.unwrap();
+        custos_db::run_migrations(&db).await.unwrap();
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES ('did:plc:a', 'alice@example.com', 'hash', datetime('now'), datetime('now'))",

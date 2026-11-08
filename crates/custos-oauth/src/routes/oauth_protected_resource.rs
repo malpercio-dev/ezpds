@@ -40,7 +40,7 @@ pub async fn oauth_protected_resource_metadata(
         resource: base.to_string(),
         resource_name: state.config.service_name.clone(),
         authorization_servers: vec![base.to_string()],
-        scopes_supported: crate::auth::oauth_scopes::supported_scopes()
+        scopes_supported: custos_core::auth::oauth_scopes::supported_scopes()
             .into_iter()
             .map(String::from)
             .collect(),
@@ -85,7 +85,7 @@ mod tests {
     #[tokio::test]
     async fn metadata_document_matches_expected_shape() {
         let json = metadata_json().await;
-        let scopes_supported: Vec<String> = crate::auth::oauth_scopes::supported_scopes()
+        let scopes_supported: Vec<String> = custos_core::auth::oauth_scopes::supported_scopes()
             .into_iter()
             .map(String::from)
             .collect();

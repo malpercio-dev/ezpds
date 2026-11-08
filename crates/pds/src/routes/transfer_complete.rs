@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extract_bearer_token;
-use crate::auth::token::hash_bearer_token;
 use crate::transfer::{complete_transfer as complete_transfer_row, CompleteOutcome};
+use custos_core::auth::extract_bearer_token;
+use custos_core::auth::token::hash_bearer_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,8 +84,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
-    use crate::auth::token::{generate_token, hash_bearer_token};
     use crate::routes::test_utils::{body_json, seed_account_random_did as seed_account};
+    use custos_core::auth::token::{generate_token, hash_bearer_token};
 
     struct AcceptedTransferFixture {
         did: String,

@@ -39,12 +39,12 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 
-use crate::db::oauth::{
-    cleanup_expired_refresh_tokens, delete_oauth_refresh_session, get_oauth_refresh_token,
-};
 use crate::oauth_dpop::token_endpoint_dpop;
 use crate::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
 use custos_core::CoreState;
+use custos_db::oauth::{
+    cleanup_expired_refresh_tokens, delete_oauth_refresh_session, get_oauth_refresh_token,
+};
 
 /// Flat form body for `POST /oauth/revoke` (application/x-www-form-urlencoded, RFC 7009 §2.1).
 ///
@@ -92,7 +92,7 @@ pub async fn post_revoke(
     // random bytes) — e.g. an access-token JWT, whose dots fail to decode — so a decode failure
     // is simply "nothing to revoke".
     if let Ok(bytes) = URL_SAFE_NO_PAD.decode(token.as_str()) {
-        let token_hash = crate::auth::token::sha256_hex(&bytes);
+        let token_hash = custos_core::auth::token::sha256_hex(&bytes);
         match get_oauth_refresh_token(&state.db, &token_hash).await {
             Ok(Some(stored)) => {
                 // Only the DPoP key the token is bound to may revoke it. `jkt` is compared in
@@ -164,7 +164,7 @@ mod tests {
 
     async fn refresh_token_exists(state: &CoreState, plaintext: &str) -> bool {
         let bytes = URL_SAFE_NO_PAD.decode(plaintext).unwrap();
-        let hash = crate::auth::token::sha256_hex(&bytes);
+        let hash = custos_core::auth::token::sha256_hex(&bytes);
         let row: Option<(String,)> = sqlx::query_as("SELECT id FROM oauth_tokens WHERE id = ?")
             .bind(hash)
             .fetch_optional(&state.db)

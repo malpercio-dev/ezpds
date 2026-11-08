@@ -31,17 +31,17 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards;
-use crate::auth::guards::AdminActor;
-use crate::db::admin_audit::{
+use custos_core::auth::guards;
+use custos_core::auth::guards::AdminActor;
+use custos_core::time::to_rfc3339_utc;
+use custos_db::admin_audit::{
     insert_admin_audit_event, record_admin_audit_event, AdminAuditAction,
 };
-use crate::db::admin_devices::{
+use custos_db::admin_devices::{
     consume_pairing_code, get_device, get_pairing_code, insert_device, insert_pairing_code,
     list_devices, revoke_device, AdminDeviceRow, NewAdminDevice,
 };
-use crate::db::insert_with_retry_on_collision;
-use crate::time::to_rfc3339_utc;
+use custos_db::insert_with_retry_on_collision;
 
 /// Default pairing-code lifetime: long enough to scan a QR, short enough that an
 /// unclaimed code's exposure window stays small. Mirrors the design's "~5 minutes".
@@ -489,10 +489,10 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::auth::guards::device_registration_sign_string;
     use crate::routes::test_utils::{
         body_json, get_request_with_bearer as get, test_state_with_admin_token,
     };
+    use custos_core::auth::guards::device_registration_sign_string;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -664,7 +664,7 @@ mod tests {
             .to_string();
 
         // The device row exists and the code was consumed.
-        let device = crate::db::admin_devices::get_device(&db, &device_id)
+        let device = custos_db::admin_devices::get_device(&db, &device_id)
             .await
             .unwrap()
             .expect("device persisted");
@@ -887,13 +887,13 @@ mod tests {
     // `get_device`, `insert_device`, `revoke_device`, and `NewAdminDevice` are already
     // in scope via `use super::*`; only the per-request signing helpers are pulled in.
 
-    use crate::auth::guards::{
+    use custos_core::auth::guards::{
         admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER, ADMIN_SIGNATURE_HEADER,
         ADMIN_TIMESTAMP_HEADER,
     };
 
     fn unix_now() -> i64 {
-        crate::time::unix_now_secs()
+        custos_core::time::unix_now_secs()
     }
 
     /// Insert an active admin device directly, returning its id and signing keypair.
