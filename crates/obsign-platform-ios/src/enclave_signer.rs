@@ -1,7 +1,7 @@
 //! The Secure Enclave [`Signer`]: on a real iOS device, every device key — each identity's,
-//! and the app-global one — is an enclave key that never leaves the hardware. The wallet
-//! hands its `Core` an [`EnclaveSigner`] there and `obsign_core::signer::SoftwareSigner` everywhere else
-//! (macOS, the Simulator). Which Keychain accounts a key occupies is the core's decision
+//! and the app-global one — is an enclave key that never leaves the hardware. The wallet builds
+//! its `Core` with an [`EnclaveSigner`] on a device and `obsign_core::signer::SoftwareSigner`
+//! elsewhere (macOS, the Simulator). Which Keychain accounts a key occupies is the core's decision
 //! (`KeyId::accounts`); this module only reads and writes them.
 //!
 //! The Keychain holds only metadata: the compressed public point and the enclave-assigned

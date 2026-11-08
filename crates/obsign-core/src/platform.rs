@@ -14,8 +14,8 @@ use crate::keystore::KeyStore;
 use crate::scheduler::Scheduler;
 use crate::signer::Signer;
 
-/// Wall time, injected so ceremonies and the 72-hour PLC window are testable. Every wall-clock
-/// read in the core goes through this; `SystemTime::now` panics on `wasm32-unknown-unknown`.
+/// Wall time, injected so ceremonies and the 72-hour PLC window are testable. Every ceremony and
+/// PLC-window read goes through this; the diagnostics log still stamps its own breadcrumbs.
 pub trait Clock: Send + Sync {
     fn now(&self) -> SystemTime;
 

@@ -367,9 +367,8 @@ pub async fn start_share_recovery(
     core: &crate::oauth::Core,
     identifier: String,
 ) -> Result<RecoveryTarget, ShareRecoveryError> {
-    let pds: &PdsClient = core.pds_client();
-    let slot: &StateSlot = &core.share_recovery_state;
-    let identifier: &str = &identifier;
+    let pds = core.pds_client();
+    let slot = &core.share_recovery_state;
     let identifier = identifier.trim();
     let did = if identifier.starts_with("did:plc:") {
         identifier.to_string()
@@ -443,8 +442,8 @@ pub async fn add_recovery_share(
     state: &crate::oauth::Core,
     share: String,
 ) -> Result<CollectedShare, ShareRecoveryError> {
-    let slot: &StateSlot = &state.share_recovery_state;
-    let share: &str = &share;
+    let slot = &state.share_recovery_state;
+    let share = share.as_str();
     let trimmed = share.trim();
     if trimmed.is_empty() {
         return Err(ShareRecoveryError::ShareFormat {
@@ -492,8 +491,8 @@ pub async fn add_recovery_share(
 /// Ask the account's PDS to email a release OTP. Always succeeds server-side for any
 /// identifier (no enumeration), so success here only means "the request was sent".
 pub async fn initiate_escrow_release(state: &crate::oauth::Core) -> Result<(), ShareRecoveryError> {
-    let pds: &PdsClient = state.pds_client();
-    let slot: &StateSlot = &state.share_recovery_state;
+    let pds = state.pds_client();
+    let slot = &state.share_recovery_state;
     let (did, pds_url) = escrow_target(slot).await?;
     let url = format!("{}/v1/recovery/initiate", pds_url.trim_end_matches('/'));
     let response = pds
@@ -522,8 +521,8 @@ pub async fn request_escrow_release(
     state: &crate::oauth::Core,
     otp: Option<String>,
 ) -> Result<EscrowReleaseStatus, ShareRecoveryError> {
-    let pds: &PdsClient = state.pds_client();
-    let slot: &StateSlot = &state.share_recovery_state;
+    let pds = state.pds_client();
+    let slot = &state.share_recovery_state;
     let (did, pds_url) = escrow_target(slot).await?;
     let url = format!("{}/v1/recovery/release", pds_url.trim_end_matches('/'));
     let mut body = serde_json::json!({ "identifier": did });
@@ -649,8 +648,8 @@ fn rate_limited(response: &reqwest::Response) -> ShareRecoveryError {
 pub async fn verify_recovery_shares(
     core: &crate::oauth::Core,
 ) -> Result<RecoveredIdentity, ShareRecoveryError> {
-    let pds: &PdsClient = core.pds_client();
-    let slot: &StateSlot = &core.share_recovery_state;
+    let pds = core.pds_client();
+    let slot = &core.share_recovery_state;
     // Derive under the lock, then drop it for the network fetch.
     let (did, handle, seed, recovery_key_id) = {
         let guard = slot.lock().await;
@@ -735,8 +734,8 @@ pub async fn verify_recovery_shares(
 pub async fn recover_identity(
     core: &crate::oauth::Core,
 ) -> Result<RecoveryAnchor, ShareRecoveryError> {
-    let pds: &PdsClient = core.pds_client();
-    let slot: &StateSlot = &core.share_recovery_state;
+    let pds = core.pds_client();
+    let slot = &core.share_recovery_state;
     let (did, seed, recovery_key_id) = {
         let guard = slot.lock().await;
         let session = guard
@@ -1050,7 +1049,7 @@ pub async fn run_recovery_epilogue(
     core: &crate::oauth::Core,
     skip_escrow: Option<bool>,
 ) -> Result<EpilogueResult, ShareRecoveryError> {
-    let pds: &PdsClient = core.pds_client();
+    let pds = core.pds_client();
     let skip_escrow: bool = skip_escrow.unwrap_or(false);
     let mut record = load_epilogue(core)?.ok_or(ShareRecoveryError::NoPendingEpilogue)?;
 

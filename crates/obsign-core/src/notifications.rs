@@ -780,7 +780,7 @@ pub async fn re_register_every_identity(core: &crate::oauth::Core) {
     }
 }
 
-/// Fetch and store one host's set. The re-pin cadence lives on `register_identity`, which calls
+/// Fetch and store one host's set. The re-pin cadence lives on `register_for_notifications`, which calls
 /// this on every successful contact — a sender key the operator revokes stops being trusted on
 /// this device at its next contact, which is what makes the cadence a security property rather
 /// than housekeeping.

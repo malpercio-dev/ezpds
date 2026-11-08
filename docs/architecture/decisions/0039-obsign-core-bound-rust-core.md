@@ -64,8 +64,10 @@ carries over from ADR-0013 unchanged.
   files, not secrets, so they fit neither `KeyStore` nor `Scheduler`, and the
   iCloud container is platform code like the rest.
 - `Clock` was declared before it was wired. Every wall-clock read in the
-  ceremonies and the PLC window now goes through the `Core`'s clock (2026-11-07),
-  which also keeps `SystemTime::now`, which panics on wasm, out of the core.
+  ceremonies and the PLC window now goes through the `Core`'s clock (2026-11-07).
+  The diagnostics log's breadcrumb timestamps still read `chrono::Utc::now`
+  directly; that read must move behind `Clock` before the wasm build, where
+  `SystemTime::now` panics.
 - `Core` owns every adapter (2026-11-07). The extraction first installed each one
   process-wide; owning them lets a test build a `Core` over fakes instead.
 - The optional cloud slot is the one real design change Android forces. The

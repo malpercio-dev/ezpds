@@ -457,7 +457,8 @@ pub async fn authenticate_source_pds(
 }
 
 /// Testable core: run `createSession` against the source PDS and build a full-session Bearer
-/// `OAuthClient`. Extracted so it can be exercised without Tauri's `State` wrapper.
+/// `OAuthClient`. Split out so the command can release the claim-state lock around the network
+/// call.
 ///
 /// The `createSession` body + account-match guard are shared with the outbound migration in
 /// `source_login::authenticate_source_password`; this wrapper only maps the neutral
@@ -510,8 +511,8 @@ impl From<crate::source_login::SourceLoginError> for ClaimError {
 /// **Prerequisites:** `authenticate_source_pds` must have completed successfully and populated
 /// `ClaimState.pds_oauth_client`.
 ///
-/// The core logic is extracted into `request_claim_verification_impl` to make it testable
-/// without Tauri's `State` wrapper.
+/// The core logic is `request_claim_verification_impl`, run on a copy of the claim state so the
+/// lock is not held across the network call.
 pub async fn request_claim_verification(
     state: &crate::oauth::Core,
     did: String,
@@ -1097,7 +1098,8 @@ pub async fn submit_claim_impl(
 
 /// Tauri command wrapper for submit_claim.
 ///
-/// Delegates to `submit_claim_impl` to allow testing without Core.
+/// Delegates to `submit_claim_impl` on a copy of the claim state, so the lock is not held across
+/// the network calls.
 pub async fn submit_claim(
     state: &crate::oauth::Core,
     did: String,

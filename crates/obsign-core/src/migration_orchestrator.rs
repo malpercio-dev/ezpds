@@ -555,8 +555,8 @@ pub async fn authenticate_migration_source(
 }
 
 /// Testable core: run `createSession` against the source PDS and build a full-session Bearer
-/// `OAuthClient`. Extracted so it can be exercised without Tauri's `State` wrapper (twin of
-/// `claim::authenticate_source_pds_impl`).
+/// `OAuthClient`. Split out so the command can release the orchestration lock around the network
+/// call (twin of `claim::authenticate_source_pds_impl`).
 ///
 /// The `createSession` body + account-match guard are shared with the claim flow in
 /// `source_login::authenticate_source_password`; this wrapper only maps the neutral

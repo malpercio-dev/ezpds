@@ -12,7 +12,7 @@
 //! `{ code: "SCREAMING_SNAKE_CASE" }`.
 //!
 //! Device keys are lazily generated on first [`IdentityStore::get_or_create_device_key`]
-//! — never at registration — through the installed [`Signer`](crate::signer::Signer)
+//! — never at registration — through the `Core`'s [`Signer`](crate::signer::Signer)
 //! under `KeyId::Identity(did)`, the same path the global key takes under `KeyId::Global`;
 //! only the account namespacing differs (`"{did}:device-key"` instead of
 //! `"device-rotation-key-priv"`). On a real device the Secure Enclave signer **probes the

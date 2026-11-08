@@ -157,11 +157,6 @@ impl Core {
         self.platform.signer.as_ref()
     }
 
-    /// The signer as a shared handle, for a signing closure that outlives the borrow.
-    pub fn signer_handle(&self) -> std::sync::Arc<dyn Signer> {
-        self.platform.signer.clone()
-    }
-
     /// The managed identities, over this `Core`'s key store and signer.
     pub fn identities(&self) -> IdentityStore<'_> {
         IdentityStore::new(self.keys(), self.signer())
