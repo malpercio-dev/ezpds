@@ -1,6 +1,6 @@
 # custos-client
 
-Last verified: 2026-09-06
+Last verified: 2026-11-07
 
 ## Purpose
 
@@ -68,12 +68,9 @@ exist.
   two apps could share. `CustosClient::par`/
   `token_exchange` take `client_id`/`redirect_uri` as plain parameters instead of deriving
   them internally.
-- The typed XRPC methods in `identity.rs`/`app_passwords.rs`/`migration.rs` take an explicit
-  `observer: &dyn TransportObserver` parameter — unlike `OAuthClient`/`CustosClient`/`PdsClient`,
-  which own their observer at construction — because these are free functions, not methods on a
-  long-lived client. Callers (identity-wallet's `pds_client.rs`) wrap each with the same
-  original signature (no new parameter), closing over the app's observer, so none of this
-  file's ~70 XRPC call sites needed to change.
+- The typed XRPC methods in `identity.rs`/`app_passwords.rs`/`migration.rs` are free functions
+  over an `&OAuthClient` and record breadcrumbs into that client's own observer. A caller wires
+  diagnostics once, at `new_bearer_with_observer`, never per call.
 - **`PdsClient::describe_server` reports the `custos` capability extension to a second,
   separate trait — `DescribeServerObserver`** — not folded into `TransportObserver`.
   `pds_capabilities::probe` (identity-wallet) reads its own cache rather than

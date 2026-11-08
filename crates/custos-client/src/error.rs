@@ -485,4 +485,71 @@ mod tests {
             other => panic!("expected InvalidResponse, got {other:?}"),
         }
     }
+
+    /// HANDLE_NOT_FOUND error is returned correctly
+    #[test]
+    fn test_pds_client_error_handle_not_found() {
+        let error = PdsClientError::HandleNotFound;
+        assert_eq!(format!("{}", error), "handle not found");
+    }
+
+    /// HandleNotFound error serializes with code "HANDLE_NOT_FOUND"
+    #[test]
+    fn test_pds_client_error_handle_not_found_serialization() {
+        let error = PdsClientError::HandleNotFound;
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"HANDLE_NOT_FOUND\""));
+    }
+
+    /// DidNotFound error serializes with code "DID_NOT_FOUND"
+    #[test]
+    fn test_pds_client_error_did_not_found_serialization() {
+        let error = PdsClientError::DidNotFound;
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"DID_NOT_FOUND\""));
+    }
+
+    /// PdsUnreachable error serializes with code "PDS_UNREACHABLE"
+    /// and does NOT include "reason" (because it's #[serde(skip)])
+    #[test]
+    fn test_pds_client_error_pds_unreachable_serialization() {
+        let error = PdsClientError::PdsUnreachable {
+            reason: "test".into(),
+        };
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"PDS_UNREACHABLE\""));
+        // Verify "reason" field is NOT serialized (it's #[serde(skip)])
+        assert!(!json.contains("\"reason\""));
+        assert!(!json.contains("test"));
+    }
+
+    /// NetworkError error serializes with code "NETWORK_ERROR"
+    #[test]
+    fn test_pds_client_error_network_error_serialization() {
+        let error = PdsClientError::NetworkError {
+            message: "connection refused".to_string(),
+        };
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"NETWORK_ERROR\""));
+    }
+
+    /// InvalidResponse error serializes with code "INVALID_RESPONSE"
+    #[test]
+    fn test_pds_client_error_invalid_response_serialization() {
+        let error = PdsClientError::InvalidResponse {
+            message: "missing required field".to_string(),
+        };
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"INVALID_RESPONSE\""));
+    }
+
+    /// OauthFailed error serializes with code "OAUTH_FAILED"
+    #[test]
+    fn test_pds_client_error_oauth_failed_serialization() {
+        let error = PdsClientError::OauthFailed {
+            message: "invalid_grant".to_string(),
+        };
+        let json = serde_json::to_string(&error).expect("serialization failed");
+        assert!(json.contains("\"code\":\"OAUTH_FAILED\""));
+    }
 }
