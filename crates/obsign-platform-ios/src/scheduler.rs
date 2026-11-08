@@ -56,27 +56,40 @@ impl IosScheduler {
         }))
     }
 
-    /// Register every job's launch handler. Must run before app launch completes. Failures are
-    /// logged rather than fatal: every job also runs in the foreground.
-    pub fn register(&self) {
+    /// Register every job's launch handler. Failures are logged rather than fatal: every job also
+    /// runs in the foreground.
+    ///
+    /// # Safety
+    ///
+    /// Call once per process, before app launch completes, with the identifiers passed to
+    /// [`IosScheduler::new`] distinct. `BGTaskScheduler` raises an Objective-C exception on a
+    /// late or repeated registration, and an exception unwinding through Rust frames is
+    /// undefined behaviour.
+    pub unsafe fn register(&self) {
         use block2::RcBlock;
         use objc2_background_tasks::{BGTask, BGTaskScheduler};
         use objc2_foundation::NSString;
         use std::ptr::NonNull;
 
+        // SAFETY: `sharedScheduler` takes no arguments and has no preconditions.
         let scheduler = unsafe { BGTaskScheduler::sharedScheduler() };
         for &(job, identifier, _) in &self.0.identifiers {
             let inner = self.0.clone();
             // Escaping launch handler; iOS stores a copy for the process lifetime and calls it
-            // on the main thread when it decides to run the task, handing us the live `BGTask`.
+            // on a background queue (the `None` below) when it decides to run the task, handing
+            // us the live `BGTask`.
             let launch_handler = RcBlock::new(move |task_ptr: NonNull<BGTask>| {
                 // We were handed the task with no ownership; retain it (+1) so it survives the
-                // async job. Non-null by the framework's contract.
+                // async job.
+                // SAFETY: `task_ptr` is a live `BGTask` for the duration of this call, so retaining
+                // it is sound.
                 let Some(task) = (unsafe { objc2::rc::Retained::retain(task_ptr.as_ptr()) }) else {
                     return;
                 };
                 inner.handle_launch(job, task);
             });
+            // SAFETY: the caller's contract (see `# Safety`) rules out the late or repeated
+            // registration that would raise; the arguments are a valid string and block.
             let registered = unsafe {
                 scheduler.registerForTaskWithIdentifier_usingQueue_launchHandler(
                     &NSString::from_str(identifier),
@@ -106,7 +119,9 @@ impl Scheduler for IosScheduler {
 
         self.0.lock_requests().remove(&job);
         if let Some((identifier, _)) = self.0.identifier(job) {
+            // SAFETY: `sharedScheduler` takes no arguments and has no preconditions.
             let scheduler = unsafe { BGTaskScheduler::sharedScheduler() };
+            // SAFETY: a valid identifier string; cancelling an unknown one is a no-op.
             unsafe { scheduler.cancelTaskRequestWithIdentifier(&NSString::from_str(identifier)) };
         }
     }
@@ -144,18 +159,21 @@ impl Inner {
         let identifier = NSString::from_str(identifier);
         let task_request: Retained<BGTaskRequest> = match kind {
             TaskKind::Processing => {
+                // SAFETY: `init` consumes a fresh `alloc` and a valid identifier string.
                 let processing = unsafe {
                     BGProcessingTaskRequest::initWithIdentifier(
                         BGProcessingTaskRequest::alloc(),
                         &identifier,
                     )
                 };
+                // SAFETY: plain property setters on a request we own and have not submitted.
                 unsafe {
                     processing.setRequiresNetworkConnectivity(request.requires_network);
                     processing.setRequiresExternalPower(request.requires_external_power);
                 }
                 Retained::into_super(processing)
             }
+            // SAFETY: `init` consumes a fresh `alloc` and a valid identifier string.
             TaskKind::AppRefresh => Retained::into_super(unsafe {
                 BGAppRefreshTaskRequest::initWithIdentifier(
                     BGAppRefreshTaskRequest::alloc(),
@@ -163,19 +181,25 @@ impl Inner {
                 )
             }),
         };
+        // SAFETY: a finite interval builds a valid date; the setter is a plain property write on a
+        // request we own and have not submitted.
         unsafe {
             let earliest =
                 NSDate::dateWithTimeIntervalSinceNow(request.earliest_after.as_secs_f64());
             task_request.setEarliestBeginDate(Some(&earliest));
         }
+        // SAFETY: `sharedScheduler` takes no arguments and has no preconditions.
         let scheduler = unsafe { BGTaskScheduler::sharedScheduler() };
+        // SAFETY: a valid, unsubmitted request; failures (an unpermitted identifier, no
+        // scheduler on the simulator) come back as `Err`, not an exception.
         if let Err(e) = unsafe { scheduler.submitTaskRequest_error(&task_request) } {
             tracing::warn!(job = ?request.job, error = ?e, "failed to submit the background task request");
         }
     }
 
-    /// The launch-handler body (runs on the main thread): re-arm the next run, apply the
-    /// network condition, then start the job and wire up completion and expiration.
+    /// The launch-handler body (runs on BGTaskScheduler's background queue): re-arm the next
+    /// run, apply the network condition, then start the job and wire up completion and
+    /// expiration.
     fn handle_launch(
         &self,
         job: BackgroundJob,
@@ -209,7 +233,7 @@ impl Inner {
         };
         let abort = Mutex::new(Some((self.start)(job, on_done)));
 
-        // iOS calls this (on the main thread) when our time is nearly up: abort the job and
+        // iOS calls this (on a queue of its choosing) when our time is nearly up: abort the job and
         // end cleanly. The jobs are idempotent and resume on the next fire.
         let expiration = {
             let task = task.clone();
@@ -224,17 +248,20 @@ impl Inner {
                 complete_once(&task, &done, false);
             })
         };
+        // SAFETY: the task is live (we hold a retain) and the block is `Fn()` as the handler's
+        // `void (^)(void)` type requires; iOS copies it.
         unsafe { task.0.setExpirationHandler(Some(&expiration)) };
     }
 }
 
 /// A `Retained<BGTask>` we promise to use soundly across threads.
 ///
-/// iOS calls the launch handler on the main thread, but the job runs on the app's async
+/// iOS calls the launch handler on a background queue, but the job runs on the app's async
 /// runtime; the worker (or the expiration handler) must call `setTaskCompletedWithSuccess`
 /// when it finishes. objc2 conservatively leaves framework objects `!Send`, so we assert it.
 ///
-/// SAFETY: the only `BGTask` methods we call on it are the completion methods, which Apple
+/// SAFETY: apart from setting the expiration handler on the thread that received the task, the
+/// only `BGTask` methods we call on it are the completion methods, which Apple
 /// documents as callable from any thread (their sample code completes the task from an
 /// `NSOperation` completion block on a background queue), and every such call is gated behind
 /// a one-shot atomic latch so it happens exactly once.
@@ -252,6 +279,8 @@ unsafe impl Sync for SendTask {}
 /// `setTaskCompletedWithSuccess` on the same task as a fatal misuse, so the latch is required.
 fn complete_once(task: &SendTask, done: &AtomicBool, success: bool) {
     if !done.swap(true, Ordering::SeqCst) {
+        // SAFETY: see `SendTask` — callable from any thread, and the latch makes this the only
+        // call.
         unsafe { task.0.setTaskCompletedWithSuccess(success) };
     }
 }

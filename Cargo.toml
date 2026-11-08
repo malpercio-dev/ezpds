@@ -60,6 +60,9 @@ license = "AGPL-3.0-only"
 # makes it unreachable. Tests are exempt via clippy.toml.
 unwrap_used = "deny"
 expect_used = "deny"
+# Every `unsafe` block states the invariant it relies on. The FFI crates are iOS-only, so only
+# the iOS-target clippy in the iOS PR gate sees them.
+undocumented_unsafe_blocks = "deny"
 
 [workspace.dependencies]
 # Async runtime

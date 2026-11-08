@@ -123,7 +123,10 @@ fn background_scheduler(
             Box::new(move || worker.abort())
         }),
     );
-    scheduler.register();
+    // SAFETY: `setup` runs once, inside tao's `didFinishLaunching` (tao defers it to the first
+    // scene connection only when the Info.plist enables multiple scenes, which this app's does
+    // not), and the two identifiers are distinct.
+    unsafe { scheduler.register() };
     Some(Arc::new(scheduler))
 }
 

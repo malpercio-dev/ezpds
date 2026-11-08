@@ -92,6 +92,8 @@ pub fn register_for_remote_notifications(app: &AppHandle) {
         | UNAuthorizationOptions::Badge;
     let handler = RcBlock::new(move |granted: Bool, error: *mut NSError| {
         if !error.is_null() {
+            // SAFETY: non-null (checked above); iOS passes an NSError that stays valid for the
+            // whole callback.
             let description = unsafe { (*error).localizedDescription() }.to_string();
             tracing::warn!(error = %description, "notification authorization failed");
         }
@@ -122,6 +124,8 @@ pub fn register_for_remote_notifications(app: &AppHandle) {
 /// rather than a replacement).
 fn install_delegate_methods(mtm: MainThreadMarker) -> bool {
     let application = UIApplication::sharedApplication(mtm);
+    // SAFETY: main thread (`mtm`). The property is `assign`, but the delegate UIApplicationMain
+    // installs lives for the whole process, so it cannot dangle.
     let Some(delegate) = (unsafe { application.delegate() }) else {
         tracing::error!("no application delegate yet; cannot receive an APNs device token");
         return false;
@@ -130,11 +134,17 @@ fn install_delegate_methods(mtm: MainThreadMarker) -> bool {
     // The delegate is an object like any other, and its *class* is what the runtime dispatches
     // on — so that is where the methods go, not on the instance.
     let delegate_ptr: *const AnyObject = Retained::as_ptr(&delegate).cast();
+    // SAFETY: `delegate_ptr` points at `delegate`, which stays retained for this whole
+    // function.
     let class: *mut AnyClass = (unsafe { &*delegate_ptr }.class() as *const AnyClass).cast_mut();
 
     // "v@:@@" — returns void, takes (self, _cmd, UIApplication, NSData | NSError).
     const SIGNATURE: &[u8] = b"v@:@@\0";
 
+    // SAFETY: `class` is the live delegate's class (the runtime locks its own method lists),
+    // and each function installed below has exactly the C-ABI signature of its `*Fn` alias,
+    // which its type string encodes, so storing it as an untyped `Imp` and dispatching through
+    // it is sound.
     let registered = unsafe {
         objc2::ffi::class_addMethod(
             class,
@@ -152,6 +162,7 @@ fn install_delegate_methods(mtm: MainThreadMarker) -> bool {
     }
 
     // Best-effort: without it a registration failure is silent, but the token path still works.
+    // SAFETY: as for `registered` above.
     let failure_registered = unsafe {
         objc2::ffi::class_addMethod(
             class,
@@ -172,6 +183,7 @@ fn install_delegate_methods(mtm: MainThreadMarker) -> bool {
     // it a tap still foregrounds the app, it just lands on the home screen.
     // "v@:@@@?" — returns void, takes (self, _cmd, center, response, completion block).
     const RESPONSE_SIGNATURE: &[u8] = b"v@:@@@?\0";
+    // SAFETY: as for `registered` above.
     let tap_registered = unsafe {
         objc2::ffi::class_addMethod(
             class,
@@ -181,10 +193,10 @@ fn install_delegate_methods(mtm: MainThreadMarker) -> bool {
         )
     };
     if tap_registered.as_bool() {
-        // Safe cast in the Objective-C model: `ProtocolObject` is a repr(transparent) view of
-        // the object, and conformance is duck-typed at dispatch time — the class now responds
-        // to the one selector we installed, and the center probes with respondsToSelector for
-        // the rest. The delegate property is weak; the application delegate outlives the app.
+        // SAFETY: `ProtocolObject` is a repr(transparent) view of the object, and conformance is
+        // duck-typed at dispatch time — the class now responds to the one selector we installed,
+        // and the center probes with respondsToSelector for the rest. The delegate property is
+        // weak; the application delegate outlives the app.
         let proto: &ProtocolObject<dyn UNUserNotificationCenterDelegate> =
             unsafe { &*delegate_ptr.cast() };
         UNUserNotificationCenter::currentNotificationCenter().setDelegate(Some(proto));
@@ -223,6 +235,8 @@ unsafe extern "C-unwind" fn did_register_with_token(
         tracing::warn!("APNs delivered a null device token");
         return;
     }
+    // SAFETY: non-null (checked above); iOS passes an NSData that stays valid for the whole
+    // call.
     let token = crate::notifications::hex_encode_apns_token(&unsafe { &*device_token }.to_vec());
 
     let Some(app) = APP.get().cloned() else {
@@ -258,6 +272,8 @@ unsafe extern "C-unwind" fn did_receive_notification_response(
     completion: *mut Block<dyn Fn()>,
 ) {
     if !response.is_null() {
+        // SAFETY: non-null (checked above); iOS passes a response that stays valid for the
+        // whole call.
         let user_info = unsafe { &*response }
             .notification()
             .request()
@@ -274,6 +290,8 @@ unsafe extern "C-unwind" fn did_receive_notification_response(
     // iOS hands us the completion handler and waits on it; not calling it earns a watchdog log
     // and delays notification cleanup, so it is called on every path.
     if !completion.is_null() {
+        // SAFETY: non-null (checked above); iOS passes its zero-argument completion block,
+        // valid for the whole call.
         unsafe { (*completion).call(()) };
     }
 }
@@ -316,6 +334,8 @@ unsafe extern "C-unwind" fn did_fail_to_register(
     let description = if error.is_null() {
         "unknown error".to_string()
     } else {
+        // SAFETY: non-null (checked above); iOS passes an NSError that stays valid for the
+        // whole call.
         unsafe { (*error).localizedDescription() }.to_string()
     };
     tracing::warn!(error = %description, "APNs registration failed");

@@ -20,7 +20,7 @@ use objc2_foundation::{NSError, NSObject, NSObjectProtocol, NSString, NSURL};
 use objc2_app_kit::NSApplication;
 
 #[cfg(target_os = "ios")]
-use objc2_ui_kit::{UIApplication, UIScene, UIWindowScene};
+use objc2_ui_kit::{UIApplication, UIWindowScene};
 
 // ---------------------------------------------------------------------------
 // PresentationContextProvider — ObjC class implementing
@@ -43,7 +43,7 @@ define_class!(
     unsafe impl ASWebAuthenticationPresentationContextProviding for AuthPresentationProvider {
         #[unsafe(method_id(presentationAnchorForWebAuthenticationSession:))]
         fn presentation_anchor(&self, _session: &ASWebAuthenticationSession) -> Retained<NSObject> {
-            get_key_window_as_anchor()
+            get_key_window_as_anchor(self.mtm())
         }
     }
 );
@@ -53,6 +53,7 @@ impl AuthPresentationProvider {
         let this = mtm.alloc::<Self>().set_ivars(ProviderIvars {
             _placeholder: Cell::new(false),
         });
+        // SAFETY: `NSObject`'s `init` on the freshly allocated, ivar-initialised instance.
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -63,8 +64,7 @@ impl AuthPresentationProvider {
 
 /// macOS: get the key window from NSApplication.
 #[cfg(target_os = "macos")]
-fn get_key_window_as_anchor() -> Retained<NSObject> {
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+fn get_key_window_as_anchor(mtm: MainThreadMarker) -> Retained<NSObject> {
     let app = NSApplication::sharedApplication(mtm);
     let window = app
         .keyWindow()
@@ -76,15 +76,13 @@ fn get_key_window_as_anchor() -> Retained<NSObject> {
 
 /// iOS: get the key window from the connected UIWindowScene.
 #[cfg(target_os = "ios")]
-fn get_key_window_as_anchor() -> Retained<NSObject> {
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+fn get_key_window_as_anchor(mtm: MainThreadMarker) -> Retained<NSObject> {
     let app = UIApplication::sharedApplication(mtm);
     let scenes = app.connectedScenes();
     for scene in &scenes {
-        // Safety: In a Tauri iOS app all connected scenes are UIWindowScene.
-        // UIWindowScene is a subclass of UIScene so the pointer cast is valid.
-        let scene_ptr: *const UIScene = &*scene;
-        let ws: &UIWindowScene = unsafe { &*(scene_ptr as *const UIWindowScene) };
+        let Some(ws) = scene.downcast_ref::<UIWindowScene>() else {
+            continue;
+        };
         let windows = ws.windows();
         if let Some(window) = windows.firstObject() {
             // UIWindow -> UIView -> UIResponder -> NSObject (3 levels)
@@ -128,6 +126,7 @@ pub async fn start_session(
 
     // ASWebAuthenticationSession must be created and started on the main thread.
     dispatch2::DispatchQueue::main().exec_async(move || {
+        // SAFETY: this closure runs on the main dispatch queue, which is the main thread.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
 
         // Drop any previous session (e.g., from a prior auth attempt that
@@ -153,10 +152,14 @@ pub async fn start_session(
         let completion_handler =
             RcBlock::new(move |callback_url: *mut NSURL, error: *mut NSError| {
                 let result = if !error.is_null() {
+                    // SAFETY: non-null (checked above); the framework passes an NSError that
+                    // stays valid for the whole callback.
                     let error = unsafe { &*error };
                     let domain = error.domain();
                     let code = error.code();
 
+                    // SAFETY: an immutable extern static the linked framework initialises
+                    // before any code runs.
                     let expected_domain: &NSString =
                         unsafe { ASWebAuthenticationSessionErrorDomain };
                     let is_cancelled = *domain == *expected_domain
@@ -171,6 +174,8 @@ pub async fn start_session(
                 } else if callback_url.is_null() {
                     Err("Auth session completed without a callback URL".to_string())
                 } else {
+                    // SAFETY: non-null (checked above); the framework passes an NSURL that
+                    // stays valid for the whole callback.
                     let url = unsafe { &*callback_url };
                     match url.absoluteString() {
                         Some(s) => Ok(s.to_string()),
@@ -193,14 +198,15 @@ pub async fn start_session(
                 // ASWebAuthenticationSession opens a separate browser window,
                 // and closing it doesn't restore focus to the originating app.
                 #[cfg(target_os = "macos")]
-                {
-                    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                if let Some(mtm) = MainThreadMarker::new() {
                     let app = NSApplication::sharedApplication(mtm);
                     app.activateIgnoringOtherApps(true);
                 }
             });
 
         // Create the ASWebAuthenticationSession
+        // SAFETY: main thread (`mtm`); `init` consumes a fresh `alloc` and copies the completion
+        // block, which stays alive in this scope and then in `ACTIVE_SESSION`.
         let session = unsafe {
             ASWebAuthenticationSession::initWithURL_callbackURLScheme_completionHandler(
                 ASWebAuthenticationSession::alloc(),
@@ -210,6 +216,7 @@ pub async fn start_session(
             )
         };
 
+        // SAFETY: a plain property setter, on the main thread, before `start`.
         unsafe {
             session.setPrefersEphemeralWebBrowserSession(ephemeral);
         }
@@ -217,11 +224,14 @@ pub async fn start_session(
         // Set the presentation context provider (required for the auth sheet
         // to anchor to a window)
         let provider = AuthPresentationProvider::new(mtm);
+        // SAFETY: the property is weak; `provider` stays alive in this scope and then in
+        // `ACTIVE_SESSION`, alongside the session.
         unsafe {
             session.setPresentationContextProvider(Some(ProtocolObject::from_ref(&*provider)));
         }
 
         // Start the session.
+        // SAFETY: main thread (`mtm`), on a fully configured session.
         let started = unsafe { session.start() };
         if !started {
             if let Some(tx) = tx.lock().unwrap().take() {

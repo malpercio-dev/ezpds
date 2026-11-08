@@ -25,10 +25,12 @@ _build app_dir:
 
 # PR-time iOS gate body (no signing, no secrets, no xcodebuild archive): build the
 # frontend (tauri's codegen embeds ../dist at compile time), cross-compile the app's
-# staticlib for the iOS device target, then run the app's Rust unit tests and clippy on
-# the macOS host target (the only CI lane that can compile these crates — the Linux
-# ci-pds gate excludes them, so without the clippy step here nothing gates lints for
-# these two crates and findings silently accumulate). The host test/clippy runs
+# staticlib for the iOS device target and clippy it there (the `#[cfg(target_os = "ios")]`
+# FFI — APNs, BGTaskScheduler — exists only on that target, so a host clippy never sees
+# it), then run the app's Rust unit tests and clippy on the macOS host target (the only
+# CI lane that can compile these crates — the Linux ci-pds gate excludes them, so without
+# the clippy steps here nothing gates lints for these two crates and findings silently
+# accumulate). The host test/clippy runs
 # deliberately do NOT set EZPDS_IOS_BUILD (that would clobber CC/AR with iOS toolchain
 # overrides). The `<app>-check` +
 # `_icon-compile` dependencies (which exercise the whole Apple/Rust seam) are declared
@@ -36,6 +38,7 @@ _build app_dir:
 _pr-check app_dir crate:
     cd {{app_dir}} && pnpm build
     cd {{app_dir}} && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo build --locked --lib --target aarch64-apple-ios -p {{crate}}
+    cd {{app_dir}} && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo clippy --locked --lib --target aarch64-apple-ios -p {{crate}} -- -D warnings
     cargo test --locked -p {{crate}}
     cargo clippy --locked -p {{crate}} --all-targets -- -D warnings
 
