@@ -160,7 +160,6 @@ mod tests {
                 subject: None,
                 email: None,
                 scopes: "[]",
-                identity_assertion: None,
                 assertion_expires_at: "2030-01-01 00:00:00",
                 pre_claim_scopes: None,
                 claim_token: None,

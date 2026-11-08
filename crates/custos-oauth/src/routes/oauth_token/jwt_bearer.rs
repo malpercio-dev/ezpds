@@ -40,7 +40,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{cleanup_expired_state, issue_access_token, TokenRequestForm};
+use super::{cleanup_expired_state, issue_access_token, persist_assertion_mint, TokenRequestForm};
 use crate::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
 use custos_core::CoreState;
 use custos_db::agent_auth::{get_agent_identity, AgentIdentityStatus};
@@ -193,40 +193,29 @@ pub(super) async fn handle_jwt_bearer(state: &CoreState, form: TokenRequestForm)
         Err(e) => return e.into_response(),
     };
 
-    // The stored assertion update and the exchange's audit row commit together, and both fail
-    // closed: a credential issuance (or renewal) the audit trail cannot account for must not
-    // leave the building. The tokens above were never returned to the caller. Every read (and
-    // both pure mints) ran before `begin()` — the single-connection pool cannot serve a
-    // `&SqlitePool` read while a transaction holds the connection.
-    let audit_result = async {
-        let mut tx = state.db.begin().await?;
-        custos_db::agent_auth::set_agent_identity_assertion(
-            &mut *tx,
-            &claims.registration_id,
-            &renewed.jwt,
-            &renewed.expires_sqlite,
-        )
-        .await?;
-        let detail = serde_json::json!({
+    // The subject equals the claimed row's stored DID, so a value that does not parse is a corrupt
+    // row, not a client error.
+    let Ok(did) = common::Did::parse(claims.sub.as_str()) else {
+        tracing::error!(registration_id = %claims.registration_id, "claimed identity's did is malformed");
+        return OAuthTokenError::new("server_error", "claimed identity is inconsistent")
+            .into_response();
+    };
+    // Every read (and both pure mints) ran before this transaction — the single-connection pool
+    // cannot serve a `&SqlitePool` read while a transaction holds the connection.
+    if let Err(e) = persist_assertion_mint(
+        state,
+        &claims.registration_id,
+        &did,
+        &renewed.expires_sqlite,
+        false,
+        serde_json::json!({
             "grant": "jwt_bearer",
             "scope": claims.scope,
             "assertion_renewed": true,
-        })
-        .to_string();
-        custos_db::agent_audit::insert_agent_audit_event(
-            &mut *tx,
-            &uuid::Uuid::new_v4().to_string(),
-            &claims.registration_id,
-            Some(&claims.sub),
-            custos_db::agent_audit::AgentAuditEventType::TokenExchanged,
-            Some(&detail),
-        )
-        .await?;
-        tx.commit().await?;
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    }
-    .await;
-    if let Err(e) = audit_result {
+        }),
+    )
+    .await
+    {
         tracing::error!(error = %e, registration_id = %claims.registration_id, "failed to persist jwt-bearer renewal + audit event");
         return OAuthTokenError::new("server_error", "database error").into_response();
     }
@@ -345,10 +334,10 @@ mod tests {
         .await;
         sqlx::query(
             "INSERT INTO agent_identities \
-             (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+             (id, did, registration_type, issuer, subject, email, scopes, \
               assertion_expires_at, status, created_at, updated_at) \
              VALUES (?, ?, 'identity_assertion', NULL, NULL, 'agent@example.com', \
-                     ?, NULL, datetime('now', '+1 hour'), ?, \
+                     ?, datetime('now', '+1 hour'), ?, \
                      datetime('now'), datetime('now'))",
         )
         .bind(registration_id)
@@ -572,8 +561,8 @@ mod tests {
     }
 
     /// The sliding renewal: the returned `identity_assertion` is freshly minted with the claimed
-    /// TTL, persisted on the row, and itself exchangeable — so an agent that persists it never
-    /// needs a new claim ceremony while it keeps acting.
+    /// TTL, its expiry recorded on the row, and itself exchangeable — so an agent that persists it
+    /// never needs a new claim ceremony while it keeps acting.
     #[tokio::test]
     async fn jwt_bearer_renewed_assertion_persists_and_round_trips() {
         let state = test_state().await;
@@ -605,15 +594,6 @@ mod tests {
         let json = json_body(resp).await;
         let renewed = json["identity_assertion"].as_str().unwrap().to_string();
 
-        // The renewal is persisted as the row's stored assertion.
-        let stored: (Option<String>,) =
-            sqlx::query_as("SELECT identity_assertion FROM agent_identities WHERE id = ?")
-                .bind("reg_renewal")
-                .fetch_one(&state.db)
-                .await
-                .unwrap();
-        assert_eq!(stored.0.as_deref(), Some(renewed.as_str()));
-
         // The renewed assertion outlives the pre-claim TTL (claimed TTL is 30 days by default)
         // and carries the stored grant clamped to the operator's current config, sorted/deduped.
         let payload_b64 = renewed.split('.').nth(1).unwrap();
@@ -622,6 +602,17 @@ mod tests {
         assert!(
             payload["exp"].as_i64().unwrap() > custos_core::time::unix_now_secs() + 3600,
             "a renewed assertion must outlive the pre-claim TTL"
+        );
+        // Only the renewal's expiry lands on the row — the assertion itself is never stored.
+        let (stored_expiry,): (String,) =
+            sqlx::query_as("SELECT assertion_expires_at FROM agent_identities WHERE id = ?")
+                .bind("reg_renewal")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            custos_core::auth::agent_assertion::parse_sqlite_datetime(&stored_expiry).timestamp(),
+            payload["exp"].as_i64().unwrap()
         );
         assert_eq!(
             payload["scope"], "atproto blob:*/* repo:*?action=create&action=update",

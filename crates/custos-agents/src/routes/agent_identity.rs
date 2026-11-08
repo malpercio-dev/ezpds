@@ -47,7 +47,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -64,9 +64,9 @@ use custos_core::CoreState;
 use custos_db::accounts::resolve_by_email;
 use custos_db::agent_audit::AgentAuditEventType;
 use custos_db::agent_auth::{
-    get_agent_identity_by_issuer_subject, insert_agent_identity, set_agent_identity_assertion,
-    AgentIdentityRow, AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity,
-    RegistrationType,
+    get_agent_identity_by_issuer_subject, insert_agent_identity, rotate_agent_identity_claim_token,
+    set_agent_identity_assertion_expiry, AgentIdentityRow, AgentIdentityStatus,
+    InsertAgentIdentityOutcome, NewAgentIdentity, RegistrationType,
 };
 
 /// The one assertion type this server accepts for the `identity_assertion` flow.
@@ -189,8 +189,7 @@ async fn handle_anonymous(
     let claim_token = new_claim_token();
     let pre_claim_scopes = &state.config.agent_auth.pre_claim_scopes;
     let scopes_json = scopes_to_json(pre_claim_scopes);
-    let claim_expiry =
-        Utc::now() + Duration::seconds(state.config.agent_auth.claim_token_ttl_secs as i64);
+    let claim_expiry = claim_token_expiry(state);
 
     // The pre-claim assertion's subject is the registration id — an anonymous identity has no DID to
     // name yet. It carries the pre-claim scope set and is marked `anonymous` in its claims.
@@ -215,7 +214,6 @@ async fn handle_anonymous(
             subject: None,
             email: None,
             scopes: &scopes_json,
-            identity_assertion: Some(&minted.jwt),
             assertion_expires_at: &minted.expires_sqlite,
             pre_claim_scopes: Some(&scopes_json),
             claim_token: Some(&claim_token),
@@ -329,7 +327,7 @@ struct PendingRegistration {
 /// and in the response they wrap the claim block in, so everything between is shared.
 ///
 /// No assertion is minted until the ceremony completes; `assertion_expires_at` is NOT NULL, so it
-/// is parked at the claim-token expiry (overwritten by `set_agent_identity_assertion` on claim).
+/// is parked at the claim-token expiry (overwritten by the claim).
 /// `Ok(None)` means the insert collided with an existing row — the caller decides whether that is
 /// a lost race to recover from or a server fault.
 async fn register_with_claim_ceremony(
@@ -343,9 +341,7 @@ async fn register_with_claim_ceremony(
     let registration_id = new_registration_id();
     let claim_token = new_claim_token();
     let scopes_json = scopes_to_json(&state.config.agent_auth.granted_scopes);
-    let claim_expiry = to_sqlite_datetime(
-        &(Utc::now() + Duration::seconds(state.config.agent_auth.claim_token_ttl_secs as i64)),
-    );
+    let claim_expiry = to_sqlite_datetime(&claim_token_expiry(state));
 
     let outcome = insert_agent_identity(
         &state.db,
@@ -358,7 +354,6 @@ async fn register_with_claim_ceremony(
             subject,
             email: Some(email),
             scopes: &scopes_json,
-            identity_assertion: None,
             assertion_expires_at: &claim_expiry,
             pre_claim_scopes: None,
             claim_token: Some(&claim_token),
@@ -518,13 +513,8 @@ async fn existing_identity_assertion(
                 RegistrationType::IdentityAssertion.as_str(),
                 &scopes,
             )?;
-            set_agent_identity_assertion(
-                &state.db,
-                &existing.id,
-                &minted.jwt,
-                &minted.expires_sqlite,
-            )
-            .await?;
+            set_agent_identity_assertion_expiry(&state.db, &existing.id, &minted.expires_sqlite)
+                .await?;
             Ok(ok_json(&IdentityAssertionResponse {
                 registration_id: existing.id,
                 registration_type: RegistrationType::IdentityAssertion.as_str(),
@@ -534,12 +524,32 @@ async fn existing_identity_assertion(
             }))
         }
         AgentIdentityStatus::Active => {
-            // Registered but not yet confirmed: return the claim challenge again. Reuse the stored
-            // claim token; issue a fresh user code so an expired one doesn't strand the ceremony.
-            let claim_token = existing
-                .claim_token
-                .clone()
-                .ok_or_else(AgentAuthError::server_error)?;
+            // Registered but not yet confirmed: return the claim challenge again with a fresh
+            // claim token (rotated, since the stored hash cannot be repeated — the agent gets its
+            // replacement in this response) and a fresh user code. A rotation that matches no row
+            // lost a race with a confirm or a revoke — re-read.
+            let claim_token = new_claim_token();
+            if !rotate_agent_identity_claim_token(
+                &state.db,
+                &existing.id,
+                &claim_token,
+                &to_sqlite_datetime(&claim_token_expiry(state)),
+            )
+            .await?
+            {
+                return match get_agent_identity_by_issuer_subject(
+                    &state.db,
+                    existing.issuer.as_deref().unwrap_or_default(),
+                    existing.subject.as_deref().unwrap_or_default(),
+                )
+                .await?
+                {
+                    Some(fresh) if fresh.status != AgentIdentityStatus::Active => {
+                        Box::pin(existing_identity_assertion(state, fresh)).await
+                    }
+                    _ => Err(AgentAuthError::server_error()),
+                };
+            }
             let started = start_claim_attempt(
                 &state.db,
                 &state.config.agent_auth,
@@ -648,8 +658,13 @@ fn new_registration_id() -> String {
     format!("reg_{}", Uuid::new_v4().simple())
 }
 
-/// An opaque, high-entropy claim token (`clm_` + 43-char base64url). Stored and looked up verbatim,
-/// matching the `agent_identities.claim_token` query layer.
+/// When a claim token issued now stops working (`[agent_auth] claim_token_ttl_secs`).
+fn claim_token_expiry(state: &CoreState) -> DateTime<Utc> {
+    Utc::now() + Duration::seconds(state.config.agent_auth.claim_token_ttl_secs as i64)
+}
+
+/// An opaque, high-entropy claim token (`clm_` + 43-char base64url). Only its SHA-256 rests in
+/// `agent_identities.claim_token_hash`; the query layer hashes on insert and lookup.
 fn new_claim_token() -> String {
     format!("clm_{}", generate_token().plaintext)
 }
@@ -678,9 +693,10 @@ mod tests {
 
     use crate::test_support::test_app;
     use crate::test_support::{
-        es256_keys, insert_account_with_email as insert_account,
+        es256_keys, insert_account_with_email as insert_account, post_json_with_bearer,
         state_with_agent_auth as state_with, trusted_issuer as trusted,
     };
+    use custos_core::auth::agent_assertion::parse_sqlite_datetime;
     use custos_core::CoreState;
 
     const PUBLIC_URL: &str = "https://test.example.com";
@@ -950,17 +966,15 @@ mod tests {
             ])
         );
 
-        // The identity was persisted ownerless (NULL did), active, with the assertion stored.
-        let row: (Option<String>, String, Option<String>) = sqlx::query_as(
-            "SELECT did, status, identity_assertion FROM agent_identities WHERE id = ?",
-        )
-        .bind(registration_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap();
+        // The identity was persisted ownerless (NULL did) and active.
+        let row: (Option<String>, String) =
+            sqlx::query_as("SELECT did, status FROM agent_identities WHERE id = ?")
+                .bind(registration_id)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
         assert_eq!(row.0, None, "anonymous identity has no owning did");
         assert_eq!(row.1, "active");
-        assert_eq!(row.2.as_deref(), Some(assertion));
     }
 
     // ── service_auth ─────────────────────────────────────────────────────
@@ -1177,6 +1191,71 @@ mod tests {
         assert_eq!(row.1, "identity_assertion");
     }
 
+    /// Re-presenting the ID-JAG while the registration awaits confirmation re-issues the challenge
+    /// with a *new* claim token: only the token's hash is stored, so the old one can't be repeated.
+    /// The new token opens the ceremony; the old one is dead.
+    #[tokio::test]
+    async fn identity_assertion_rechallenge_rotates_the_claim_token() {
+        let (priv_pem, pub_pem) = es256_keys();
+        let cfg = AgentAuthConfig {
+            trusted_issuers: vec![trusted("https://trusted.example", pub_pem)],
+            ..AgentAuthConfig::default()
+        };
+        let state = state_with(cfg).await;
+        insert_account(
+            &state.db,
+            "did:plc:idassertrotate11111",
+            "agent@example.com",
+        )
+        .await;
+        let jag = || {
+            make_id_jag(
+                &priv_pem,
+                "https://trusted.example",
+                "sub-rotate",
+                PUBLIC_URL,
+                Some("agent@example.com"),
+                None,
+            )
+        };
+
+        let (_s, first) = post(
+            state.clone(),
+            json!({ "type": "identity_assertion", "assertion": jag() }),
+        )
+        .await;
+        let (status, second) = post(
+            state.clone(),
+            json!({ "type": "identity_assertion", "assertion": jag() }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(second["error"], "interaction_required");
+        let old = first["claim_token"].as_str().unwrap();
+        let new = second["claim_token"].as_str().unwrap();
+        assert!(new.starts_with("clm_"));
+        assert_ne!(old, new, "a re-challenge issues a fresh claim token");
+
+        let (status, body) = post_json_with_bearer(
+            state.clone(),
+            "/agent/identity/claim",
+            json!({ "claim_token": new }),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["claim_attempt"]["user_code"].is_string());
+        let (status, body) = post_json_with_bearer(
+            state,
+            "/agent/identity/claim",
+            json!({ "claim_token": old }),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid_claim_token");
+    }
+
     #[tokio::test]
     async fn identity_assertion_no_matching_account_is_access_denied() {
         let (priv_pem, pub_pem) = es256_keys();
@@ -1215,11 +1294,11 @@ mod tests {
         // the default granular profile so the config-clamp intersection is a no-op here.
         sqlx::query(
             "INSERT INTO agent_identities \
-             (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+             (id, did, registration_type, issuer, subject, email, scopes, \
               assertion_expires_at, status, created_at, updated_at) \
              VALUES ('reg_seed', ?, 'identity_assertion', 'https://trusted.example', 'sub-known', \
                      'agent@example.com', \
-                     '[\"atproto\",\"repo:*?action=create&action=update\",\"blob:*/*\"]', NULL, \
+                     '[\"atproto\",\"repo:*?action=create&action=update\",\"blob:*/*\"]', \
                      datetime('now', '+1 hour'), 'claimed', datetime('now'), datetime('now'))",
         )
         .bind(did)
@@ -1252,14 +1331,19 @@ mod tests {
         let assertion = body["identity_assertion"].as_str().unwrap();
         assert_eq!(assertion.split('.').count(), 3, "assertion must be a JWT");
 
-        // The freshly minted assertion was stored back on the identity.
-        let stored: Option<String> = sqlx::query_scalar(
-            "SELECT identity_assertion FROM agent_identities WHERE id = 'reg_seed'",
+        // Only the fresh mint's expiry is recorded on the identity; the assertion is not stored.
+        let stored_expiry: String = sqlx::query_scalar(
+            "SELECT assertion_expires_at FROM agent_identities WHERE id = 'reg_seed'",
         )
         .fetch_one(&state.db)
         .await
         .unwrap();
-        assert_eq!(stored.as_deref(), Some(assertion));
+        assert_eq!(
+            parse_sqlite_datetime(&stored_expiry).timestamp(),
+            chrono::DateTime::parse_from_rfc3339(body["assertion_expires"].as_str().unwrap())
+                .unwrap()
+                .timestamp()
+        );
     }
 
     #[tokio::test]
@@ -1282,11 +1366,11 @@ mod tests {
         // The registration was stored earlier with the broader default profile (incl. blob).
         sqlx::query(
             "INSERT INTO agent_identities \
-             (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+             (id, did, registration_type, issuer, subject, email, scopes, \
               assertion_expires_at, status, created_at, updated_at) \
              VALUES ('reg_clamp', ?, 'identity_assertion', 'https://trusted.example', 'sub-clamp', \
                      'agent@example.com', \
-                     '[\"atproto\",\"repo:*?action=create&action=update\",\"blob:*/*\"]', NULL, \
+                     '[\"atproto\",\"repo:*?action=create&action=update\",\"blob:*/*\"]', \
                      datetime('now', '+1 hour'), 'claimed', datetime('now'), datetime('now'))",
         )
         .bind(did)
@@ -1333,10 +1417,10 @@ mod tests {
         insert_account(&state.db, did, "agent@example.com").await;
         sqlx::query(
             "INSERT INTO agent_identities \
-             (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+             (id, did, registration_type, issuer, subject, email, scopes, \
               assertion_expires_at, status, created_at, updated_at) \
              VALUES ('reg_disjoint', ?, 'identity_assertion', 'https://trusted.example', \
-                     'sub-disjoint', 'agent@example.com', '[\"blob:*/*\"]', NULL, \
+                     'sub-disjoint', 'agent@example.com', '[\"blob:*/*\"]', \
                      datetime('now', '+1 hour'), 'claimed', datetime('now'), datetime('now'))",
         )
         .bind(did)

@@ -18,7 +18,9 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use ceremony_journal::{Journal, JournalStore, Step};
-use custos_core::auth::agent_assertion::{mint_identity_assertion, scopes_to_json};
+use custos_core::auth::agent_assertion::{
+    mint_identity_assertion, scopes_to_json, MintedAssertion,
+};
 use custos_core::auth::password::hash_password;
 use custos_core::CoreState;
 use custos_db::agent_auth::{
@@ -65,7 +67,7 @@ pub(crate) struct MintedChild {
     pub(crate) did: String,
     pub(crate) did_document: serde_json::Value,
     pub(crate) identity_assertion: String,
-    /// SQLite datetime, as stored on the identity row; callers format their own wire value.
+    /// SQLite datetime, as recorded on the identity row; callers format their own wire value.
     pub(crate) assertion_expires: String,
     pub(crate) scopes: Vec<String>,
 }
@@ -149,18 +151,7 @@ pub(crate) async fn mint_child_account(
     let did_document = custos_core::identity::genesis::build_did_document(&verified)?;
 
     let registration_id = registration.registration_id();
-    let scopes = state.config.agent_auth.granted_scopes.clone();
-    let scopes_json = scopes_to_json(&scopes);
-    let assertion = mint_identity_assertion(
-        &state.oauth_signing_keypair,
-        state.config.issuer(),
-        state.config.agent_auth.claimed_assertion_ttl_secs,
-        &child_did,
-        &registration_id,
-        RegistrationType::Child.as_str(),
-        &scopes,
-    )
-    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to mint child capability"))?;
+    let scopes_json = scopes_to_json(&state.config.agent_auth.granted_scopes);
 
     let mut journal = Journal::resume(ChildProvisioning {
         db: &state.db,
@@ -177,8 +168,6 @@ pub(crate) async fn mint_child_account(
             &repo_key,
             &registration_id,
             &scopes_json,
-            &assertion.jwt,
-            &assertion.expires_sqlite,
             &root_string,
             &rev,
             &blocks,
@@ -192,6 +181,20 @@ pub(crate) async fn mint_child_account(
     } else {
         load_prepared_child(state, parent_did, handle, &child_did).await?
     };
+    // No assertion is stored, so each call — fresh or resumed — mints the one it hands out, from
+    // the registration id and grant the provisioning row carries (`registration_id` above is a
+    // fresh id on a resumed `New` mint and matches no row).
+    let scopes: Vec<String> = serde_json::from_str(&prepared.scopes).unwrap_or_default();
+    let assertion = mint_identity_assertion(
+        &state.oauth_signing_keypair,
+        state.config.issuer(),
+        state.config.agent_auth.claimed_assertion_ttl_secs,
+        &child_did,
+        &prepared.registration_id,
+        RegistrationType::Child.as_str(),
+        &scopes,
+    )
+    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to mint child capability"))?;
     journal
         .run(ChildStep::Published, || {
             publish_child_genesis(state, &prepared, &did_document)
@@ -199,17 +202,25 @@ pub(crate) async fn mint_child_account(
         .await?;
     journal
         .run(ChildStep::Finalized, || {
-            finalize_child(state, &prepared, registration)
+            finalize_child(state, &prepared, registration, &assertion)
         })
         .await?;
+    // A resume that found the mint already finalized skipped the write inside it; the row records
+    // the expiry of the assertion actually handed out either way.
+    custos_db::agent_auth::set_agent_identity_assertion_expiry(
+        &state.db,
+        &prepared.registration_id,
+        &assertion.expires_sqlite,
+    )
+    .await?;
 
     Ok(MintedChild {
         registration_id: prepared.registration_id,
         did: child_did,
         did_document,
-        identity_assertion: prepared.assertion,
-        assertion_expires: prepared.assertion_expires,
-        scopes: serde_json::from_str(&prepared.scopes).unwrap_or(scopes),
+        identity_assertion: assertion.jwt,
+        assertion_expires: assertion.expires_sqlite,
+        scopes,
     })
 }
 
@@ -287,8 +298,6 @@ struct PreparedChild {
     parent_did: String,
     registration_id: String,
     scopes: String,
-    assertion: String,
-    assertion_expires: String,
     signed_op: String,
     root: String,
     rev: String,
@@ -310,8 +319,6 @@ async fn load_prepared_child(
         String,
         String,
         String,
-        String,
-        String,
         Vec<u8>,
         Vec<u8>,
         String,
@@ -328,16 +335,14 @@ async fn load_prepared_child(
         stored_handle,
         registration_id,
         scopes,
-        assertion,
-        assertion_expires,
         signed_op,
         genesis_car,
         sync_car,
         root,
         rev,
     ) = sqlx::query_as::<_, PendingRow>(
-        "SELECT p.parent_did, p.handle, p.registration_id, p.scopes, p.identity_assertion, \
-                p.assertion_expires_at, p.signed_op, p.genesis_car, p.sync_car, \
+        "SELECT p.parent_did, p.handle, p.registration_id, p.scopes, \
+                p.signed_op, p.genesis_car, p.sync_car, \
                 a.repo_root_cid, a.repo_rev \
          FROM agent_child_provisionings p JOIN accounts a ON a.did = p.child_did \
          WHERE p.child_did = ?",
@@ -358,8 +363,6 @@ async fn load_prepared_child(
         parent_did: stored_parent,
         registration_id,
         scopes,
-        assertion,
-        assertion_expires,
         signed_op,
         root,
         rev,
@@ -380,8 +383,6 @@ async fn prepare_child(
     repo_key: &RepoSigningKey,
     registration_id: &str,
     scopes: &str,
-    assertion: &str,
-    assertion_expires_at: &str,
     root: &str,
     rev: &str,
     blocks: &[(repo_engine::Cid, Vec<u8>)],
@@ -452,9 +453,9 @@ async fn prepare_child(
     }
     sqlx::query(
         "INSERT INTO agent_child_provisionings \
-         (child_did, parent_did, handle, registration_id, signed_op, scopes, identity_assertion, \
-          assertion_expires_at, genesis_car, sync_car, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+         (child_did, parent_did, handle, registration_id, signed_op, scopes, \
+          genesis_car, sync_car, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
     )
     .bind(child_did)
     .bind(parent_did)
@@ -462,8 +463,6 @@ async fn prepare_child(
     .bind(registration_id)
     .bind(signed_op)
     .bind(scopes)
-    .bind(assertion)
-    .bind(assertion_expires_at)
     .bind(genesis_car)
     .bind(sync_car)
     .execute(&mut *tx)
@@ -486,8 +485,6 @@ async fn prepare_child(
         parent_did: parent_did.to_string(),
         registration_id: registration_id.to_string(),
         scopes: scopes.to_string(),
-        assertion: assertion.to_string(),
-        assertion_expires: assertion_expires_at.to_string(),
         signed_op: signed_op.to_string(),
         root: root.to_string(),
         rev: rev.to_string(),
@@ -525,6 +522,7 @@ async fn finalize_child(
     state: &CoreState,
     prepared: &PreparedChild,
     registration: ChildRegistration<'_>,
+    assertion: &MintedAssertion,
 ) -> Result<(), ApiError> {
     let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state
@@ -545,8 +543,7 @@ async fn finalize_child(
                     subject: Some(&prepared.child_did),
                     email: None,
                     scopes: &prepared.scopes,
-                    identity_assertion: Some(&prepared.assertion),
-                    assertion_expires_at: &prepared.assertion_expires,
+                    assertion_expires_at: &assertion.expires_sqlite,
                     pre_claim_scopes: None,
                     claim_token: None,
                     claim_token_expires_at: None,
@@ -587,8 +584,7 @@ async fn finalize_child(
                 &prepared.child_did,
                 &prepared.parent_did,
                 &prepared.scopes,
-                &prepared.assertion,
-                &prepared.assertion_expires,
+                &assertion.expires_sqlite,
             )
             .await?
             {

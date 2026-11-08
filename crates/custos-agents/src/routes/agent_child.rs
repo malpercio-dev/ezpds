@@ -23,7 +23,7 @@ use custos_db::accounts::{deactivate_account, AccountStateChange};
 use custos_db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
 use custos_db::agent_auth::{
     get_child_of_parent, list_children_of_parent, revoke_agent_identity,
-    set_agent_identity_assertion, AgentIdentityStatus, RegistrationType,
+    set_agent_identity_assertion_expiry, AgentIdentityStatus, RegistrationType,
 };
 
 #[derive(Debug, Deserialize)]
@@ -276,13 +276,13 @@ pub async fn remint_child_assertion(
     )
     .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to renew child capability"))?;
 
-    // The stored assertion and its audit row commit together, so a renewal can never be issued
+    // The renewal's expiry and its audit row commit together, so a renewal can never be issued
     // without landing on the trail the parent reads.
     let mut tx =
         state.db.begin().await.map_err(|_| {
             ApiError::new(ErrorCode::InternalError, "failed to renew child capability")
         })?;
-    set_agent_identity_assertion(&mut *tx, &child.id, &minted.jwt, &minted.expires_sqlite).await?;
+    set_agent_identity_assertion_expiry(&mut *tx, &child.id, &minted.expires_sqlite).await?;
     insert_agent_audit_event(
         &mut *tx,
         &Uuid::new_v4().to_string(),
@@ -826,12 +826,6 @@ mod tests {
         seed_account_with_repo(&state.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
         let child = mint_child_for(&state, "renewable-writer.example.com", &token).await;
-        let issued: Option<String> =
-            sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE did = ?")
-                .bind(&child)
-                .fetch_one(&state.db)
-                .await
-                .unwrap();
 
         let response = test_app(state.clone())
             .oneshot(request(
@@ -868,19 +862,17 @@ mod tests {
         assert_eq!(renewed_scopes, granted);
 
         let fresh = renewed["identityAssertion"].as_str().unwrap();
-        assert_ne!(
-            Some(fresh),
-            issued.as_deref(),
-            "the renewal must be a distinct credential, not the assertion minted at provisioning"
-        );
+        assert_eq!(fresh.split('.').count(), 3, "the renewal is a JWT");
         let row = get_child_of_parent(&state.db, &child, parent)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
-            row.identity_assertion.as_deref(),
-            Some(fresh),
-            "the renewal must be the assertion the token endpoint will accept"
+            parse_sqlite_datetime(&row.assertion_expires_at).timestamp(),
+            chrono::DateTime::parse_from_rfc3339(renewed["assertionExpires"].as_str().unwrap())
+                .unwrap()
+                .timestamp(),
+            "the row records the renewal's expiry; the assertion itself is never stored"
         );
         assert_eq!(renewed["registrationId"], row.id);
 
@@ -905,8 +897,8 @@ mod tests {
         let token = access_jwt(&[0x42; 32], parent);
         let child = mint_child_for(&state, "refused-writer.example.com", &token).await;
         let stored = |db: sqlx::SqlitePool, did: String| async move {
-            sqlx::query_scalar::<_, Option<String>>(
-                "SELECT identity_assertion FROM agent_identities WHERE did = ?",
+            sqlx::query_scalar::<_, String>(
+                "SELECT assertion_expires_at FROM agent_identities WHERE did = ?",
             )
             .bind(did)
             .fetch_one(&db)
@@ -943,7 +935,7 @@ mod tests {
         assert_eq!(
             stored(state.db.clone(), child.clone()).await,
             before,
-            "a refused renewal must not touch the stored credential"
+            "a refused renewal must not touch the stored credential's expiry"
         );
 
         // Revocation walked the custody ladder down; renewal must not walk it back up.
