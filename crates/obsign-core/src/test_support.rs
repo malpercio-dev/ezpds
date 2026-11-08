@@ -92,21 +92,31 @@ impl KeyStore for MemKeyStore {
 
 // ── EventSink ───────────────────────────────────────────────────────────────
 
-/// An [`EventSink`] that records every event in order.
+/// An [`EventSink`] that records every event and notification in order.
 #[derive(Default)]
 pub struct RecordingEvents {
     events: Mutex<Vec<(String, serde_json::Value)>>,
+    notifications: Mutex<Vec<(String, String)>>,
 }
 
 impl RecordingEvents {
     pub fn events(&self) -> Vec<(String, serde_json::Value)> {
         lock(&self.events).clone()
     }
+
+    /// Every `(title, body)` passed to [`EventSink::notify`].
+    pub fn notifications(&self) -> Vec<(String, String)> {
+        lock(&self.notifications).clone()
+    }
 }
 
 impl EventSink for RecordingEvents {
     fn emit(&self, event: &str, payload: serde_json::Value) {
         lock(&self.events).push((event.to_string(), payload));
+    }
+
+    fn notify(&self, title: &str, body: &str) {
+        lock(&self.notifications).push((title.to_string(), body.to_string()));
     }
 }
 

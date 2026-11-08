@@ -17,6 +17,9 @@
 //! portable, host-tested half), and emits the `notification_route` event — the deep-link path
 //! for push-to-approve.
 //!
+//! It also posts the core's `EventSink::notify` as local notifications
+//! ([`post_local_notification`]).
+//!
 //! Deliberately NOT here: `application:openURL:options:`. tao runs the UIScene lifecycle,
 //! under which iOS delivers opened URLs to the scene delegate (tao's, which forwards them as
 //! `RunEvent::Opened`) and never calls an application-delegate openURL method — an add-only
@@ -91,10 +94,7 @@ pub fn register_for_remote_notifications(app: &AppHandle) {
         | UNAuthorizationOptions::Sound
         | UNAuthorizationOptions::Badge;
     let handler = RcBlock::new(move |granted: Bool, error: *mut NSError| {
-        if !error.is_null() {
-            // SAFETY: non-null (checked above); iOS passes an NSError that stays valid for the
-            // whole callback.
-            let description = unsafe { (*error).localizedDescription() }.to_string();
+        if let Some(description) = error_description(error) {
             tracing::warn!(error = %description, "notification authorization failed");
         }
         if !granted.as_bool() {
@@ -331,12 +331,40 @@ unsafe extern "C-unwind" fn did_fail_to_register(
     _application: *mut AnyObject,
     error: *mut NSError,
 ) {
-    let description = if error.is_null() {
-        "unknown error".to_string()
-    } else {
-        // SAFETY: non-null (checked above); iOS passes an NSError that stays valid for the
-        // whole call.
-        unsafe { (*error).localizedDescription() }.to_string()
-    };
+    let description = error_description(error).unwrap_or_else(|| "unknown error".to_string());
     tracing::warn!(error = %description, "APNs registration failed");
+}
+
+/// Show `title`/`body` as a local notification, delivered now. Callable from any thread
+/// (`UNUserNotificationCenter` is thread-safe). iOS shows it only while the app is off screen:
+/// the center's delegate does not implement `willPresentNotification:`. A tap just opens the
+/// app. One fixed identifier, so a second alert replaces the first rather than stacking.
+pub fn post_local_notification(title: &str, body: &str) {
+    use objc2_user_notifications::{
+        UNMutableNotificationContent, UNNotificationRequest, UNNotificationSound,
+    };
+
+    let content = UNMutableNotificationContent::new();
+    content.setTitle(&NSString::from_str(title));
+    content.setBody(&NSString::from_str(body));
+    content.setSound(Some(&UNNotificationSound::defaultSound()));
+    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+        &NSString::from_str("local-alert"),
+        &content,
+        None, // no trigger: deliver now
+    );
+    let handler = RcBlock::new(|error: *mut NSError| {
+        if let Some(description) = error_description(error) {
+            tracing::warn!(error = %description, "local notification was not delivered");
+        }
+    });
+    UNUserNotificationCenter::currentNotificationCenter()
+        .addNotificationRequest_withCompletionHandler(&request, Some(&handler));
+}
+
+/// The `localizedDescription` of an `NSError` a completion handler or delegate method was
+/// handed, or `None` for the null that means success.
+fn error_description(error: *mut NSError) -> Option<String> {
+    // SAFETY: non-null, the pointer is the live `NSError` iOS passed for this call.
+    (!error.is_null()).then(|| unsafe { (*error).localizedDescription() }.to_string())
 }

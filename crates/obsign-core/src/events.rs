@@ -6,4 +6,9 @@
 
 pub trait EventSink: Send + Sync {
     fn emit(&self, event: &str, payload: serde_json::Value);
+
+    /// Show a system notification, for news the user must get while the app is not on
+    /// screen (a background job has no UI listening). Fire-and-forget, like `emit`; a shell
+    /// with no notification surface drops it.
+    fn notify(&self, title: &str, body: &str);
 }

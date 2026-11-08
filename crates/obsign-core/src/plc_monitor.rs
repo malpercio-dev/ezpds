@@ -30,8 +30,8 @@
 //! `"plc_alert"` Tauri event (`Vec<IdentityStatus>`) when unauthorized changes are found.
 //! While the app is closed the same sweep runs as the
 //! [`PlcCheck`](crate::scheduler::BackgroundJob::PlcCheck) job (requested by
-//! [`schedule_background_check`], at most every [`BACKGROUND_CHECK_AFTER`]); its result
-//! reaches the user through the sweep history and the next foreground check.
+//! [`schedule_background_check`], at most every [`BACKGROUND_CHECK_AFTER`]). Every sweep also
+//! raises a system notification ([`PLC_ALERT_TITLE`]) on an unauthorized change.
 //! `check_identity_status` is the synchronous foreground IPC check over the same set.
 //!
 //! **Sweep history.** Every completed pass — either trigger — is folded by the pure,
@@ -564,10 +564,20 @@ pub fn schedule_background_check(core: &crate::oauth::Core) {
     });
 }
 
-/// Emit "plc_alert" event to the frontend if any identity has unauthorized changes.
+/// The system notification a sweep with an unauthorized change raises. Lock-screen text, so it
+/// names no identity. It promises no recovery window: that exists only when this device's key
+/// outranks the signer's.
+pub const PLC_ALERT_TITLE: &str = "Unapproved change to your identity";
+pub const PLC_ALERT_BODY: &str =
+    "This device didn't approve a recent change. Open Obsign soon to review it.";
+
+/// If any identity has unauthorized changes: emit "plc_alert" to the UI and raise a system
+/// notification. `check_for_changes` has already cached the change as seen, so this is the
+/// only time the user hears of it.
 fn emit_if_alerts(core: &crate::oauth::Core, statuses: &[IdentityStatus]) {
     if statuses.iter().any(|s| !s.unauthorized_changes.is_empty()) {
         core.emit("plc_alert", statuses);
+        core.notify(PLC_ALERT_TITLE, PLC_ALERT_BODY);
     }
 }
 
@@ -587,7 +597,8 @@ pub async fn check_identity_status(
 mod tests {
     use super::*;
 
-    /// The UI hears about a sweep only when it found an operation the device key did not sign.
+    /// The UI and the system notification hear about a sweep only when it found an operation
+    /// the device key did not sign.
     #[test]
     fn only_a_sweep_with_unauthorized_changes_alerts() {
         let (core, fakes) = crate::test_support::core_with_fakes();
@@ -599,6 +610,7 @@ mod tests {
 
         emit_if_alerts(&core, &[status(Vec::new())]);
         assert!(fakes.events.events().is_empty());
+        assert!(fakes.events.notifications().is_empty());
 
         let change = UnauthorizedChange {
             cid: "bafyunauthorized".to_string(),
@@ -611,6 +623,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "plc_alert");
         assert_eq!(events[0].1[0]["did"], "did:plc:alerted");
+        assert_eq!(
+            fakes.events.notifications(),
+            vec![(PLC_ALERT_TITLE.to_string(), PLC_ALERT_BODY.to_string())]
+        );
     }
 
     /// Test UnauthorizedChange serialization to ensure camelCase conversion.
