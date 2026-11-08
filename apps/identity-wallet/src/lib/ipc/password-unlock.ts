@@ -15,6 +15,7 @@
  * wrappers directly; it owns the branch.
  */
 import { invoke } from '@tauri-apps/api/core';
+import type { SharedFailure } from './errors';
 
 import type { SessionReady } from './identity';
 
@@ -30,22 +31,15 @@ export type UnlockRoute = {
   handle: string | null;
 };
 
-export type UnlockError = {
-  code:
-    | 'IDENTITY_NOT_FOUND'
-    | 'UNSUPPORTED_HOST'
-    | 'TWO_FACTOR_REQUIRED'
-    | 'INVALID_CREDENTIALS'
-    | 'ACCOUNT_MISMATCH'
-    | 'INSECURE_HOST_URL'
-    | 'RATE_LIMITED'
-    | 'SERVER_ERROR'
-    | 'NETWORK_ERROR'
-    | 'KEYCHAIN'
-    | 'INVALID_RESPONSE';
-  retryAfter?: string;
-  message?: string;
-};
+/** Matches `UnlockError` in `obsign-core/src/password_unlock.rs`. */
+export type UnlockError =
+  | { code: 'TWO_FACTOR_REQUIRED' }
+  | { code: 'INVALID_CREDENTIALS'; message: string }
+  | { code: 'ACCOUNT_MISMATCH' }
+  | { code: 'INSECURE_HOST_URL' }
+  // The host's own error text — server-quoted (ADR-0031 rule 4), renderable behind attribution.
+  | { code: 'SERVER_REJECTED'; message: string }
+  | SharedFailure;
 
 /**
  * Which unlock should this identity's screen offer?

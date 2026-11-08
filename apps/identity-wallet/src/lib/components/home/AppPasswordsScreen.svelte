@@ -135,7 +135,7 @@
       try {
         await ensureIdentitySession(did);
       } catch (e) {
-        if (isCodedError(e) && e.code === 'NEEDS_UNLOCK') {
+        if (isCodedError(e) && e.code === 'SESSION_LOCKED') {
           await unlockIdentity(did);
         } else {
           throw e;

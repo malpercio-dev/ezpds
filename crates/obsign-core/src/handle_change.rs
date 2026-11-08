@@ -59,21 +59,19 @@
 //! SIGNING_FAILED, PLC_DIRECTORY_ERROR, SERVER_ERROR, NETWORK_ERROR,
 //! IDENTITY_NOT_FOUND) serializes as SCREAMING_SNAKE_CASE; the `$lib/ipc` union must
 //! match exactly, and `SESSION_LOCKED` carries `reason: UnlockReason` — the cue for
-//! the frontend to run `unlockIdentity(did)` and retry. A directory read
-//! (`fetch_audit_log`/`fetch_plc_data_document`/`discover_pds`) is classified via
-//! `map_plc_fetch_error` (throttle → RATE_LIMITED, HTTP verdict →
-//! PLC_DIRECTORY_ERROR, transport → NETWORK_ERROR); a session-lifecycle failure via
-//! `map_session_error` (a server verdict / unsupported host / keychain / malformed
-//! response → SERVER_ERROR, never NETWORK_ERROR).
+//! the frontend to run `unlockIdentity(did)` and retry. Directory reads
+//! (`fetch_audit_log`/`fetch_plc_data_document`/`discover_pds`) and session failures are
+//! the shared vocabulary in [`crate::failure`].
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
 use crate::claim::ClaimResult;
+use crate::failure::SharedFailure;
 use crate::identity_store::{IdentityStore, PerDidSignError};
 use crate::pds_client::{PdsClient, PdsClientError};
-use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
+use crate::session_provider::SessionProvider;
 use crypto::{AuditEntry, PlcService};
 
 /// The atproto handle URI scheme prefix inside a PLC operation's `alsoKnownAs` array.
@@ -84,7 +82,7 @@ const HANDLE_AKA_PREFIX: &str = "at://";
 /// Errors from the sovereign change-handle flow.
 ///
 /// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` to match the sibling
-/// wallet error enums (`MigrateError`, `RecoveryError`, `SessionError`).
+/// wallet error enums (`MigrateError`, `RecoveryError`, `SharedFailure`).
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(
     tag = "code",
@@ -96,13 +94,6 @@ pub enum HandleChangeError {
     /// cannot self-sign the alsoKnownAs op.
     #[error("wallet is not authorized to self-sign for this DID (no device key in current rotationKeys)")]
     WalletNotAuthorized,
-    /// The identity's session could not be resolved without a passwordless unlock —
-    /// the frontend should run the biometric sovereign login and retry.
-    #[error("identity is locked and needs a passwordless unlock")]
-    SessionLocked { reason: UnlockReason },
-    /// The hosting PDS or plc.directory rate limited the request.
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
     /// The requested handle is already taken / not available on the hosting PDS.
     #[error("handle is not available")]
     HandleNotAvailable { message: String },
@@ -121,69 +112,10 @@ pub enum HandleChangeError {
     /// Local signing failed.
     #[error("signing failed: {message}")]
     SigningFailed { message: String },
-    /// plc.directory rejected the submitted operation.
-    #[error("PLC directory error: {message}")]
-    PlcDirectoryError { message: String },
-    /// A server-side step failed for a non-connectivity reason (session refresh verdict,
-    /// unsupported host, malformed response, or local session storage). The precise cause is
-    /// in `message` for diagnostics; the UI shows a neutral retry prompt.
-    #[error("server error: {message}")]
-    ServerError { message: String },
-    /// A network / transport call failed.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-    /// The DID's device key or identity record could not be found.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
-}
-
-/// Map a session-lifecycle failure into the change-handle surface. Exhaustive on purpose: only
-/// a genuine transport failure becomes `NetworkError` — a server verdict, unsupported host, or
-/// storage failure must not surface as "check your connection", or the real cause becomes
-/// undiagnosable from the screen (the same defect class `classify_xrpc_error` exists to fix).
-fn map_session_error(error: SessionError) -> HandleChangeError {
-    match error {
-        SessionError::NeedsUnlock { reason } => HandleChangeError::SessionLocked { reason },
-        SessionError::RateLimited { retry_after } => HandleChangeError::RateLimited { retry_after },
-        SessionError::IdentityNotFound => HandleChangeError::IdentityNotFound {
-            message: "identity not found".to_string(),
-        },
-        SessionError::Offline { message } => HandleChangeError::NetworkError { message },
-        SessionError::ServerFailure { status } => HandleChangeError::ServerError {
-            message: format!("session refresh returned HTTP {status}"),
-        },
-        SessionError::UnsupportedHost => HandleChangeError::ServerError {
-            message: "the identity's hosting server does not support session refresh".to_string(),
-        },
-        SessionError::Keychain { message } => HandleChangeError::ServerError {
-            message: format!("session keychain failure: {message}"),
-        },
-        SessionError::InvalidResponse { message } => HandleChangeError::ServerError {
-            message: format!("invalid session response: {message}"),
-        },
-    }
-}
-
-/// Map a plc.directory read failure into the change-handle surface: a throttle is retryable
-/// (`RateLimited`), an HTTP verdict is the directory's problem (`PlcDirectoryError`), and only
-/// a transport failure is `NetworkError`.
-fn map_plc_fetch_error(context: &str, error: PdsClientError) -> HandleChangeError {
-    match error {
-        PdsClientError::RateLimited { retry_after, .. } => {
-            HandleChangeError::RateLimited { retry_after }
-        }
-        PdsClientError::XrpcError {
-            status, message, ..
-        } => HandleChangeError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP {status}: {message}"),
-        },
-        PdsClientError::Unauthorized { message, .. } => HandleChangeError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP 401: {message}"),
-        },
-        other => HandleChangeError::NetworkError {
-            message: format!("{context}: {other}"),
-        },
-    }
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 // ── Pure inputs to the guard ─────────────────────────────────────────────────
@@ -460,7 +392,7 @@ pub fn classify_update_handle_error(
     retry_after: Option<String>,
 ) -> HandleChangeError {
     match status {
-        429 => HandleChangeError::RateLimited { retry_after },
+        429 => HandleChangeError::Shared(SharedFailure::RateLimited { retry_after }),
         // A 400 is either "taken / reserved" (HandleNotAvailable) or "malformed"
         // (InvalidHandle / anything else the PDS reports as a bad request).
         400 => match error_code {
@@ -499,19 +431,16 @@ async fn build_handle_op(
     let store = IdentityStore;
 
     // 1. Per-DID device key (rotationKeys[0] for a wallet-custodied identity).
-    let device =
-        store
-            .get_or_create_device_key(did)
-            .map_err(|e| HandleChangeError::IdentityNotFound {
-                message: format!("failed to get device key: {e}"),
-            })?;
+    let device = store
+        .get_or_create_device_key(did)
+        .map_err(SharedFailure::from)?;
     let device_key_id = device.key_id;
 
     // 2. Current audit log -> prev + full current state.
     let log_json = pds_client
         .fetch_audit_log(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch audit log", e))?;
     let audit_log =
         crypto::parse_audit_log(&log_json).map_err(|e| HandleChangeError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
@@ -542,8 +471,8 @@ async fn build_handle_op(
 
     // 5. Sign locally with the per-DID device key.
     let sign_closure = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { message } => {
-            HandleChangeError::IdentityNotFound { message }
+        PerDidSignError::DeviceKeyNotFound { .. } => {
+            HandleChangeError::Shared(SharedFailure::IdentityNotFound)
         }
         PerDidSignError::SigningSetupFailed { message } => {
             HandleChangeError::SigningFailed { message }
@@ -583,11 +512,11 @@ async fn submit_handle_op(
         .map_err(|e| match e {
             // A throttle is a pacing instruction, not a rejection of the operation.
             PdsClientError::RateLimited { retry_after, .. } => {
-                HandleChangeError::RateLimited { retry_after }
+                HandleChangeError::Shared(SharedFailure::RateLimited { retry_after })
             }
-            other => HandleChangeError::PlcDirectoryError {
+            other => HandleChangeError::Shared(SharedFailure::PlcDirectoryError {
                 message: format!("plc.directory rejected the operation: {other}"),
-            },
+            }),
         })?;
     refresh_handle_cache(pds_client, did).await
 }
@@ -605,7 +534,7 @@ async fn refresh_handle_cache(
     let updated_log = pds_client
         .fetch_audit_log(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch updated audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch updated audit log", e))?;
     store
         .store_plc_log(did, &updated_log)
         .map_err(|e| HandleChangeError::SigningFailed {
@@ -615,7 +544,7 @@ async fn refresh_handle_cache(
     let did_doc = pds_client
         .fetch_plc_data_document(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch DID document", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch DID document", e))?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| HandleChangeError::SigningFailed {
@@ -640,8 +569,10 @@ async fn call_update_handle(
             &serde_json::json!({ "handle": new_handle }),
         )
         .await
-        .map_err(|e| HandleChangeError::NetworkError {
-            message: format!("updateHandle request failed: {e}"),
+        .map_err(|e| {
+            HandleChangeError::Shared(SharedFailure::NetworkError {
+                message: format!("updateHandle request failed: {e}"),
+            })
         })?;
 
     let status = response.status();
@@ -706,12 +637,11 @@ pub async fn change_handle(
         }
     })?;
 
-    // 1. Full-access session (the per-DID session-provider seam). NEEDS_UNLOCK surfaces distinctly so
+    // 1. Full-access session (the per-DID session-provider seam). SESSION_LOCKED surfaces distinctly so
     //    the frontend can run the biometric sovereign login and retry.
     let session = SessionProvider
         .full_access_client(pds_client, &IdentityStore, did, now)
-        .await
-        .map_err(map_session_error)?;
+        .await?;
 
     // 2. updateHandle first — PDS-side validation/uniqueness. Idempotent on retry
     //    (setting the same handle again is a no-op the PDS accepts).
@@ -806,9 +736,9 @@ async fn resolve_handle_via_pds(
         handle
     );
     let resp = pds_client.client().get(&url).send().await.map_err(|e| {
-        HandleChangeError::NetworkError {
+        HandleChangeError::Shared(SharedFailure::NetworkError {
             message: format!("resolveHandle on hosting PDS failed: {e}"),
-        }
+        })
     })?;
     if !resp.status().is_success() {
         return Ok(None);
@@ -846,13 +776,15 @@ pub async fn get_identity_handle_domains(
         .pds_client()
         .discover_pds(&did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to discover hosting PDS", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to discover hosting PDS", e))?;
     let description = state
         .pds_client()
         .describe_server(&pds_url)
         .await
-        .map_err(|e| HandleChangeError::NetworkError {
-            message: format!("describeServer failed: {e}"),
+        .map_err(|e| {
+            HandleChangeError::Shared(SharedFailure::NetworkError {
+                message: format!("describeServer failed: {e}"),
+            })
         })?;
     Ok(description.available_user_domains)
 }
@@ -876,7 +808,7 @@ pub async fn check_custom_handle_dns(
     let (pds_url, _doc) = pds_client
         .discover_pds(&did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to discover hosting PDS", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to discover hosting PDS", e))?;
 
     let pds_answer = resolve_handle_via_pds(pds_client, &pds_url, &handle).await?;
     let dns_answer = crate::pds_client::try_resolve_dns(&handle)
@@ -895,75 +827,7 @@ pub async fn check_custom_handle_dns(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A directory throttle and a directory HTTP verdict must reach the UI as RATE_LIMITED /
-    /// PLC_DIRECTORY_ERROR — only a transport failure may say "check your connection".
-    #[test]
-    fn plc_fetch_errors_classify_by_status() {
-        let throttled = map_plc_fetch_error(
-            "failed to fetch audit log",
-            PdsClientError::RateLimited {
-                retry_after: Some("30".to_string()),
-                message: "slow down".to_string(),
-            },
-        );
-        assert!(matches!(
-            throttled,
-            HandleChangeError::RateLimited { retry_after: Some(ref r) } if r == "30"
-        ));
-
-        let outage = map_plc_fetch_error(
-            "failed to fetch audit log",
-            PdsClientError::XrpcError {
-                status: 502,
-                error: None,
-                message: "bad gateway".to_string(),
-            },
-        );
-        assert!(
-            matches!(outage, HandleChangeError::PlcDirectoryError { ref message } if message.contains("502")),
-            "got {outage:?}"
-        );
-
-        let transport = map_plc_fetch_error(
-            "failed to fetch audit log",
-            PdsClientError::NetworkError {
-                message: "dns failure".to_string(),
-            },
-        );
-        assert!(matches!(transport, HandleChangeError::NetworkError { .. }));
-    }
-
-    /// Session failures keep their nature: a server verdict is SERVER_ERROR, not NETWORK_ERROR.
-    #[test]
-    fn session_errors_no_longer_flatten_to_network_error() {
-        assert!(matches!(
-            map_session_error(SessionError::ServerFailure { status: 500 }),
-            HandleChangeError::ServerError { ref message } if message.contains("500")
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::UnsupportedHost),
-            HandleChangeError::ServerError { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::Keychain {
-                message: "no slot".to_string()
-            }),
-            HandleChangeError::ServerError { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::InvalidResponse {
-                message: "bad json".to_string()
-            }),
-            HandleChangeError::ServerError { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::Offline {
-                message: "timeout".to_string()
-            }),
-            HandleChangeError::NetworkError { .. }
-        ));
-    }
+    use crate::session_provider::UnlockReason;
 
     const DEVICE: &str = "did:key:zDEVICE";
     const PDS: &str = "did:key:zPDS";
@@ -1229,7 +1093,7 @@ mod tests {
             classify_update_handle_error(429, None, "slow down".to_string(), Some("30".into()));
         assert!(matches!(
             err,
-            HandleChangeError::RateLimited { retry_after: Some(v) } if v == "30"
+            HandleChangeError::Shared(SharedFailure::RateLimited { retry_after: Some(v) }) if v == "30"
         ));
     }
 
@@ -1255,9 +1119,9 @@ mod tests {
 
     #[test]
     fn session_locked_carries_unlock_reason() {
-        let json = serde_json::to_value(HandleChangeError::SessionLocked {
+        let json = serde_json::to_value(HandleChangeError::Shared(SharedFailure::SessionLocked {
             reason: UnlockReason::NoRefreshChain,
-        })
+        }))
         .expect("serialize");
         assert_eq!(
             json.get("code").and_then(|v| v.as_str()),

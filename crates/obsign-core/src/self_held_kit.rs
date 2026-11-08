@@ -67,6 +67,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::claim::OpDiff;
+use crate::failure::SharedFailure;
 use crate::handle_change::CurrentHandleState;
 use crate::identity_store::{IdentityStore, PerDidSignError};
 use crate::pds_client::{PdsClient, PdsClientError};
@@ -111,9 +112,6 @@ pub enum SelfHeldKitError {
     /// second, weaker recovery key alongside it.
     #[error("this identity's server offers recovery escrow")]
     HostOffersEscrow,
-    /// plc.directory rate limited the request.
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
     /// The strict pre-sign allowlist rejected the proposed operation.
     #[error("operation rejected by pre-sign guard: {reason}")]
     GuardRejected { reason: String },
@@ -129,10 +127,6 @@ pub enum SelfHeldKitError {
     /// Submitting the rotation op to plc.directory failed.
     #[error("PLC submission failed: {message}")]
     PlcSubmissionFailed { message: String },
-    /// plc.directory answered a read with an HTTP failure — a directory outage or verdict,
-    /// distinct from `NetworkError` so it is never reported as "check your connection".
-    #[error("plc.directory error: {message}")]
-    PlcDirectoryError { message: String },
     /// Writing (or verifying) Share 1 to its durable Keychain slot failed. Distinct from a
     /// generic Keychain error because the PLC op has already landed.
     #[error("recovery share 1 could not be durably stored: {message}")]
@@ -141,33 +135,10 @@ pub enum SelfHeldKitError {
     /// not be destroyed while it is the only home of the new seed material.
     #[error("recovery share 1 is not durably stored")]
     ShareNotStored,
-    /// A network / transport call failed.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-    /// The DID's device key or identity record could not be found.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
-}
-
-/// Map a plc.directory read failure: a throttle is retryable, an HTTP verdict is the
-/// directory's problem, and only a transport failure is `NetworkError`.
-fn map_plc_fetch_error(context: &str, error: PdsClientError) -> SelfHeldKitError {
-    match error {
-        PdsClientError::RateLimited { retry_after, .. } => {
-            SelfHeldKitError::RateLimited { retry_after }
-        }
-        PdsClientError::XrpcError {
-            status, message, ..
-        } => SelfHeldKitError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP {status}: {message}"),
-        },
-        PdsClientError::Unauthorized { message, .. } => SelfHeldKitError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP 401: {message}"),
-        },
-        other => SelfHeldKitError::NetworkError {
-            message: format!("{context}: {other}"),
-        },
-    }
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 // ── Pure inputs to the guard ─────────────────────────────────────────────────
@@ -360,7 +331,7 @@ async fn fetch_current_state(
     crate::handle_change::fetch_current_state(
         pds_client,
         did,
-        |e| map_plc_fetch_error("failed to fetch audit log", e),
+        |e| SharedFailure::from_plc_fetch("failed to fetch audit log", e).into(),
         |message| SelfHeldKitError::InvalidAuditLog { message },
     )
     .await
@@ -428,12 +399,9 @@ pub async fn build_self_held_kit(
     require_did_plc(did)?;
     let store = IdentityStore;
 
-    let device =
-        store
-            .get_or_create_device_key(did)
-            .map_err(|e| SelfHeldKitError::IdentityNotFound {
-                message: format!("failed to get device key: {e}"),
-            })?;
+    let device = store
+        .get_or_create_device_key(did)
+        .map_err(SharedFailure::from)?;
 
     let current = fetch_current_state(pds_client, did).await?;
     let pds_url = pds_endpoint(&current);
@@ -510,12 +478,9 @@ pub async fn submit_self_held_kit(
     require_did_plc(did)?;
     let store = IdentityStore;
 
-    let device =
-        store
-            .get_or_create_device_key(did)
-            .map_err(|e| SelfHeldKitError::IdentityNotFound {
-                message: format!("failed to get device key: {e}"),
-            })?;
+    let device = store
+        .get_or_create_device_key(did)
+        .map_err(SharedFailure::from)?;
 
     let current = fetch_current_state(pds_client, did).await?;
 
@@ -535,8 +500,8 @@ pub async fn submit_self_held_kit(
 
         let sign_closure =
             crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-                PerDidSignError::DeviceKeyNotFound { message } => {
-                    SelfHeldKitError::IdentityNotFound { message }
+                PerDidSignError::DeviceKeyNotFound { .. } => {
+                    SelfHeldKitError::Shared(SharedFailure::IdentityNotFound)
                 }
                 PerDidSignError::SigningSetupFailed { message } => {
                     SelfHeldKitError::SigningFailed { message }
@@ -564,7 +529,7 @@ pub async fn submit_self_held_kit(
             .await
             .map_err(|e| match e {
                 PdsClientError::RateLimited { retry_after, .. } => {
-                    SelfHeldKitError::RateLimited { retry_after }
+                    SelfHeldKitError::Shared(SharedFailure::RateLimited { retry_after })
                 }
                 other => SelfHeldKitError::PlcSubmissionFailed {
                     message: format!("failed to submit the recovery-key op: {other}"),
@@ -582,7 +547,7 @@ pub async fn submit_self_held_kit(
     let updated_log = pds_client
         .fetch_audit_log(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch updated audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch updated audit log", e))?;
     store
         .store_plc_log(did, &updated_log)
         .map_err(|e| SelfHeldKitError::ShareStorageFailed {
@@ -591,7 +556,7 @@ pub async fn submit_self_held_kit(
     let did_doc = pds_client
         .fetch_plc_data_document(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch DID document", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch DID document", e))?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| SelfHeldKitError::ShareStorageFailed {
@@ -920,42 +885,6 @@ mod tests {
             Err(SelfHeldKitError::NotDidPlc)
         ));
         assert!(require_did_plc("did:plc:abc123").is_ok());
-    }
-
-    /// A directory throttle and a directory HTTP verdict must reach the UI as RATE_LIMITED /
-    /// PLC_DIRECTORY_ERROR — only a transport failure may say "check your connection".
-    #[test]
-    fn plc_fetch_errors_classify_by_status() {
-        assert!(matches!(
-            map_plc_fetch_error(
-                "ctx",
-                PdsClientError::RateLimited {
-                    retry_after: Some("30".to_string()),
-                    message: "slow down".to_string(),
-                }
-            ),
-            SelfHeldKitError::RateLimited { retry_after: Some(ref r) } if r == "30"
-        ));
-        assert!(matches!(
-            map_plc_fetch_error(
-                "ctx",
-                PdsClientError::XrpcError {
-                    status: 502,
-                    error: None,
-                    message: "bad gateway".to_string(),
-                }
-            ),
-            SelfHeldKitError::PlcDirectoryError { ref message } if message.contains("502")
-        ));
-        assert!(matches!(
-            map_plc_fetch_error(
-                "ctx",
-                PdsClientError::NetworkError {
-                    message: "dns failure".to_string(),
-                }
-            ),
-            SelfHeldKitError::NetworkError { .. }
-        ));
     }
 
     #[test]

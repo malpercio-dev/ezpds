@@ -55,6 +55,7 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use crate::failure::SharedFailure;
 use crate::handle_change::CurrentHandleState;
 use crate::identity_store::{IdentityStore, IdentityStoreError, PerDidSignError};
 use crate::pds_client::{PdsClient, PdsClientError};
@@ -170,12 +171,6 @@ pub enum ShareRecoveryError {
     DidNotFound,
     #[error("invalid audit log: {message}")]
     InvalidAuditLog { message: String },
-    #[error("plc.directory rejected the operation: {message}")]
-    PlcDirectoryError { message: String },
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
     /// The escrow release was refused. The server answers uniformly (wrong/expired
     /// OTP, cancelled release, unknown account, escrow opted out) so the wallet cannot
     /// and does not distinguish — the screen copy explains the possibilities.
@@ -185,8 +180,6 @@ pub enum ShareRecoveryError {
     EscrowDepositFailed { message: String },
     #[error("session bootstrap failed: {message}")]
     SessionFailed { message: String },
-    #[error("keychain failure: {message}")]
-    KeychainError { message: String },
     #[error("signing failed: {message}")]
     SigningFailed { message: String },
     #[error("no rotation epilogue is pending")]
@@ -195,8 +188,10 @@ pub enum ShareRecoveryError {
     /// only copy of the new share set, so it is never overwritten with fresh material.
     #[error("epilogue record present but unreadable: {message}")]
     EpilogueCorrupt { message: String },
-    #[error("invalid server response: {message}")]
-    InvalidResponse { message: String },
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 fn map_pds_error(e: PdsClientError) -> ShareRecoveryError {
@@ -204,12 +199,14 @@ fn map_pds_error(e: PdsClientError) -> ShareRecoveryError {
         PdsClientError::HandleNotFound => ShareRecoveryError::HandleNotFound,
         PdsClientError::DidNotFound => ShareRecoveryError::DidNotFound,
         PdsClientError::RateLimited { retry_after, .. } => {
-            ShareRecoveryError::RateLimited { retry_after }
+            ShareRecoveryError::Shared(SharedFailure::RateLimited { retry_after })
         }
-        PdsClientError::NetworkError { message } => ShareRecoveryError::NetworkError { message },
-        other => ShareRecoveryError::NetworkError {
+        PdsClientError::NetworkError { message } => {
+            ShareRecoveryError::Shared(SharedFailure::NetworkError { message })
+        }
+        other => ShareRecoveryError::Shared(SharedFailure::NetworkError {
             message: other.to_string(),
-        },
+        }),
     }
 }
 
@@ -224,15 +221,9 @@ fn map_decode_error(e: crypto::CryptoError) -> ShareRecoveryError {
 }
 
 fn map_keychain_error(e: crate::keystore::KeyStoreError) -> ShareRecoveryError {
-    ShareRecoveryError::KeychainError {
+    ShareRecoveryError::Shared(SharedFailure::KeychainError {
         message: e.to_string(),
-    }
-}
-
-fn map_store_error(e: IdentityStoreError) -> ShareRecoveryError {
-    ShareRecoveryError::KeychainError {
-        message: e.to_string(),
-    }
+    })
 }
 
 // ── Session state (in-memory, Core) ──────────────────────────────────────
@@ -513,15 +504,17 @@ pub async fn initiate_impl(pds: &PdsClient, slot: &StateSlot) -> Result<(), Shar
         .json(&serde_json::json!({ "identifier": did }))
         .send()
         .await
-        .map_err(|e| ShareRecoveryError::NetworkError {
-            message: e.to_string(),
+        .map_err(|e| {
+            ShareRecoveryError::Shared(SharedFailure::NetworkError {
+                message: e.to_string(),
+            })
         })?;
     match response.status().as_u16() {
         200 => Ok(()),
         429 => Err(rate_limited(&response)),
-        status => Err(ShareRecoveryError::InvalidResponse {
+        status => Err(ShareRecoveryError::Shared(SharedFailure::InvalidResponse {
             message: format!("initiate returned HTTP {status}"),
-        }),
+        })),
     }
 }
 
@@ -561,26 +554,26 @@ pub async fn release_impl(
         .json(&body)
         .send()
         .await
-        .map_err(|e| ShareRecoveryError::NetworkError {
-            message: e.to_string(),
+        .map_err(|e| {
+            ShareRecoveryError::Shared(SharedFailure::NetworkError {
+                message: e.to_string(),
+            })
         })?;
     match response.status().as_u16() {
         200 => {}
         401 => return Err(ShareRecoveryError::ReleaseUnauthorized),
         429 => return Err(rate_limited(&response)),
         status => {
-            return Err(ShareRecoveryError::InvalidResponse {
+            return Err(ShareRecoveryError::Shared(SharedFailure::InvalidResponse {
                 message: format!("release returned HTTP {status}"),
-            })
+            }))
         }
     }
-    let release: ReleaseResponse =
-        response
-            .json()
-            .await
-            .map_err(|e| ShareRecoveryError::InvalidResponse {
-                message: e.to_string(),
-            })?;
+    let release: ReleaseResponse = response.json().await.map_err(|e| {
+        ShareRecoveryError::Shared(SharedFailure::InvalidResponse {
+            message: e.to_string(),
+        })
+    })?;
 
     match release.status.as_str() {
         "pending" => Ok(EscrowReleaseStatus {
@@ -589,11 +582,11 @@ pub async fn release_impl(
             share: None,
         }),
         "released" => {
-            let share = release
-                .share
-                .ok_or_else(|| ShareRecoveryError::InvalidResponse {
+            let share = release.share.ok_or_else(|| {
+                ShareRecoveryError::Shared(SharedFailure::InvalidResponse {
                     message: "released without a share".to_string(),
-                })?;
+                })
+            })?;
             let envelope = crypto::ShareEnvelope::decode_share(&share).map_err(map_decode_error)?;
             if envelope.index() != 2 {
                 return Err(ShareRecoveryError::ShareFormat {
@@ -628,9 +621,9 @@ pub async fn release_impl(
                 share: Some(collected),
             })
         }
-        other => Err(ShareRecoveryError::InvalidResponse {
+        other => Err(ShareRecoveryError::Shared(SharedFailure::InvalidResponse {
             message: format!("unknown release status {other:?}"),
-        }),
+        })),
     }
 }
 
@@ -639,23 +632,22 @@ async fn escrow_target(slot: &StateSlot) -> Result<(String, String), ShareRecove
     let session = guard
         .as_ref()
         .ok_or(ShareRecoveryError::NoRecoverySession)?;
-    let pds_url = session
-        .pds_url
-        .clone()
-        .ok_or_else(|| ShareRecoveryError::InvalidResponse {
+    let pds_url = session.pds_url.clone().ok_or_else(|| {
+        ShareRecoveryError::Shared(SharedFailure::InvalidResponse {
             message: "the identity's DID document lists no PDS endpoint".to_string(),
-        })?;
+        })
+    })?;
     Ok((session.did.clone(), pds_url))
 }
 
 fn rate_limited(response: &reqwest::Response) -> ShareRecoveryError {
-    ShareRecoveryError::RateLimited {
+    ShareRecoveryError::Shared(SharedFailure::RateLimited {
         retry_after: response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string),
-    }
+    })
 }
 
 // ── Verify: combine → derive → compare against plc.directory ─────────────────
@@ -780,11 +772,11 @@ pub async fn recover_impl(
     let store = IdentityStore;
     match store.add_identity(&did) {
         Ok(()) | Err(IdentityStoreError::IdentityAlreadyExists) => {}
-        Err(e) => return Err(map_store_error(e)),
+        Err(e) => return Err(SharedFailure::from(e).into()),
     }
     let device = store
         .get_or_create_device_key(&did)
-        .map_err(map_store_error)?;
+        .map_err(SharedFailure::from)?;
 
     let current = fetch_current_state(pds, &did).await?;
 
@@ -816,9 +808,9 @@ pub async fn recover_impl(
             }
         })?;
         pds.post_plc_operation(&did, &op_json).await.map_err(|e| {
-            ShareRecoveryError::PlcDirectoryError {
+            ShareRecoveryError::Shared(SharedFailure::PlcDirectoryError {
                 message: e.to_string(),
-            }
+            })
         })?;
         (Some(op.cid), false)
     };
@@ -903,14 +895,14 @@ async fn refresh_identity_cache(
     let updated_log = pds.fetch_audit_log(did).await.map_err(map_pds_error)?;
     store
         .store_plc_log(did, &updated_log)
-        .map_err(map_store_error)?;
+        .map_err(SharedFailure::from)?;
     let did_doc = pds
         .fetch_plc_data_document(did)
         .await
         .map_err(map_pds_error)?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
-        .map_err(map_store_error)?;
+        .map_err(SharedFailure::from)?;
     Ok(())
 }
 
@@ -1138,8 +1130,10 @@ pub async fn epilogue_impl(
                 })?;
             pds.post_plc_operation(&record.did, &op_json)
                 .await
-                .map_err(|e| ShareRecoveryError::PlcDirectoryError {
-                    message: e.to_string(),
+                .map_err(|e| {
+                    ShareRecoveryError::Shared(SharedFailure::PlcDirectoryError {
+                        message: e.to_string(),
+                    })
                 })?;
             record.op_submitted = true;
         }
@@ -1173,9 +1167,9 @@ pub async fn epilogue_impl(
         let read_back =
             crate::rekey::read_share1_synced(&record.did).map_err(map_keychain_error)?;
         if read_back != record.share1.as_bytes() {
-            return Err(ShareRecoveryError::KeychainError {
+            return Err(ShareRecoveryError::Shared(SharedFailure::KeychainError {
                 message: "Share 1 read-back verification failed".to_string(),
-            });
+            }));
         }
         record.share1_written = true;
         save_epilogue(&record)?;
@@ -1224,7 +1218,7 @@ async fn ensure_session(
         })?;
     let record = store
         .load_oauth_tokens(did)
-        .map_err(map_store_error)?
+        .map_err(SharedFailure::from)?
         .ok_or_else(|| ShareRecoveryError::SessionFailed {
             message: "sovereign login succeeded but no session was persisted".to_string(),
         })?;
@@ -1245,8 +1239,10 @@ async fn deposit_escrow_share(
         .json(&serde_json::json!({ "share": share2 }))
         .send()
         .await
-        .map_err(|e| ShareRecoveryError::NetworkError {
-            message: e.to_string(),
+        .map_err(|e| {
+            ShareRecoveryError::Shared(SharedFailure::NetworkError {
+                message: e.to_string(),
+            })
         })?;
     let status = response.status();
     if status.is_success() {

@@ -29,9 +29,8 @@
 
 use serde::Serialize;
 
-use crate::identity_store::{
-    IdentityStore, IdentityStoreError, PerDidSignError, SovereignTokenRecord,
-};
+use crate::failure::SharedFailure;
+use crate::identity_store::{IdentityStore, PerDidSignError, SovereignTokenRecord};
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::PdsClient;
 
@@ -46,22 +45,8 @@ pub use custos_client::sovereign_session::{
     rename_all_fields = "camelCase"
 )]
 pub enum SovereignLoginError {
-    #[error("identity not found")]
-    IdentityNotFound,
-    #[error("the identity's hosting server does not support Custos sovereign login")]
-    UnsupportedHost,
     #[error("the hosting server rejected the device-key proof")]
     AuthorizationFailed,
-    #[error("the hosting server rate limited the login")]
-    RateLimited { retry_after: Option<String> },
-    /// `message` is diagnostic only (ADR-0031) — a transport failure is never the server's
-    /// words.
-    #[error("transport failure: {message}")]
-    TransportFailure { message: String },
-    /// `message` is diagnostic only (ADR-0031) — a local Keychain failure is never the
-    /// server's words.
-    #[error("keychain failure: {message}")]
-    KeychainFailure { message: String },
     /// The signer closure (device key / Secure Enclave) failed — a **local** failure, the same
     /// one [`custos_client::sovereign_session::SovereignLoginError::SigningFailed`] documents.
     /// `message` is diagnostic only (ADR-0031 rule 4's producer contract).
@@ -71,12 +56,10 @@ pub enum SovereignLoginError {
     DidMismatch,
     #[error("invalid hosting server identity")]
     ServerMismatch,
-    /// `message` is diagnostic only (ADR-0031) — it describes this client's read of the
-    /// response, not a reason the server stated.
-    #[error("invalid sovereign-session response: {message}")]
-    InvalidResponse { message: String },
-    #[error("hosting server failure: {status}")]
-    ServerFailure { status: u16 },
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 /// Map the crate's network/validation error into this app's superset enum.
@@ -84,15 +67,20 @@ impl From<custos_client::sovereign_session::SovereignLoginError> for SovereignLo
     fn from(error: custos_client::sovereign_session::SovereignLoginError) -> Self {
         use custos_client::sovereign_session::SovereignLoginError as Crate;
         match error {
-            Crate::UnsupportedHost => Self::UnsupportedHost,
             Crate::AuthorizationFailed => Self::AuthorizationFailed,
-            Crate::RateLimited { retry_after } => Self::RateLimited { retry_after },
-            Crate::TransportFailure { message } => Self::TransportFailure { message },
             Crate::SigningFailed { message } => Self::SigningFailed { message },
             Crate::DidMismatch => Self::DidMismatch,
             Crate::ServerMismatch => Self::ServerMismatch,
-            Crate::InvalidResponse { message } => Self::InvalidResponse { message },
-            Crate::ServerFailure { status } => Self::ServerFailure { status },
+            Crate::UnsupportedHost => SharedFailure::UnsupportedHost.into(),
+            Crate::RateLimited { retry_after } => SharedFailure::RateLimited { retry_after }.into(),
+            Crate::TransportFailure { message } => SharedFailure::NetworkError { message }.into(),
+            Crate::InvalidResponse { message } => SharedFailure::InvalidResponse { message }.into(),
+            Crate::ServerFailure { status } => SharedFailure::ServerError {
+                status,
+                message: format!("sovereign login returned HTTP {status}"),
+            }
+            .into(),
+            Crate::Discovery(error) => SharedFailure::from_discovery(error).into(),
         }
     }
 }
@@ -104,18 +92,6 @@ pub struct SovereignLoginResult {
     pub pds_url: String,
     pub access_expires_at: u64,
     pub refresh_expires_at: u64,
-}
-
-fn map_store_error(error: IdentityStoreError) -> SovereignLoginError {
-    match error {
-        IdentityStoreError::IdentityNotFound => SovereignLoginError::IdentityNotFound,
-        IdentityStoreError::KeychainError { message } => {
-            SovereignLoginError::KeychainFailure { message }
-        }
-        other => SovereignLoginError::KeychainFailure {
-            message: other.to_string(),
-        },
-    }
 }
 
 /// Mint and persist a full-access session for one managed DID.
@@ -139,7 +115,7 @@ pub async fn sovereign_login_impl(
     // managed-DID membership and guarantees the selected DID's key is the signer.
     let device_key = store
         .get_or_create_device_key(did)
-        .map_err(map_store_error)?;
+        .map_err(SharedFailure::from)?;
     let signer = crate::identity_store::per_did_sign_closure(did).map_err(|error| match error {
         PerDidSignError::DeviceKeyNotFound { message }
         | PerDidSignError::SigningSetupFailed { message } => {
@@ -158,8 +134,10 @@ pub async fn sovereign_login_impl(
     )
     .await?;
 
-    let stored_at = u64::try_from(timestamp).map_err(|_| SovereignLoginError::InvalidResponse {
-        message: "negative timestamp cannot be persisted".into(),
+    let stored_at = u64::try_from(timestamp).map_err(|_| {
+        SovereignLoginError::Shared(SharedFailure::InvalidResponse {
+            message: "negative timestamp cannot be persisted".into(),
+        })
     })?;
     let record = SovereignTokenRecord {
         version: SovereignTokenRecord::VERSION,
@@ -173,7 +151,7 @@ pub async fn sovereign_login_impl(
     };
     store
         .store_oauth_tokens(did, &record)
-        .map_err(map_store_error)?;
+        .map_err(SharedFailure::from)?;
 
     Ok(SovereignLoginResult {
         did: did.into(),
@@ -187,19 +165,19 @@ pub async fn sovereign_login_impl(
 pub fn stored_bearer_client(did: &str) -> Result<Option<OAuthClient>, SovereignLoginError> {
     let Some(record) = IdentityStore
         .load_oauth_tokens(did)
-        .map_err(map_store_error)?
+        .map_err(SharedFailure::from)?
     else {
         return Ok(None);
     };
     let access = bearer_jwt_claims(&record.access_jwt).ok_or_else(|| {
-        SovereignLoginError::InvalidResponse {
+        SovereignLoginError::Shared(SharedFailure::InvalidResponse {
             message: "stored accessJwt is malformed".into(),
-        }
+        })
     })?;
     let refresh = bearer_jwt_claims(&record.refresh_jwt).ok_or_else(|| {
-        SovereignLoginError::InvalidResponse {
+        SovereignLoginError::Shared(SharedFailure::InvalidResponse {
             message: "stored refreshJwt is malformed".into(),
-        }
+        })
     })?;
     if access.sub != did || refresh.sub != did {
         return Err(SovereignLoginError::DidMismatch);
@@ -216,8 +194,10 @@ pub fn stored_bearer_client(did: &str) -> Result<Option<OAuthClient>, SovereignL
         crate::oauth_client::diagnostics_observer(),
     )
     .map(Some)
-    .map_err(|e| SovereignLoginError::KeychainFailure {
-        message: e.to_string(),
+    .map_err(|e| {
+        SovereignLoginError::Shared(SharedFailure::KeychainError {
+            message: e.to_string(),
+        })
     })
 }
 
@@ -402,7 +382,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(SovereignLoginError::InvalidResponse { .. })
+            Err(SovereignLoginError::Shared(
+                SharedFailure::InvalidResponse { .. }
+            ))
         ));
         assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
     }
@@ -497,15 +479,24 @@ mod tests {
             )
             .await;
             assert!(match (expected, result) {
-                ("unsupported", Err(SovereignLoginError::UnsupportedHost)) => true,
+                (
+                    "unsupported",
+                    Err(SovereignLoginError::Shared(SharedFailure::UnsupportedHost)),
+                ) => true,
                 ("authorization", Err(SovereignLoginError::AuthorizationFailed)) => true,
                 (
                     "rate_limit",
-                    Err(SovereignLoginError::RateLimited {
+                    Err(SovereignLoginError::Shared(SharedFailure::RateLimited {
                         retry_after: Some(value),
-                    }),
+                    })),
                 ) if value == "12" => true,
-                ("server", Err(SovereignLoginError::ServerFailure { status: 503 })) => true,
+                (
+                    "server",
+                    Err(SovereignLoginError::Shared(SharedFailure::ServerError {
+                        status: 503,
+                        ..
+                    })),
+                ) => true,
                 _ => false,
             });
             assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);

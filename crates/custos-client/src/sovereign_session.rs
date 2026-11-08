@@ -67,6 +67,11 @@ pub enum SovereignLoginError {
     InvalidResponse { message: String },
     #[error("hosting server failure: {status}")]
     ServerFailure { status: u16 },
+    /// DID → PDS discovery (the DID document or the host's `describeServer`) failed. Passed
+    /// up unclassified: the wallet classifies discovery failures in one place.
+    #[serde(untagged)]
+    #[error(transparent)]
+    Discovery(#[from] PdsClientError),
 }
 
 /// A successful sovereign login, carrying everything a caller needs both to persist the
@@ -209,23 +214,6 @@ pub fn unix_timestamp() -> Result<i64, SovereignLoginError> {
     })
 }
 
-fn map_discovery_error(error: PdsClientError) -> SovereignLoginError {
-    match error {
-        PdsClientError::DidNotFound | PdsClientError::InvalidResponse { .. } => {
-            SovereignLoginError::UnsupportedHost
-        }
-        PdsClientError::PdsUnreachable { reason } => {
-            SovereignLoginError::TransportFailure { message: reason }
-        }
-        PdsClientError::NetworkError { message } => {
-            SovereignLoginError::TransportFailure { message }
-        }
-        other => SovereignLoginError::TransportFailure {
-            message: other.to_string(),
-        },
-    }
-}
-
 /// Mint a full-access session for one DID via Custos sovereign login.
 ///
 /// `device_key_id` is the signing key's public did:key identifier (not the key material —
@@ -251,20 +239,14 @@ pub async fn sovereign_login(
         });
     }
 
-    let (pds_url, did_doc) = pds_client
-        .discover_pds(did)
-        .await
-        .map_err(map_discovery_error)?;
+    let (pds_url, did_doc) = pds_client.discover_pds(did).await?;
     if did_doc.did != did {
         return Err(SovereignLoginError::DidMismatch);
     }
     if !crate::pds_client::pds_url_is_secure(&pds_url) {
         return Err(SovereignLoginError::UnsupportedHost);
     }
-    let server = pds_client
-        .describe_server(&pds_url)
-        .await
-        .map_err(map_discovery_error)?;
+    let server = pds_client.describe_server(&pds_url).await?;
     if !server.did.starts_with("did:") || server.did.chars().any(char::is_whitespace) {
         return Err(SovereignLoginError::ServerMismatch);
     }

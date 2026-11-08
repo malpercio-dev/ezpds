@@ -13,8 +13,8 @@
 //!   and the request can never address different hosts. A host that could not be
 //!   described reports `true` — a field the user can ignore beats a missing one.
 //! - `request_identity_removal(did)` — full-access session via
-//!   `SessionProvider::full_access_client` (a `NeedsUnlock` maps to
-//!   `SessionRequired`, so the UI runs `unlockIdentity` first), then
+//!   `SessionProvider::full_access_client` (a `SESSION_LOCKED` makes
+//!   the UI run `unlockIdentity` first), then
 //!   `com.atproto.server.requestAccountDelete`, which emails a single-use code.
 //! - `confirm_identity_removal(did, password: Option<String>, token)` — calls
 //!   `deleteAccount` FIRST (a bad credential mutates nothing), then persists the
@@ -84,18 +84,17 @@
 //!
 //! Types: `RemovalOutcome { tombstoneCid, wasLastIdentity }` (`tombstoneCid: null`
 //! when the removed DID has no tombstone leg — a did:web), `RemovalRoute`.
-//! `RemovalError` (SESSION_REQUIRED, REQUEST_DELETE_FAILED, INVALID_TOKEN,
-//! INVALID_CONFIRMATION_CODE, PASSWORD_REQUIRED, PROOF_SIGNING_FAILED,
-//! ACCOUNT_DELETE_FAILED, INVALID_AUDIT_LOG, TOMBSTONE_SIGNING_FAILED,
-//! PLC_DIRECTORY_ERROR, IDENTITY_NOT_FOUND, LOCAL_WIPE_FAILED, RATE_LIMITED,
-//! NETWORK_ERROR) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`.
+//! `RemovalError` (REQUEST_DELETE_FAILED, INVALID_TOKEN, INVALID_CONFIRMATION_CODE,
+//! PASSWORD_REQUIRED, PROOF_SIGNING_FAILED, ACCOUNT_DELETE_FAILED, INVALID_AUDIT_LOG,
+//! TOMBSTONE_SIGNING_FAILED, LOCAL_WIPE_FAILED, plus the shared codes) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Serialize;
 
+use crate::failure::SharedFailure;
 use crate::identity_store::{IdentityStore, PerDidSignError};
 use crate::pds_client::{DeleteAccountProof, DeleteCredential, PdsClient, PdsClientError};
-use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
+use crate::session_provider::SessionProvider;
 
 /// Keychain account holding the durable "removal in progress (post-delete)" index:
 /// a JSON array of DIDs whose PDS account was deleted but whose tombstone + local
@@ -196,7 +195,7 @@ fn clear_removal_pending_best_effort(did: &str) {
 /// Errors from the identity-removal flow.
 ///
 /// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` to match the other wallet
-/// error enums (`RecoveryError`, `SessionError`, …). Variants are ordered by the step
+/// error enums (`RecoveryError`, `SharedFailure`, …). Variants are ordered by the step
 /// that produces them so the UI can tell what already happened — notably, a
 /// `PlcDirectoryError`/`RateLimited`/`NetworkError` *after* `InvalidToken` succeeded
 /// means the PDS account is gone and only the tombstone + wipe remain (resume via
@@ -211,10 +210,6 @@ fn clear_removal_pending_best_effort(did: &str) {
     rename_all_fields = "camelCase"
 )]
 pub enum RemovalError {
-    /// The identity has no usable session; the UI must run the passwordless
-    /// `sovereignLogin(did)` unlock before requesting deletion.
-    #[error("identity needs a passwordless unlock before removal")]
-    SessionRequired { reason: UnlockReason },
     /// `requestAccountDelete` failed (could not mint/send the confirmation code).
     #[error("failed to request account deletion: {message}")]
     RequestDeleteFailed { message: String },
@@ -245,22 +240,13 @@ pub enum RemovalError {
     /// Building or signing the tombstone with the device key failed.
     #[error("failed to sign the tombstone: {message}")]
     TombstoneSigningFailed { message: String },
-    /// plc.directory rejected the tombstone. The account is already deleted — retry via
-    /// `tombstone_identity`.
-    #[error("plc.directory rejected the tombstone: {message}")]
-    PlcDirectoryError { message: String },
-    /// The DID's device key / managed-dids entry is missing.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
     /// The account was deleted and tombstoned, but the local Keychain wipe failed.
     #[error("local cleanup failed after removal: {message}")]
     LocalWipeFailed { message: String },
-    /// A server rate-limited a step; the UI can retry after `retryAfter`.
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
-    /// Transport failure reaching the PDS or plc.directory.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 /// The successful result of a removal (or a `tombstone_identity` resume).
@@ -297,9 +283,11 @@ fn map_delete_account_error(e: PdsClientError, sent_password: bool) -> RemovalEr
         PdsClientError::Unauthorized { .. } => invalid_credentials(),
         PdsClientError::XrpcError { status: 400, .. } => invalid_credentials(),
         PdsClientError::RateLimited { retry_after, .. } => {
-            RemovalError::RateLimited { retry_after }
+            RemovalError::Shared(SharedFailure::RateLimited { retry_after })
         }
-        PdsClientError::NetworkError { message } => RemovalError::NetworkError { message },
+        PdsClientError::NetworkError { message } => {
+            RemovalError::Shared(SharedFailure::NetworkError { message })
+        }
         other => RemovalError::AccountDeleteFailed {
             message: other.to_string(),
         },
@@ -325,13 +313,11 @@ async fn build_delete_credential(
 
     // The audience is the server's own DID, read from the host itself — the same binding the
     // sovereign-session and consent envelopes use, so a proof cannot be relayed to another server.
-    let server =
-        pds_client
-            .describe_server(pds_url)
-            .await
-            .map_err(|e| RemovalError::NetworkError {
-                message: format!("could not identify the hosting server: {e}"),
-            })?;
+    let server = pds_client.describe_server(pds_url).await.map_err(|e| {
+        RemovalError::Shared(SharedFailure::NetworkError {
+            message: format!("could not identify the hosting server: {e}"),
+        })
+    })?;
     let capabilities = crate::pds_capabilities::ServerCapabilities::from(server.custos.as_ref());
     if !capabilities.wallet_account_delete() {
         return Err(RemovalError::PasswordRequired);
@@ -339,24 +325,23 @@ async fn build_delete_credential(
 
     // Resolve the key before signing, so membership of the managed set is enforced and the
     // signer is unambiguously *this* identity's key (the `sovereign_session` ordering).
-    let device_key = IdentityStore.get_or_create_device_key(did).map_err(|e| {
-        RemovalError::IdentityNotFound {
-            message: e.to_string(),
-        }
-    })?;
+    let device_key = IdentityStore
+        .get_or_create_device_key(did)
+        .map_err(SharedFailure::from)?;
     let sign = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { message } => {
-            RemovalError::IdentityNotFound { message }
+        PerDidSignError::DeviceKeyNotFound { .. } => {
+            RemovalError::Shared(SharedFailure::IdentityNotFound)
         }
         PerDidSignError::SigningSetupFailed { message } => {
             RemovalError::ProofSigningFailed { message }
         }
     })?;
 
-    let timestamp =
-        crate::sovereign_session::unix_timestamp().map_err(|_| RemovalError::NetworkError {
+    let timestamp = crate::sovereign_session::unix_timestamp().map_err(|_| {
+        RemovalError::Shared(SharedFailure::NetworkError {
             message: "system clock is unavailable".to_string(),
-        })?;
+        })
+    })?;
     let nonce = crate::sovereign_session::fresh_nonce();
     let envelope = crypto::encode_account_delete_envelope(
         &server.did,
@@ -381,24 +366,11 @@ async fn build_delete_credential(
 fn map_request_delete_error(e: PdsClientError) -> RemovalError {
     match e {
         PdsClientError::RateLimited { retry_after, .. } => {
-            RemovalError::RateLimited { retry_after }
+            RemovalError::Shared(SharedFailure::RateLimited { retry_after })
         }
-        PdsClientError::NetworkError { message } => RemovalError::NetworkError { message },
-        other => RemovalError::RequestDeleteFailed {
-            message: other.to_string(),
-        },
-    }
-}
-
-/// Map a `SessionProvider` failure onto the removal error surface.
-fn map_session_error(e: SessionError) -> RemovalError {
-    match e {
-        SessionError::NeedsUnlock { reason } => RemovalError::SessionRequired { reason },
-        SessionError::IdentityNotFound => RemovalError::IdentityNotFound {
-            message: "no managed identity for this DID".to_string(),
-        },
-        SessionError::RateLimited { retry_after } => RemovalError::RateLimited { retry_after },
-        SessionError::Offline { message } => RemovalError::NetworkError { message },
+        PdsClientError::NetworkError { message } => {
+            RemovalError::Shared(SharedFailure::NetworkError { message })
+        }
         other => RemovalError::RequestDeleteFailed {
             message: other.to_string(),
         },
@@ -503,8 +475,8 @@ async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String,
 
     // 2. Obtain the per-DID device-key signing closure (rotationKeys[0]).
     let sign = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { message } => {
-            RemovalError::IdentityNotFound { message }
+        PerDidSignError::DeviceKeyNotFound { .. } => {
+            RemovalError::Shared(SharedFailure::IdentityNotFound)
         }
         PerDidSignError::SigningSetupFailed { message } => {
             RemovalError::TombstoneSigningFailed { message }
@@ -544,8 +516,10 @@ async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String,
             pds_client
                 .post_plc_operation(&did_owned, &op_value)
                 .await
-                .map_err(|e| RemovalError::PlcDirectoryError {
-                    message: format!("plc.directory rejected the tombstone: {e}"),
+                .map_err(|e| {
+                    RemovalError::Shared(SharedFailure::PlcDirectoryError {
+                        message: format!("plc.directory rejected the tombstone: {e}"),
+                    })
                 })
         },
         || wipe_local(&store, &did_owned),
@@ -640,21 +614,21 @@ pub async fn get_identity_removal_route(
 /// Tauri command: request permanent deletion — emails a single-use confirmation code.
 ///
 /// Obtains a full-access session for `did` (the frontend runs the passwordless unlock
-/// first if this returns `SessionRequired`) and calls `requestAccountDelete`. The PDS
+/// first if this returns `SESSION_LOCKED`) and calls `requestAccountDelete`. The PDS
 /// emails a 1-hour code to the account address; the user then supplies that code plus
 /// the account password to `confirm_identity_removal`.
 pub async fn request_identity_removal(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<(), RemovalError> {
-    let now =
-        crate::sovereign_session::unix_timestamp().map_err(|_| RemovalError::NetworkError {
+    let now = crate::sovereign_session::unix_timestamp().map_err(|_| {
+        RemovalError::Shared(SharedFailure::NetworkError {
             message: "system clock is unavailable".to_string(),
-        })?;
+        })
+    })?;
     let session = SessionProvider
         .full_access_client(state.pds_client(), &IdentityStore, &did, now)
-        .await
-        .map_err(map_session_error)?;
+        .await?;
 
     crate::pds_client::request_account_delete(&session.client)
         .await
@@ -767,19 +741,18 @@ async fn resolve_pds_url(pds_client: &PdsClient, did: &str) -> Result<String, Re
             return Ok(record.pds_url);
         }
     }
-    let (pds_url, _doc) =
-        pds_client
-            .discover_pds(did)
-            .await
-            .map_err(|e| RemovalError::NetworkError {
-                message: format!("could not resolve the identity's PDS: {e}"),
-            })?;
+    let (pds_url, _doc) = pds_client.discover_pds(did).await.map_err(|e| {
+        RemovalError::Shared(SharedFailure::NetworkError {
+            message: format!("could not resolve the identity's PDS: {e}"),
+        })
+    })?;
     Ok(pds_url)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_provider::UnlockReason;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -792,9 +765,9 @@ mod tests {
             Some("INVALID_TOKEN")
         );
 
-        let err = RemovalError::PlcDirectoryError {
+        let err = RemovalError::Shared(SharedFailure::PlcDirectoryError {
             message: "rejected".to_string(),
-        };
+        });
         let v = serde_json::to_value(&err).unwrap();
         assert_eq!(
             v.get("code").and_then(|c| c.as_str()),
@@ -802,13 +775,13 @@ mod tests {
         );
         assert_eq!(v.get("message").and_then(|m| m.as_str()), Some("rejected"));
 
-        let err = RemovalError::SessionRequired {
+        let err = RemovalError::Shared(SharedFailure::SessionLocked {
             reason: UnlockReason::NoRefreshChain,
-        };
+        });
         let v = serde_json::to_value(&err).unwrap();
         assert_eq!(
             v.get("code").and_then(|c| c.as_str()),
-            Some("SESSION_REQUIRED")
+            Some("SESSION_LOCKED")
         );
         // rename_all_fields = camelCase → the UnlockReason lands under `reason`.
         assert_eq!(
@@ -861,9 +834,9 @@ mod tests {
         let w = wiped.clone();
         let result = submit_then_wipe(
             async {
-                Err(RemovalError::PlcDirectoryError {
+                Err(RemovalError::Shared(SharedFailure::PlcDirectoryError {
                     message: "boom".to_string(),
-                })
+                }))
             },
             move || {
                 w.store(true, Ordering::SeqCst);
@@ -874,7 +847,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(RemovalError::PlcDirectoryError { .. })
+            Err(RemovalError::Shared(
+                SharedFailure::PlcDirectoryError { .. }
+            ))
         ));
         assert!(
             !wiped.load(Ordering::SeqCst),

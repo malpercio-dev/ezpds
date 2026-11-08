@@ -52,10 +52,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use crate::failure::SharedFailure;
 use crate::identity_store::IdentityStore;
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::PdsClient;
-use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
+use crate::session_provider::full_access_session;
 
 // ── Keychain accounts ────────────────────────────────────────────────────────
 
@@ -131,67 +132,19 @@ const FAILURE_LOG_VERSION: u8 = 1;
     rename_all_fields = "camelCase"
 )]
 pub enum NotificationsError {
-    /// The identity's session could not be resolved without an unlock — the frontend's cue to
-    /// run `unlockIdentity(did)` and retry.
-    #[error("identity is locked and needs an unlock")]
-    SessionLocked { reason: UnlockReason },
-    /// The hosting PDS rate limited the request.
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
-    /// The DID is not registered in this wallet.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
     /// A notification key could not be generated.
     #[error("could not generate the notification key: {message}")]
     KeyGenerationFailed { message: String },
-    /// The Keychain refused a read or a write.
-    #[error("keychain error: {message}")]
-    KeychainError { message: String },
-    /// The hosting server refused for a non-connectivity reason. `status` is the HTTP code where
-    /// there was one, and `None` for a session-lifecycle verdict that is not a transport failure.
-    #[error("server error: {message}")]
-    ServerError {
-        status: Option<u16>,
-        message: String,
-    },
-    /// A network / transport call failed.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-}
-
-/// Map a session-lifecycle failure onto this surface. Exhaustive on purpose: only a genuine
-/// transport failure becomes `NetworkError`, so a server verdict or a Keychain fault is never
-/// mislabelled "check your connection" (the same discipline as `app_passwords.rs`).
-fn map_session_error(error: SessionError) -> NotificationsError {
-    match error {
-        SessionError::NeedsUnlock { reason } => NotificationsError::SessionLocked { reason },
-        SessionError::RateLimited { retry_after } => {
-            NotificationsError::RateLimited { retry_after }
-        }
-        SessionError::IdentityNotFound => NotificationsError::IdentityNotFound {
-            message: "identity not found".to_string(),
-        },
-        SessionError::Offline { message } => NotificationsError::NetworkError { message },
-        SessionError::ServerFailure { status } => NotificationsError::ServerError {
-            status: Some(status),
-            message: format!("session request failed with status {status}"),
-        },
-        SessionError::UnsupportedHost => NotificationsError::ServerError {
-            status: None,
-            message: "the identity's hosting server does not support session refresh".to_string(),
-        },
-        SessionError::Keychain { message } => NotificationsError::KeychainError { message },
-        SessionError::InvalidResponse { message } => NotificationsError::ServerError {
-            status: None,
-            message: format!("invalid session response: {message}"),
-        },
-    }
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 fn keychain_err(e: crate::keystore::KeyStoreError) -> NotificationsError {
-    NotificationsError::KeychainError {
+    NotificationsError::Shared(SharedFailure::KeychainError {
         message: e.to_string(),
-    }
+    })
 }
 
 // ── Wire + storage types ─────────────────────────────────────────────────────
@@ -399,9 +352,9 @@ fn mint_device_uuid() -> Result<String, NotificationsError> {
     crate::keystore::store_item(DEVICE_UUID_ACCOUNT, uuid.as_bytes()).map_err(keychain_err)?;
     match crate::keystore::get_item(DEVICE_UUID_ACCOUNT) {
         Ok(bytes) if bytes == uuid.as_bytes() => Ok(uuid),
-        _ => Err(NotificationsError::KeychainError {
+        _ => Err(NotificationsError::Shared(SharedFailure::KeychainError {
             message: "the device uuid did not read back after storing".to_string(),
-        }),
+        })),
     }
 }
 
@@ -442,9 +395,9 @@ fn load_or_create_notification_key() -> Result<String, NotificationsError> {
         Some(read_back) if read_back.as_ref() == keypair.private_key_bytes.as_ref() => {
             Ok(keypair.key_id.0)
         }
-        _ => Err(NotificationsError::KeychainError {
+        _ => Err(NotificationsError::Shared(SharedFailure::KeychainError {
             message: "the notification key did not read back after storing".to_string(),
-        }),
+        })),
     }
 }
 
@@ -572,8 +525,10 @@ fn store_pins_for_host(host: &str, keys: &[SenderKey]) -> Result<(), Notificatio
     pins.version = PIN_DOCUMENT_VERSION;
     pins.hosts.insert(host.to_string(), keys.to_vec());
 
-    let encoded = serde_json::to_vec(&pins).map_err(|e| NotificationsError::KeychainError {
-        message: format!("could not encode pinned sender keys: {e}"),
+    let encoded = serde_json::to_vec(&pins).map_err(|e| {
+        NotificationsError::Shared(SharedFailure::KeychainError {
+            message: format!("could not encode pinned sender keys: {e}"),
+        })
     })?;
     crate::keystore::store_item_after_first_unlock(PINNED_SENDER_KEYS_ACCOUNT, &encoded)
         .map_err(keychain_err)
@@ -582,9 +537,9 @@ fn store_pins_for_host(host: &str, keys: &[SenderKey]) -> Result<(), Notificatio
 // ── Network cores (testable against httpmock) ────────────────────────────────
 
 fn oauth_err(e: crate::oauth::OAuthError) -> NotificationsError {
-    NotificationsError::NetworkError {
+    NotificationsError::Shared(SharedFailure::NetworkError {
         message: e.to_string(),
-    }
+    })
 }
 
 /// `POST /v1/notifications/register`. `Ok(false)` is the host's 501 — it serves no notification
@@ -600,17 +555,17 @@ async fn register_impl(
     match resp.status().as_u16() {
         200 => Ok(true),
         501 => Ok(false),
-        429 => Err(NotificationsError::RateLimited {
+        429 => Err(NotificationsError::Shared(SharedFailure::RateLimited {
             retry_after: resp
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string),
-        }),
-        other => Err(NotificationsError::ServerError {
-            status: Some(other),
+        })),
+        other => Err(NotificationsError::Shared(SharedFailure::ServerError {
+            status: other,
             message: server_message(resp, "registration was refused").await,
-        }),
+        })),
     }
 }
 
@@ -626,27 +581,25 @@ async fn fetch_sender_keys_impl(
         .map_err(oauth_err)?;
     match resp.status().as_u16() {
         200 => {
-            let body: SenderKeysResponse =
-                resp.json()
-                    .await
-                    .map_err(|e| NotificationsError::ServerError {
-                        status: Some(200),
-                        message: format!("could not parse the sender-key set: {e}"),
-                    })?;
+            let body: SenderKeysResponse = resp.json().await.map_err(|e| {
+                NotificationsError::Shared(SharedFailure::InvalidResponse {
+                    message: format!("could not parse the sender-key set: {e}"),
+                })
+            })?;
             Ok(Some(body.keys))
         }
         501 => Ok(None),
-        429 => Err(NotificationsError::RateLimited {
+        429 => Err(NotificationsError::Shared(SharedFailure::RateLimited {
             retry_after: resp
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string),
-        }),
-        other => Err(NotificationsError::ServerError {
-            status: Some(other),
+        })),
+        other => Err(NotificationsError::Shared(SharedFailure::ServerError {
+            status: other,
             message: server_message(resp, "the sender-key set is unavailable").await,
-        }),
+        })),
     }
 }
 
@@ -667,26 +620,6 @@ async fn server_message(resp: reqwest::Response, fallback: &str) -> String {
         .and_then(|e| e.error)
         .and_then(|e| e.message)
         .unwrap_or_else(|| fallback.to_string())
-}
-
-/// Resolve the DID's full-access session (restore / refresh, or `SessionLocked`).
-async fn full_access_session(
-    pds_client: &PdsClient,
-    did: &str,
-) -> Result<crate::session_provider::ActiveSession, NotificationsError> {
-    // Not `NetworkError`: an unreadable clock is a local fault, and this module's rule is that
-    // only a transport failure may be reported as one — otherwise the screen offers connectivity
-    // advice for a problem connectivity cannot fix.
-    let now = crate::sovereign_session::unix_timestamp().map_err(|_| {
-        NotificationsError::ServerError {
-            status: None,
-            message: "system clock is unavailable".to_string(),
-        }
-    })?;
-    SessionProvider
-        .full_access_client(pds_client, &IdentityStore, did, now)
-        .await
-        .map_err(map_session_error)
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
@@ -859,6 +792,7 @@ pub fn clear_notification_failures() {
 mod tests {
     use super::*;
     use crate::keystore::Accessibility;
+    use crate::session_provider::UnlockReason;
 
     fn key(kid: i64) -> SenderKey {
         SenderKey {
@@ -1243,69 +1177,20 @@ mod tests {
     // ── error mapping ──
 
     #[test]
-    fn needs_unlock_maps_to_session_locked() {
-        assert!(matches!(
-            map_session_error(SessionError::NeedsUnlock {
-                reason: UnlockReason::NoRefreshChain
-            }),
-            NotificationsError::SessionLocked {
-                reason: UnlockReason::NoRefreshChain
-            }
-        ));
-    }
-
-    /// Only a transport failure is a network error — the discipline `classify_xrpc_error` exists
-    /// to enforce, restated here because a mislabelled cause is undiagnosable from the screen.
-    #[test]
-    fn session_verdicts_keep_their_nature() {
-        assert!(matches!(
-            map_session_error(SessionError::Offline {
-                message: "timeout".to_string()
-            }),
-            NotificationsError::NetworkError { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::ServerFailure { status: 503 }),
-            NotificationsError::ServerError {
-                status: Some(503),
-                ..
-            }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::UnsupportedHost),
-            NotificationsError::ServerError { status: None, .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::Keychain {
-                message: "no slot".to_string()
-            }),
-            NotificationsError::KeychainError { .. }
-        ));
-    }
-
-    #[test]
     fn errors_serialize_as_screaming_snake_codes_with_camel_fields() {
-        let json = serde_json::to_value(NotificationsError::SessionLocked {
+        let json = serde_json::to_value(NotificationsError::Shared(SharedFailure::SessionLocked {
             reason: UnlockReason::HostChanged,
-        })
+        }))
         .unwrap();
         assert_eq!(json["code"], "SESSION_LOCKED");
         assert_eq!(json["reason"], "HOST_CHANGED");
 
-        let json = serde_json::to_value(NotificationsError::RateLimited {
+        let json = serde_json::to_value(NotificationsError::Shared(SharedFailure::RateLimited {
             retry_after: Some("30".to_string()),
-        })
+        }))
         .unwrap();
         assert_eq!(json["code"], "RATE_LIMITED");
         assert_eq!(json["retryAfter"], "30");
-
-        let json = serde_json::to_value(NotificationsError::ServerError {
-            status: None,
-            message: "unsupported host".to_string(),
-        })
-        .unwrap();
-        assert_eq!(json["code"], "SERVER_ERROR");
-        assert_eq!(json["status"], serde_json::Value::Null);
     }
 
     #[test]
@@ -1436,8 +1321,8 @@ mod tests {
         .unwrap_err();
 
         match err {
-            NotificationsError::ServerError { status, message } => {
-                assert_eq!(status, Some(400));
+            NotificationsError::Shared(SharedFailure::ServerError { status, message }) => {
+                assert_eq!(status, 400);
                 assert_eq!(message, "apnsToken must be hexadecimal");
             }
             other => panic!("expected ServerError, got {other:?}"),
@@ -1522,10 +1407,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            NotificationsError::ServerError {
-                status: Some(503),
-                ..
-            }
+            NotificationsError::Shared(SharedFailure::ServerError { status: 503, .. })
         ));
         assert_eq!(
             load_pins().hosts[&host_key(&server.base_url())],

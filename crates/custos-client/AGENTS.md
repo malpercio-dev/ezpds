@@ -114,12 +114,13 @@ exist.
   classification `map_child_confirm_error` widens ahead of).
 - **`refresh_bearer_session` is the network+validation slice of a Bearer rotation; the
   decision ladder around it stays in identity-wallet.** `SessionProvider::full_access_client`
-  (restore / decide-to-refresh / `NeedsUnlock`, the per-DID coalescing lock,
+  (restore / decide-to-refresh / `SessionLocked`, the per-DID coalescing lock,
   `IdentityStore`'s `SovereignTokenRecord` reads/writes) is still identity-wallet-only
   orchestration in `session_provider.rs` — it calls this function once it has decided a
   rotation is needed, then persists the result or discards the record on a classified
   revocation (`map_refresh_error`, session_provider.rs's own mapping from `PdsClientError`
-  to its `SessionError`, mirroring `map_discovery_error`'s existing style in the same file).
+  to obsign-core's shared `SharedFailure`). `sovereign_login` likewise passes a discovery
+  failure up unclassified (`SovereignLoginError::Discovery`); obsign-core classifies it.
   A candidate for a future PR if the wallet-core extraction needs the ladder itself moved,
   not yet redesigned behind injected traits.
 - **Typed methods stay hand-written; lexicon codegen (`atrium-api`) was investigated and

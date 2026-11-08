@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 import type { UnlockReason } from './identity';
 
@@ -19,7 +20,6 @@ import type { UnlockReason } from './identity';
  */
 export type RemovalError =
   /** The identity needs a passwordless unlock (`sovereignLogin`) before removal. */
-  | { code: 'SESSION_REQUIRED'; reason: UnlockReason }
   /** `requestAccountDelete` failed (could not mint/send the confirmation code). */
   | { code: 'REQUEST_DELETE_FAILED'; message: string }
   /** The PDS rejected the account password or the emailed confirmation code. */
@@ -42,15 +42,12 @@ export type RemovalError =
   /** Building or signing the tombstone with the device key failed. */
   | { code: 'TOMBSTONE_SIGNING_FAILED'; message: string }
   /** plc.directory rejected the tombstone — the account is already deleted; retry via `tombstoneIdentity`. */
-  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
   /** The DID's device key / managed-dids entry is missing. */
-  | { code: 'IDENTITY_NOT_FOUND'; message: string }
   /** The account was deleted and tombstoned, but the local Keychain wipe failed. */
   | { code: 'LOCAL_WIPE_FAILED'; message: string }
   /** A server rate-limited a step. */
-  | { code: 'RATE_LIMITED'; retryAfter?: string }
   /** Transport failure reaching the PDS or plc.directory. */
-  | { code: 'NETWORK_ERROR'; message: string };
+  | SharedFailure;
 
 /**
  * Result of a successful removal (or a `tombstoneIdentity` resume).
@@ -94,7 +91,7 @@ export const getIdentityRemovalRoute = (did: string): Promise<RemovalRoute> =>
 
 /**
  * Step 1 — request permanent deletion. Obtains a full-access session for the DID (the
- * caller runs `sovereignLogin` first if this rejects with `SESSION_REQUIRED`) and asks
+ * caller runs `sovereignLogin` first if this rejects with `SESSION_LOCKED`) and asks
  * the PDS to email a single-use confirmation code to the account address.
  */
 export const requestIdentityRemoval = (did: string): Promise<void> =>

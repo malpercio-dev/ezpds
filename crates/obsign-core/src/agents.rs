@@ -56,12 +56,11 @@
 //! can produce.
 //!
 //! `AgentsError` (NOT_AUTHENTICATED, CODE_NOT_FOUND, CODE_EXPIRED, ALREADY_CLAIMED,
-//! ACCESS_DENIED, AGENT_NOT_FOUND, RATE_LIMITED, NOT_PROVISIONED, HANDLE_REJECTED,
-//! SESSION_LOCKED, NETWORK_ERROR, UNKNOWN) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; the
+//! ACCESS_DENIED, AGENT_NOT_FOUND, NOT_PROVISIONED, HANDLE_REJECTED,
+//! UNKNOWN, plus the shared codes) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; the
 //! TypeScript union in `$lib/ipc` must match exactly, and `SESSION_LOCKED` carries
-//! `reason: UnlockReason`. A session-lifecycle failure maps via `map_session_error` — only a
-//! genuine transport failure is NETWORK_ERROR (a `NeedsUnlock` is SESSION_LOCKED, every other
-//! verdict UNKNOWN) — so denial, expiry, and lock render as explicit states. The IPC types
+//! `reason: UnlockReason`. Session failures are the shared vocabulary in [`crate::failure`], so
+//! denial, expiry, and lock render as explicit states. The IPC types
 //! (`AgentSummary`, `AgentAuditEvent`, `AgentAuditPage`, `AgentClaimPreview`,
 //! `AgentClaimConfirmation`, `MintedChild`, `ChildReconciliation`) serialize camelCase and must
 //! match their `$lib/ipc` counterparts.
@@ -70,11 +69,12 @@ use custos_client::agents::CeremonyErrorBody;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::failure::SharedFailure;
 use crate::identity_store::IdentityStore;
 use crate::oauth::OAuthError;
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::PdsClient;
-use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
+use crate::session_provider::full_access_session;
 
 pub use custos_client::agents::{
     AgentAuditEvent, AgentAuditPage, AgentClaimConfirmation, AgentClaimPreview, AgentSummary,
@@ -138,15 +138,6 @@ pub enum AgentsError {
     /// Unknown registration id (or one not bound to this account).
     #[error("unknown agent registration")]
     AgentNotFound,
-    /// Too many attempts in the window (the claim endpoints share a tight per-IP limiter);
-    /// the caller should back off and retry.
-    #[error("rate limited")]
-    RateLimited,
-    /// The identity's session could not be resolved without a passwordless unlock — the
-    /// frontend should run the biometric `sovereignLogin(did)` and retry. Replaces the old
-    /// dead-end where an expired global session token surfaced as a bogus connection error.
-    #[error("identity is locked and needs a passwordless unlock")]
-    SessionLocked { reason: UnlockReason },
     /// This identity holds no delegation seed, so there is no key to sign a child's genesis
     /// operation with. The frontend gates on `agent_accounts_provisioned` first; reaching this
     /// means the seed vanished between the gate and the mint.
@@ -160,14 +151,14 @@ pub enum AgentsError {
     /// Rust sentence ("the server refused this handle") rather than an empty quote.
     #[error("handle rejected: {message}")]
     HandleRejected { message: String },
-    /// Transport-level failure reaching the PDS. `message` is diagnostic only (ADR-0031) —
-    /// never the server's words.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
     /// The PDS answered with something this wallet does not understand. `message` is
     /// diagnostic only (ADR-0031) — never render it as the server's words.
     #[error("unexpected response: {message}")]
     Unknown { message: String },
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 /// `custos_client::agents::AgentError` covers only the variants a network response can
@@ -182,8 +173,8 @@ impl From<custos_client::agents::AgentError> for AgentsError {
             A::AlreadyClaimed => Self::AlreadyClaimed,
             A::AccessDenied => Self::AccessDenied,
             A::AgentNotFound => Self::AgentNotFound,
-            A::RateLimited => Self::RateLimited,
-            A::NetworkError { message } => Self::NetworkError { message },
+            A::RateLimited => SharedFailure::RateLimited { retry_after: None }.into(),
+            A::NetworkError { message } => SharedFailure::NetworkError { message }.into(),
             A::Unknown { message } => Self::Unknown { message },
         }
     }
@@ -193,51 +184,9 @@ impl From<custos_client::agents::AgentError> for AgentsError {
 /// refreshed) up front, so a failure here is a transport error on the request itself — and the
 /// redacted breadcrumb was already recorded inside `OAuthClient`.
 fn oauth_err(e: OAuthError) -> AgentsError {
-    AgentsError::NetworkError {
+    AgentsError::Shared(SharedFailure::NetworkError {
         message: e.to_string(),
-    }
-}
-
-/// Map a session-lifecycle failure into the agents surface. Only a genuine transport failure
-/// becomes `NetworkError`; a `NeedsUnlock` becomes `SessionLocked` (the cue to run
-/// `sovereignLogin(did)` and retry), and every other server/storage verdict is surfaced as
-/// `Unknown` carrying the real cause — never mislabelled as connectivity.
-fn map_session_error(error: SessionError) -> AgentsError {
-    match error {
-        SessionError::NeedsUnlock { reason } => AgentsError::SessionLocked { reason },
-        SessionError::RateLimited { .. } => AgentsError::RateLimited,
-        SessionError::Offline { message } => AgentsError::NetworkError { message },
-        SessionError::IdentityNotFound => AgentsError::Unknown {
-            message: "identity not found in wallet".to_string(),
-        },
-        SessionError::ServerFailure { status } => AgentsError::Unknown {
-            message: format!("session request failed with status {status}"),
-        },
-        SessionError::UnsupportedHost => AgentsError::Unknown {
-            message: "the identity's hosting server does not support session refresh".to_string(),
-        },
-        SessionError::Keychain { message } => AgentsError::Unknown {
-            message: format!("session keychain failure: {message}"),
-        },
-        SessionError::InvalidResponse { message } => AgentsError::Unknown {
-            message: format!("invalid session response: {message}"),
-        },
-    }
-}
-
-/// Resolve the DID's full-access session (restore / refresh, or `SessionLocked`).
-async fn full_access_session(
-    pds_client: &PdsClient,
-    did: &str,
-) -> Result<crate::session_provider::ActiveSession, AgentsError> {
-    let now =
-        crate::sovereign_session::unix_timestamp().map_err(|_| AgentsError::NetworkError {
-            message: "system clock is unavailable".to_string(),
-        })?;
-    SessionProvider
-        .full_access_client(pds_client, &IdentityStore, did, now)
-        .await
-        .map_err(map_session_error)
+    })
 }
 
 // ── Network cores staying here (wallet key material) ───────────────────────────
@@ -446,8 +395,10 @@ async fn mint_child_from_claim_impl(
     let repo_key = pds_client
         .reserve_signing_key(pds_url, None)
         .await
-        .map_err(|e| AgentsError::NetworkError {
-            message: format!("could not reserve a signing key: {e}"),
+        .map_err(|e| {
+            AgentsError::Shared(SharedFailure::NetworkError {
+                message: format!("could not reserve a signing key: {e}"),
+            })
         })?;
 
     let genesis = build_child_genesis_op(
@@ -510,7 +461,7 @@ async fn map_child_confirm_error(status: u16, resp: reqwest::Response) -> Agents
         return AgentsError::NotAuthenticated;
     }
     if status == 429 {
-        return AgentsError::RateLimited;
+        return AgentsError::Shared(SharedFailure::RateLimited { retry_after: None });
     }
     match resp.json::<CeremonyErrorBody>().await {
         Ok(body) if body.error == "invalid_request" => AgentsError::HandleRejected {
@@ -1200,46 +1151,5 @@ mod tests {
         assert_eq!(json["code"], "CODE_EXPIRED");
         let json = serde_json::to_value(AgentsError::NotAuthenticated).unwrap();
         assert_eq!(json["code"], "NOT_AUTHENTICATED");
-    }
-
-    #[test]
-    fn session_needs_unlock_maps_to_session_locked() {
-        let err = map_session_error(SessionError::NeedsUnlock {
-            reason: UnlockReason::NoRefreshChain,
-        });
-        assert!(matches!(
-            err,
-            AgentsError::SessionLocked {
-                reason: UnlockReason::NoRefreshChain
-            }
-        ));
-        let json = serde_json::to_value(err).unwrap();
-        assert_eq!(json["code"], "SESSION_LOCKED");
-        assert_eq!(json["reason"], "NO_REFRESH_CHAIN");
-    }
-
-    /// A session failure keeps its nature: only a genuine transport failure is NETWORK_ERROR;
-    /// a rate limit is RATE_LIMITED and a server/host verdict is UNKNOWN (never "check your
-    /// connection"), so the "My agents" screen can tell an expired session from an outage.
-    #[test]
-    fn session_errors_do_not_flatten_to_network_error() {
-        assert!(matches!(
-            map_session_error(SessionError::RateLimited { retry_after: None }),
-            AgentsError::RateLimited
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::ServerFailure { status: 503 }),
-            AgentsError::Unknown { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::UnsupportedHost),
-            AgentsError::Unknown { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::Offline {
-                message: "timeout".to_string()
-            }),
-            AgentsError::NetworkError { .. }
-        ));
     }
 }

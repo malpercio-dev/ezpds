@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 import { authenticateBiometric } from '$lib/biometric';
 import type { UnlockReason } from './identity';
@@ -43,18 +44,9 @@ export type AppPasswordEntry = {
  * `SESSION_LOCKED` is the cue to run the passwordless {@link sovereignLogin} (biometric) and retry.
  */
 export type AppPasswordsError =
-  // The identity is locked — run sovereignLogin(did) and retry. `reason` mirrors ensureIdentitySession.
-  | { code: 'SESSION_LOCKED'; reason: UnlockReason }
-  // The hosting PDS rate-limited the request; `retryAfter` is the server's Retry-After.
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
   // An app password with this name already exists — pick a different name.
   | { code: 'DUPLICATE_NAME' }
-  | { code: 'IDENTITY_NOT_FOUND'; message: string }
-  // A server-side step failed for a non-connectivity reason. `status` is the HTTP code when
-  // the hosting PDS refused the request, or null for a non-HTTP session failure (unsupported
-  // host, keychain, malformed response); `message` is the server's own error text.
-  | { code: 'SERVER_ERROR'; status: number | null; message: string }
-  | { code: 'NETWORK_ERROR'; message: string };
+  | SharedFailure;
 
 /**
  * Mint a named app password for the identity. Resolves with the generated secret,

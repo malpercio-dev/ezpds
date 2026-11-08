@@ -40,12 +40,12 @@ describe('ensureIdentitySession', () => {
     expect(result.rotated).toBe(false);
   });
 
-  it('surfaces a NEEDS_UNLOCK error so the caller can offer a passwordless unlock', async () => {
-    invoke.mockRejectedValue({ code: 'NEEDS_UNLOCK', reason: 'HOST_CHANGED' });
+  it('surfaces a SESSION_LOCKED error so the caller can offer a passwordless unlock', async () => {
+    invoke.mockRejectedValue({ code: 'SESSION_LOCKED', reason: 'HOST_CHANGED' });
 
     await expect(
       ensureIdentitySession('did:plc:abcdefghijklmnopqrstuvwx'),
-    ).rejects.toMatchObject({ code: 'NEEDS_UNLOCK', reason: 'HOST_CHANGED' });
+    ).rejects.toMatchObject({ code: 'SESSION_LOCKED', reason: 'HOST_CHANGED' });
     expect(authenticate).not.toHaveBeenCalled();
   });
 });

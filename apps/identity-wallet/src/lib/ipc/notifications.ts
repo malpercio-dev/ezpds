@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 import type { UnlockReason } from './identity';
 
@@ -101,13 +102,8 @@ export type NotificationDiagnostics = {
 
 export type NotificationsError =
   /** Run `unlockIdentity(did)` and retry. */
-  | { code: 'SESSION_LOCKED'; reason: UnlockReason }
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
-  | { code: 'IDENTITY_NOT_FOUND'; message: string }
   | { code: 'KEY_GENERATION_FAILED'; message: string }
-  | { code: 'KEYCHAIN_ERROR'; message: string }
-  | { code: 'SERVER_ERROR'; status: number | null; message: string }
-  | { code: 'NETWORK_ERROR'; message: string };
+  | SharedFailure;
 
 /**
  * Register this device for push on the identity's hosting Custos.

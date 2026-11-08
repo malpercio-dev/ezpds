@@ -30,11 +30,10 @@
 //! `confirmOAuthConsent`, so a cancelled prompt signs and sends nothing. Request cores
 //! are `_impl` functions taking `&PdsClient`, tested against httpmock.
 //!
-//! `ConsentError` (IDENTITY_NOT_FOUND, UNSUPPORTED_HOST, REQUEST_NOT_FOUND,
+//! `ConsentError` (REQUEST_NOT_FOUND,
 //! APPROVAL_REJECTED, MATCH_CODE_MISMATCH — the server's 403 "number mismatch"; the
 //! request stays pending, so the review stays open for a retype — ALREADY_RESOLVED,
-//! RATE_LIMITED, TRANSPORT_FAILURE, KEYCHAIN_FAILURE, SIGNING_FAILED, DID_MISMATCH,
-//! SERVER_MISMATCH, INVALID_RESPONSE, SERVER_FAILURE) serializes as
+//! SIGNING_FAILED, DID_MISMATCH, SERVER_MISMATCH, plus the shared codes) serializes as
 //! `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase fields; the TypeScript union and
 //! the camelCase `ConsentPreview`/`ConsentDecision` types must match their `$lib/ipc`
 //! counterparts. `ConsentPreview.matchRequired` defaults false on deserialize, so a
@@ -43,8 +42,9 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 
-use crate::identity_store::{IdentityStore, IdentityStoreError, PerDidSignError};
-use crate::pds_client::{PdsClient, PdsClientError};
+use crate::failure::SharedFailure;
+use crate::identity_store::{IdentityStore, PerDidSignError};
+use crate::pds_client::PdsClient;
 use crate::sovereign_session::{fresh_nonce, unix_timestamp};
 
 #[derive(Debug, Serialize, thiserror::Error)]
@@ -54,10 +54,6 @@ use crate::sovereign_session::{fresh_nonce, unix_timestamp};
     rename_all_fields = "camelCase"
 )]
 pub enum ConsentError {
-    #[error("identity not found")]
-    IdentityNotFound,
-    #[error("the identity's hosting server does not support wallet-confirmed consent")]
-    UnsupportedHost,
     #[error("no pending authorization matches that code")]
     RequestNotFound,
     #[error("the hosting server rejected the consent approval")]
@@ -66,22 +62,16 @@ pub enum ConsentError {
     MatchCodeMismatch,
     #[error("the authorization request was already resolved")]
     AlreadyResolved,
-    #[error("the hosting server rate limited the request")]
-    RateLimited { retry_after: Option<String> },
-    #[error("transport failure: {message}")]
-    TransportFailure { message: String },
-    #[error("keychain failure: {message}")]
-    KeychainFailure { message: String },
     #[error("signing failure: {message}")]
     SigningFailed { message: String },
     #[error("the discovered DID document did not match the selected identity")]
     DidMismatch,
     #[error("invalid hosting server identity")]
     ServerMismatch,
-    #[error("invalid response: {message}")]
-    InvalidResponse { message: String },
-    #[error("hosting server failure: {status}")]
-    ServerFailure { status: u16 },
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 /// The pending authorization a wallet screen previews before the biometric gate. Mirrors the
@@ -136,43 +126,18 @@ struct ApprovalResponse {
     did: String,
 }
 
-fn map_store_error(error: IdentityStoreError) -> ConsentError {
-    match error {
-        IdentityStoreError::IdentityNotFound => ConsentError::IdentityNotFound,
-        IdentityStoreError::KeychainError { message } => ConsentError::KeychainFailure { message },
-        other => ConsentError::KeychainFailure {
-            message: other.to_string(),
-        },
-    }
-}
-
-fn map_discovery_error(error: PdsClientError) -> ConsentError {
-    match error {
-        PdsClientError::DidNotFound | PdsClientError::InvalidResponse { .. } => {
-            ConsentError::UnsupportedHost
-        }
-        PdsClientError::PdsUnreachable { reason } => {
-            ConsentError::TransportFailure { message: reason }
-        }
-        PdsClientError::NetworkError { message } => ConsentError::TransportFailure { message },
-        other => ConsentError::TransportFailure {
-            message: other.to_string(),
-        },
-    }
-}
-
 /// Resolve the selected DID's hosting PDS URL, verifying the DID document matches and the endpoint
 /// is safe to send a request to.
 async fn resolve_safe_pds(pds_client: &PdsClient, did: &str) -> Result<String, ConsentError> {
     let (pds_url, did_doc) = pds_client
         .discover_pds(did)
         .await
-        .map_err(map_discovery_error)?;
+        .map_err(SharedFailure::from_discovery)?;
     if did_doc.did != did {
         return Err(ConsentError::DidMismatch);
     }
     if !custos_client::pds_url_is_secure(&pds_url) {
-        return Err(ConsentError::UnsupportedHost);
+        return Err(ConsentError::Shared(SharedFailure::UnsupportedHost));
     }
     Ok(pds_url)
 }
@@ -216,36 +181,34 @@ pub async fn preview_oauth_consent_impl(
         query_key,
         urlencoding::encode(query_value.as_ref())
     );
-    let response =
-        pds_client
-            .client()
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| ConsentError::TransportFailure {
-                message: e.to_string(),
-            })?;
+    let response = pds_client.client().get(url).send().await.map_err(|e| {
+        ConsentError::Shared(SharedFailure::NetworkError {
+            message: e.to_string(),
+        })
+    })?;
     let status = response.status();
     if !status.is_success() {
         return Err(match status.as_u16() {
             404 => ConsentError::RequestNotFound,
-            405 => ConsentError::UnsupportedHost,
-            429 => ConsentError::RateLimited {
+            405 => ConsentError::Shared(SharedFailure::UnsupportedHost),
+            429 => ConsentError::Shared(SharedFailure::RateLimited {
                 retry_after: response
                     .headers()
                     .get(reqwest::header::RETRY_AFTER)
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_string),
-            },
-            status => ConsentError::ServerFailure { status },
+            }),
+            status => ConsentError::Shared(SharedFailure::ServerError {
+                status,
+                message: format!("consent request failed with HTTP {status}"),
+            }),
         });
     }
-    response
-        .json::<ConsentPreview>()
-        .await
-        .map_err(|e| ConsentError::InvalidResponse {
+    response.json::<ConsentPreview>().await.map_err(|e| {
+        ConsentError::Shared(SharedFailure::InvalidResponse {
             message: e.to_string(),
         })
+    })
 }
 
 /// Sign and submit a decision (approve/deny) for a previewed authorization. `granted_scope` is the
@@ -264,8 +227,10 @@ pub async fn confirm_oauth_consent(
     match_code: Option<String>,
 ) -> Result<ConsentDecision, ConsentError> {
     let nonce = fresh_nonce();
-    let timestamp = unix_timestamp().map_err(|_| ConsentError::InvalidResponse {
-        message: "system clock is before Unix epoch".into(),
+    let timestamp = unix_timestamp().map_err(|_| {
+        ConsentError::Shared(SharedFailure::InvalidResponse {
+            message: "system clock is before Unix epoch".into(),
+        })
     })?;
     confirm_oauth_consent_impl(
         state.pds_client(),
@@ -298,16 +263,16 @@ pub async fn confirm_oauth_consent_impl(
     if decision != crypto::OAUTH_CONSENT_DECISION_APPROVE
         && decision != crypto::OAUTH_CONSENT_DECISION_DENY
     {
-        return Err(ConsentError::InvalidResponse {
+        return Err(ConsentError::Shared(SharedFailure::InvalidResponse {
             message: "decision must be approve or deny".into(),
-        });
+        }));
     }
 
     // Resolve the signing key before any request — enforces managed-DID membership and guarantees
     // the selected DID's device key is the signer.
     let device_key = store
         .get_or_create_device_key(did)
-        .map_err(map_store_error)?;
+        .map_err(SharedFailure::from)?;
     let signer = crate::identity_store::per_did_sign_closure(did).map_err(|error| match error {
         PerDidSignError::DeviceKeyNotFound { message }
         | PerDidSignError::SigningSetupFailed { message } => {
@@ -319,7 +284,7 @@ pub async fn confirm_oauth_consent_impl(
     let server = pds_client
         .describe_server(&pds_url)
         .await
-        .map_err(map_discovery_error)?;
+        .map_err(SharedFailure::from_discovery)?;
     if !server.did.starts_with("did:") || server.did.chars().any(char::is_whitespace) {
         return Err(ConsentError::ServerMismatch);
     }
@@ -361,8 +326,10 @@ pub async fn confirm_oauth_consent_impl(
         .json(&request)
         .send()
         .await
-        .map_err(|e| ConsentError::TransportFailure {
-            message: e.to_string(),
+        .map_err(|e| {
+            ConsentError::Shared(SharedFailure::NetworkError {
+                message: e.to_string(),
+            })
         })?;
     let status = response.status();
     if !status.is_success() {
@@ -374,25 +341,26 @@ pub async fn confirm_oauth_consent_impl(
             // server returns 403 from this route.)
             403 => ConsentError::MatchCodeMismatch,
             404 => ConsentError::RequestNotFound,
-            405 => ConsentError::UnsupportedHost,
-            429 => ConsentError::RateLimited {
+            405 => ConsentError::Shared(SharedFailure::UnsupportedHost),
+            429 => ConsentError::Shared(SharedFailure::RateLimited {
                 retry_after: response
                     .headers()
                     .get(reqwest::header::RETRY_AFTER)
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_string),
-            },
-            status => ConsentError::ServerFailure { status },
+            }),
+            status => ConsentError::Shared(SharedFailure::ServerError {
+                status,
+                message: format!("consent request failed with HTTP {status}"),
+            }),
         });
     }
 
-    let response: ApprovalResponse =
-        response
-            .json()
-            .await
-            .map_err(|e| ConsentError::InvalidResponse {
-                message: e.to_string(),
-            })?;
+    let response: ApprovalResponse = response.json().await.map_err(|e| {
+        ConsentError::Shared(SharedFailure::InvalidResponse {
+            message: e.to_string(),
+        })
+    })?;
     if response.did != did {
         return Err(ConsentError::DidMismatch);
     }
@@ -404,10 +372,10 @@ pub async fn confirm_oauth_consent_impl(
         "denied"
     };
     if response.status != expected_status {
-        return Err(ConsentError::InvalidResponse {
+        return Err(ConsentError::Shared(SharedFailure::InvalidResponse {
             message: "server returned a decision status that did not match the submitted decision"
                 .into(),
-        });
+        }));
     }
     Ok(ConsentDecision {
         status: response.status,

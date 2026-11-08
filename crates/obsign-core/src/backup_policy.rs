@@ -296,6 +296,7 @@ async fn run_repo_sweep(core: &crate::oauth::Core, dids: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::SharedFailure;
     use blob_backup::BlobBackupError;
     use repo_backup::RepoBackupError;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -350,9 +351,9 @@ mod tests {
                 async move {
                     attempts.fetch_add(1, Ordering::SeqCst);
                     if did == "did:plc:b" {
-                        Err(BlobBackupError::NetworkError {
+                        Err(BlobBackupError::Shared(SharedFailure::NetworkError {
                             message: "boom".to_string(),
-                        })
+                        }))
                     } else {
                         Ok(())
                     }

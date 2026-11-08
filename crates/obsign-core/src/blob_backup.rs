@@ -18,7 +18,7 @@
 //!   fetchedAt`), checkpointed during the run so an interrupted pass resumes
 //! - `restore_blob_backup(did)` — walk the manifest, re-verify each file's hash, `uploadBlob`
 //!   with the stored MIME type over a `SessionProvider::full_access_client` session
-//!   (`NeedsUnlock` maps to `SESSION_LOCKED`, the frontend's `unlockIdentity` retry cue)
+//!   (`SESSION_LOCKED` is the frontend's `unlockIdentity` retry cue)
 //!
 //! Both passes degrade per-blob: one dead blob — or an undownloaded iCloud placeholder, or a
 //! corrupt file — becomes a report entry with guidance, never an aborted run. A corrupt
@@ -44,10 +44,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::identity_store::IdentityStore;
+use crate::failure::SharedFailure;
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::{self, PdsClient, PdsClientError};
-use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
+use crate::session_provider::full_access_session;
 
 /// Dev/test override for the backup root directory. When set, backups land there
 /// (reported as `location: "local"`) regardless of platform — this is what lets the
@@ -69,7 +69,7 @@ const MANIFEST_SAVE_EVERY: u64 = 25;
 /// Errors from the blob-backup commands.
 ///
 /// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` to match the sibling
-/// wallet error enums (`HandleChangeError`, `AppPasswordsError`, `SessionError`).
+/// wallet error enums (`HandleChangeError`, `AppPasswordsError`, `SharedFailure`).
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(
     tag = "code",
@@ -81,33 +81,6 @@ pub enum BlobBackupError {
     /// the mirror must not silently land somewhere that doesn't survive the device).
     #[error("no backup location is available (is iCloud Drive enabled?)")]
     BackupUnavailable,
-    /// The identity's session could not be resolved without a passwordless unlock —
-    /// the frontend should run the biometric sovereign login and retry (restore only;
-    /// the backup pass reads public sync endpoints and needs no session).
-    #[error("identity is locked and needs a passwordless unlock")]
-    SessionLocked { reason: UnlockReason },
-    /// The hosting PDS or plc.directory rate limited the request.
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
-    /// The DID is not registered in this wallet.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
-    /// A plc.directory read failed with an HTTP verdict (the hosting-PDS discovery).
-    #[error("PLC directory error: {message}")]
-    PlcDirectoryError { message: String },
-    /// A server-side step failed for a non-connectivity reason (an XRPC refusal, a
-    /// session refresh verdict, unsupported host, or malformed response). `status` is
-    /// `Some` only for a real HTTP verdict; because the `None` bucket includes local
-    /// session failures, `message` is mixed-provenance and therefore diagnostic only
-    /// (ADR-0031): the screen keys on `code` + `status` and never quotes it.
-    #[error("server error: {message}")]
-    ServerError {
-        status: Option<u16>,
-        message: String,
-    },
-    /// A network / transport call failed.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
     /// Local file I/O on the mirror failed.
     #[error("storage error: {message}")]
     StorageError { message: String },
@@ -115,70 +88,43 @@ pub enum BlobBackupError {
     /// file is preserved (it may name blobs the PDS has since lost), never rebuilt over.
     #[error("backup manifest is corrupt: {message}")]
     ManifestCorrupt { message: String },
-    /// The opt-in flag could not be read from / written to the Keychain.
-    #[error("keychain error: {message}")]
-    KeychainError { message: String },
-}
-
-/// Map a session-lifecycle failure into the blob-backup surface. Exhaustive on purpose:
-/// only a genuine transport failure becomes `NetworkError` — a server verdict, unsupported
-/// host, or storage failure must not surface as "check your connection" (the same defect
-/// class `classify_xrpc_error` exists to fix).
-fn map_session_error(error: SessionError) -> BlobBackupError {
-    match error {
-        SessionError::NeedsUnlock { reason } => BlobBackupError::SessionLocked { reason },
-        SessionError::RateLimited { retry_after } => BlobBackupError::RateLimited { retry_after },
-        SessionError::IdentityNotFound => BlobBackupError::IdentityNotFound {
-            message: "identity not found".to_string(),
-        },
-        SessionError::Offline { message } => BlobBackupError::NetworkError { message },
-        SessionError::ServerFailure { status } => BlobBackupError::ServerError {
-            status: Some(status),
-            message: format!("session request failed with status {status}"),
-        },
-        SessionError::UnsupportedHost => BlobBackupError::ServerError {
-            status: None,
-            message: "the identity's hosting server does not support session refresh".to_string(),
-        },
-        SessionError::Keychain { message } => BlobBackupError::ServerError {
-            status: None,
-            message: format!("session keychain failure: {message}"),
-        },
-        SessionError::InvalidResponse { message } => BlobBackupError::ServerError {
-            status: None,
-            message: format!("invalid session response: {message}"),
-        },
-    }
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 /// Map a plc.directory / PDS read failure into the blob-backup surface: a throttle is
 /// retryable (`RateLimited`), an HTTP verdict names the server's reason, and only a
-/// transport failure is `NetworkError` (mirrors `handle_change::map_plc_fetch_error`).
+/// transport failure is `NetworkError`.
 fn map_fetch_error(context: &str, error: PdsClientError) -> BlobBackupError {
     match error {
         PdsClientError::RateLimited { retry_after, .. } => {
-            BlobBackupError::RateLimited { retry_after }
+            BlobBackupError::Shared(SharedFailure::RateLimited { retry_after })
         }
-        PdsClientError::DidNotFound => BlobBackupError::PlcDirectoryError {
+        PdsClientError::DidNotFound => BlobBackupError::Shared(SharedFailure::PlcDirectoryError {
             message: format!("{context}: DID not found in the PLC directory"),
-        },
+        }),
         PdsClientError::XrpcError {
             status, message, ..
-        } => BlobBackupError::ServerError {
-            status: Some(status),
+        } => BlobBackupError::Shared(SharedFailure::ServerError {
+            status,
             message: format!("{context}: {message}"),
-        },
-        PdsClientError::Unauthorized { message, .. } => BlobBackupError::ServerError {
-            status: Some(401),
-            message: format!("{context}: {message}"),
-        },
-        PdsClientError::InvalidResponse { message } => BlobBackupError::ServerError {
-            status: None,
-            message: format!("{context}: {message}"),
-        },
-        other => BlobBackupError::NetworkError {
+        }),
+        PdsClientError::Unauthorized { message, .. } => {
+            BlobBackupError::Shared(SharedFailure::ServerError {
+                status: 401,
+                message: format!("{context}: {message}"),
+            })
+        }
+        PdsClientError::InvalidResponse { message } => {
+            BlobBackupError::Shared(SharedFailure::InvalidResponse {
+                message: format!("{context}: {message}"),
+            })
+        }
+        other => BlobBackupError::Shared(SharedFailure::NetworkError {
             message: format!("{context}: {other}"),
-        },
+        }),
     }
 }
 
@@ -440,9 +386,9 @@ pub fn is_backup_enabled(did: &str) -> bool {
 fn store_enabled(did: &str, enabled: bool) -> Result<(), BlobBackupError> {
     let value: &[u8] = if enabled { b"true" } else { b"false" };
     crate::keystore::store_item(&backup_enabled_account(did), value).map_err(|e| {
-        BlobBackupError::KeychainError {
+        BlobBackupError::Shared(SharedFailure::KeychainError {
             message: e.to_string(),
-        }
+        })
     })
 }
 
@@ -833,27 +779,12 @@ pub async fn seed_mirror_blob_for_test(root: &Path, did: &str, bytes: &[u8], mim
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
-/// Resolve the DID's full-access session (restore / refresh, or `SessionLocked`).
-async fn full_access_session(
-    pds_client: &PdsClient,
-    did: &str,
-) -> Result<crate::session_provider::ActiveSession, BlobBackupError> {
-    let now =
-        crate::sovereign_session::unix_timestamp().map_err(|_| BlobBackupError::NetworkError {
-            message: "system clock is unavailable".to_string(),
-        })?;
-    SessionProvider
-        .full_access_client(pds_client, &IdentityStore, did, now)
-        .await
-        .map_err(map_session_error)
-}
-
 /// Discover the DID's current hosting PDS endpoint via plc.directory.
 async fn hosting_pds_url(pds_client: &PdsClient, did: &str) -> Result<String, BlobBackupError> {
     let (pds_url, _doc) = pds_client
         .discover_pds(did)
         .await
-        .map_err(|e| map_fetch_error("failed to discover hosting PDS", e))?;
+        .map_err(SharedFailure::from_discovery)?;
     Ok(pds_url)
 }
 
@@ -916,6 +847,7 @@ pub async fn restore_blob_backup(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_provider::UnlockReason;
     use httpmock::prelude::*;
 
     /// A JWT whose `exp` is far in the future — Bearer test clients need one, else
@@ -966,19 +898,6 @@ mod tests {
     // ── Error mapping ──────────────────────────────────────────────────────
 
     #[test]
-    fn needs_unlock_maps_to_session_locked() {
-        let err = map_session_error(SessionError::NeedsUnlock {
-            reason: UnlockReason::NoRefreshChain,
-        });
-        assert!(matches!(
-            err,
-            BlobBackupError::SessionLocked {
-                reason: UnlockReason::NoRefreshChain
-            }
-        ));
-    }
-
-    #[test]
     fn fetch_error_mapping_keeps_the_server_reason() {
         let throttled = map_fetch_error(
             "ctx",
@@ -988,7 +907,7 @@ mod tests {
             },
         );
         assert!(
-            matches!(throttled, BlobBackupError::RateLimited { retry_after: Some(ref s) } if s == "30")
+            matches!(throttled, BlobBackupError::Shared(SharedFailure::RateLimited { retry_after: Some(ref s) }) if s == "30")
         );
 
         let verdict = map_fetch_error(
@@ -1000,7 +919,7 @@ mod tests {
             },
         );
         assert!(
-            matches!(verdict, BlobBackupError::ServerError { status: Some(503), ref message } if message.contains("maintenance"))
+            matches!(verdict, BlobBackupError::Shared(SharedFailure::ServerError { status: 503, ref message }) if message.contains("maintenance"))
         );
 
         let transport = map_fetch_error(
@@ -1009,7 +928,10 @@ mod tests {
                 message: "dns".into(),
             },
         );
-        assert!(matches!(transport, BlobBackupError::NetworkError { .. }));
+        assert!(matches!(
+            transport,
+            BlobBackupError::Shared(SharedFailure::NetworkError { .. })
+        ));
     }
 
     #[test]
@@ -1018,9 +940,9 @@ mod tests {
         let json = serde_json::to_string(&err).unwrap();
         assert!(json.contains(r#""code":"BACKUP_UNAVAILABLE""#));
 
-        let err = BlobBackupError::SessionLocked {
+        let err = BlobBackupError::Shared(SharedFailure::SessionLocked {
             reason: UnlockReason::HostChanged,
-        };
+        });
         let json = serde_json::to_string(&err).unwrap();
         assert!(json.contains(r#""code":"SESSION_LOCKED""#));
         assert!(json.contains(r#""reason":"HOST_CHANGED""#));

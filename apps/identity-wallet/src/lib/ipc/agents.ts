@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 import type { UnlockReason } from './identity';
 
@@ -133,16 +134,13 @@ export type AgentsError =
   | { code: 'ALREADY_CLAIMED' }
   | { code: 'ACCESS_DENIED' }
   | { code: 'AGENT_NOT_FOUND' }
-  | { code: 'RATE_LIMITED' }
   // No delegation seed — route to "Enable agent accounts" instead of retrying.
   | { code: 'NOT_PROVISIONED' }
   // The proposed child handle (or the op built around it) was refused. Recoverable: the claim
   // attempt is not spent, so the user can correct the handle and submit again.
   | { code: 'HANDLE_REJECTED'; message: string }
-  // The identity is locked — run sovereignLogin(did) and retry.
-  | { code: 'SESSION_LOCKED'; reason: UnlockReason }
-  | { code: 'NETWORK_ERROR'; message: string }
-  | { code: 'UNKNOWN'; message: string };
+  | { code: 'UNKNOWN'; message: string }
+  | SharedFailure;
 
 /** List the agent identities bound to this identity's account. */
 export const listAgents = (did: string): Promise<AgentSummary[]> =>
