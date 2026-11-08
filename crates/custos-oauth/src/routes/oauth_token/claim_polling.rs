@@ -7,10 +7,13 @@
 //!
 //! The identity's lifecycle is the state machine, so the handler reads it and reports it as
 //! OAuth device-flow codes: `authorization_pending` (active, ceremony still pending),
-//! `expired_token` (`claim_token`/`user_code` window lapsed), `access_denied` (`revoked`), or —
-//! once `claimed` — **200** with a fresh Bearer token plus the stored post-claim
-//! `identity_assertion` and its `assertion_expires`. The token's scope derives from the row's
-//! stored scopes, so it matches a jwt-bearer exchange of the same assertion byte-for-byte.
+//! `expired_token` (`claim_token`/`user_code` window lapsed — enforced in the `claimed` state
+//! too, so the token has one lifetime), `access_denied` (`revoked`), or — once `claimed` —
+//! **200** with a fresh Bearer token plus a post-claim `identity_assertion` minted on the spot
+//! and its `assertion_expires`. That collecting poll is the claim token's one use: it retires
+//! the token, so a later poll with it is `invalid_grant`. The assertion is minted from the row's
+//! stored scopes and the token's scope derives from the same list, so the two agree
+//! byte-for-byte, as they would across a jwt-bearer exchange.
 //!
 //! Polling faster than the advertised `interval`
 //! (`auth/agent_assertion.rs::POLL_INTERVAL_SECS`, 5s) yields `slow_down`, throttled by the
@@ -24,12 +27,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::SecondsFormat;
 use serde::Serialize;
 
-use super::{cleanup_expired_state, issue_access_token, TokenRequestForm};
+use super::{cleanup_expired_state, issue_access_token, persist_assertion_mint, TokenRequestForm};
 use crate::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
-use custos_core::auth::agent_assertion::{parse_sqlite_datetime, POLL_INTERVAL_SECS};
+use custos_core::auth::agent_assertion::{
+    mint_identity_assertion, parse_sqlite_datetime, POLL_INTERVAL_SECS,
+};
 use custos_core::auth::token::sha256_hex;
 use custos_core::CoreState;
 use custos_db::agent_auth::{
@@ -58,10 +62,11 @@ struct ClaimPollingResponse {
 /// DPoP proof: the agent may hold no key yet, and the `claim_token` is itself the credential.
 ///
 /// The identity's lifecycle *is* the state machine — the confirm endpoint already flipped it to
-/// `claimed` and stored the post-claim assertion, so this handler only reads and reports:
+/// `claimed`, so this handler only reads and reports:
 ///   - `active`, ceremony still pending → `authorization_pending`
 ///   - `active`, user_code / claim_token window lapsed → `expired_token`
-///   - `claimed` → 200 with a fresh Bearer access token + the stored assertion
+///   - `claimed`, claim_token window still open → 200 with a fresh Bearer access token + a
+///     freshly minted assertion; the claim token is retired
 ///   - `revoked` → `access_denied`
 ///
 /// Polling faster than the advertised `interval` ([`POLL_INTERVAL_SECS`]) → `slow_down`.
@@ -177,34 +182,62 @@ pub(super) async fn handle_claim_polling(state: &CoreState, form: TokenRequestFo
 }
 
 /// Issue the post-claim credential for a `claimed` identity: a fresh Bearer access token carrying the
-/// identity's granted scopes + `registration_id`, plus the stored post-claim assertion the agent
-/// re-exchanges (jwt-bearer) once the token expires. A `claimed` identity always has a bound DID and
-/// a stored assertion; a missing one is an internal inconsistency → `server_error`.
+/// identity's granted scopes + `registration_id`, plus a post-claim assertion minted here, under the
+/// claimed TTL, for the agent to re-exchange (jwt-bearer) once the token expires. The claim token
+/// is spent by this collection. A `claimed` identity always has a bound DID; a missing one is an
+/// internal inconsistency → `server_error`.
 async fn claim_success(state: &CoreState, identity: &AgentIdentityRow) -> Response {
-    let (Some(did), Some(assertion)) = (
-        identity.did.as_deref(),
-        identity.identity_assertion.as_deref(),
-    ) else {
-        tracing::error!(registration_id = %identity.id, "claimed identity missing did or assertion");
+    let Some(did) = identity
+        .did
+        .as_deref()
+        .and_then(|did| common::Did::parse(did).ok())
+    else {
+        tracing::error!(registration_id = %identity.id, "claimed identity missing or malformed did");
         return OAuthTokenError::new("server_error", "claimed identity is inconsistent")
             .into_response();
     };
+    // The token's own window still bounds collection: a confirmed-but-uncollected registration
+    // is otherwise a credential that never expires.
+    let claim_token_lapsed = identity
+        .claim_token_expires_at
+        .as_deref()
+        .is_some_and(|exp| parse_sqlite_datetime(exp) <= chrono::Utc::now());
+    if claim_token_lapsed {
+        return OAuthTokenError::new("expired_token", "the claim window has expired")
+            .into_response();
+    }
 
-    // The token's `scope` must equal what a jwt-bearer exchange of this same assertion would carry:
-    // the assertion's `scope` claim is `scopes.join(" ")`, and `identity.scopes` is the JSON of that
-    // same list, so parse-and-join reproduces it exactly without re-decoding the JWT.
-    let scope = match serde_json::from_str::<Vec<String>>(&identity.scopes) {
-        Ok(scopes) => scopes.join(" "),
+    // The assertion and the access token are minted from the same stored list, so the token's
+    // `scope` equals the assertion's `scope` claim (`scopes.join(" ")`) exactly — what a jwt-bearer
+    // exchange of this assertion would carry too.
+    let scopes = match serde_json::from_str::<Vec<String>>(&identity.scopes) {
+        Ok(scopes) => scopes,
         Err(e) => {
             tracing::error!(registration_id = %identity.id, error = %e, "malformed stored agent scopes");
             return OAuthTokenError::new("server_error", "stored scopes are malformed")
                 .into_response();
         }
     };
+    let scope = scopes.join(" ");
+    let minted = match mint_identity_assertion(
+        &state.oauth_signing_keypair,
+        state.config.issuer(),
+        state.config.agent_auth.claimed_assertion_ttl_secs,
+        did.as_str(),
+        &identity.id,
+        identity.registration_type.as_str(),
+        &scopes,
+    ) {
+        Ok(minted) => minted,
+        Err(_) => {
+            return OAuthTokenError::new("server_error", "assertion minting failed")
+                .into_response();
+        }
+    };
 
     let access_token = match issue_access_token(
         &state.oauth_signing_keypair,
-        did,
+        did.as_str(),
         &scope,
         None,
         Some(&identity.id),
@@ -215,22 +248,19 @@ async fn claim_success(state: &CoreState, identity: &AgentIdentityRow) -> Respon
         Err(e) => return e.into_response(),
     };
 
-    if let Err(e) = custos_core::auth::agent_assertion::record_agent_audit(
-        &state.db,
+    if let Err(e) = persist_assertion_mint(
+        state,
         &identity.id,
-        Some(did),
-        custos_db::agent_audit::AgentAuditEventType::TokenExchanged,
+        &did,
+        &minted.expires_sqlite,
+        true,
         serde_json::json!({ "grant": "claim", "scope": scope }),
     )
     .await
     {
-        // Fail closed, mirroring the jwt-bearer path: the token was never returned to the caller.
-        tracing::error!(error = %e, registration_id = %identity.id, "failed to record token-exchange audit event");
+        tracing::error!(error = %e, registration_id = %identity.id, "failed to persist claim-grant mint + audit event");
         return OAuthTokenError::new("server_error", "database error").into_response();
     }
-
-    let assertion_expires = parse_sqlite_datetime(&identity.assertion_expires_at)
-        .to_rfc3339_opts(SecondsFormat::Millis, true);
 
     let mut headers = axum::http::HeaderMap::new();
     insert_no_store_headers(&mut headers);
@@ -243,8 +273,8 @@ async fn claim_success(state: &CoreState, identity: &AgentIdentityRow) -> Respon
             token_type: "Bearer",
             expires_in: super::AGENT_ACCESS_TOKEN_TTL_SECS,
             scope,
-            identity_assertion: assertion.to_string(),
-            assertion_expires,
+            identity_assertion: minted.jwt,
+            assertion_expires: minted.expires_rfc3339,
         }),
     )
         .into_response()
@@ -255,16 +285,20 @@ mod tests {
     use axum::http::StatusCode;
     use tower::ServiceExt;
 
-    use super::super::test_support::{json_body, mint_assertion, post_token};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    use super::super::test_support::{json_body, post_token};
     use crate::test_support::{test_app, test_state};
+    use custos_core::auth::agent_assertion::parse_sqlite_datetime;
+    use custos_core::auth::token::sha256_hex;
     use custos_core::CoreState;
 
     const CLAIM_GRANT: &str = "urn:workos:agent-auth:grant-type:claim";
 
     /// Builder for an agent identity carrying a `claim_token` — the state the claim-polling grant
     /// reads. Defaults to the shape most tests want (anonymous, `active`, a live claim-token
-    /// window, the default granted scope, no stored assertion); call the setters for the one or
-    /// two fields a given test varies.
+    /// window, the default granted scope); call the setters for the one or two fields a given
+    /// test varies. The token is seeded as its SHA-256, the only form the table holds.
     struct ClaimableIdentity<'a> {
         registration_id: &'a str,
         claim_token: &'a str,
@@ -272,7 +306,6 @@ mod tests {
         status: &'a str,
         claim_token_expires_sql: &'a str,
         scopes_json: &'a str,
-        identity_assertion: Option<&'a str>,
     }
 
     impl<'a> ClaimableIdentity<'a> {
@@ -284,7 +317,6 @@ mod tests {
                 status: "active",
                 claim_token_expires_sql: "datetime('now', '+1 hour')",
                 scopes_json: r#"["repo:*"]"#,
-                identity_assertion: None,
             }
         }
 
@@ -311,11 +343,6 @@ mod tests {
             self
         }
 
-        fn identity_assertion(mut self, assertion: &'a str) -> Self {
-            self.identity_assertion = Some(assertion);
-            self
-        }
-
         async fn seed(self, state: &CoreState) {
             if let Some(did) = self.did {
                 sqlx::query(
@@ -330,10 +357,10 @@ mod tests {
             }
             sqlx::query(&format!(
                 "INSERT INTO agent_identities \
-                 (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
-                  assertion_expires_at, claim_token, claim_token_expires_at, status, created_at, \
-                  updated_at) \
-                 VALUES (?, ?, 'anonymous', NULL, NULL, 'agent@example.com', ?, ?, \
+                 (id, did, registration_type, issuer, subject, email, scopes, \
+                  assertion_expires_at, claim_token_hash, claim_token_expires_at, status, \
+                  created_at, updated_at) \
+                 VALUES (?, ?, 'anonymous', NULL, NULL, 'agent@example.com', ?, \
                          datetime('now', '+1 hour'), ?, {}, ?, \
                          datetime('now'), datetime('now'))",
                 self.claim_token_expires_sql
@@ -341,8 +368,7 @@ mod tests {
             .bind(self.registration_id)
             .bind(self.did)
             .bind(self.scopes_json)
-            .bind(self.identity_assertion)
-            .bind(self.claim_token)
+            .bind(sha256_hex(self.claim_token.as_bytes()))
             .bind(self.status)
             .execute(&state.db)
             .await
@@ -442,6 +468,17 @@ mod tests {
                 attempt: None,
                 expected_error: "access_denied",
             },
+            Case {
+                // Confirmed, but never collected within the token's own window: the token has one
+                // lifetime, so it does not become a credential that never expires.
+                name: "claimed_after_claim_token_lapsed",
+                identity: ClaimableIdentity::new("reg_lateclaim", "clm_lateclaim")
+                    .did("did:plc:lateclaim00000000000")
+                    .status("claimed")
+                    .claim_token_expires_sql("datetime('now', '-1 minute')"),
+                attempt: None,
+                expected_error: "expired_token",
+            },
         ];
 
         for case in cases {
@@ -470,26 +507,21 @@ mod tests {
         }
     }
 
+    /// A claimed identity's poll mints the post-claim assertion on the spot — the table holds no
+    /// copy to hand back — bound to the identity's DID, registration and stored grant, and records
+    /// the fresh expiry on the row.
     #[tokio::test]
-    async fn claim_polling_claimed_returns_token_and_stored_assertion() {
+    async fn claim_polling_claimed_returns_token_and_freshly_minted_assertion() {
         let state = test_state().await;
         let did = "did:plc:claimpoll000000000000";
-        let assertion = mint_assertion(
-            &state,
-            did,
-            "reg_claimed",
-            "repo:* blob:*/*",
-            custos_core::time::unix_now_secs() + 600,
-        );
         ClaimableIdentity::new("reg_claimed", "clm_claimed")
             .did(did)
             .status("claimed")
             .scopes_json(r#"["repo:*","blob:*/*"]"#)
-            .identity_assertion(&assertion)
             .seed(&state)
             .await;
 
-        let resp = test_app(state)
+        let resp = test_app(state.clone())
             .oneshot(post_token(&format!(
                 "grant_type={CLAIM_GRANT}&claim_token=clm_claimed"
             )))
@@ -512,11 +544,55 @@ mod tests {
         assert_eq!(json["expires_in"], 300);
         // Scope is the stored JSON list rendered space-delimited — the jwt-bearer parity property.
         assert_eq!(json["scope"], "repo:* blob:*/*");
-        // The stored post-claim assertion is handed back verbatim for later re-exchange.
-        assert_eq!(json["identity_assertion"], assertion);
+        // The post-claim assertion is minted at poll time for this DID, registration and grant.
+        let assertion = json["identity_assertion"].as_str().unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(assertion.split('.').nth(1).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["sub"], did);
+        assert_eq!(payload["registration_id"], "reg_claimed");
+        assert_eq!(payload["scope"], "repo:* blob:*/*");
         assert!(
-            json["assertion_expires"].as_str().unwrap().contains('T'),
+            payload["exp"].as_i64().unwrap() > custos_core::time::unix_now_secs() + 3600,
+            "the collected assertion carries the claimed TTL, not the pre-claim one"
+        );
+        let expires = json["assertion_expires"].as_str().unwrap();
+        assert!(
+            expires.contains('T'),
             "assertion_expires is an RFC3339 timestamp"
+        );
+        let (stored_expiry,): (String,) =
+            sqlx::query_as("SELECT assertion_expires_at FROM agent_identities WHERE id = ?")
+                .bind("reg_claimed")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            parse_sqlite_datetime(&stored_expiry).timestamp(),
+            payload["exp"].as_i64().unwrap(),
+            "the row records the minted assertion's expiry"
+        );
+
+        // Collection spends the claim token: the same token is now unknown.
+        state
+            .poll_tracker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        let resp = test_app(state)
+            .oneshot(post_token(&format!(
+                "grant_type={CLAIM_GRANT}&claim_token=clm_claimed"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(resp).await["error"],
+            "invalid_grant",
+            "a collected claim token is spent"
         );
         assert!(
             json.get("refresh_token").is_none(),

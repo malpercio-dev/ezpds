@@ -367,9 +367,9 @@ mod tests {
     async fn seed_claimed_identity(db: &sqlx::SqlitePool, id: &str, did: &str, subject: &str) {
         sqlx::query(
             "INSERT INTO agent_identities \
-             (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+             (id, did, registration_type, issuer, subject, email, scopes, \
               assertion_expires_at, status, created_at, updated_at) \
-             VALUES (?, ?, 'identity_assertion', ?, ?, 'agent@example.com', '[\"atproto\"]', NULL, \
+             VALUES (?, ?, 'identity_assertion', ?, ?, 'agent@example.com', '[\"atproto\"]', \
                      datetime('now', '+1 hour'), 'claimed', datetime('now'), datetime('now'))",
         )
         .bind(id)

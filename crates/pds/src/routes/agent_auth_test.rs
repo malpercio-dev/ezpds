@@ -425,6 +425,7 @@ async fn service_auth_journey_then_revoke_blocks_reexchange() {
     )
     .await;
     let registration_id = reg["registration_id"].as_str().unwrap().to_string();
+    let claim_token = reg["claim_token"].as_str().unwrap().to_string();
     let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
 
     let (cstatus, _c) = post_json(
@@ -436,13 +437,8 @@ async fn service_auth_journey_then_revoke_blocks_reexchange() {
     .await;
     assert_eq!(cstatus, StatusCode::OK);
 
-    // The post-claim assertion the confirm stored is exchangeable.
-    let assertion: String =
-        sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE id = ?")
-            .bind(&registration_id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap();
+    // The post-claim assertion the agent collects by polling is exchangeable.
+    let assertion = collect_assertion(&state, &claim_token).await;
     let (x1, x1body) = exchange_assertion(state.clone(), &assertion).await;
     assert_eq!(x1, StatusCode::OK, "confirmed identity must exchange");
     assert_eq!(x1body["token_type"], "Bearer");
@@ -764,8 +760,13 @@ async fn get_json_authed(state: AppState, uri: &str, token: &str) -> (StatusCode
 }
 
 /// Register a `service_auth` agent for `email` and confirm it as `owner`, returning the
-/// registration id.
-async fn register_and_confirm_service_auth(state: &AppState, owner: &str, email: &str) -> String {
+/// registration id and the agent's `claim_token` (the credential its post-claim poll collects
+/// the assertion with).
+async fn register_and_confirm_service_auth(
+    state: &AppState,
+    owner: &str,
+    email: &str,
+) -> (String, String) {
     let (_s, reg) = post_json(
         state.clone(),
         "/agent/identity",
@@ -774,6 +775,7 @@ async fn register_and_confirm_service_auth(state: &AppState, owner: &str, email:
     )
     .await;
     let registration_id = reg["registration_id"].as_str().unwrap().to_string();
+    let claim_token = reg["claim_token"].as_str().unwrap().to_string();
     let user_code = reg["claim"]["user_code"].as_str().unwrap().to_string();
     let (cstatus, _c) = post_json(
         state.clone(),
@@ -783,7 +785,19 @@ async fn register_and_confirm_service_auth(state: &AppState, owner: &str, email:
     )
     .await;
     assert_eq!(cstatus, StatusCode::OK, "confirm must succeed in setup");
-    registration_id
+    (registration_id, claim_token)
+}
+
+/// Collect a confirmed registration's post-claim `identity_assertion` the way an agent does:
+/// through the claim-grant poll. The server keeps no copy to read out of the database.
+async fn collect_assertion(state: &AppState, claim_token: &str) -> String {
+    let (status, body) = poll_claim(state.clone(), claim_token).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "claim poll must succeed in setup: {body}"
+    );
+    body["identity_assertion"].as_str().unwrap().to_string()
 }
 
 /// The list is scoped to the authenticated DID, and a foreign registration id is a uniform 404
@@ -799,7 +813,7 @@ async fn management_api_isolates_accounts() {
     let owner_b = "did:plc:mgmtownerb1111111";
     insert_account(&state.db, owner_a, "mgmt-a@example.com").await;
     insert_account(&state.db, owner_b, "mgmt-b@example.com").await;
-    let registration_id =
+    let (registration_id, _claim_token) =
         register_and_confirm_service_auth(&state, owner_a, "mgmt-a@example.com").await;
 
     // Owner A sees exactly their agent, with the configured scopes and claimed status.
@@ -851,15 +865,10 @@ async fn revoke_via_api_blocks_reexchange_and_audits_once() {
     .await;
     let owner = "did:plc:mgmtrevoke111111";
     insert_account(&state.db, owner, "mgmt-revoke@example.com").await;
-    let registration_id =
+    let (registration_id, claim_token) =
         register_and_confirm_service_auth(&state, owner, "mgmt-revoke@example.com").await;
 
-    let assertion: String =
-        sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE id = ?")
-            .bind(&registration_id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap();
+    let assertion = collect_assertion(&state, &claim_token).await;
     let (x1, _b1) = exchange_assertion(state.clone(), &assertion).await;
     assert_eq!(x1, StatusCode::OK, "pre-revocation exchange must succeed");
 
@@ -930,12 +939,7 @@ async fn lifecycle_audit_trail_is_ordered_and_leak_free() {
     )
     .await;
     assert_eq!(cstatus, StatusCode::OK);
-    let assertion: String =
-        sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE id = ?")
-            .bind(&registration_id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap();
+    let assertion = collect_assertion(&state, &claim_token).await;
     let (xstatus, _x) = exchange_assertion(state.clone(), &assertion).await;
     assert_eq!(xstatus, StatusCode::OK);
     let (rstatus, _r) = post_json(
@@ -959,11 +963,13 @@ async fn lifecycle_audit_trail_is_ordered_and_leak_free() {
         .iter()
         .map(|e| e["eventType"].as_str().unwrap())
         .collect();
-    // Newest first.
+    // Newest first: the jwt-bearer exchange, then the claim-grant poll that collected the
+    // assertion — both `token_exchanged`.
     assert_eq!(
         types,
         vec![
             "revoked",
+            "token_exchanged",
             "token_exchanged",
             "claim_confirmed",
             "claim_initiated",
@@ -997,7 +1003,7 @@ async fn agent_tokens_cannot_use_management_api() {
     .await;
     let owner = "did:plc:mgmtagentself1111";
     insert_account(&state.db, owner, "mgmt-self@example.com").await;
-    let registration_id =
+    let (registration_id, _claim_token) =
         register_and_confirm_service_auth(&state, owner, "mgmt-self@example.com").await;
     let agent_token = crate::routes::test_utils::agent_jwt(
         &state.jwt_secret,
@@ -1119,14 +1125,9 @@ async fn audit_cursor_pages_without_gaps_or_duplicates() {
     .await;
     let owner = "did:plc:mgmtpaging111111";
     insert_account(&state.db, owner, "mgmt-paging@example.com").await;
-    let registration_id =
+    let (registration_id, claim_token) =
         register_and_confirm_service_auth(&state, owner, "mgmt-paging@example.com").await;
-    let assertion: String =
-        sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE id = ?")
-            .bind(&registration_id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap();
+    let assertion = collect_assertion(&state, &claim_token).await;
     let (xstatus, _x) = exchange_assertion(state.clone(), &assertion).await;
     assert_eq!(xstatus, StatusCode::OK);
     let (rstatus, _r) = post_json(
@@ -1150,7 +1151,9 @@ async fn audit_cursor_pages_without_gaps_or_duplicates() {
         .iter()
         .map(|e| e["id"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(all_ids.len(), 5, "full lifecycle should have 5 events");
+    // registered, claim_initiated, claim_confirmed, token_exchanged (the collecting poll),
+    // token_exchanged (the jwt-bearer exchange), revoked.
+    assert_eq!(all_ids.len(), 6, "full lifecycle should have 6 events");
 
     let mut paged_ids: Vec<String> = Vec::new();
     let mut cursor: Option<String> = None;
@@ -1621,14 +1624,9 @@ async fn agent_token_is_forbidden_on_account_and_app_password_routes() {
     .await;
     let owner = "did:plc:agentbounded00000000";
     insert_account(&state.db, owner, "bounded@example.com").await;
-    let registration_id =
+    let (_registration_id, claim_token) =
         register_and_confirm_service_auth(&state, owner, "bounded@example.com").await;
-    let assertion: String =
-        sqlx::query_scalar("SELECT identity_assertion FROM agent_identities WHERE id = ?")
-            .bind(&registration_id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap();
+    let assertion = collect_assertion(&state, &claim_token).await;
     let (xstatus, xbody) = exchange_assertion(state.clone(), &assertion).await;
     assert_eq!(xstatus, StatusCode::OK, "confirmed identity must exchange");
     let at = xbody["access_token"].as_str().unwrap().to_string();

@@ -41,6 +41,41 @@ use custos_core::auth::agent_assertion::POLL_INTERVAL_SECS;
 use custos_core::CoreState;
 use custos_db::oauth::{cleanup_expired_auth_codes, cleanup_expired_refresh_tokens};
 
+/// What an agent-assertion mint leaves behind, committed together so it fails closed (a
+/// credential the audit trail cannot account for is never returned): the row's new
+/// `assertion_expires_at`, the `token_exchanged` audit event, and — for the claim-grant poll that
+/// collects the post-claim assertion, the claim token's one use — the token's retirement.
+async fn persist_assertion_mint(
+    state: &CoreState,
+    registration_id: &str,
+    did: &common::Did,
+    expires_sqlite: &str,
+    retire_claim_token: bool,
+    detail: serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut tx = state.db.begin().await?;
+    custos_db::agent_auth::set_agent_identity_assertion_expiry(
+        &mut *tx,
+        registration_id,
+        expires_sqlite,
+    )
+    .await?;
+    if retire_claim_token {
+        custos_db::agent_auth::retire_agent_identity_claim_token(&mut *tx, registration_id).await?;
+    }
+    custos_db::agent_audit::insert_agent_audit_event(
+        &mut *tx,
+        &uuid::Uuid::new_v4().to_string(),
+        registration_id,
+        Some(did.as_str()),
+        custos_db::agent_audit::AgentAuditEventType::TokenExchanged,
+        Some(&detail.to_string()),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 // ── Request / response types ──────────────────────────────────────────────────
 
 /// Flat form body for `POST /oauth/token` (application/x-www-form-urlencoded).

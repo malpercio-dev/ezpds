@@ -584,6 +584,142 @@ mod tests {
         assert_eq!(pending_did.as_deref(), Some("did:plc:v055"));
     }
 
+    /// V076 drops the raw `claim_token` / `identity_assertion` credential columns from
+    /// `agent_identities` (and the child provisioning row's assertion copy) and adds the hashed
+    /// `claim_token_hash` lookup column. The fresh-DB run drops empty columns, so this exercises the
+    /// production upgrade: populated rows holding raw credentials, a claim attempt and an audit
+    /// event FK'd to the identity, and a provisioning row — all must survive with the raw material
+    /// gone and the FKs still enforced.
+    #[tokio::test]
+    async fn v076_drops_raw_agent_credentials_over_populated_rows() {
+        let pool = in_memory_pool().await;
+        apply_migrations_before(&pool, 76).await;
+
+        for did in ["did:plc:v076owner", "did:plc:v076child"] {
+            sqlx::query(
+                "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+                 VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
+            )
+            .bind(did)
+            .bind(format!("{did}@example.com"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, identity_assertion, assertion_expires_at, \
+              claim_token, claim_token_expires_at, status, created_at, updated_at) \
+             VALUES ('reg_v076', 'did:plc:v076owner', 'service_auth', '[\"atproto\"]', 'raw.jwt', \
+                     datetime('now', '+30 days'), 'clm_raw', datetime('now', '+10 minutes'), \
+                     'claimed', datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_claim_attempts \
+             (id, identity_id, user_code, user_code_expires_at, created_at) \
+             VALUES ('cla_v076', 'reg_v076', '111222', datetime('now', '+10 minutes'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_audit_events \
+             (id, registration_id, did, event_type, detail, created_at) \
+             VALUES ('evt_v076', 'reg_v076', 'did:plc:v076owner', 'registered', NULL, datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_child_provisionings \
+             (child_did, parent_did, handle, registration_id, signed_op, scopes, \
+              identity_assertion, assertion_expires_at, genesis_car, sync_car, created_at, updated_at) \
+             VALUES ('did:plc:v076child', 'did:plc:v076owner', 'v076.example.com', 'reg_v076', 'op', \
+                     '[]', 'raw.child.jwt', datetime('now', '+30 days'), X'', X'', \
+                     datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let v076 = MIGRATIONS.iter().find(|m| m.version == 76).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(v076.sql)
+            .execute(&mut *tx)
+            .await
+            .expect("V076 must apply over populated agent-auth rows");
+        tx.commit().await.unwrap();
+
+        for (table, column) in [
+            ("agent_identities", "claim_token"),
+            ("agent_identities", "identity_assertion"),
+            ("agent_child_provisionings", "identity_assertion"),
+            ("agent_child_provisionings", "assertion_expires_at"),
+        ] {
+            let query = format!("SELECT {column} FROM {table}");
+            assert!(
+                sqlx::query(&query).fetch_optional(&pool).await.is_err(),
+                "{table}.{column} must no longer exist after V076"
+            );
+        }
+
+        // The identity survives claimed, with no raw credential anywhere on the row.
+        let (status, hash, scopes): (String, Option<String>, String) = sqlx::query_as(
+            "SELECT status, claim_token_hash, scopes FROM agent_identities WHERE id = 'reg_v076'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "claimed");
+        assert_eq!(
+            hash, None,
+            "an in-flight raw claim token is dropped, not carried over"
+        );
+        assert_eq!(scopes, r#"["atproto"]"#);
+
+        // Dependents survive and still FK-check against the identity.
+        let (attempts, events, provisionings): (i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM agent_claim_attempts WHERE identity_id = 'reg_v076'), \
+                    (SELECT COUNT(*) FROM agent_audit_events WHERE registration_id = 'reg_v076'), \
+                    (SELECT COUNT(*) FROM agent_child_provisionings WHERE registration_id = 'reg_v076')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((attempts, events, provisionings), (1, 1, 1));
+        let orphan = sqlx::query(
+            "INSERT INTO agent_claim_attempts \
+             (id, identity_id, user_code, user_code_expires_at, created_at) \
+             VALUES ('cla_orphan', 'reg_missing', '000000', datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            orphan.is_err(),
+            "claim attempts must still FK-check after V076"
+        );
+
+        // The hashed lookup column is unique among non-NULL values, like the raw one was.
+        let insert_same_hash = |id: &'static str| {
+            sqlx::query(
+                "INSERT INTO agent_identities \
+                 (id, registration_type, scopes, assertion_expires_at, claim_token_hash, \
+                  created_at, updated_at) \
+                 VALUES (?, 'anonymous', '[]', datetime('now'), 'samehash', datetime('now'), datetime('now'))",
+            )
+            .bind(id)
+            .execute(&pool)
+        };
+        insert_same_hash("reg_v076_a").await.unwrap();
+        assert!(
+            insert_same_hash("reg_v076_b").await.is_err(),
+            "a second identity with the same claim token hash must be refused"
+        );
+    }
+
     /// schema_migrations records version=1 with a non-null applied_at.
     /// Verifies that version and timestamp fields are recorded correctly.
     #[tokio::test]

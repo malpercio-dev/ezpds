@@ -618,9 +618,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO agent_child_provisionings \
              (child_did, parent_did, handle, registration_id, signed_op, scopes, \
-              identity_assertion, assertion_expires_at, genesis_car, sync_car, created_at, updated_at) \
-             VALUES (?, ?, 'child.example.com', 'reg_tomb', 'op', '[]', 'jwt', \
-                     '2099-01-01T00:00:00Z', ?, ?, datetime('now'), datetime('now'))",
+              genesis_car, sync_car, created_at, updated_at) \
+             VALUES (?, ?, 'child.example.com', 'reg_tomb', 'op', '[]', ?, ?, datetime('now'), datetime('now'))",
         )
         .bind(child)
         .bind(parent)
@@ -758,9 +757,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO agent_child_provisionings \
              (child_did, parent_did, handle, registration_id, signed_op, scopes, \
-              identity_assertion, assertion_expires_at, genesis_car, sync_car, created_at, updated_at) \
-             VALUES (?, ?, 'cascade-child.example.com', 'reg_casc', 'op', '[]', 'jwt', \
-                     '2099-01-01T00:00:00Z', ?, ?, datetime('now'), datetime('now'))",
+              genesis_car, sync_car, created_at, updated_at) \
+             VALUES (?, ?, 'cascade-child.example.com', 'reg_casc', 'op', '[]', ?, ?, datetime('now'), datetime('now'))",
         )
         .bind(child)
         .bind(parent)

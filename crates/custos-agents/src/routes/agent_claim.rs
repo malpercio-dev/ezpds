@@ -46,13 +46,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::{SecondsFormat, Utc};
+use chrono::{Duration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agent_child_core::{mint_child_account, ChildRegistration};
 use custos_core::auth::agent_assertion::{
-    mint_identity_assertion, parse_sqlite_datetime, scopes_to_json, start_claim_attempt,
-    to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
+    parse_sqlite_datetime, scopes_to_json, start_claim_attempt, to_sqlite_datetime,
+    verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
 };
 use custos_core::auth::guards::{authenticate_account_owner, OwnerAuthError};
 use custos_core::auth::oauth_scopes::intersect_scope_tokens;
@@ -414,30 +414,26 @@ async fn confirm(
             .await;
     }
 
-    // The post-claim assertion carries the operator's current full granted-scope profile. Normalize
-    // it into a deterministic, deduplicated set so this mint matches the `identity_assertion` mint
-    // path byte-for-byte: `intersect_scope_tokens(xs, xs)` is the crate's canonicalizer — it returns
-    // the tokens of `xs` sorted and deduped (a self-intersection, since every token is in both
-    // operands). There is no separate infallible canonicalizer helper; `canonicalize_agent_scopes`
-    // is the fallible startup validator, not this hot path.
+    // The post-claim grant is the operator's current full granted-scope profile. Normalize it into
+    // a deterministic, deduplicated set so the assertion the claim-grant poll later mints from it
+    // matches the `identity_assertion` mint path byte-for-byte: `intersect_scope_tokens(xs, xs)` is
+    // the crate's canonicalizer — it returns the tokens of `xs` sorted and deduped (a
+    // self-intersection, since every token is in both operands). There is no separate infallible
+    // canonicalizer helper; `canonicalize_agent_scopes` is the fallible startup validator, not this
+    // hot path. No assertion is minted here — the agent collects one by polling — so the row only
+    // records the window a mint made now would get.
     let granted = &state.config.agent_auth.granted_scopes;
     let scopes = intersect_scope_tokens(granted, granted);
-    let minted = mint_identity_assertion(
-        &state.oauth_signing_keypair,
-        state.config.issuer(),
-        state.config.agent_auth.claimed_assertion_ttl_secs,
-        &caller_did,
-        &identity.id,
-        identity.registration_type.as_str(),
-        &scopes,
-    )?;
     let scopes_json = scopes_to_json(&scopes);
+    let assertion_expires = to_sqlite_datetime(
+        &(Utc::now()
+            + Duration::seconds(state.config.agent_auth.claimed_assertion_ttl_secs as i64)),
+    );
 
     // One transaction: consume the pending attempt, then claim the identity. Each write carries its
     // own guard (`status = 'pending'` / `status = 'active'`), so a lost race rolls back cleanly
-    // rather than double-claiming. Every read (and the pure mint) ran before `begin()` — the
-    // single-connection pool cannot serve a `&SqlitePool` read while a transaction holds the
-    // connection.
+    // rather than double-claiming. Every read ran before `begin()` — the single-connection pool
+    // cannot serve a `&SqlitePool` read while a transaction holds the connection.
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, "failed to open transaction for agent claim confirm");
         AgentAuthError::server_error()
@@ -454,8 +450,7 @@ async fn confirm(
         &identity.id,
         bind_did,
         &scopes_json,
-        &minted.jwt,
-        &minted.expires_sqlite,
+        &assertion_expires,
     )
     .await?
     {
@@ -596,6 +591,8 @@ mod tests {
 
     use common::AgentAuthConfig;
     use serde_json::{json, Value};
+
+    use custos_core::auth::token::sha256_hex;
 
     use crate::test_support::{
         insert_account_with_email as insert_account, post_json_with_bearer as post_json,
@@ -751,12 +748,13 @@ mod tests {
         // Seed an active anonymous identity whose claim token expired in the past.
         sqlx::query(
             "INSERT INTO agent_identities \
-             (id, did, registration_type, scopes, assertion_expires_at, claim_token, \
+             (id, did, registration_type, scopes, assertion_expires_at, claim_token_hash, \
               claim_token_expires_at, status, created_at, updated_at) \
              VALUES ('reg_exp', NULL, 'anonymous', '[]', datetime('now', '+1 hour'), \
-                     'clm_expired', datetime('now', '-1 minute'), 'active', datetime('now'), \
+                     ?, datetime('now', '-1 minute'), 'active', datetime('now'), \
                      datetime('now'))",
         )
+        .bind(sha256_hex(b"clm_expired"))
         .execute(&state.db)
         .await
         .unwrap();
@@ -778,12 +776,13 @@ mod tests {
         insert_account(&state.db, "did:plc:claimeddid1111111", "u@example.com").await;
         sqlx::query(
             "INSERT INTO agent_identities \
-             (id, did, registration_type, scopes, assertion_expires_at, claim_token, \
+             (id, did, registration_type, scopes, assertion_expires_at, claim_token_hash, \
               claim_token_expires_at, status, created_at, updated_at) \
              VALUES ('reg_done', 'did:plc:claimeddid1111111', 'anonymous', '[]', \
-                     datetime('now', '+1 hour'), 'clm_done', datetime('now', '+1 hour'), \
+                     datetime('now', '+1 hour'), ?, datetime('now', '+1 hour'), \
                      'claimed', datetime('now'), datetime('now'))",
         )
+        .bind(sha256_hex(b"clm_done"))
         .execute(&state.db)
         .await
         .unwrap();
@@ -840,19 +839,17 @@ mod tests {
         assert_eq!(body["status"], "claimed");
         assert_eq!(body["did"], did);
 
-        // The identity is now claimed, bound to the owner, with a fresh assertion stored.
-        let row: (Option<String>, String, Option<String>) = sqlx::query_as(
-            "SELECT did, status, identity_assertion FROM agent_identities WHERE id = ?",
-        )
-        .bind(&registration_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap();
+        // The identity is now claimed and bound to the owner. The assertion the agent collects
+        // is minted by the claim-grant poll (custos-oauth), asserted end to end in `pds`'s
+        // `agent_auth_test.rs`.
+        let row: (Option<String>, String) =
+            sqlx::query_as("SELECT did, status FROM agent_identities WHERE id = ?")
+                .bind(&registration_id)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
         assert_eq!(row.0.as_deref(), Some(did));
         assert_eq!(row.1, "claimed");
-        assert!(row.2.is_some(), "post-claim assertion stored");
-        // That the stored assertion exchanges at `/oauth/token` (custos-oauth) is asserted
-        // end to end in `pds`'s `agent_auth_test.rs`.
     }
 
     #[tokio::test]

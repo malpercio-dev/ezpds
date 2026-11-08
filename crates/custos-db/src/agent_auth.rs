@@ -3,13 +3,30 @@
 // auth.md agent-registration queries. Reads and writes the `agent_identities` and
 // `agent_claim_attempts` tables (V037); returns plain data structs. No JWT validation,
 // code generation, or route-level state-machine decisions live here.
+//
+// No agent credential rests in these tables: the claim token is hashed here on both insert and
+// lookup, and no assertion is stored (V076 — see the migration for why).
 
 #![allow(dead_code)]
 
+use common::token::sha256_hex;
 use common::{ApiError, ApiResultExt, ErrorCode};
 use sqlx::Sqlite;
 
 use crate::is_unique_violation;
+
+/// The at-rest form of a claim token. Every write and lookup goes through here, so no caller
+/// can store one raw.
+fn hash_claim_token(claim_token: &str) -> String {
+    sha256_hex(claim_token.as_bytes())
+}
+
+/// The `agent_identities` projection every identity lookup shares; `IdentitySqlRow` binds its
+/// columns by name.
+const SELECT_IDENTITY: &str = "SELECT id, did, parent_did, registration_type, issuer, subject, \
+            email, scopes, assertion_expires_at, pre_claim_scopes, claim_token_expires_at, status, \
+            created_at, updated_at, handle_hint \
+     FROM agent_identities";
 
 /// The `agent_identities` SELECT projection. A struct rather than a tuple because sqlx only
 /// implements `FromRow` for tuples up to 16 elements and this table has outgrown that; field
@@ -24,10 +41,8 @@ struct IdentitySqlRow {
     subject: Option<String>,
     email: Option<String>,
     scopes: String,
-    identity_assertion: Option<String>,
     assertion_expires_at: String,
     pre_claim_scopes: Option<String>,
-    claim_token: Option<String>,
     claim_token_expires_at: Option<String>,
     status: String,
     created_at: String,
@@ -145,10 +160,10 @@ pub struct AgentIdentityRow {
     pub subject: Option<String>,
     pub email: Option<String>,
     pub scopes: String,
-    pub identity_assertion: Option<String>,
+    /// Expiry of the most recently minted `identity_assertion`; the assertion itself is not stored.
     pub assertion_expires_at: String,
     pub pre_claim_scopes: Option<String>,
-    pub claim_token: Option<String>,
+    /// The claim token itself is stored only hashed and never read back.
     pub claim_token_expires_at: Option<String>,
     pub status: AgentIdentityStatus,
     pub created_at: String,
@@ -169,9 +184,9 @@ pub struct NewAgentIdentity<'a> {
     pub subject: Option<&'a str>,
     pub email: Option<&'a str>,
     pub scopes: &'a str,
-    pub identity_assertion: Option<&'a str>,
     pub assertion_expires_at: &'a str,
     pub pre_claim_scopes: Option<&'a str>,
+    /// The raw claim token; only its SHA-256 is written.
     pub claim_token: Option<&'a str>,
     pub claim_token_expires_at: Option<&'a str>,
     pub handle_hint: Option<&'a str>,
@@ -226,10 +241,10 @@ where
 {
     let result = sqlx::query(
         "INSERT INTO agent_identities \
-         (id, did, parent_did, registration_type, issuer, subject, email, scopes, identity_assertion, \
-          assertion_expires_at, pre_claim_scopes, claim_token, claim_token_expires_at, handle_hint, \
-          created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+         (id, did, parent_did, registration_type, issuer, subject, email, scopes, \
+          assertion_expires_at, pre_claim_scopes, claim_token_hash, claim_token_expires_at, \
+          handle_hint, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
     )
     .bind(identity.id)
     .bind(identity.did)
@@ -239,10 +254,9 @@ where
     .bind(identity.subject)
     .bind(identity.email)
     .bind(identity.scopes)
-    .bind(identity.identity_assertion)
     .bind(identity.assertion_expires_at)
     .bind(identity.pre_claim_scopes)
-    .bind(identity.claim_token)
+    .bind(identity.claim_token.map(hash_claim_token))
     .bind(identity.claim_token_expires_at)
     .bind(identity.handle_hint)
     .execute(executor)
@@ -271,12 +285,9 @@ pub async fn list_children_of_parent(
     db: &sqlx::SqlitePool,
     parent_did: &str,
 ) -> Result<Vec<AgentIdentityRow>, ApiError> {
-    let rows = sqlx::query_as::<_, IdentitySqlRow>(
-        "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, \
-                identity_assertion, assertion_expires_at, pre_claim_scopes, claim_token, \
-                claim_token_expires_at, status, created_at, updated_at, handle_hint \
-         FROM agent_identities WHERE parent_did = ? ORDER BY created_at DESC, id DESC",
-    )
+    let rows = sqlx::query_as::<_, IdentitySqlRow>(&format!(
+        "{SELECT_IDENTITY} WHERE parent_did = ? ORDER BY created_at DESC, id DESC"
+    ))
     .bind(parent_did)
     .fetch_all(db)
     .await
@@ -293,12 +304,9 @@ pub async fn get_child_of_parent(
     child_did: &str,
     parent_did: &str,
 ) -> Result<Option<AgentIdentityRow>, ApiError> {
-    let row = sqlx::query_as::<_, IdentitySqlRow>(
-        "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, \
-                identity_assertion, assertion_expires_at, pre_claim_scopes, claim_token, \
-                claim_token_expires_at, status, created_at, updated_at, handle_hint \
-         FROM agent_identities WHERE did = ? AND parent_did = ? AND registration_type = 'child'",
-    )
+    let row = sqlx::query_as::<_, IdentitySqlRow>(&format!(
+        "{SELECT_IDENTITY} WHERE did = ? AND parent_did = ? AND registration_type = 'child'"
+    ))
     .bind(child_did)
     .bind(parent_did)
     .fetch_optional(db)
@@ -310,12 +318,12 @@ pub async fn get_child_of_parent(
     Ok(row.map(into_identity_row))
 }
 
-/// Fetch an agent identity by one-time claim token.
+/// Fetch an agent identity by its one-time claim token (the raw token; the lookup is by hash).
 pub async fn get_agent_identity_by_claim_token(
     db: &sqlx::SqlitePool,
     claim_token: &str,
 ) -> Result<Option<AgentIdentityRow>, ApiError> {
-    fetch_identity_by(db, "claim_token", claim_token).await
+    fetch_identity_by(db, "claim_token_hash", &hash_claim_token(claim_token)).await
 }
 
 /// Fetch an agent identity by its `(issuer, subject)` pair.
@@ -327,17 +335,17 @@ pub async fn get_agent_identity_by_issuer_subject(
     issuer: &str,
     subject: &str,
 ) -> Result<Option<AgentIdentityRow>, ApiError> {
-    let row = sqlx::query_as::<_, IdentitySqlRow>(
-        "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, identity_assertion, \
-                assertion_expires_at, pre_claim_scopes, claim_token, claim_token_expires_at, \
-                status, created_at, updated_at, handle_hint \
-         FROM agent_identities WHERE issuer = ? AND subject = ?",
-    )
+    let row = sqlx::query_as::<_, IdentitySqlRow>(&format!(
+        "{SELECT_IDENTITY} WHERE issuer = ? AND subject = ?"
+    ))
     .bind(issuer)
     .bind(subject)
     .fetch_optional(db)
     .await
-    .or_internal_as("DB error fetching agent identity by issuer/subject", "failed to load agent identity")?;
+    .or_internal_as(
+        "DB error fetching agent identity by issuer/subject",
+        "failed to load agent identity",
+    )?;
     Ok(row.map(into_identity_row))
 }
 
@@ -347,22 +355,11 @@ async fn fetch_identity_by(
     value: &str,
 ) -> Result<Option<AgentIdentityRow>, ApiError> {
     let sql = match column {
-        "id" => {
-            "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, identity_assertion, \
-                    assertion_expires_at, pre_claim_scopes, claim_token, claim_token_expires_at, \
-                    status, created_at, updated_at, handle_hint \
-             FROM agent_identities WHERE id = ?"
-        }
-        "claim_token" => {
-            "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, identity_assertion, \
-                    assertion_expires_at, pre_claim_scopes, claim_token, claim_token_expires_at, \
-                    status, created_at, updated_at, handle_hint \
-             FROM agent_identities WHERE claim_token = ?"
-        }
+        "id" | "claim_token_hash" => format!("{SELECT_IDENTITY} WHERE {column} = ?"),
         _ => unreachable!("unsupported agent identity lookup column"),
     };
 
-    let row = sqlx::query_as::<_, IdentitySqlRow>(sql)
+    let row = sqlx::query_as::<_, IdentitySqlRow>(&sql)
         .bind(value)
         .fetch_optional(db)
         .await
@@ -498,11 +495,10 @@ where
     Ok(result.rows_affected() == 1)
 }
 
-/// Store a freshly minted service assertion for an identity.
-pub async fn set_agent_identity_assertion<'e, E>(
+/// Record the expiry of a freshly minted service assertion for an identity.
+pub async fn set_agent_identity_assertion_expiry<'e, E>(
     executor: E,
     id: &str,
-    identity_assertion: &str,
     assertion_expires_at: &str,
 ) -> Result<bool, ApiError>
 where
@@ -510,10 +506,9 @@ where
 {
     let result = sqlx::query(
         "UPDATE agent_identities \
-         SET identity_assertion = ?, assertion_expires_at = ?, updated_at = datetime('now') \
+         SET assertion_expires_at = ?, updated_at = datetime('now') \
          WHERE id = ?",
     )
-    .bind(identity_assertion)
     .bind(assertion_expires_at)
     .bind(id)
     .execute(executor)
@@ -527,9 +522,62 @@ where
     Ok(result.rows_affected() == 1)
 }
 
+/// Retire an identity's claim token once its job is done: the claim-grant poll that collects the
+/// post-claim assertion is the token's one use, so a later poll with it finds no row.
+pub async fn retire_agent_identity_claim_token<'e, E>(
+    executor: E,
+    id: &str,
+) -> Result<bool, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query(
+        "UPDATE agent_identities \
+         SET claim_token_hash = NULL, claim_token_expires_at = NULL, updated_at = datetime('now') \
+         WHERE id = ? AND claim_token_hash IS NOT NULL",
+    )
+    .bind(id)
+    .execute(executor)
+    .await
+    .map_err(|e| {
+        tracing::error!(identity_id = %id, error = %e, "DB error retiring agent claim token");
+        ApiError::new(ErrorCode::InternalError, "failed to update agent identity")
+    })?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Replace an `active` identity's claim token with a fresh one, retiring the old one: the hash
+/// cannot be turned back into the token an agent holds, so a re-challenge issues a new token.
+/// The `status = 'active'` guard keeps a claimed registration's token for the poll that collects.
+pub async fn rotate_agent_identity_claim_token<'e, E>(
+    executor: E,
+    id: &str,
+    claim_token: &str,
+    claim_token_expires_at: &str,
+) -> Result<bool, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query(
+        "UPDATE agent_identities \
+         SET claim_token_hash = ?, claim_token_expires_at = ?, updated_at = datetime('now') \
+         WHERE id = ? AND status = 'active'",
+    )
+    .bind(hash_claim_token(claim_token))
+    .bind(claim_token_expires_at)
+    .bind(id)
+    .execute(executor)
+    .await
+    .map_err(|e| {
+        tracing::error!(identity_id = %id, error = %e, "DB error rotating agent claim token");
+        ApiError::new(ErrorCode::InternalError, "failed to update agent identity")
+    })?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Atomically claim an `active` agent identity: bind an owning DID (for a previously ownerless
-/// `anonymous` registration), store the freshly minted post-claim assertion and its granted scopes,
-/// and flip the status to `claimed` — all in one single-table UPDATE.
+/// `anonymous` registration), store the granted scopes and the post-claim assertion's expiry, and
+/// flip the status to `claimed` — all in one single-table UPDATE.
 ///
 /// `bind_did` is `Some(did)` only for the `anonymous` flow (whose `did` was NULL); pass `None` for a
 /// registration already bound at registration time (`service_auth` / `identity_assertion`), where
@@ -546,7 +594,6 @@ pub async fn claim_agent_identity<'e, E>(
     id: &str,
     bind_did: Option<&str>,
     scopes: &str,
-    identity_assertion: &str,
     assertion_expires_at: &str,
 ) -> Result<bool, ApiError>
 where
@@ -557,14 +604,12 @@ where
          SET status = 'claimed', \
              did = COALESCE(?, did), \
              scopes = ?, \
-             identity_assertion = ?, \
              assertion_expires_at = ?, \
              updated_at = datetime('now') \
          WHERE id = ? AND status = 'active' AND (? IS NULL OR did IS NULL)",
     )
     .bind(bind_did)
     .bind(scopes)
-    .bind(identity_assertion)
     .bind(assertion_expires_at)
     .bind(id)
     .bind(bind_did)
@@ -588,14 +633,12 @@ where
 /// race roll back rather than re-home an already-claimed registration. All three of `did`,
 /// `parent_did`, and `registration_type` move together because V047's CHECK constraint requires a
 /// `child` row to carry both DIDs.
-#[allow(clippy::too_many_arguments)]
 pub async fn convert_identity_to_child<'e, E>(
     executor: E,
     id: &str,
     child_did: &str,
     parent_did: &str,
     scopes: &str,
-    identity_assertion: &str,
     assertion_expires_at: &str,
 ) -> Result<bool, ApiError>
 where
@@ -609,7 +652,6 @@ where
              parent_did = ?, \
              subject = ?, \
              scopes = ?, \
-             identity_assertion = ?, \
              assertion_expires_at = ?, \
              updated_at = datetime('now') \
          WHERE id = ? AND status = 'active' AND did IS NULL AND registration_type = 'anonymous'",
@@ -618,7 +660,6 @@ where
     .bind(parent_did)
     .bind(child_did)
     .bind(scopes)
-    .bind(identity_assertion)
     .bind(assertion_expires_at)
     .bind(id)
     .execute(executor)
@@ -786,10 +827,8 @@ fn into_identity_row(row: IdentitySqlRow) -> AgentIdentityRow {
         subject: row.subject,
         email: row.email,
         scopes: row.scopes,
-        identity_assertion: row.identity_assertion,
         assertion_expires_at: row.assertion_expires_at,
         pre_claim_scopes: row.pre_claim_scopes,
-        claim_token: row.claim_token,
         claim_token_expires_at: row.claim_token_expires_at,
         status: AgentIdentityStatus::from_string(row.status),
         created_at: row.created_at,
@@ -829,7 +868,6 @@ mod tests {
             subject: None,
             email: None,
             scopes: r#"["com.atproto.access"]"#,
-            identity_assertion: Some("assertion.jwt"),
             assertion_expires_at: "2099-01-01T00:00:00Z",
             pre_claim_scopes: Some(r#"["com.atproto.access"]"#),
             claim_token: Some("clm_test"),
@@ -854,13 +892,76 @@ mod tests {
         assert_eq!(by_id.did.as_deref(), Some(did));
         assert_eq!(by_id.registration_type, RegistrationType::Anonymous);
         assert_eq!(by_id.status, AgentIdentityStatus::Active);
-        assert_eq!(by_id.claim_token.as_deref(), Some("clm_test"));
 
         let by_claim = get_agent_identity_by_claim_token(&pool, "clm_test")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(by_claim.id, "reg_1");
+
+        // Only the token's SHA-256 rests in the row: a database read yields no polling credential.
+        let (stored,): (Option<String>,) =
+            sqlx::query_as("SELECT claim_token_hash FROM agent_identities WHERE id = 'reg_1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored.as_deref(), Some(sha256_hex(b"clm_test").as_str()));
+        assert!(
+            get_agent_identity_by_claim_token(&pool, &sha256_hex(b"clm_test"))
+                .await
+                .unwrap()
+                .is_none(),
+            "the stored hash itself must not work as a claim token"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotating_a_claim_token_retires_the_old_one_while_active_only() {
+        let pool = test_pool().await;
+        let anon = NewAgentIdentity {
+            did: None,
+            ..new_identity("reg_rotate", "unused")
+        };
+        insert_agent_identity(&pool, &anon).await.unwrap();
+
+        assert!(rotate_agent_identity_claim_token(
+            &pool,
+            "reg_rotate",
+            "clm_next",
+            "2099-06-01 00:00:00"
+        )
+        .await
+        .unwrap());
+        assert!(get_agent_identity_by_claim_token(&pool, "clm_test")
+            .await
+            .unwrap()
+            .is_none());
+        let row = get_agent_identity_by_claim_token(&pool, "clm_next")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.id, "reg_rotate");
+        assert_eq!(
+            row.claim_token_expires_at.as_deref(),
+            Some("2099-06-01 00:00:00")
+        );
+
+        // A claimed registration keeps its token: the poll that collects the credential still works.
+        set_agent_identity_status(&pool, "reg_rotate", AgentIdentityStatus::Claimed)
+            .await
+            .unwrap();
+        assert!(!rotate_agent_identity_claim_token(
+            &pool,
+            "reg_rotate",
+            "clm_never",
+            "2099-07-01 00:00:00"
+        )
+        .await
+        .unwrap());
+        assert!(get_agent_identity_by_claim_token(&pool, "clm_next")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -885,7 +986,6 @@ mod tests {
             .unwrap();
         assert_eq!(row.did, None);
         assert_eq!(row.status, AgentIdentityStatus::Active);
-        assert_eq!(row.claim_token.as_deref(), Some("clm_test"));
     }
 
     #[tokio::test]
@@ -921,6 +1021,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retiring_a_claim_token_makes_it_unknown() {
+        let pool = test_pool().await;
+        let anon = NewAgentIdentity {
+            did: None,
+            ..new_identity("reg_retire", "unused")
+        };
+        insert_agent_identity(&pool, &anon).await.unwrap();
+
+        assert!(retire_agent_identity_claim_token(&pool, "reg_retire")
+            .await
+            .unwrap());
+        assert!(get_agent_identity_by_claim_token(&pool, "clm_test")
+            .await
+            .unwrap()
+            .is_none());
+        let row = get_agent_identity(&pool, "reg_retire")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.claim_token_expires_at, None);
+        // Already retired: nothing to do, reported as such.
+        assert!(!retire_agent_identity_claim_token(&pool, "reg_retire")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
     async fn identity_status_and_assertion_can_be_updated() {
         let pool = test_pool().await;
         let did = "did:plc:agentauthowner3333333333";
@@ -934,21 +1061,17 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert!(set_agent_identity_assertion(
-            &pool,
-            "reg_update",
-            "new.assertion.jwt",
-            "2099-02-01T00:00:00Z",
-        )
-        .await
-        .unwrap());
+        assert!(
+            set_agent_identity_assertion_expiry(&pool, "reg_update", "2099-02-01T00:00:00Z")
+                .await
+                .unwrap()
+        );
 
         let row = get_agent_identity(&pool, "reg_update")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(row.status, AgentIdentityStatus::Claimed);
-        assert_eq!(row.identity_assertion.as_deref(), Some("new.assertion.jwt"));
         assert_eq!(row.assertion_expires_at, "2099-02-01T00:00:00Z");
     }
 
@@ -1041,7 +1164,6 @@ mod tests {
             did: None,
             scopes: r#"["blob:*/*"]"#,
             pre_claim_scopes: Some(r#"["blob:*/*"]"#),
-            identity_assertion: Some("pre.claim.jwt"),
             ..new_identity("reg_claimbind", "unused")
         };
         insert_agent_identity(&pool, &anon).await.unwrap();
@@ -1052,7 +1174,6 @@ mod tests {
             "reg_claimbind",
             Some(did),
             r#"["atproto","repo:*?action=create&action=update","blob:*/*"]"#,
-            "post.claim.jwt",
             "2099-03-01T00:00:00Z",
         )
         .await
@@ -1064,7 +1185,7 @@ mod tests {
             .unwrap();
         assert_eq!(row.did.as_deref(), Some(did));
         assert_eq!(row.status, AgentIdentityStatus::Claimed);
-        assert_eq!(row.identity_assertion.as_deref(), Some("post.claim.jwt"));
+        assert_eq!(row.assertion_expires_at, "2099-03-01T00:00:00Z");
         assert_eq!(
             row.scopes,
             r#"["atproto","repo:*?action=create&action=update","blob:*/*"]"#
@@ -1076,7 +1197,6 @@ mod tests {
             "reg_claimbind",
             Some(did),
             r#"["atproto"]"#,
-            "other.jwt",
             "2099-04-01T00:00:00Z",
         )
         .await
@@ -1100,7 +1220,6 @@ mod tests {
             "reg_prebound",
             None,
             r#"["atproto"]"#,
-            "bound.jwt",
             "2099-05-01T00:00:00Z",
         )
         .await
@@ -1133,7 +1252,6 @@ mod tests {
             "reg_owned",
             Some(intruder),
             r#"["atproto"]"#,
-            "hijack.jwt",
             "2099-06-01T00:00:00Z",
         )
         .await
