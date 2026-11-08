@@ -42,18 +42,18 @@
 //! PLC_DIRECTORY_ERROR, SERVER_ERROR, NETWORK_ERROR, IDENTITY_NOT_FOUND,
 //! NO_PENDING_ROTATION) serializes as SCREAMING_SNAKE_CASE; `SESSION_LOCKED` carries
 //! `reason: UnlockReason` and `ROTATION_FAILED` carries the server `status`.
-//! Directory reads classify via `map_plc_fetch_error` and session-lifecycle failures
-//! via `map_session_error` — the same split as `HandleChangeError`.
+//! Session, store, and directory-read failures are the shared vocabulary in
+//! [`crate::failure`].
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
 use crate::claim::{ClaimResult, OpDiff};
+use crate::failure::SharedFailure;
 use crate::handle_change::latest_full_state;
 use crate::identity_store::PerDidSignError;
-use crate::pds_client::PdsClientError;
-use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
+use crate::session_provider::SessionProvider;
 use crypto::PlcService;
 
 /// The atproto verification-method id in a PLC operation's `verificationMethods` map.
@@ -76,13 +76,6 @@ pub enum RotationError {
     /// cannot self-sign the rotation op.
     #[error("wallet is not authorized to self-sign for this DID (no device key in current rotationKeys)")]
     WalletNotAuthorized,
-    /// The identity's session could not be resolved without a passwordless unlock —
-    /// the frontend should run the biometric sovereign login and retry.
-    #[error("identity is locked and needs a passwordless unlock")]
-    SessionLocked { reason: UnlockReason },
-    /// The hosting PDS or plc.directory rate limited the request.
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
     /// The strict pre-sign allowlist rejected the proposed operation.
     #[error("rotation operation rejected by pre-sign guard: {reason}")]
     GuardRejected { reason: String },
@@ -96,74 +89,13 @@ pub enum RotationError {
     /// model specifically.
     #[error("rotation request failed (HTTP {status}): {message}")]
     RotationFailed { status: u16, message: String },
-    /// plc.directory answered a read with an HTTP failure (throttle handled separately as
-    /// `RateLimited`; this is a 5xx/4xx verdict) — distinct from `NetworkError` so a directory
-    /// outage is never reported as "check your connection".
-    #[error("plc.directory error: {message}")]
-    PlcDirectoryError { message: String },
-    /// A server-side step failed for a non-connectivity reason (session refresh verdict,
-    /// unsupported host, malformed response, or local session storage). The precise cause is
-    /// in `message` for diagnostics; the UI shows a neutral retry prompt.
-    #[error("server error: {message}")]
-    ServerError { message: String },
-    /// A network / transport call failed.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-    /// The DID's device key or identity record could not be found.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
     /// No built rotation op is pending for this DID (build must run first).
     #[error("no rotation operation is pending")]
     NoPendingRotation,
-}
-
-/// Map a session-lifecycle failure into the rotation surface. Exhaustive on purpose: only a
-/// genuine transport failure becomes `NetworkError` — a server verdict, unsupported host, or
-/// storage failure must not surface as "check your connection", or the real cause becomes
-/// undiagnosable from the screen (the same defect class `classify_xrpc_error` exists to fix).
-fn map_session_error(error: SessionError) -> RotationError {
-    match error {
-        SessionError::NeedsUnlock { reason } => RotationError::SessionLocked { reason },
-        SessionError::RateLimited { retry_after } => RotationError::RateLimited { retry_after },
-        SessionError::IdentityNotFound => RotationError::IdentityNotFound {
-            message: "identity not found".to_string(),
-        },
-        SessionError::Offline { message } => RotationError::NetworkError { message },
-        SessionError::ServerFailure { status } => RotationError::ServerError {
-            message: format!("session refresh returned HTTP {status}"),
-        },
-        SessionError::UnsupportedHost => RotationError::ServerError {
-            message: "the identity's hosting server does not support session refresh".to_string(),
-        },
-        SessionError::Keychain { message } => RotationError::ServerError {
-            message: format!("session keychain failure: {message}"),
-        },
-        SessionError::InvalidResponse { message } => RotationError::ServerError {
-            message: format!("invalid session response: {message}"),
-        },
-    }
-}
-
-/// Map a plc.directory read failure into the rotation surface: a throttle is retryable
-/// (`RateLimited`), an HTTP verdict is the directory's problem (`PlcDirectoryError`), and only
-/// a transport failure is `NetworkError`.
-fn map_plc_fetch_error(context: &str, error: PdsClientError) -> RotationError {
-    match error {
-        PdsClientError::RateLimited { retry_after, .. } => {
-            RotationError::RateLimited { retry_after }
-        }
-        PdsClientError::XrpcError {
-            status, message, ..
-        } => RotationError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP {status}: {message}"),
-        },
-        PdsClientError::Unauthorized { message, .. } => RotationError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP 401: {message}"),
-        },
-        other => RotationError::NetworkError {
-            message: format!("{context}: {other}"),
-        },
-    }
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 // ── Pure inputs to the guard ─────────────────────────────────────────────────
@@ -353,7 +285,7 @@ async fn classify_rotation_response(response: reqwest::Response) -> RotationErro
         .map(str::to_string);
     let body = response.text().await.unwrap_or_default();
     if status == 429 {
-        return RotationError::RateLimited { retry_after };
+        return RotationError::Shared(SharedFailure::RateLimited { retry_after });
     }
     let envelope: Option<serde_json::Value> = serde_json::from_str(&body).ok();
     let message = envelope
@@ -379,24 +311,26 @@ async fn begin_rotation_on_pds(
     let response = session
         .post_no_body("/v1/repo-keys/rotation")
         .await
-        .map_err(|e| RotationError::NetworkError {
-            message: format!("rotation begin request failed: {e}"),
+        .map_err(|e| {
+            RotationError::Shared(SharedFailure::NetworkError {
+                message: format!("rotation begin request failed: {e}"),
+            })
         })?;
     if !response.status().is_success() {
         return Err(classify_rotation_response(response).await);
     }
-    let body: serde_json::Value =
-        response
-            .json()
-            .await
-            .map_err(|e| RotationError::NetworkError {
-                message: format!("failed to read rotation begin response: {e}"),
-            })?;
+    let body: serde_json::Value = response.json().await.map_err(|e| {
+        RotationError::Shared(SharedFailure::NetworkError {
+            message: format!("failed to read rotation begin response: {e}"),
+        })
+    })?;
     body.get("signingKey")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .ok_or_else(|| RotationError::NetworkError {
-            message: "rotation begin response is missing signingKey".to_string(),
+        .ok_or_else(|| {
+            RotationError::Shared(SharedFailure::NetworkError {
+                message: "rotation begin response is missing signingKey".to_string(),
+            })
         })
 }
 
@@ -412,8 +346,10 @@ async fn complete_rotation_on_pds(
             &serde_json::json!({ "operation": signed_op }),
         )
         .await
-        .map_err(|e| RotationError::NetworkError {
-            message: format!("rotation complete request failed: {e}"),
+        .map_err(|e| {
+            RotationError::Shared(SharedFailure::NetworkError {
+                message: format!("rotation complete request failed: {e}"),
+            })
         })?;
     if !response.status().is_success() {
         return Err(classify_rotation_response(response).await);
@@ -437,22 +373,16 @@ pub async fn build_repo_key_rotation(
     let store = core.identities();
 
     // 1. Full-access session on the hosting PDS (the per-DID session-provider seam).
-    let session = SessionProvider
-        .full_access_client(core, did)
-        .await
-        .map_err(map_session_error)?;
+    let session = SessionProvider.full_access_client(core, did).await?;
 
     // 2. Stage a fresh replacement key on the PDS. Idempotency note: re-running build
     //    stages another fresh key, which simply replaces the previous staged one.
     let staged_key_id = begin_rotation_on_pds(&session.client).await?;
 
     // 3. Per-DID device key (rotationKeys[0] for a wallet-custodied identity).
-    let device =
-        store
-            .get_or_create_device_key(did)
-            .map_err(|e| RotationError::IdentityNotFound {
-                message: format!("failed to get device key: {e}"),
-            })?;
+    let device = store
+        .get_or_create_device_key(did)
+        .map_err(SharedFailure::from)?;
     let device_key_id = device.key_id;
 
     // 4. Current audit log -> prev + full current state.
@@ -460,7 +390,7 @@ pub async fn build_repo_key_rotation(
         .pds_client()
         .fetch_audit_log(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch audit log", e))?;
     let audit_log =
         crypto::parse_audit_log(&log_json).map_err(|e| RotationError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
@@ -496,8 +426,8 @@ pub async fn build_repo_key_rotation(
     // 7. Sign locally with the per-DID device key.
     let sign_closure =
         crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
-            PerDidSignError::DeviceKeyNotFound { message } => {
-                RotationError::IdentityNotFound { message }
+            PerDidSignError::DeviceKeyNotFound { .. } => {
+                RotationError::Shared(SharedFailure::IdentityNotFound)
             }
             PerDidSignError::SigningSetupFailed { message } => {
                 RotationError::SigningFailed { message }
@@ -551,10 +481,7 @@ pub async fn submit_repo_key_rotation(
 ) -> Result<ClaimResult, RotationError> {
     let store = core.identities();
 
-    let session = SessionProvider
-        .full_access_client(core, did)
-        .await
-        .map_err(map_session_error)?;
+    let session = SessionProvider.full_access_client(core, did).await?;
     complete_rotation_on_pds(&session.client, signed_op).await?;
 
     // Refresh the cached PLC log + DID document (PLC *data* shape — the home card's
@@ -563,7 +490,7 @@ pub async fn submit_repo_key_rotation(
         .pds_client()
         .fetch_audit_log(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch updated audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch updated audit log", e))?;
     store
         .store_plc_log(did, &updated_log)
         .map_err(|e| RotationError::SigningFailed {
@@ -573,7 +500,7 @@ pub async fn submit_repo_key_rotation(
         .pds_client()
         .fetch_plc_data_document(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch DID document", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch DID document", e))?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| RotationError::SigningFailed {
@@ -634,75 +561,6 @@ pub async fn submit_repo_key_rotation_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A directory throttle and a directory HTTP verdict must reach the UI as RATE_LIMITED /
-    /// PLC_DIRECTORY_ERROR — only a transport failure may say "check your connection".
-    #[test]
-    fn plc_fetch_errors_classify_by_status() {
-        let throttled = map_plc_fetch_error(
-            "failed to fetch audit log",
-            PdsClientError::RateLimited {
-                retry_after: Some("30".to_string()),
-                message: "slow down".to_string(),
-            },
-        );
-        assert!(matches!(
-            throttled,
-            RotationError::RateLimited { retry_after: Some(ref r) } if r == "30"
-        ));
-
-        let outage = map_plc_fetch_error(
-            "failed to fetch audit log",
-            PdsClientError::XrpcError {
-                status: 502,
-                error: None,
-                message: "bad gateway".to_string(),
-            },
-        );
-        assert!(
-            matches!(outage, RotationError::PlcDirectoryError { ref message } if message.contains("502")),
-            "got {outage:?}"
-        );
-
-        let transport = map_plc_fetch_error(
-            "failed to fetch audit log",
-            PdsClientError::NetworkError {
-                message: "dns failure".to_string(),
-            },
-        );
-        assert!(matches!(transport, RotationError::NetworkError { .. }));
-    }
-
-    /// Session failures keep their nature: a server verdict is SERVER_ERROR, not NETWORK_ERROR.
-    #[test]
-    fn session_errors_no_longer_flatten_to_network_error() {
-        assert!(matches!(
-            map_session_error(SessionError::ServerFailure { status: 500 }),
-            RotationError::ServerError { ref message } if message.contains("500")
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::UnsupportedHost),
-            RotationError::ServerError { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::Keychain {
-                message: "no slot".to_string()
-            }),
-            RotationError::ServerError { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::InvalidResponse {
-                message: "bad json".to_string()
-            }),
-            RotationError::ServerError { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::Offline {
-                message: "timeout".to_string()
-            }),
-            RotationError::NetworkError { .. }
-        ));
-    }
 
     const DEVICE: &str = "did:key:zDEVICE";
     const OLD_PDS: &str = "did:key:zOLDPDS";

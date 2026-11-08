@@ -137,7 +137,7 @@ commands! {
     [async state] create_recovery_destination_account = crate::disaster_recovery::create_recovery_destination_account(did: String, email: String, invite_code: Option<String>) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] recovery_transfer_repo = crate::disaster_recovery::recovery_transfer_repo(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] sovereign_login = crate::sovereign_session::sovereign_login(did: String) -> Result<crate::sovereign_session::SovereignLoginResult, crate::sovereign_session::SovereignLoginError>;
-    [async state] ensure_identity_session = crate::session_provider::ensure_identity_session(did: String) -> Result<crate::session_provider::SessionReady, crate::session_provider::SessionError>;
+    [async state] ensure_identity_session = crate::session_provider::ensure_identity_session(did: String) -> Result<crate::session_provider::SessionReady, crate::failure::SharedFailure>;
     [async state] get_identity_unlock_route = crate::password_unlock::get_identity_unlock_route(did: String) -> Result<crate::password_unlock::UnlockRoute, crate::password_unlock::UnlockError>;
     [async state] unlock_identity_with_password = crate::password_unlock::unlock_identity_with_password(did: String, identifier: String, password: String, auth_factor_token: Option<String>) -> Result<crate::session_provider::SessionReady, crate::password_unlock::UnlockError>;
     [async state] change_handle_cmd = crate::handle_change::change_handle_cmd(did: String, handle: String) -> Result<crate::claim::ClaimResult, crate::handle_change::HandleChangeError>;

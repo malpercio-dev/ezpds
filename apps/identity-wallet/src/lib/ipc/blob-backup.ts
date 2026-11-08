@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 import { authenticateBiometric } from '$lib/biometric';
 import type { UnlockReason } from './identity';
@@ -80,22 +81,11 @@ export type BlobRestoreReport = {
 export type BlobBackupError =
   // No backup location on this device — iCloud Drive is off (or the entitlement is absent).
   | { code: 'BACKUP_UNAVAILABLE' }
-  // The identity is locked — run sovereignLogin(did) and retry. `reason` mirrors ensureIdentitySession.
-  | { code: 'SESSION_LOCKED'; reason: UnlockReason }
-  // The hosting PDS or plc.directory rate-limited the request; `retryAfter` is the server's Retry-After.
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
-  | { code: 'IDENTITY_NOT_FOUND'; message: string }
-  // plc.directory refused the hosting-PDS discovery (e.g. the DID is unknown).
-  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
-  // A server-side step failed for a non-connectivity reason; `status` is the HTTP code when
-  // the server refused the request, null for a non-HTTP failure; `message` is its own text.
-  | { code: 'SERVER_ERROR'; status: number | null; message: string }
-  | { code: 'NETWORK_ERROR'; message: string }
   // Local file I/O on the mirror failed.
   | { code: 'STORAGE_ERROR'; message: string }
   // The backup manifest is unreadable; it is preserved, never rebuilt over.
   | { code: 'MANIFEST_CORRUPT'; message: string }
-  | { code: 'KEYCHAIN_ERROR'; message: string };
+  | SharedFailure;
 
 /**
  * App-global settings for the iOS background media-backup sweep (distinct from the per-DID

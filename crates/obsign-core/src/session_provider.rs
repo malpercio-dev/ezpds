@@ -6,20 +6,20 @@
 //! operation on a Custos-hosted identity goes through. It is an on-demand, per-DID resolver running
 //! a decision ladder over the DID's versioned [`SovereignTokenRecord`]:
 //!
-//! 1. No record, or a dead refresh chain → [`SessionError::NeedsUnlock`]
+//! 1. No record, or a dead refresh chain → [`SharedFailure::SessionLocked`]
 //!    (`NoRefreshChain`).
 //! 2. Access JWT still valid (`exp > now + 120s` headroom) → rebuild a Bearer client
 //!    with **no network** — this is what makes a restart or offline launch with a
 //!    live token need no prompt.
 //! 3. Near-expiry with a live refresh → discover the DID's current PDS; if the host
 //!    moved, **discard the old-audience record** and return
-//!    `NeedsUnlock { HostChanged }`, else call `com.atproto.server.refreshSession`
+//!    `SessionLocked { HostChanged }`, else call `com.atproto.server.refreshSession`
 //!    exactly once and atomically persist the rotated pair (re-validating sub/aud).
 //!
-//! Terminal errors are distinct and never looped: `NeedsUnlock { reason }`,
-//! `RateLimited { retryAfter }`, `UnsupportedHost`, `Offline { message }`,
-//! `ServerFailure { status }`, `Keychain`, `InvalidResponse` ([`SessionError`]
-//! serializes a SCREAMING_SNAKE_CASE `code`). A revoked refresh (400/401) and a host
+//! Terminal errors are distinct and never looped: `SessionLocked { reason }`,
+//! `RateLimited { retryAfter }`, `UnsupportedHost`, `NetworkError`, `ServerError { status }`,
+//! `KeychainError`, `InvalidResponse` — the shared [`SharedFailure`] vocabulary every
+//! command embeds, so this pre-flight and the commands reject with the same codes. A revoked refresh (400/401) and a host
 //! change both delete the dead record; a rate limit keeps it. Coalescing is a
 //! **re-read**, not a shared future: the second caller for one DID waits on the
 //! per-DID async lock, then re-loads the freshly-persisted record — so a refresh
@@ -33,7 +33,7 @@
 //! `rotated`), [`SessionReady`] (the serializable summary, dropping the client), and
 //! [`UnlockReason`] (`NO_REFRESH_CHAIN` / `REFRESH_REVOKED` / `HOST_CHANGED`). The
 //! [`ensure_identity_session`] Tauri command is the frontend pre-flight: restore or
-//! rotate, report a `SessionReady`; a `NEEDS_UNLOCK` error is the UI's cue to run
+//! rotate, report a `SessionReady`; a `SESSION_LOCKED` error is the UI's cue to run
 //! `unlockIdentity(did)` — the biometric sovereign login where the host advertises
 //! `sovereignSessions`, the `password_unlock` prompt where it does not. The command
 //! performs no biometric prompt itself: a live token must never demand one.
@@ -43,7 +43,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 
-use crate::identity_store::{IdentityStore, IdentityStoreError, SovereignTokenRecord};
+use crate::failure::SharedFailure;
+use crate::identity_store::{IdentityStore, SovereignTokenRecord};
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::sovereign_session::{audience_matches_server, bearer_jwt_claims};
@@ -67,43 +68,6 @@ pub enum UnlockReason {
     /// The DID now resolves to a different PDS than the stored credentials' audience.
     /// The old-audience record has been discarded.
     HostChanged,
-}
-
-/// Outcome of trying to obtain a full-access client for a managed DID.
-///
-/// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` to match `OAuthError` /
-/// `IdentityStoreError` / `SovereignLoginError`. Each variant is a distinct terminal
-/// classification — the provider never loops refresh/login retries.
-#[derive(Debug, Serialize, thiserror::Error)]
-#[serde(
-    tag = "code",
-    rename_all = "SCREAMING_SNAKE_CASE",
-    rename_all_fields = "camelCase"
-)]
-pub enum SessionError {
-    #[error("identity not found")]
-    IdentityNotFound,
-    #[error("identity is locked and needs a passwordless unlock")]
-    NeedsUnlock { reason: UnlockReason },
-    #[error("the hosting server rate limited the refresh")]
-    RateLimited { retry_after: Option<String> },
-    #[error("the identity's hosting server does not support session refresh")]
-    UnsupportedHost,
-    /// `message` is diagnostic only (ADR-0031) — a transport failure is never the server's
-    /// words.
-    #[error("offline or transport failure: {message}")]
-    Offline { message: String },
-    #[error("hosting server failure: {status}")]
-    ServerFailure { status: u16 },
-    /// `message` is diagnostic only (ADR-0031) — a local Keychain failure is never the
-    /// server's words.
-    #[error("keychain failure: {message}")]
-    Keychain { message: String },
-    /// A malformed stored/rotated JWT, or a `refresh_bearer_session` validation failure
-    /// (DID/sub/aud mismatch). `message` is diagnostic only (ADR-0031) — it describes this
-    /// client's read of the response, not a reason the server stated.
-    #[error("invalid session response: {message}")]
-    InvalidResponse { message: String },
 }
 
 /// A resolved, ready-to-use full-access session for one managed DID.
@@ -172,39 +136,6 @@ fn did_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
-fn map_store_error(error: IdentityStoreError) -> SessionError {
-    match error {
-        IdentityStoreError::IdentityNotFound => SessionError::IdentityNotFound,
-        IdentityStoreError::KeychainError { message } => SessionError::Keychain { message },
-        other => SessionError::Keychain {
-            message: other.to_string(),
-        },
-    }
-}
-
-/// Map a DID-discovery failure to a session-lifecycle error. A transport failure
-/// (offline, PDS unreachable) is [`SessionError::Offline`]; a resolution failure
-/// (DID or PDS metadata absent) is [`SessionError::UnsupportedHost`]; a directory
-/// throttle or HTTP verdict keeps its status-classified shape rather than reading
-/// as a connectivity problem.
-fn map_discovery_error(error: PdsClientError) -> SessionError {
-    match error {
-        PdsClientError::PdsUnreachable { reason } => SessionError::Offline { message: reason },
-        PdsClientError::NetworkError { message } => SessionError::Offline { message },
-        PdsClientError::DidNotFound | PdsClientError::InvalidResponse { .. } => {
-            SessionError::UnsupportedHost
-        }
-        PdsClientError::RateLimited { retry_after, .. } => {
-            SessionError::RateLimited { retry_after }
-        }
-        PdsClientError::XrpcError { status, .. } => SessionError::ServerFailure { status },
-        PdsClientError::Unauthorized { .. } => SessionError::ServerFailure { status: 401 },
-        other => SessionError::Offline {
-            message: other.to_string(),
-        },
-    }
-}
-
 /// Whether two PDS URLs identify the same host (trailing slash is not significant).
 fn pds_urls_match(a: &str, b: &str) -> bool {
     a.trim_end_matches('/') == b.trim_end_matches('/')
@@ -222,14 +153,14 @@ impl SessionProvider {
         &self,
         core: &crate::oauth::Core,
         did: &str,
-    ) -> Result<ActiveSession, SessionError> {
+    ) -> Result<ActiveSession, SharedFailure> {
         let pds_client = core.pds_client();
         let store = &core.identities();
         let lock = did_lock(did);
         let _guard = lock.lock().await;
 
-        let Some(record) = store.load_oauth_tokens(did).map_err(map_store_error)? else {
-            return Err(SessionError::NeedsUnlock {
+        let Some(record) = store.load_oauth_tokens(did).map_err(SharedFailure::from)? else {
+            return Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::NoRefreshChain,
             });
         };
@@ -237,16 +168,20 @@ impl SessionProvider {
         // The stored access JWT must be readable and bound to this DID + host, or the
         // record is corrupt/foreign and only a fresh mint can recover it.
         let Some(access) = bearer_jwt_claims(&record.access_jwt) else {
-            store.delete_oauth_tokens(did).map_err(map_store_error)?;
-            return Err(SessionError::NeedsUnlock {
+            store
+                .delete_oauth_tokens(did)
+                .map_err(SharedFailure::from)?;
+            return Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::NoRefreshChain,
             });
         };
         if access.sub != did
             || !audience_matches_server(&access.aud, &record.server_did, &record.pds_url)
         {
-            store.delete_oauth_tokens(did).map_err(map_store_error)?;
-            return Err(SessionError::NeedsUnlock {
+            store
+                .delete_oauth_tokens(did)
+                .map_err(SharedFailure::from)?;
+            return Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::NoRefreshChain,
             });
         }
@@ -263,7 +198,7 @@ impl SessionProvider {
             .refresh_expires_at
             .or_else(|| bearer_jwt_claims(&record.refresh_jwt).map(|c| c.exp));
         if refresh_exp.is_none_or(|exp| (exp as i64) <= now) {
-            return Err(SessionError::NeedsUnlock {
+            return Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::NoRefreshChain,
             });
         }
@@ -274,10 +209,12 @@ impl SessionProvider {
         let (current_pds, _doc) = pds_client
             .discover_pds(did)
             .await
-            .map_err(map_discovery_error)?;
+            .map_err(SharedFailure::from_discovery)?;
         if !pds_urls_match(&current_pds, &record.pds_url) {
-            store.delete_oauth_tokens(did).map_err(map_store_error)?;
-            return Err(SessionError::NeedsUnlock {
+            store
+                .delete_oauth_tokens(did)
+                .map_err(SharedFailure::from)?;
+            return Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::HostChanged,
             });
         }
@@ -290,12 +227,12 @@ impl SessionProvider {
 ///
 /// Restores or rotates the selected DID's session and reports its status, discarding
 /// the resolved client (an [`OAuthClient`] cannot cross the IPC boundary). The
-/// frontend calls this when showing an identity so a `NEEDS_UNLOCK` result can render
+/// frontend calls this when showing an identity so a `SESSION_LOCKED` result can render
 /// the passwordless "Unlock identity" action before the user attempts an operation.
 pub async fn ensure_identity_session(
     state: &crate::oauth::Core,
     did: String,
-) -> Result<SessionReady, SessionError> {
+) -> Result<SessionReady, SharedFailure> {
     let session = SessionProvider.full_access_client(state, &did).await?;
     Ok(SessionReady::from(&session))
 }
@@ -306,9 +243,9 @@ fn active_session_from_record(
     did: &str,
     record: SovereignTokenRecord,
     rotated: bool,
-) -> Result<ActiveSession, SessionError> {
+) -> Result<ActiveSession, SharedFailure> {
     let access =
-        bearer_jwt_claims(&record.access_jwt).ok_or_else(|| SessionError::InvalidResponse {
+        bearer_jwt_claims(&record.access_jwt).ok_or_else(|| SharedFailure::InvalidResponse {
             message: "stored accessJwt is malformed".into(),
         })?;
     let client = OAuthClient::new_bearer_with_observer(
@@ -317,7 +254,7 @@ fn active_session_from_record(
         record.pds_url.clone(),
         crate::oauth_client::diagnostics_observer(),
     )
-    .map_err(|e| SessionError::Keychain {
+    .map_err(|e| SharedFailure::KeychainError {
         message: e.to_string(),
     })?;
     Ok(ActiveSession {
@@ -343,7 +280,7 @@ async fn rotate_and_persist(
     did: &str,
     record: &SovereignTokenRecord,
     now: i64,
-) -> Result<ActiveSession, SessionError> {
+) -> Result<ActiveSession, SharedFailure> {
     let refreshed = match custos_client::sovereign_session::refresh_bearer_session(
         pds_client,
         &record.pds_url,
@@ -357,7 +294,7 @@ async fn rotate_and_persist(
         Err(e) => return Err(map_refresh_error(e, store, did)?),
     };
 
-    let stored_at = u64::try_from(now).map_err(|_| SessionError::InvalidResponse {
+    let stored_at = u64::try_from(now).map_err(|_| SharedFailure::InvalidResponse {
         message: "negative timestamp cannot be persisted".into(),
     })?;
     let new_record = SovereignTokenRecord {
@@ -372,7 +309,7 @@ async fn rotate_and_persist(
     };
     store
         .store_oauth_tokens(did, &new_record)
-        .map_err(map_store_error)?;
+        .map_err(SharedFailure::from)?;
 
     active_session_from_record(did, new_record, true)
 }
@@ -391,23 +328,28 @@ fn map_refresh_error(
     error: PdsClientError,
     store: &IdentityStore<'_>,
     did: &str,
-) -> Result<SessionError, SessionError> {
+) -> Result<SharedFailure, SharedFailure> {
     Ok(match error {
         PdsClientError::Unauthorized { .. } | PdsClientError::XrpcError { status: 400, .. } => {
-            store.delete_oauth_tokens(did).map_err(map_store_error)?;
-            SessionError::NeedsUnlock {
+            store
+                .delete_oauth_tokens(did)
+                .map_err(SharedFailure::from)?;
+            SharedFailure::SessionLocked {
                 reason: UnlockReason::RefreshRevoked,
             }
         }
         PdsClientError::XrpcError {
             status: 404 | 405, ..
-        } => SessionError::UnsupportedHost,
+        } => SharedFailure::UnsupportedHost,
         PdsClientError::RateLimited { retry_after, .. } => {
-            SessionError::RateLimited { retry_after }
+            SharedFailure::RateLimited { retry_after }
         }
-        PdsClientError::XrpcError { status, .. } => SessionError::ServerFailure { status },
-        PdsClientError::NetworkError { message } => SessionError::Offline { message },
-        other => SessionError::InvalidResponse {
+        PdsClientError::XrpcError { status, .. } => SharedFailure::ServerError {
+            status,
+            message: error.to_string(),
+        },
+        PdsClientError::NetworkError { message } => SharedFailure::NetworkError { message },
+        other => SharedFailure::InvalidResponse {
             message: other.to_string(),
         },
     })
@@ -420,33 +362,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    /// A directory throttle or HTTP verdict during discovery keeps its status-classified
-    /// shape instead of reading as Offline ("check your connection").
-    #[test]
-    fn discovery_throttle_and_verdict_are_not_offline() {
-        assert!(matches!(
-            map_discovery_error(PdsClientError::RateLimited {
-                retry_after: Some("15".to_string()),
-                message: "slow down".to_string(),
-            }),
-            SessionError::RateLimited { retry_after: Some(ref r) } if r == "15"
-        ));
-        assert!(matches!(
-            map_discovery_error(PdsClientError::XrpcError {
-                status: 503,
-                error: None,
-                message: "unavailable".to_string(),
-            }),
-            SessionError::ServerFailure { status: 503 }
-        ));
-        assert!(matches!(
-            map_discovery_error(PdsClientError::NetworkError {
-                message: "dns failure".to_string(),
-            }),
-            SessionError::Offline { .. }
-        ));
-    }
 
     const DID: &str = "did:plc:abcdefghijklmnopqrstuvwx";
     const OTHER_DID: &str = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
@@ -657,7 +572,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(SessionError::NeedsUnlock {
+            Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::HostChanged
             })
         ));
@@ -697,7 +612,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(SessionError::NeedsUnlock {
+            Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::RefreshRevoked
             })
         ));
@@ -729,7 +644,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(SessionError::NeedsUnlock {
+            Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::RefreshRevoked
             })
         ));
@@ -757,7 +672,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(SessionError::RateLimited { retry_after: Some(v) }) if v == "30"
+            Err(SharedFailure::RateLimited { retry_after: Some(v) }) if v == "30"
         ));
         assert!(
             core.identities().load_oauth_tokens(DID).unwrap().is_some(),
@@ -783,7 +698,7 @@ mod tests {
         let core = &core.with_pds_client(client);
         let result = SessionProvider.full_access_client(core, DID).await;
 
-        assert!(matches!(result, Err(SessionError::Offline { .. })));
+        assert!(matches!(result, Err(SharedFailure::NetworkError { .. })));
     }
 
     // ── Dead / missing chains need an unlock ──────────────────────────────────────
@@ -799,7 +714,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(SessionError::NeedsUnlock {
+            Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::NoRefreshChain
             })
         ));
@@ -816,7 +731,7 @@ mod tests {
         );
         seed(core, DID, &record);
 
-        // Unroutable plc.directory: reaching it would error, so a clean NeedsUnlock
+        // Unroutable plc.directory: reaching it would error, so a clean SessionLocked
         // proves the dead-chain short-circuit precedes any discovery.
         let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let core = &core.with_pds_client(client);
@@ -824,7 +739,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(SessionError::NeedsUnlock {
+            Err(SharedFailure::SessionLocked {
                 reason: UnlockReason::NoRefreshChain
             })
         ));
@@ -879,15 +794,5 @@ mod tests {
             alice.pds_url, bob.pds_url,
             "each identity's session must stay bound to its own host"
         );
-    }
-
-    #[test]
-    fn session_error_serializes_needs_unlock_with_reason() {
-        let json = serde_json::to_string(&SessionError::NeedsUnlock {
-            reason: UnlockReason::HostChanged,
-        })
-        .unwrap();
-        assert!(json.contains(r#""code":"NEEDS_UNLOCK""#));
-        assert!(json.contains(r#""reason":"HOST_CHANGED""#));
     }
 }

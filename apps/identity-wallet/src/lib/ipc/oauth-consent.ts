@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 
 // ── Wallet-confirmed OAuth consent (Phase A) ─────────────────────────────────
@@ -42,20 +43,14 @@ export type ConsentDecision = {
  * (`#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]`) — codes must match exactly.
  */
 export type ConsentError =
-  | { code: 'IDENTITY_NOT_FOUND' }
-  | { code: 'UNSUPPORTED_HOST' }
   | { code: 'REQUEST_NOT_FOUND' }
   | { code: 'APPROVAL_REJECTED' }
   | { code: 'MATCH_CODE_MISMATCH' }
   | { code: 'ALREADY_RESOLVED' }
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
-  | { code: 'TRANSPORT_FAILURE'; message: string }
-  | { code: 'KEYCHAIN_FAILURE'; message: string }
   | { code: 'SIGNING_FAILED'; message: string }
   | { code: 'DID_MISMATCH' }
   | { code: 'SERVER_MISMATCH' }
-  | { code: 'INVALID_RESPONSE'; message: string }
-  | { code: 'SERVER_FAILURE'; status: number };
+  | SharedFailure;
 
 /**
  * Preview a pending authorization by its typed `userCode`, against the selected DID's hosting PDS.

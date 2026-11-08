@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 
 // ── Sovereign disaster recovery (rebuild from the iCloud backups) ─────────────
@@ -19,14 +20,10 @@ export type DisasterRecoveryError =
   | { code: 'GUARD_REJECTED'; reason: string }
   | { code: 'INVALID_AUDIT_LOG'; message: string }
   | { code: 'SIGNING_FAILED'; message: string }
-  | { code: 'KEYCHAIN_ERROR'; message: string }
-  | { code: 'IDENTITY_NOT_FOUND'; message: string }
-  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
   | { code: 'KEY_NOT_ENROLLED'; message: string }
   | { code: 'DESTINATION_UNREACHABLE'; message: string }
   | { code: 'RECOVERY_NOT_READY'; message: string }
-  | { code: 'NETWORK_ERROR'; message: string };
+  | SharedFailure;
 
 /**
  * What `prepareDisasterRecovery` resolved — mirrors the Rust `PreparedRecovery`

@@ -96,8 +96,8 @@ exist.
   Keychain — is app-shaped state this crate does not model. identity-wallet's
   `sovereign_session.rs` is now a thin wrapper: it resolves the device key + signer from
   `IdentityStore`, calls this module's `sovereign_login`, and persists the result; its own
-  `SovereignLoginError` stays a superset (adds pre-flight variants like `IdentityNotFound`/
-  `KeychainFailure` this crate's classification can't produce) with a `From` conversion for the
+  `SovereignLoginError` stays a superset (embeds obsign-core's `SharedFailure` for pre-flight
+  failures like `IDENTITY_NOT_FOUND`/`KEYCHAIN_ERROR` this crate's classification can't produce) with a `From` conversion for the
   rest. `fresh_nonce`/`unix_timestamp` are reused well beyond this one ceremony — every other
   device-key-signed wallet flow (agents, app passwords, identity removal, migration, rotation,
   …) calls them too, so the wallet re-exports both from its own `sovereign_session.rs` rather
@@ -114,12 +114,13 @@ exist.
   classification `map_child_confirm_error` widens ahead of).
 - **`refresh_bearer_session` is the network+validation slice of a Bearer rotation; the
   decision ladder around it stays in identity-wallet.** `SessionProvider::full_access_client`
-  (restore / decide-to-refresh / `NeedsUnlock`, the per-DID coalescing lock,
+  (restore / decide-to-refresh / `SessionLocked`, the per-DID coalescing lock,
   `IdentityStore`'s `SovereignTokenRecord` reads/writes) is still identity-wallet-only
   orchestration in `session_provider.rs` — it calls this function once it has decided a
   rotation is needed, then persists the result or discards the record on a classified
   revocation (`map_refresh_error`, session_provider.rs's own mapping from `PdsClientError`
-  to its `SessionError`, mirroring `map_discovery_error`'s existing style in the same file).
+  to obsign-core's shared `SharedFailure`). `sovereign_login` likewise passes a discovery
+  failure up unclassified (`SovereignLoginError::Discovery`); obsign-core classifies it.
   A candidate for a future PR if the wallet-core extraction needs the ladder itself moved,
   not yet redesigned behind injected traits.
 - **Typed methods stay hand-written; lexicon codegen (`atrium-api`) was investigated and

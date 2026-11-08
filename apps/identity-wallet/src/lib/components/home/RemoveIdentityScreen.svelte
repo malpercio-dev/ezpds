@@ -171,7 +171,7 @@
     if (isCodedError(raw)) {
       const err = raw as RemovalError;
       switch (err.code) {
-        case 'SESSION_REQUIRED':
+        case 'SESSION_LOCKED':
           return 'This identity needs to be unlocked first.';
         case 'REQUEST_DELETE_FAILED':
           return 'Your server couldn’t start the deletion. Nothing was removed — try again in a moment.';
@@ -216,7 +216,7 @@
     } catch (raw: unknown) {
       // A locked identity: run the host's unlock (biometric sovereign login on Custos, a
       // password prompt on any other host) once, then retry.
-      if (isCodedError(raw) && (raw as RemovalError).code === 'SESSION_REQUIRED') {
+      if (isCodedError(raw) && (raw as RemovalError).code === 'SESSION_LOCKED') {
         try {
           await unlockIdentity(did);
           await requestIdentityRemoval(did);

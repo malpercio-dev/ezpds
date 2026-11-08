@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 import { authenticateBiometric } from '$lib/biometric';
 
@@ -85,17 +86,13 @@ export type ShareRecoveryError =
   | { code: 'HANDLE_NOT_FOUND' }
   | { code: 'DID_NOT_FOUND' }
   | { code: 'INVALID_AUDIT_LOG'; message: string }
-  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
-  | { code: 'NETWORK_ERROR'; message: string }
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
   | { code: 'RELEASE_UNAUTHORIZED' }
   | { code: 'ESCROW_DEPOSIT_FAILED'; message: string }
   | { code: 'SESSION_FAILED'; message: string }
-  | { code: 'KEYCHAIN_ERROR'; message: string }
   | { code: 'SIGNING_FAILED'; message: string }
   | { code: 'NO_PENDING_EPILOGUE' }
   | { code: 'EPILOGUE_CORRUPT'; message: string }
-  | { code: 'INVALID_RESPONSE'; message: string };
+  | SharedFailure;
 
 // ── IPC wrappers ───────────────────────────────────────────────────────────
 

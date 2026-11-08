@@ -307,6 +307,7 @@ async fn run_repo_sweep(core: &crate::oauth::Core, dids: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::SharedFailure;
     use crate::test_support::SchedulerCall;
 
     /// The request follows the settings: on submits it with the chosen conditions, off
@@ -397,9 +398,9 @@ mod tests {
                 async move {
                     attempts.fetch_add(1, Ordering::SeqCst);
                     if did == "did:plc:b" {
-                        Err(BlobBackupError::NetworkError {
+                        Err(BlobBackupError::Shared(SharedFailure::NetworkError {
                             message: "boom".to_string(),
-                        })
+                        }))
                     } else {
                         Ok(())
                     }

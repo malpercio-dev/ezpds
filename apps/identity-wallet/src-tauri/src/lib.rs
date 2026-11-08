@@ -25,6 +25,7 @@ pub use obsign_core::device_key;
 pub mod diagnostics;
 pub use obsign_core::disaster_recovery;
 pub use obsign_core::endpoint_repair;
+pub use obsign_core::failure;
 pub use obsign_core::handle_change;
 pub use obsign_core::http;
 pub use obsign_core::identity_removal;

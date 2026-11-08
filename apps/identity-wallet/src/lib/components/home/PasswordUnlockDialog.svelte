@@ -183,9 +183,11 @@
       case 'UNSUPPORTED_HOST':
         return `Couldn't reach the server hosting ${who}. Check your connection and try again.`;
       case 'RATE_LIMITED':
-        return formatRateLimitMessage(err.retryAfter ?? null);
+        return formatRateLimitMessage(err.retryAfter);
+      case 'SERVER_REJECTED':
+        return formatServerErrorMessage(err.message);
       case 'SERVER_ERROR':
-        return formatServerErrorMessage(err.message ?? '');
+        return `${request.pdsUrl} couldn't complete the sign-in. Please try again.`;
       case 'NETWORK_ERROR':
         return 'Network error. Check your connection and try again.';
       case 'IDENTITY_NOT_FOUND':

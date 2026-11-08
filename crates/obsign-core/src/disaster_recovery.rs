@@ -64,13 +64,13 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use crate::failure::SharedFailure;
 use crate::handle_change::latest_full_state;
 use crate::identity_store::PerDidSignError;
 use crate::migration_orchestrator::{
     ensure_phase_did, preferred_login_identifier, MigrationError, MigrationPhase,
     OutboundMigrationState,
 };
-use crate::pds_client::PdsClientError;
 use crypto::{AuditEntry, PlcService};
 
 /// Lexicon method the offline service-auth JWT authorizes — the migration-mode
@@ -103,21 +103,6 @@ pub enum DisasterRecoveryError {
     /// Device-key signing (or key setup) failed.
     #[error("signing failed: {message}")]
     SigningFailed { message: String },
-    /// A Keychain read/write failed (including the recovery signing key persist).
-    #[error("keychain error: {message}")]
-    KeychainError { message: String },
-    /// The DID is not registered in the wallet's identity store.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
-    /// plc.directory rejected a request with an HTTP verdict.
-    #[error("plc.directory error: {message}")]
-    PlcDirectoryError { message: String },
-    /// plc.directory rate-limited the request.
-    #[error("rate limited")]
-    RateLimited {
-        #[serde(rename = "retryAfter")]
-        retry_after: Option<String>,
-    },
     /// No recovery signing key has been enrolled for this DID yet.
     #[error("no recovery signing key enrolled: {message}")]
     KeyNotEnrolled { message: String },
@@ -127,25 +112,10 @@ pub enum DisasterRecoveryError {
     /// Recovery state absent, DID mismatch, or phase too low.
     #[error("recovery not ready: {message}")]
     RecoveryNotReady { message: String },
-    /// A transport-level network failure.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-}
-
-/// Classify a plc.directory / discovery read failure: throttling and HTTP verdicts are
-/// named, only genuine transport failures become NETWORK_ERROR.
-fn map_plc_fetch_error(context: &str, e: PdsClientError) -> DisasterRecoveryError {
-    match e {
-        PdsClientError::RateLimited { retry_after, .. } => {
-            DisasterRecoveryError::RateLimited { retry_after }
-        }
-        PdsClientError::NetworkError { .. } => DisasterRecoveryError::NetworkError {
-            message: format!("{context}: {e}"),
-        },
-        other => DisasterRecoveryError::PlcDirectoryError {
-            message: format!("{context}: {other}"),
-        },
-    }
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 // ── Pure inputs to the guard ─────────────────────────────────────────────────
@@ -387,7 +357,7 @@ pub async fn prepare_disaster_recovery(
     let log_json = pds_client
         .fetch_audit_log(&did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch audit log", e))?;
     let audit_log =
         crypto::parse_audit_log(&log_json).map_err(|e| DisasterRecoveryError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
@@ -448,11 +418,9 @@ pub async fn enroll_recovery_signing_key(
     let store = core.identities();
 
     // 1. Per-DID device key (the op's signer).
-    let device_pub = store.get_or_create_device_key(did).map_err(|e| {
-        DisasterRecoveryError::IdentityNotFound {
-            message: format!("failed to get device key: {e}"),
-        }
-    })?;
+    let device_pub = store
+        .get_or_create_device_key(did)
+        .map_err(SharedFailure::from)?;
     let device_key_id = device_pub.key_id;
 
     // 2. Current core from the audit log.
@@ -460,7 +428,7 @@ pub async fn enroll_recovery_signing_key(
         .pds_client()
         .fetch_audit_log(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch audit log", e))?;
     let audit_log =
         crypto::parse_audit_log(&log_json).map_err(|e| DisasterRecoveryError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
@@ -473,9 +441,9 @@ pub async fn enroll_recovery_signing_key(
     // 3. Reuse a persisted key across retries; generate + persist a fresh one
     //    otherwise. Persist happens BEFORE the network submit.
     let key_id = match store.load_recovery_signing_key(did).map_err(|e| {
-        DisasterRecoveryError::KeychainError {
+        DisasterRecoveryError::Shared(SharedFailure::KeychainError {
             message: e.to_string(),
-        }
+        })
     })? {
         Some(scalar) => did_key_for_scalar(&scalar)?,
         None => {
@@ -486,8 +454,10 @@ pub async fn enroll_recovery_signing_key(
             })?;
             store
                 .store_recovery_signing_key(did, &keypair.private_key_bytes)
-                .map_err(|e| DisasterRecoveryError::KeychainError {
-                    message: e.to_string(),
+                .map_err(|e| {
+                    DisasterRecoveryError::Shared(SharedFailure::KeychainError {
+                        message: e.to_string(),
+                    })
                 })?;
             keypair.key_id.0
         }
@@ -525,8 +495,8 @@ pub async fn enroll_recovery_signing_key(
     // 7. Device-key-sign and submit directly to plc.directory.
     let sign_closure =
         crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
-            PerDidSignError::DeviceKeyNotFound { message } => {
-                DisasterRecoveryError::IdentityNotFound { message }
+            PerDidSignError::DeviceKeyNotFound { .. } => {
+                DisasterRecoveryError::Shared(SharedFailure::IdentityNotFound)
             }
             PerDidSignError::SigningSetupFailed { message } => {
                 DisasterRecoveryError::SigningFailed { message }
@@ -553,7 +523,9 @@ pub async fn enroll_recovery_signing_key(
     core.pds_client()
         .post_plc_operation(did, &signed_op)
         .await
-        .map_err(|e| map_plc_fetch_error("plc.directory rejected the enroll operation", e))?;
+        .map_err(|e| {
+            SharedFailure::from_plc_fetch("plc.directory rejected the enroll operation", e)
+        })?;
 
     // Best-effort cache refresh so the monitor sees the wallet's own op as expected.
     if let Ok(updated) = core.pds_client().fetch_audit_log(did).await {
@@ -580,8 +552,10 @@ pub async fn await_recovery_key_visibility(
     let store = state.identities();
     let scalar = store
         .load_recovery_signing_key(&did)
-        .map_err(|e| DisasterRecoveryError::KeychainError {
-            message: e.to_string(),
+        .map_err(|e| {
+            DisasterRecoveryError::Shared(SharedFailure::KeychainError {
+                message: e.to_string(),
+            })
         })?
         .ok_or_else(|| DisasterRecoveryError::KeyNotEnrolled {
             message: "run enroll_recovery_signing_key first".to_string(),
@@ -593,7 +567,7 @@ pub async fn await_recovery_key_visibility(
         .pds_client()
         .fetch_audit_log(&did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch audit log", e))?;
     let audit_log =
         crypto::parse_audit_log(&log_json).map_err(|e| DisasterRecoveryError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),

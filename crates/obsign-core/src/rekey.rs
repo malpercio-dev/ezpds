@@ -55,10 +55,11 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::claim::OpDiff;
+use crate::failure::SharedFailure;
 use crate::handle_change::CurrentHandleState;
 use crate::identity_store::PerDidSignError;
 use crate::pds_client::{PdsClient, PdsClientError};
-use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
+use crate::session_provider::SessionProvider;
 use crypto::PlcService;
 
 /// The per-DID Share 1 account naming. It lives with the cloud-slot guard in
@@ -143,13 +144,6 @@ pub enum RekeyError {
     /// re-key the identity (an interop account manages its own rotation keys).
     #[error("wallet device key is not the root rotation key for this DID")]
     WalletNotAuthorized,
-    /// The identity's session could not be resolved without a passwordless unlock — the
-    /// frontend should run the biometric sovereign login and retry.
-    #[error("identity is locked and needs a passwordless unlock")]
-    SessionLocked { reason: UnlockReason },
-    /// The PDS or plc.directory rate limited the request.
-    #[error("rate limited")]
-    RateLimited { retry_after: Option<String> },
     /// The strict pre-sign allowlist rejected the proposed operation.
     #[error("re-key operation rejected by pre-sign guard: {reason}")]
     GuardRejected { reason: String },
@@ -165,16 +159,6 @@ pub enum RekeyError {
     /// Submitting the rotation op to plc.directory failed.
     #[error("PLC submission failed: {message}")]
     PlcSubmissionFailed { message: String },
-    /// plc.directory answered a read with an HTTP failure (throttle handled separately as
-    /// `RateLimited`; this is a 5xx/4xx verdict) — distinct from `NetworkError` so a directory
-    /// outage is never reported as "check your connection".
-    #[error("plc.directory error: {message}")]
-    PlcDirectoryError { message: String },
-    /// A server-side step failed for a non-connectivity reason (session refresh verdict,
-    /// unsupported host, malformed response, or local session storage). The precise cause is
-    /// in `message` for diagnostics; the UI shows a neutral retry prompt.
-    #[error("server error: {message}")]
-    ServerError { message: String },
     /// The escrow deposit of the new Share 2 failed.
     #[error("escrow deposit failed (HTTP {status}): {message}")]
     EscrowFailed { status: u16, message: String },
@@ -188,59 +172,10 @@ pub enum RekeyError {
     /// not be destroyed while it is the only home of the new seed material.
     #[error("recovery share 1 is not durably stored")]
     ShareNotStored,
-    /// A network / transport call failed.
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-    /// The DID's device key or identity record could not be found.
-    #[error("identity not found: {message}")]
-    IdentityNotFound { message: String },
-}
-
-/// Map a session-lifecycle failure into the re-key surface. Exhaustive on purpose: only a
-/// genuine transport failure becomes `NetworkError` — a server verdict, unsupported host, or
-/// storage failure must not surface as "check your connection", or the real cause becomes
-/// undiagnosable from the screen (the same defect class `classify_xrpc_error` exists to fix).
-fn map_session_error(error: SessionError) -> RekeyError {
-    match error {
-        SessionError::NeedsUnlock { reason } => RekeyError::SessionLocked { reason },
-        SessionError::RateLimited { retry_after } => RekeyError::RateLimited { retry_after },
-        SessionError::IdentityNotFound => RekeyError::IdentityNotFound {
-            message: "identity not found".to_string(),
-        },
-        SessionError::Offline { message } => RekeyError::NetworkError { message },
-        SessionError::ServerFailure { status } => RekeyError::ServerError {
-            message: format!("session refresh returned HTTP {status}"),
-        },
-        SessionError::UnsupportedHost => RekeyError::ServerError {
-            message: "the identity's hosting server does not support session refresh".to_string(),
-        },
-        SessionError::Keychain { message } => RekeyError::ServerError {
-            message: format!("session keychain failure: {message}"),
-        },
-        SessionError::InvalidResponse { message } => RekeyError::ServerError {
-            message: format!("invalid session response: {message}"),
-        },
-    }
-}
-
-/// Map a plc.directory read failure into the re-key surface: a throttle is retryable
-/// (`RateLimited`), an HTTP verdict is the directory's problem (`PlcDirectoryError`), and only
-/// a transport failure is `NetworkError`.
-fn map_plc_fetch_error(context: &str, error: PdsClientError) -> RekeyError {
-    match error {
-        PdsClientError::RateLimited { retry_after, .. } => RekeyError::RateLimited { retry_after },
-        PdsClientError::XrpcError {
-            status, message, ..
-        } => RekeyError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP {status}: {message}"),
-        },
-        PdsClientError::Unauthorized { message, .. } => RekeyError::PlcDirectoryError {
-            message: format!("{context}: plc.directory returned HTTP 401: {message}"),
-        },
-        other => RekeyError::NetworkError {
-            message: format!("{context}: {other}"),
-        },
-    }
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 // ── Pure inputs to the guard ─────────────────────────────────────────────────
@@ -408,7 +343,7 @@ async fn fetch_current_state(
     crate::handle_change::fetch_current_state(
         pds_client,
         did,
-        |e| map_plc_fetch_error("failed to fetch audit log", e),
+        |e| SharedFailure::from_plc_fetch("failed to fetch audit log", e).into(),
         |message| RekeyError::InvalidAuditLog { message },
     )
     .await
@@ -443,8 +378,10 @@ async fn deposit_escrow_share(
             &serde_json::json!({ "share": share2 }),
         )
         .await
-        .map_err(|e| RekeyError::NetworkError {
-            message: format!("escrow deposit request failed: {e}"),
+        .map_err(|e| {
+            RekeyError::Shared(SharedFailure::NetworkError {
+                message: format!("escrow deposit request failed: {e}"),
+            })
         })?;
     if response.status().is_success() {
         return Ok(());
@@ -456,7 +393,9 @@ async fn deposit_escrow_share(
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        return Err(RekeyError::RateLimited { retry_after });
+        return Err(RekeyError::Shared(SharedFailure::RateLimited {
+            retry_after,
+        }));
     }
     let body = response.text().await.unwrap_or_default();
     let message = serde_json::from_str::<serde_json::Value>(&body)
@@ -506,9 +445,7 @@ pub async fn build_rekey(core: &crate::oauth::Core, did: &str) -> Result<RekeyPr
 
     let device = store
         .get_or_create_device_key(did)
-        .map_err(|e| RekeyError::IdentityNotFound {
-            message: format!("failed to get device key: {e}"),
-        })?;
+        .map_err(SharedFailure::from)?;
 
     let current = fetch_current_state(core.pds_client(), did).await?;
 
@@ -573,9 +510,7 @@ pub async fn submit_rekey(core: &crate::oauth::Core, did: &str) -> Result<RekeyR
 
     let device = store
         .get_or_create_device_key(did)
-        .map_err(|e| RekeyError::IdentityNotFound {
-            message: format!("failed to get device key: {e}"),
-        })?;
+        .map_err(SharedFailure::from)?;
 
     let current = fetch_current_state(core.pds_client(), did).await?;
 
@@ -608,8 +543,8 @@ pub async fn submit_rekey(core: &crate::oauth::Core, did: &str) -> Result<RekeyR
 
         let sign_closure = crate::identity_store::per_did_sign_closure(core.signer(), did)
             .map_err(|e| match e {
-                PerDidSignError::DeviceKeyNotFound { message } => {
-                    RekeyError::IdentityNotFound { message }
+                PerDidSignError::DeviceKeyNotFound { .. } => {
+                    RekeyError::Shared(SharedFailure::IdentityNotFound)
                 }
                 PerDidSignError::SigningSetupFailed { message } => {
                     RekeyError::SigningFailed { message }
@@ -637,7 +572,7 @@ pub async fn submit_rekey(core: &crate::oauth::Core, did: &str) -> Result<RekeyR
             .await
             .map_err(|e| match e {
                 PdsClientError::RateLimited { retry_after, .. } => {
-                    RekeyError::RateLimited { retry_after }
+                    RekeyError::Shared(SharedFailure::RateLimited { retry_after })
                 }
                 other => RekeyError::PlcSubmissionFailed {
                     message: format!("failed to submit re-key op: {other}"),
@@ -647,10 +582,7 @@ pub async fn submit_rekey(core: &crate::oauth::Core, did: &str) -> Result<RekeyR
 
     // Step 2: escrow the new Share 2 over the account-owner session. The server nulls the dead
     // legacy `accounts.recovery_share` in the same transaction.
-    let session = SessionProvider
-        .full_access_client(core, did)
-        .await
-        .map_err(map_session_error)?;
+    let session = SessionProvider.full_access_client(core, did).await?;
     deposit_escrow_share(&session.client, &shares.share2).await?;
 
     // Step 3: overwrite the durable per-DID Share 1 slot with the new Share 1 (verified).
@@ -664,7 +596,7 @@ pub async fn submit_rekey(core: &crate::oauth::Core, did: &str) -> Result<RekeyR
         .pds_client()
         .fetch_audit_log(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch updated audit log", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch updated audit log", e))?;
     store
         .store_plc_log(did, &updated_log)
         .map_err(|e| RekeyError::ShareStorageFailed {
@@ -674,7 +606,7 @@ pub async fn submit_rekey(core: &crate::oauth::Core, did: &str) -> Result<RekeyR
         .pds_client()
         .fetch_plc_data_document(did)
         .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch DID document", e))?;
+        .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch DID document", e))?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| RekeyError::ShareStorageFailed {
@@ -776,63 +708,6 @@ mod tests {
         core.keys().delete_item_synced(&account).unwrap();
         assert!(read_share1_synced(core, TEST_DID).is_err());
         assert_eq!(load_share1(core, TEST_DID).unwrap(), b"LOCAL");
-    }
-
-    /// A directory throttle and a directory HTTP verdict must reach the UI as RATE_LIMITED /
-    /// PLC_DIRECTORY_ERROR — only a transport failure may say "check your connection".
-    #[test]
-    fn plc_fetch_errors_classify_by_status() {
-        let throttled = map_plc_fetch_error(
-            "failed to fetch audit log",
-            PdsClientError::RateLimited {
-                retry_after: Some("30".to_string()),
-                message: "slow down".to_string(),
-            },
-        );
-        assert!(matches!(
-            throttled,
-            RekeyError::RateLimited { retry_after: Some(ref r) } if r == "30"
-        ));
-
-        let outage = map_plc_fetch_error(
-            "failed to fetch audit log",
-            PdsClientError::XrpcError {
-                status: 502,
-                error: None,
-                message: "bad gateway".to_string(),
-            },
-        );
-        assert!(
-            matches!(outage, RekeyError::PlcDirectoryError { ref message } if message.contains("502")),
-            "got {outage:?}"
-        );
-
-        let transport = map_plc_fetch_error(
-            "failed to fetch audit log",
-            PdsClientError::NetworkError {
-                message: "dns failure".to_string(),
-            },
-        );
-        assert!(matches!(transport, RekeyError::NetworkError { .. }));
-    }
-
-    /// Session failures keep their nature: a server verdict is SERVER_ERROR, not NETWORK_ERROR.
-    #[test]
-    fn session_errors_no_longer_flatten_to_network_error() {
-        assert!(matches!(
-            map_session_error(SessionError::ServerFailure { status: 500 }),
-            RekeyError::ServerError { ref message } if message.contains("500")
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::UnsupportedHost),
-            RekeyError::ServerError { .. }
-        ));
-        assert!(matches!(
-            map_session_error(SessionError::Offline {
-                message: "timeout".to_string()
-            }),
-            RekeyError::NetworkError { .. }
-        ));
     }
 
     const DEVICE: &str = "did:key:zDEVICE";

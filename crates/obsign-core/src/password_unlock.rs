@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! The second resolution of [`crate::session_provider::SessionError::NeedsUnlock`].
+//! The second resolution of [`crate::failure::SharedFailure::SessionLocked`].
 //!
 //! Every authenticated wallet operation goes through
 //! [`SessionProvider::full_access_client`](crate::session_provider::SessionProvider::full_access_client),
@@ -45,8 +45,8 @@
 
 use serde::Serialize;
 
-use crate::identity_store::{IdentityStoreError, SovereignTokenRecord};
-use crate::pds_client::PdsClientError;
+use crate::failure::SharedFailure;
+use crate::identity_store::SovereignTokenRecord;
 use crate::session_provider::SessionReady;
 use crate::source_login::{create_source_session, SourceLoginError};
 use crate::sovereign_session::{audience_matches_server, bearer_jwt_claims};
@@ -78,7 +78,7 @@ pub struct UnlockRoute {
 
 /// Why a password unlock could not produce a session.
 ///
-/// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` alongside `SessionError` /
+/// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` alongside `SharedFailure` /
 /// `ClaimError` / `MigrationError`. The credential-shaped variants mirror the claim flow's,
 /// because they are the same `createSession` failures seen from a different screen.
 #[derive(Debug, Serialize, thiserror::Error)]
@@ -88,10 +88,6 @@ pub struct UnlockRoute {
     rename_all_fields = "camelCase"
 )]
 pub enum UnlockError {
-    #[error("identity not found")]
-    IdentityNotFound,
-    #[error("the identity's hosting server could not be resolved")]
-    UnsupportedHost,
     /// The account has email two-factor enabled; the host has emailed a code and the caller
     /// re-invokes with `auth_factor_token`.
     #[error("a two-factor code is required")]
@@ -105,19 +101,16 @@ pub enum UnlockError {
     /// rather than sent in cleartext.
     #[error("the hosting server's endpoint is not secure")]
     InsecureHostUrl,
-    #[error("the hosting server rate limited the sign-in")]
-    RateLimited { retry_after: Option<String> },
     /// A non-2xx the wallet doesn't model specially. `message` is the host's own error text
     /// (mapped from [`SourceLoginError::ServerError`]) — server-quoted per ADR-0031, so the
-    /// dialog may render it behind explicit attribution.
+    /// dialog may render it behind explicit attribution. Its own code, so the shared
+    /// (diagnostic) `SERVER_ERROR` can never render under the host's name.
     #[error("hosting server failure: {message}")]
-    ServerError { message: String },
-    #[error("offline or transport failure: {message}")]
-    NetworkError { message: String },
-    #[error("keychain failure: {message}")]
-    Keychain { message: String },
-    #[error("invalid session response: {message}")]
-    InvalidResponse { message: String },
+    ServerRejected { message: String },
+    /// See [`SharedFailure`].
+    #[serde(untagged)]
+    #[error(transparent)]
+    Shared(#[from] SharedFailure),
 }
 
 impl From<SourceLoginError> for UnlockError {
@@ -127,33 +120,13 @@ impl From<SourceLoginError> for UnlockError {
             SourceLoginError::SourceAuthFailed { message } => Self::InvalidCredentials { message },
             SourceLoginError::AccountMismatch => Self::AccountMismatch,
             SourceLoginError::InsecureSourceUrl => Self::InsecureHostUrl,
-            SourceLoginError::RateLimited { retry_after } => Self::RateLimited { retry_after },
-            SourceLoginError::ServerError { message } => Self::ServerError { message },
-            SourceLoginError::NetworkError { message } => Self::NetworkError { message },
-        }
-    }
-}
-
-fn map_store_error(error: IdentityStoreError) -> UnlockError {
-    match error {
-        IdentityStoreError::IdentityNotFound => UnlockError::IdentityNotFound,
-        IdentityStoreError::KeychainError { message } => UnlockError::Keychain { message },
-        other => UnlockError::Keychain {
-            message: other.to_string(),
-        },
-    }
-}
-
-/// Map a DID-discovery failure. A transport failure is a connectivity problem; anything that
-/// means the DID or its PDS metadata could not be read leaves us with no host to sign in to.
-fn map_discovery_error(error: PdsClientError) -> UnlockError {
-    match error {
-        PdsClientError::PdsUnreachable { reason } => UnlockError::NetworkError { message: reason },
-        PdsClientError::NetworkError { message } => UnlockError::NetworkError { message },
-        PdsClientError::RateLimited { retry_after, .. } => UnlockError::RateLimited { retry_after },
-        other => {
-            tracing::warn!(error = %other, "could not resolve the identity's hosting server");
-            UnlockError::UnsupportedHost
+            SourceLoginError::RateLimited { retry_after } => {
+                SharedFailure::RateLimited { retry_after }.into()
+            }
+            SourceLoginError::ServerError { message } => Self::ServerRejected { message },
+            SourceLoginError::NetworkError { message } => {
+                SharedFailure::NetworkError { message }.into()
+            }
         }
     }
 }
@@ -183,18 +156,18 @@ pub async fn unlock_route(
     if !core
         .identities()
         .list_identities()
-        .map_err(map_store_error)?
+        .map_err(SharedFailure::from)?
         .iter()
         .any(|managed| managed == did)
     {
-        return Err(UnlockError::IdentityNotFound);
+        return Err(UnlockError::Shared(SharedFailure::IdentityNotFound));
     }
 
     let (pds_url, doc) = core
         .pds_client()
         .discover_pds(did)
         .await
-        .map_err(map_discovery_error)?;
+        .map_err(SharedFailure::from_discovery)?;
     let capabilities = crate::pds_capabilities::probe(core.pds_client(), &pds_url).await;
     let method = if capabilities.reached && !capabilities.sovereign_sessions() {
         UnlockMethod::Password
@@ -230,12 +203,12 @@ pub async fn unlock_with_password(
         .pds_client()
         .discover_pds(did)
         .await
-        .map_err(map_discovery_error)?;
+        .map_err(SharedFailure::from_discovery)?;
     let server = core
         .pds_client()
         .describe_server(&pds_url)
         .await
-        .map_err(map_discovery_error)?;
+        .map_err(SharedFailure::from_discovery)?;
 
     let session = create_source_session(
         core.pds_client(),
@@ -247,27 +220,31 @@ pub async fn unlock_with_password(
     )
     .await?;
 
-    let access =
-        bearer_jwt_claims(&session.access_jwt).ok_or_else(|| UnlockError::InvalidResponse {
+    let access = bearer_jwt_claims(&session.access_jwt).ok_or_else(|| {
+        UnlockError::Shared(SharedFailure::InvalidResponse {
             message: "accessJwt is missing valid exp, sub, or aud claims".into(),
-        })?;
-    let refresh =
-        bearer_jwt_claims(&session.refresh_jwt).ok_or_else(|| UnlockError::InvalidResponse {
+        })
+    })?;
+    let refresh = bearer_jwt_claims(&session.refresh_jwt).ok_or_else(|| {
+        UnlockError::Shared(SharedFailure::InvalidResponse {
             message: "refreshJwt is missing valid exp, sub, or aud claims".into(),
-        })?;
+        })
+    })?;
     if access.sub != did || refresh.sub != did {
         return Err(UnlockError::AccountMismatch);
     }
     if !audience_matches_server(&access.aud, &server.did, &pds_url)
         || !audience_matches_server(&refresh.aud, &server.did, &pds_url)
     {
-        return Err(UnlockError::InvalidResponse {
+        return Err(UnlockError::Shared(SharedFailure::InvalidResponse {
             message: "the session is bound to a different host".into(),
-        });
+        }));
     }
 
-    let stored_at = u64::try_from(now).map_err(|_| UnlockError::InvalidResponse {
-        message: "negative timestamp cannot be persisted".into(),
+    let stored_at = u64::try_from(now).map_err(|_| {
+        UnlockError::Shared(SharedFailure::InvalidResponse {
+            message: "negative timestamp cannot be persisted".into(),
+        })
     })?;
     let record = SovereignTokenRecord {
         version: SovereignTokenRecord::VERSION,
@@ -281,7 +258,7 @@ pub async fn unlock_with_password(
     };
     core.identities()
         .store_oauth_tokens(did, &record)
-        .map_err(map_store_error)?;
+        .map_err(SharedFailure::from)?;
 
     Ok(SessionReady {
         did: did.to_string(),
@@ -468,7 +445,10 @@ mod tests {
         let core = &core.with_pds_client(client);
         let result = unlock_route(core, DID).await;
 
-        assert!(matches!(result, Err(UnlockError::IdentityNotFound)));
+        assert!(matches!(
+            result,
+            Err(UnlockError::Shared(SharedFailure::IdentityNotFound))
+        ));
     }
 
     // ── Password unlock ───────────────────────────────────────────────────────────
@@ -609,15 +589,18 @@ mod tests {
         let result =
             unlock_with_password(core, DID, "alice.example.com", "hunter2", None, now()).await;
 
-        assert!(matches!(result, Err(UnlockError::InvalidResponse { .. })));
+        assert!(matches!(
+            result,
+            Err(UnlockError::Shared(SharedFailure::InvalidResponse { .. }))
+        ));
         assert_eq!(core.identities().load_oauth_tokens(DID).unwrap(), None);
     }
 
     #[test]
     fn errors_serialize_with_the_shared_coded_shape() {
-        let json = serde_json::to_string(&UnlockError::RateLimited {
+        let json = serde_json::to_string(&UnlockError::Shared(SharedFailure::RateLimited {
             retry_after: Some("30".into()),
-        })
+        }))
         .unwrap();
         assert!(json.contains(r#""code":"RATE_LIMITED""#));
         assert!(json.contains(r#""retryAfter":"30""#));

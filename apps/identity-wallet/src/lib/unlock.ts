@@ -1,8 +1,8 @@
 /**
  * The one place a locked identity is reopened.
  *
- * Every authenticated screen hits the same wall: an operation rejects with `SESSION_LOCKED`
- * (or a pre-flight rejects with `NEEDS_UNLOCK`), and the screen has to turn that into a live
+ * Every authenticated screen hits the same wall: an operation (or the session pre-flight)
+ * rejects with `SESSION_LOCKED`, and the screen has to turn that into a live
  * session before retrying. Until now each screen answered that with `sovereignLogin(did)`
  * inline, which silently assumed the identity's host offers passwordless sessions — true for
  * Custos, false for bsky.social and every other spec-compliant PDS.

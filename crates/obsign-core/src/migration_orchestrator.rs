@@ -1552,7 +1552,9 @@ async fn deactivate_source_account(source_client: &OAuthClient) -> Result<(), Mi
 fn map_sovereign_error(error: crate::sovereign_session::SovereignLoginError) -> MigrationError {
     use crate::sovereign_session::SovereignLoginError as E;
     match error {
-        E::KeychainFailure { message } => MigrationError::SessionPersistFailed { message },
+        E::Shared(crate::failure::SharedFailure::KeychainError { message }) => {
+            MigrationError::SessionPersistFailed { message }
+        }
         other => MigrationError::SovereignLoginFailed {
             message: other.to_string(),
         },

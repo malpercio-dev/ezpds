@@ -73,7 +73,7 @@ const REPO_VERSION: i128 = 3;
 /// Errors from the repo-backup commands.
 ///
 /// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` to match the sibling wallet error
-/// enums (`BlobBackupError`, `HandleChangeError`, `SessionError`). Note there is deliberately
+/// enums (`BlobBackupError`, `HandleChangeError`, `SharedFailure`). Note there is deliberately
 /// **no `SESSION_LOCKED`** variant: backup reads a public endpoint and export reads local disk,
 /// so neither path needs a full-access session.
 #[derive(Debug, Serialize, thiserror::Error)]
@@ -128,7 +128,7 @@ pub enum RepoBackupError {
 
 /// Map a plc.directory / PDS read failure into the repo-backup surface: a throttle is retryable
 /// (`RateLimited`), an HTTP verdict names the server's reason, and only a transport failure is
-/// `NetworkError` (mirrors `blob_backup::map_fetch_error`, minus the session variants).
+/// `NetworkError`.
 fn map_fetch_error(context: &str, error: PdsClientError) -> RepoBackupError {
     match error {
         PdsClientError::RateLimited { retry_after, .. } => {

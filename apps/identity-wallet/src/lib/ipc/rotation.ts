@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 import { authenticateBiometric } from '$lib/biometric';
 import type { ClaimResult, OpDiff } from './claim';
@@ -17,25 +18,15 @@ import type { UnlockReason } from './identity';
 export type RotationError =
   // The wallet holds no authorized rotation key for this DID, so it cannot self-sign.
   | { code: 'WALLET_NOT_AUTHORIZED' }
-  // The identity is locked — run sovereignLogin(did) and retry. `reason` mirrors ensureIdentitySession.
-  | { code: 'SESSION_LOCKED'; reason: UnlockReason }
-  // The hosting PDS or plc.directory rate-limited the request; `retryAfter` is the server's Retry-After.
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
   // The strict pre-sign guard rejected the op (something other than the repo key would change).
   | { code: 'GUARD_REJECTED'; reason: string }
   | { code: 'INVALID_AUDIT_LOG'; message: string }
   | { code: 'SIGNING_FAILED'; message: string }
   // The hosting PDS rejected a rotation call (begin or complete).
   | { code: 'ROTATION_FAILED'; status: number; message: string }
-  // plc.directory answered a read with an HTTP failure (outage/verdict, not connectivity).
-  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
-  // A server-side step failed for a non-connectivity reason (session refresh verdict,
-  // unsupported host, malformed response, or session storage). Details in `message`.
-  | { code: 'SERVER_ERROR'; message: string }
-  | { code: 'NETWORK_ERROR'; message: string }
-  | { code: 'IDENTITY_NOT_FOUND'; message: string }
   // submit was called with no built rotation op pending for this DID.
-  | { code: 'NO_PENDING_ROTATION' };
+  | { code: 'NO_PENDING_ROTATION' }
+  | SharedFailure;
 
 /**
  * Signed rotation operation ready for review and submission.

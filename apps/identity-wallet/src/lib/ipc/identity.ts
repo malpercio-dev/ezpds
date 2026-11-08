@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { authenticateBiometric } from '$lib/biometric';
+import type { SharedFailure } from './errors';
 
 // ── Identity Store ──────────────────────────────────────────────────────────
 
@@ -70,23 +71,13 @@ export type SovereignLoginResult = {
   refreshExpiresAt: number;
 };
 
-export type SovereignLoginError = {
-  code:
-    | 'IDENTITY_NOT_FOUND'
-    | 'UNSUPPORTED_HOST'
-    | 'AUTHORIZATION_FAILED'
-    | 'RATE_LIMITED'
-    | 'TRANSPORT_FAILURE'
-    | 'KEYCHAIN_FAILURE'
-    | 'SIGNING_FAILED'
-    | 'DID_MISMATCH'
-    | 'SERVER_MISMATCH'
-    | 'INVALID_RESPONSE'
-    | 'SERVER_FAILURE';
-  message?: string;
-  retryAfter?: string;
-  status?: number;
-};
+/** Matches `SovereignLoginError` in `obsign-core/src/sovereign_session.rs`. */
+export type SovereignLoginError =
+  | { code: 'AUTHORIZATION_FAILED' }
+  | { code: 'SIGNING_FAILED'; message: string }
+  | { code: 'DID_MISMATCH' }
+  | { code: 'SERVER_MISMATCH' }
+  | SharedFailure;
 
 /**
  * Prove control of one managed identity's device key and persist its full-access session.
@@ -110,27 +101,10 @@ export type SessionReady = {
   rotated: boolean;
 };
 
-export type SessionError = {
-  code:
-    | 'IDENTITY_NOT_FOUND'
-    | 'NEEDS_UNLOCK'
-    | 'RATE_LIMITED'
-    | 'UNSUPPORTED_HOST'
-    | 'OFFLINE'
-    | 'SERVER_FAILURE'
-    | 'KEYCHAIN'
-    | 'INVALID_RESPONSE';
-  /** Present when `code === 'NEEDS_UNLOCK'`; drives the "Unlock identity" action. */
-  reason?: UnlockReason;
-  retryAfter?: string;
-  status?: number;
-  message?: string;
-};
-
 /**
  * Pre-flight a managed identity's full-access session before an authenticated
  * operation. Restores a still-valid session with no prompt, rotates a near-expiry
- * one, or rejects with `NEEDS_UNLOCK` so the caller can offer the passwordless
+ * one, or rejects with {@link SharedFailure} — `SESSION_LOCKED` so the caller can offer the passwordless
  * {@link sovereignLogin}. Unlike `sovereignLogin`, this performs no biometric prompt —
  * a live token must never demand one.
  */

@@ -1,3 +1,4 @@
+import type { SharedFailure } from './errors';
 import { invoke } from '@tauri-apps/api/core';
 import { authenticateBiometric } from '$lib/biometric';
 import type { OpDiff } from './claim';
@@ -26,26 +27,17 @@ export type RekeyError =
   | { code: 'ALREADY_REKEYED' }
   // The wallet's device key is not rotationKeys[0], so it cannot additively re-key.
   | { code: 'WALLET_NOT_AUTHORIZED' }
-  // The identity is locked — run sovereignLogin(did) and retry.
-  | { code: 'SESSION_LOCKED'; reason: UnlockReason }
-  | { code: 'RATE_LIMITED'; retryAfter: string | null }
   // The strict additive pre-sign guard rejected the op.
   | { code: 'GUARD_REJECTED'; reason: string }
   | { code: 'INVALID_AUDIT_LOG'; message: string }
   | { code: 'SHARE_GENERATION_FAILED'; message: string }
   | { code: 'SIGNING_FAILED'; message: string }
   | { code: 'PLC_SUBMISSION_FAILED'; message: string }
-  // plc.directory answered a read with an HTTP failure (outage/verdict, not connectivity).
-  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
-  // A server-side step failed for a non-connectivity reason (session refresh verdict,
-  // unsupported host, malformed response, or session storage). Details in `message`.
-  | { code: 'SERVER_ERROR'; message: string }
   | { code: 'ESCROW_FAILED'; status: number; message: string }
   | { code: 'SHARE_STORAGE_FAILED'; message: string }
   // Confirm was called before Share 1 reached its durable slot.
   | { code: 'SHARE_NOT_STORED' }
-  | { code: 'NETWORK_ERROR'; message: string }
-  | { code: 'IDENTITY_NOT_FOUND'; message: string };
+  | SharedFailure;
 
 /**
  * Preview of a re-key, driving the review screen. Matches `RekeyPreview` in `rekey.rs`
