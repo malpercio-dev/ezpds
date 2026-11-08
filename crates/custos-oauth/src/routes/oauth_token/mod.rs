@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use crate::oauth_errors::{insert_no_store_headers, OAuthTokenError};
 use custos_core::auth::agent_assertion::POLL_INTERVAL_SECS;
 use custos_core::CoreState;
+use custos_db::agent_auth::RegistrationType;
 use custos_db::oauth::{cleanup_expired_auth_codes, cleanup_expired_refresh_tokens};
 
 /// What an agent-assertion mint leaves behind, committed together so it fails closed (a
@@ -63,17 +64,65 @@ async fn persist_assertion_mint(
     if retire_claim_token {
         custos_db::agent_auth::retire_agent_identity_claim_token(&mut *tx, registration_id).await?;
     }
+    audit_token_exchanged(&mut tx, registration_id, did, detail).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Link the OAuth grant's agent record for `(did, client_id)` — a `connector` when the code was
+/// issued for one of the operator's `[oauth] connector_resources`, else an `oauth_app` — so the
+/// owner can see and revoke it in My agents. Returns the record id.
+async fn link_grant_record(
+    conn: &mut sqlx::SqliteConnection,
+    state: &CoreState,
+    did: &common::Did,
+    client_id: &str,
+    resource: Option<&str>,
+    scope: &str,
+) -> Result<(String, RegistrationType), common::ApiError> {
+    let connector = resource.is_some_and(|r| {
+        state
+            .config
+            .oauth
+            .connector_resources
+            .iter()
+            .any(|c| c == r)
+    });
+    let registration_type = if connector {
+        RegistrationType::Connector
+    } else {
+        RegistrationType::OauthApp
+    };
+    let scopes_json = serde_json::to_string(&scope.split_whitespace().collect::<Vec<_>>())
+        .unwrap_or_else(|_| "[]".to_string());
+    let id = custos_db::agent_auth::link_oauth_grant(
+        &mut *conn,
+        did.as_str(),
+        client_id,
+        registration_type,
+        &scopes_json,
+    )
+    .await?;
+    Ok((id, registration_type))
+}
+
+/// Record a token issued under an agent registration as its `token_exchanged` audit event — what
+/// My agents shows as "last used". `detail` carries mechanical facts only, at least the `grant`.
+async fn audit_token_exchanged(
+    conn: &mut sqlx::SqliteConnection,
+    registration_id: &str,
+    did: &common::Did,
+    detail: serde_json::Value,
+) -> Result<(), common::ApiError> {
     custos_db::agent_audit::insert_agent_audit_event(
-        &mut *tx,
+        &mut *conn,
         &uuid::Uuid::new_v4().to_string(),
         registration_id,
         Some(did.as_str()),
         custos_db::agent_audit::AgentAuditEventType::TokenExchanged,
         Some(&detail.to_string()),
     )
-    .await?;
-    tx.commit().await?;
-    Ok(())
+    .await
 }
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -146,9 +195,10 @@ struct AccessTokenClaims {
     /// is already key-bound upstream, so no DPoP proof is required at the token endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
     cnf: Option<CnfClaim>,
-    /// Agent registration id — set only on tokens minted from an auth.md agent `identity_assertion`
-    /// (the jwt-bearer grant). Carried through so `require_*` guards can recognise an agent-derived
-    /// token and the audit path can attribute its actions; omitted entirely on all other grants.
+    /// Agent registration id — set on agent-derived tokens: those minted from an auth.md agent
+    /// `identity_assertion` (the jwt-bearer grant) and those issued under a `connector` grant
+    /// record. Carried through so `require_*` guards can recognise an agent-derived token and the
+    /// audit path can attribute its actions; omitted on every other token.
     #[serde(skip_serializing_if = "Option::is_none")]
     registration_id: Option<String>,
 }

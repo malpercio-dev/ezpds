@@ -123,7 +123,8 @@ pub async fn get_oauth_client(
 /// `dpop_jkt` is the DPoP key thumbprint the client proved at PAR time, or `None` when the
 /// flow carries no binding (a PAR without a DPoP header, or the password-consent POST,
 /// which deliberately drops it). When present, the token endpoint requires the redeeming
-/// proof to use that same key.
+/// proof to use that same key. `resource` is the RFC 8707 resource indicator the client named
+/// at PAR, which the exchange reads to classify the grant (V077).
 #[allow(clippy::too_many_arguments)]
 pub async fn store_authorization_code<'e, E>(
     executor: E,
@@ -135,6 +136,7 @@ pub async fn store_authorization_code<'e, E>(
     redirect_uri: &str,
     scope: &str,
     dpop_jkt: Option<&str>,
+    resource: Option<&str>,
 ) -> Result<(), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
@@ -142,8 +144,8 @@ where
     sqlx::query(
         "INSERT INTO oauth_authorization_codes \
          (code, client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, \
-          dpop_jkt, expires_at, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+60 seconds'), datetime('now'))",
+          dpop_jkt, resource, expires_at, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+60 seconds'), datetime('now'))",
     )
     .bind(code)
     .bind(client_id)
@@ -153,6 +155,7 @@ where
     .bind(redirect_uri)
     .bind(scope)
     .bind(dpop_jkt)
+    .bind(resource)
     .execute(executor)
     .await?;
     Ok(())
@@ -219,6 +222,8 @@ pub struct AuthCodeRow {
     /// The DPoP key thumbprint the client proved at PAR time, when it proved one. The
     /// token endpoint requires the redeeming proof to use this key (RFC 9449 §10).
     pub dpop_jkt: Option<String>,
+    /// The RFC 8707 resource indicator named at PAR, if any.
+    pub resource: Option<String>,
 }
 
 /// Retrieve an authorization code without consuming it.
@@ -233,7 +238,7 @@ pub struct AuthCodeRow {
 /// after all checks pass. The SELECT+DELETE are serialized due to `max_connections(1)`
 /// on the pool, preventing TOCTOU races.
 /// The raw column tuple `get_authorization_code` selects, in SELECT order:
-/// client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, dpop_jkt.
+/// client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, dpop_jkt, resource.
 type AuthCodeColumns = (
     String,
     String,
@@ -241,6 +246,7 @@ type AuthCodeColumns = (
     String,
     String,
     String,
+    Option<String>,
     Option<String>,
 );
 
@@ -250,7 +256,7 @@ pub async fn get_authorization_code(
 ) -> Result<Option<AuthCodeRow>, sqlx::Error> {
     let row: Option<AuthCodeColumns> = sqlx::query_as(
         "SELECT client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, \
-             dpop_jkt \
+             dpop_jkt, resource \
              FROM oauth_authorization_codes \
              WHERE code = ? AND expires_at > datetime('now')",
     )
@@ -259,7 +265,16 @@ pub async fn get_authorization_code(
     .await?;
 
     Ok(row.map(
-        |(client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, dpop_jkt)| {
+        |(
+            client_id,
+            did,
+            code_challenge,
+            code_challenge_method,
+            redirect_uri,
+            scope,
+            dpop_jkt,
+            resource,
+        )| {
             AuthCodeRow {
                 client_id,
                 did,
@@ -268,6 +283,7 @@ pub async fn get_authorization_code(
                 redirect_uri,
                 scope,
                 dpop_jkt,
+                resource,
             }
         },
     ))
@@ -307,18 +323,24 @@ const REFRESH_REUSE_GRACE: &str = "-60 seconds";
 /// family, as the family's `session_id`. `scope` is the granular atproto OAuth scope set
 /// granted to this session, persisted so rotation carries the granted permissions forward.
 /// `jkt` is the DPoP key thumbprint binding this token to the client's keypair.
+/// `registration_id` is the grant's agent record (V077), carried to every rotation.
 /// The session expires [`REFRESH_SESSION_TTL`] after insertion.
-pub async fn store_initial_oauth_refresh_token(
-    pool: &SqlitePool,
+pub async fn store_initial_oauth_refresh_token<'e, E>(
+    executor: E,
     token_hash: &str,
     client_id: &str,
     did: &str,
     scope: &str,
     jkt: &str,
-) -> Result<(), sqlx::Error> {
+    registration_id: &str,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     sqlx::query(
-        "INSERT INTO oauth_tokens (id, session_id, client_id, did, scope, jkt, expires_at, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?), datetime('now'))",
+        "INSERT INTO oauth_tokens \
+         (id, session_id, client_id, did, scope, jkt, registration_id, expires_at, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?), datetime('now'))",
     )
     .bind(token_hash)
     .bind(token_hash)
@@ -326,8 +348,9 @@ pub async fn store_initial_oauth_refresh_token(
     .bind(did)
     .bind(scope)
     .bind(jkt)
+    .bind(registration_id)
     .bind(REFRESH_SESSION_TTL)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
@@ -337,8 +360,8 @@ pub async fn store_initial_oauth_refresh_token(
 /// `expires_at` is the presented token's expiry, carried forward verbatim — the session's
 /// lifetime is absolute from the initial grant, so rotation never extends it.
 #[allow(clippy::too_many_arguments)]
-pub async fn store_rotated_oauth_refresh_token(
-    pool: &SqlitePool,
+pub async fn store_rotated_oauth_refresh_token<'e, E>(
+    executor: E,
     token_hash: &str,
     client_id: &str,
     did: &str,
@@ -346,10 +369,15 @@ pub async fn store_rotated_oauth_refresh_token(
     jkt: &str,
     session_id: &str,
     expires_at: &str,
-) -> Result<(), sqlx::Error> {
+    registration_id: &str,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     sqlx::query(
-        "INSERT INTO oauth_tokens (id, session_id, client_id, did, scope, jkt, expires_at, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        "INSERT INTO oauth_tokens \
+         (id, session_id, client_id, did, scope, jkt, registration_id, expires_at, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
     )
     .bind(token_hash)
     .bind(session_id)
@@ -357,8 +385,9 @@ pub async fn store_rotated_oauth_refresh_token(
     .bind(did)
     .bind(scope)
     .bind(jkt)
+    .bind(registration_id)
     .bind(expires_at)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
@@ -381,6 +410,8 @@ pub struct RefreshTokenRow {
     /// been rotated away: `true` inside [`REFRESH_REUSE_GRACE`] (a concurrent duplicate
     /// refresh — still serviceable), `false` beyond it (reuse — revoke the family).
     pub superseded_within_grace: Option<bool>,
+    /// The grant's agent record (V077) and its type. `None` for a family issued before V077.
+    pub registration: Option<(String, crate::agent_auth::RegistrationType)>,
 }
 
 /// Retrieve a refresh token without consuming it.
@@ -391,7 +422,8 @@ pub struct RefreshTokenRow {
 /// The `id` column stores the SHA-256 hex hash of the raw token bytes.
 /// Callers must hash the presented token before calling this function
 /// The raw column tuple `get_oauth_refresh_token` selects, in SELECT order:
-/// client_id, did, scope, jkt, session_id (coalesced), expires_at, superseded-within-grace.
+/// client_id, did, scope, jkt, session_id (coalesced), expires_at, superseded-within-grace,
+/// registration_id, registration_type.
 type RefreshTokenColumns = (
     String,
     String,
@@ -400,6 +432,8 @@ type RefreshTokenColumns = (
     String,
     String,
     Option<bool>,
+    Option<String>,
+    Option<String>,
 );
 
 /// Retrieve a refresh token without consuming it.
@@ -411,16 +445,22 @@ type RefreshTokenColumns = (
 /// [`supersede_oauth_refresh_token`] + [`store_rotated_oauth_refresh_token`]. The
 /// SELECT+UPDATE are serialized due to `max_connections(1)` on the pool, preventing
 /// TOCTOU races.
+///
+/// A token whose grant record (V077) is revoked or gone reads as absent: revoking the record in
+/// My agents ends the grant at its next refresh, whatever revocation path flipped the status.
 pub async fn get_oauth_refresh_token(
     pool: &SqlitePool,
     token_hash: &str,
 ) -> Result<Option<RefreshTokenRow>, sqlx::Error> {
     let row: Option<RefreshTokenColumns> = sqlx::query_as(
-        "SELECT client_id, did, scope, jkt, COALESCE(session_id, id), expires_at, \
-             CASE WHEN superseded_at IS NULL THEN NULL \
-                  ELSE superseded_at > datetime('now', ?) END \
-             FROM oauth_tokens \
-             WHERE id = ? AND expires_at > datetime('now')",
+        "SELECT t.client_id, t.did, t.scope, t.jkt, COALESCE(t.session_id, t.id), t.expires_at, \
+             CASE WHEN t.superseded_at IS NULL THEN NULL \
+                  ELSE t.superseded_at > datetime('now', ?) END, \
+             t.registration_id, a.registration_type \
+             FROM oauth_tokens t \
+             LEFT JOIN agent_identities a ON a.id = t.registration_id \
+             WHERE t.id = ? AND t.expires_at > datetime('now') \
+               AND (t.registration_id IS NULL OR a.status = 'claimed')",
     )
     .bind(REFRESH_REUSE_GRACE)
     .bind(token_hash)
@@ -428,16 +468,26 @@ pub async fn get_oauth_refresh_token(
     .await?;
 
     Ok(row.map(
-        |(client_id, did, scope, jkt, session_id, expires_at, superseded_within_grace)| {
-            RefreshTokenRow {
-                client_id,
-                did,
-                scope,
-                jkt,
-                session_id,
-                expires_at,
-                superseded_within_grace,
-            }
+        |(
+            client_id,
+            did,
+            scope,
+            jkt,
+            session_id,
+            expires_at,
+            superseded_within_grace,
+            registration_id,
+            registration_type,
+        )| RefreshTokenRow {
+            client_id,
+            did,
+            scope,
+            jkt,
+            session_id,
+            expires_at,
+            superseded_within_grace,
+            registration: registration_id
+                .zip(registration_type.map(crate::agent_auth::RegistrationType::from_string)),
         },
     ))
 }
@@ -500,6 +550,9 @@ pub struct StoredPARParams {
     /// PAR row stored before this field existed reads as unbound — exactly how it behaved.
     #[serde(default)]
     pub dpop_jkt: Option<String>,
+    /// The RFC 8707 resource indicator the client named (V077); `None` when it named none.
+    #[serde(default)]
+    pub resource: Option<String>,
 }
 
 fn default_response_mode() -> String {
@@ -807,6 +860,7 @@ mod tests {
             "https://app.example.com/callback",
             "atproto",
             None,
+            None,
         )
         .await
         .unwrap();
@@ -880,6 +934,7 @@ mod tests {
             "did:plc:testaccount000000000000",
             "atproto transition:generic",
             "jkt-thumbprint",
+            "reg_test",
         )
         .await
         .unwrap();

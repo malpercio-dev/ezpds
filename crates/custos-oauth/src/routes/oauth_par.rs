@@ -53,6 +53,9 @@ pub struct PARForm {
     /// RFC 9449 §10: the client may name its DPoP key thumbprint directly instead of (or
     /// as well as) sending a proof header. When both arrive they must agree.
     pub dpop_jkt: Option<String>,
+    /// RFC 8707 resource indicator. Optional; a value naming one of the operator's
+    /// `[oauth] connector_resources` records the grant as an MCP connector.
+    pub resource: Option<String>,
 }
 
 /// Successful PAR response body (RFC 9126 §2.2).
@@ -275,6 +278,18 @@ pub async fn post_par(
         Err(response) => return response,
     };
 
+    // RFC 8707 §2: an absolute URI with no fragment. Anything else is `invalid_target`.
+    let resource = form.resource.filter(|r| !r.is_empty());
+    if let Some(r) = resource.as_deref() {
+        if !url::Url::parse(r).is_ok_and(|u| u.fragment().is_none()) {
+            return OAuthTokenError::new(
+                "invalid_target",
+                "resource must be an absolute URI without a fragment",
+            )
+            .into_response();
+        }
+    }
+
     let params = StoredPARParams {
         redirect_uri,
         code_challenge,
@@ -285,6 +300,7 @@ pub async fn post_par(
         scope,
         login_hint: form.login_hint.filter(|s| !s.is_empty()),
         dpop_jkt,
+        resource,
     };
 
     let params_json = match serde_json::to_string(&params) {
@@ -960,6 +976,50 @@ mod tests {
         let stored: custos_db::oauth::StoredPARParams =
             serde_json::from_str(&row.request_parameters).unwrap();
         assert_eq!(stored.response_mode, "fragment");
+    }
+
+    /// RFC 8707: a resource indicator is stored for the code it will yield; one that is not an
+    /// absolute URI without a fragment is `invalid_target`.
+    #[tokio::test]
+    async fn post_par_stores_a_resource_indicator_and_rejects_a_malformed_one() {
+        let state = test_state().await;
+        register_client(&state).await;
+        let par = |resource: &'static str| {
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/par")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(par_body(&[("resource", resource)])))
+                .unwrap()
+        };
+
+        let response = test_app(state.clone())
+            .oneshot(par("https://mcp.example.com"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let row =
+            custos_db::oauth::consume_par_request(&state.db, json["request_uri"].as_str().unwrap())
+                .await
+                .unwrap()
+                .expect("PAR row stored");
+        let stored: custos_db::oauth::StoredPARParams =
+            serde_json::from_str(&row.request_parameters).unwrap();
+        assert_eq!(stored.resource.as_deref(), Some("https://mcp.example.com"));
+
+        for bad in ["not a uri", "https://mcp.example.com/#frag"] {
+            let response = test_app(state.clone()).oneshot(par(bad)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad}");
+            assert_eq!(
+                error_json(response).await["error"],
+                "invalid_target",
+                "{bad}"
+            );
+        }
     }
 
     #[tokio::test]

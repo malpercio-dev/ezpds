@@ -32,6 +32,9 @@ pub struct AgentSummary {
     pub issuer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
+    /// The OAuth client a `connector` / `oauth_app` grant record was approved for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
     pub scopes: Vec<String>,
     /// `active` (awaiting the claim ceremony), `claimed`, or `revoked`.
     pub status: String,

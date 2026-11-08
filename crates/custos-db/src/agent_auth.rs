@@ -68,24 +68,39 @@ pub enum RegistrationType {
     ServiceAuth,
     Anonymous,
     Child,
+    /// An OAuth grant for an MCP resource the operator named in `[oauth] connector_resources`.
+    /// Its tokens carry the record's `registration_id`, so they are agent-derived.
+    Connector,
+    /// Any other OAuth grant: listed and revocable, but its tokens stay unmarked.
+    OauthApp,
 }
 
 impl RegistrationType {
+    /// Whether tokens issued under an OAuth grant record of this type carry its
+    /// `registration_id`, making them agent-derived. Only a connector's do.
+    pub fn marks_oauth_tokens(self) -> bool {
+        self == RegistrationType::Connector
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             RegistrationType::IdentityAssertion => "identity_assertion",
             RegistrationType::ServiceAuth => "service_auth",
             RegistrationType::Anonymous => "anonymous",
             RegistrationType::Child => "child",
+            RegistrationType::Connector => "connector",
+            RegistrationType::OauthApp => "oauth_app",
         }
     }
 
-    fn from_string(value: String) -> Self {
+    pub(crate) fn from_string(value: String) -> Self {
         match value.as_str() {
             "identity_assertion" => RegistrationType::IdentityAssertion,
             "service_auth" => RegistrationType::ServiceAuth,
             "anonymous" => RegistrationType::Anonymous,
             "child" => RegistrationType::Child,
+            "connector" => RegistrationType::Connector,
+            "oauth_app" => RegistrationType::OauthApp,
             _ => RegistrationType::Anonymous,
         }
     }
@@ -405,6 +420,8 @@ pub struct AgentIdentitySummary {
     pub registration_type: RegistrationType,
     pub issuer: Option<String>,
     pub subject: Option<String>,
+    /// The OAuth client a `connector` / `oauth_app` grant record was approved for.
+    pub client_id: Option<String>,
     pub scopes: String,
     pub status: AgentIdentityStatus,
     pub created_at: String,
@@ -413,6 +430,11 @@ pub struct AgentIdentitySummary {
 }
 
 /// List the agent identities bound to `did`, newest first.
+///
+/// A live OAuth grant record whose sessions have all ended — expired, revoked by the app itself
+/// (RFC 7009), or swept by an admin — is left out: there is nothing left to revoke, and listing it
+/// as connected would be untrue. The record stays, so a later sign-in by the same client links
+/// back to it with its history.
 pub async fn list_agent_identities_for_did(
     db: &sqlx::SqlitePool,
     did: &str,
@@ -422,6 +444,7 @@ pub async fn list_agent_identities_for_did(
         String,
         Option<String>,
         Option<String>,
+        Option<String>,
         String,
         String,
         String,
@@ -429,13 +452,16 @@ pub async fn list_agent_identities_for_did(
         Option<String>,
     );
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT a.id, a.registration_type, a.issuer, a.subject, a.scopes, a.status, \
+        "SELECT a.id, a.registration_type, a.issuer, a.subject, a.client_id, a.scopes, a.status, \
                 a.created_at, a.updated_at, \
                 (SELECT MAX(e.created_at) FROM agent_audit_events e \
                  WHERE e.registration_id = a.id \
                    AND e.event_type IN ('token_exchanged', 'repo_write', 'blob_upload')) \
          FROM agent_identities a \
          WHERE a.did = ? \
+           AND (a.client_id IS NULL OR a.status = 'revoked' \
+                OR EXISTS (SELECT 1 FROM oauth_tokens t \
+                           WHERE t.registration_id = a.id AND t.expires_at > datetime('now'))) \
          ORDER BY a.created_at DESC, a.id",
     )
     .bind(did)
@@ -454,6 +480,7 @@ pub async fn list_agent_identities_for_did(
                 registration_type,
                 issuer,
                 subject,
+                client_id,
                 scopes,
                 status,
                 created_at,
@@ -464,6 +491,7 @@ pub async fn list_agent_identities_for_did(
                 registration_type: RegistrationType::from_string(registration_type),
                 issuer,
                 subject,
+                client_id,
                 scopes,
                 status: AgentIdentityStatus::from_string(status),
                 created_at,
@@ -472,6 +500,52 @@ pub async fn list_agent_identities_for_did(
             },
         )
         .collect())
+}
+
+/// Find or create the live grant record for `(did, client_id, registration_type)` and return its
+/// id: one statement, so two concurrent exchanges for the same client land on one record. A
+/// re-approval refreshes the record's scopes to the latest grant. A revoked record is never
+/// revived (the partial unique index excludes it), so approving again after a revoke starts a
+/// fresh record with a fresh audit trail.
+///
+/// The row is born `claimed`: the owner approved it at consent, so there is no claim ceremony.
+/// `assertion_expires_at` is NOT NULL for every registration, but a grant record never has an
+/// assertion; it holds the creation time and nothing reads it.
+pub async fn link_oauth_grant<'e, E>(
+    executor: E,
+    did: &str,
+    client_id: &str,
+    registration_type: RegistrationType,
+    scopes_json: &str,
+) -> Result<String, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    debug_assert!(matches!(
+        registration_type,
+        RegistrationType::Connector | RegistrationType::OauthApp
+    ));
+    sqlx::query_scalar(
+        "INSERT INTO agent_identities \
+         (id, did, registration_type, client_id, scopes, assertion_expires_at, status, \
+          created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, datetime('now'), 'claimed', datetime('now'), datetime('now')) \
+         ON CONFLICT (did, client_id, registration_type) \
+             WHERE client_id IS NOT NULL AND status != 'revoked' \
+         DO UPDATE SET scopes = excluded.scopes, updated_at = datetime('now') \
+         RETURNING id",
+    )
+    .bind(format!("reg_{}", uuid::Uuid::new_v4().simple()))
+    .bind(did)
+    .bind(registration_type.as_str())
+    .bind(client_id)
+    .bind(scopes_json)
+    .fetch_one(executor)
+    .await
+    .or_internal_as(
+        "DB error linking OAuth grant record",
+        "failed to record the OAuth grant",
+    )
 }
 
 /// Revoke an identity, reporting whether this call made the transition. The `status != 'revoked'`
