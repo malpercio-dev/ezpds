@@ -46,8 +46,7 @@
 use serde::Serialize;
 
 use crate::failure::SharedFailure;
-use crate::identity_store::{IdentityStore, SovereignTokenRecord};
-use crate::pds_client::PdsClient;
+use crate::identity_store::SovereignTokenRecord;
 use crate::session_provider::SessionReady;
 use crate::source_login::{create_source_session, SourceLoginError};
 use crate::sovereign_session::{audience_matches_server, bearer_jwt_claims};
@@ -149,13 +148,13 @@ fn handle_from_also_known_as(also_known_as: &[String]) -> Option<String> {
 /// their server and a change in behavior for every Custos identity whose launch happens to be
 /// offline.
 pub async fn unlock_route(
-    pds_client: &PdsClient,
-    store: &IdentityStore,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<UnlockRoute, UnlockError> {
     // Registration is what `store_oauth_tokens` requires, so an unmanaged DID must fail here
     // rather than after the user has typed a password.
-    if !store
+    if !core
+        .identities()
         .list_identities()
         .map_err(SharedFailure::from)?
         .iter()
@@ -164,11 +163,12 @@ pub async fn unlock_route(
         return Err(UnlockError::Shared(SharedFailure::IdentityNotFound));
     }
 
-    let (pds_url, doc) = pds_client
+    let (pds_url, doc) = core
+        .pds_client()
         .discover_pds(did)
         .await
         .map_err(SharedFailure::from_discovery)?;
-    let capabilities = crate::pds_capabilities::probe(pds_client, &pds_url).await;
+    let capabilities = crate::pds_capabilities::probe(core.pds_client(), &pds_url).await;
     let method = if capabilities.reached && !capabilities.sovereign_sessions() {
         UnlockMethod::Password
     } else {
@@ -192,25 +192,26 @@ pub async fn unlock_route(
 /// at the write keeps the user's error honest ("that didn't sign you in") instead of surfacing
 /// later as an unexplained re-lock.
 pub async fn unlock_with_password(
-    pds_client: &PdsClient,
-    store: &IdentityStore,
+    core: &crate::oauth::Core,
     did: &str,
     identifier: &str,
     password: &str,
     auth_factor_token: Option<&str>,
     now: i64,
 ) -> Result<SessionReady, UnlockError> {
-    let (pds_url, _doc) = pds_client
+    let (pds_url, _doc) = core
+        .pds_client()
         .discover_pds(did)
         .await
         .map_err(SharedFailure::from_discovery)?;
-    let server = pds_client
+    let server = core
+        .pds_client()
         .describe_server(&pds_url)
         .await
         .map_err(SharedFailure::from_discovery)?;
 
     let session = create_source_session(
-        pds_client,
+        core.pds_client(),
         &pds_url,
         did,
         identifier,
@@ -255,7 +256,7 @@ pub async fn unlock_with_password(
         refresh_expires_at: Some(refresh.exp),
         stored_at,
     };
-    store
+    core.identities()
         .store_oauth_tokens(did, &record)
         .map_err(SharedFailure::from)?;
 
@@ -274,7 +275,7 @@ pub async fn get_identity_unlock_route(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<UnlockRoute, UnlockError> {
-    unlock_route(state.pds_client(), &IdentityStore, &did).await
+    unlock_route(state, &did).await
 }
 
 /// Tauri command: open a locked identity with the account's password.
@@ -290,14 +291,9 @@ pub async fn unlock_identity_with_password(
     password: String,
     auth_factor_token: Option<String>,
 ) -> Result<SessionReady, UnlockError> {
-    let now = crate::sovereign_session::unix_timestamp().map_err(|_| {
-        UnlockError::Shared(SharedFailure::InvalidResponse {
-            message: "system clock is unavailable".into(),
-        })
-    })?;
+    let now = state.unix_timestamp();
     unlock_with_password(
-        state.pds_client(),
-        &IdentityStore,
+        state,
         &did,
         &identifier,
         &password,
@@ -370,18 +366,18 @@ mod tests {
             .await;
     }
 
-    fn register(did: &str) {
-        crate::keystore::clear_for_test();
+    fn register(core: &crate::oauth::Core, did: &str) {
         crate::pds_capabilities::clear_for_test();
-        IdentityStore.add_identity(did).unwrap();
+        core.identities().add_identity(did).unwrap();
     }
 
     // ── Route selection ───────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn a_host_advertising_sovereign_sessions_keeps_the_passwordless_route() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
-        register(DID);
+        register(core, DID);
         discovery_mocks(&server, DID, &server.base_url()).await;
         describe_mock(
             &server,
@@ -390,7 +386,8 @@ mod tests {
         .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let route = unlock_route(&client, &IdentityStore, DID).await.unwrap();
+        let core = &core.with_pds_client(client);
+        let route = unlock_route(core, DID).await.unwrap();
 
         assert_eq!(route.method, UnlockMethod::Sovereign);
         assert_eq!(route.handle.as_deref(), Some("alice.example.com"));
@@ -398,14 +395,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_standard_lexicon_host_routes_to_the_password_prompt() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
-        register(DID);
+        register(core, DID);
         discovery_mocks(&server, DID, &server.base_url()).await;
         // A reference PDS answers describeServer with no `custos` object at all.
         describe_mock(&server, None).await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let route = unlock_route(&client, &IdentityStore, DID).await.unwrap();
+        let core = &core.with_pds_client(client);
+        let route = unlock_route(core, DID).await.unwrap();
 
         assert_eq!(route.method, UnlockMethod::Password);
         assert_eq!(route.pds_url, server.base_url());
@@ -413,8 +412,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_host_that_could_not_be_asked_is_not_demoted_to_the_password_prompt() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
-        register(DID);
+        register(core, DID);
         discovery_mocks(&server, DID, &server.base_url()).await;
         // describeServer fails: the probe is unreached, which says nothing about the host.
         server
@@ -426,7 +426,8 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let route = unlock_route(&client, &IdentityStore, DID).await.unwrap();
+        let core = &core.with_pds_client(client);
+        let route = unlock_route(core, DID).await.unwrap();
 
         assert_eq!(
             route.method,
@@ -437,11 +438,12 @@ mod tests {
 
     #[tokio::test]
     async fn an_unmanaged_did_is_refused_before_any_prompt() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core_at(now() as u64);
         crate::pds_capabilities::clear_for_test();
 
         let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
-        let result = unlock_route(&client, &IdentityStore, DID).await;
+        let core = &core.with_pds_client(client);
+        let result = unlock_route(core, DID).await;
 
         assert!(matches!(
             result,
@@ -463,8 +465,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_password_unlock_persists_the_pair_the_provider_reads() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
-        register(DID);
+        register(core, DID);
         discovery_mocks(&server, DID, &server.base_url()).await;
         describe_mock(&server, None).await;
         let access = jwt(now() + 3_600, DID, "did:web:pds.example.com");
@@ -482,20 +485,13 @@ mod tests {
         .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let ready = unlock_with_password(
-            &client,
-            &IdentityStore,
-            DID,
-            "alice.example.com",
-            "hunter2",
-            None,
-            now(),
-        )
-        .await
-        .expect("a valid password mints a session");
+        let core = &core.with_pds_client(client);
+        let ready = unlock_with_password(core, DID, "alice.example.com", "hunter2", None, now())
+            .await
+            .expect("a valid password mints a session");
 
         assert_eq!(ready.access_expires_at, (now() + 3_600) as u64);
-        let stored = IdentityStore.load_oauth_tokens(DID).unwrap().unwrap();
+        let stored = core.identities().load_oauth_tokens(DID).unwrap().unwrap();
         assert_eq!(stored.access_jwt, access);
         assert_eq!(stored.refresh_jwt, refresh);
         assert_eq!(stored.refresh_expires_at, Some((now() + 86_400) as u64));
@@ -504,8 +500,9 @@ mod tests {
         // The whole point: the provider's fast path now restores this identity with no
         // network and no prompt, exactly as it would after a sovereign login.
         let offline = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
+        let core = &core.with_pds_client(offline);
         let session = crate::session_provider::SessionProvider
-            .full_access_client(&offline, &IdentityStore, DID, now())
+            .full_access_client(core, DID)
             .await
             .expect("the persisted pair restores through the unchanged provider ladder");
         assert!(!session.rotated);
@@ -514,8 +511,9 @@ mod tests {
 
     #[tokio::test]
     async fn email_two_factor_is_distinct_from_a_wrong_password() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
-        register(DID);
+        register(core, DID);
         discovery_mocks(&server, DID, &server.base_url()).await;
         describe_mock(&server, None).await;
         create_session_mock(
@@ -526,20 +524,13 @@ mod tests {
         .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = unlock_with_password(
-            &client,
-            &IdentityStore,
-            DID,
-            "alice.example.com",
-            "hunter2",
-            None,
-            now(),
-        )
-        .await;
+        let core = &core.with_pds_client(client);
+        let result =
+            unlock_with_password(core, DID, "alice.example.com", "hunter2", None, now()).await;
 
         assert!(matches!(result, Err(UnlockError::TwoFactorRequired)));
         assert_eq!(
-            IdentityStore.load_oauth_tokens(DID).unwrap(),
+            core.identities().load_oauth_tokens(DID).unwrap(),
             None,
             "a 2FA challenge must not leave a partial record"
         );
@@ -547,8 +538,9 @@ mod tests {
 
     #[tokio::test]
     async fn credentials_for_another_account_never_become_this_identitys_session() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
-        register(DID);
+        register(core, DID);
         discovery_mocks(&server, DID, &server.base_url()).await;
         describe_mock(&server, None).await;
         create_session_mock(
@@ -564,25 +556,19 @@ mod tests {
         .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = unlock_with_password(
-            &client,
-            &IdentityStore,
-            DID,
-            "mallory.example.com",
-            "hunter2",
-            None,
-            now(),
-        )
-        .await;
+        let core = &core.with_pds_client(client);
+        let result =
+            unlock_with_password(core, DID, "mallory.example.com", "hunter2", None, now()).await;
 
         assert!(matches!(result, Err(UnlockError::AccountMismatch)));
-        assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+        assert_eq!(core.identities().load_oauth_tokens(DID).unwrap(), None);
     }
 
     #[tokio::test]
     async fn a_session_bound_to_another_host_is_refused() {
+        let core = &crate::test_support::core_at(now() as u64);
         let server = MockServer::start_async().await;
-        register(DID);
+        register(core, DID);
         discovery_mocks(&server, DID, &server.base_url()).await;
         describe_mock(&server, None).await;
         // `createSession` answers for the right DID but audiences the pair elsewhere.
@@ -599,22 +585,15 @@ mod tests {
         .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = unlock_with_password(
-            &client,
-            &IdentityStore,
-            DID,
-            "alice.example.com",
-            "hunter2",
-            None,
-            now(),
-        )
-        .await;
+        let core = &core.with_pds_client(client);
+        let result =
+            unlock_with_password(core, DID, "alice.example.com", "hunter2", None, now()).await;
 
         assert!(matches!(
             result,
             Err(UnlockError::Shared(SharedFailure::InvalidResponse { .. }))
         ));
-        assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+        assert_eq!(core.identities().load_oauth_tokens(DID).unwrap(), None);
     }
 
     #[test]

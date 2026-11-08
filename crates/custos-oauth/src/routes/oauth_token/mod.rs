@@ -36,10 +36,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::auth::agent_assertion::POLL_INTERVAL_SECS;
-use crate::db::oauth::{cleanup_expired_auth_codes, cleanup_expired_refresh_tokens};
 use crate::oauth_errors::{insert_no_store_headers, OAuthTokenError};
+use custos_core::auth::agent_assertion::POLL_INTERVAL_SECS;
 use custos_core::CoreState;
+use custos_db::oauth::{cleanup_expired_auth_codes, cleanup_expired_refresh_tokens};
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -135,7 +135,7 @@ pub(super) const AGENT_ACCESS_TOKEN_TTL_SECS: u64 = 300;
 /// `ttl_secs` is the token's lifetime — [`custos_core::CoreState`]'s configured
 /// `oauth.access_token_ttl_secs` for OAuth grants, [`AGENT_ACCESS_TOKEN_TTL_SECS`] for agent ones.
 fn issue_access_token(
-    signing_key: &crate::auth::OAuthSigningKey,
+    signing_key: &custos_core::auth::OAuthSigningKey,
     did: &str,
     scope: &str,
     jkt: Option<&str>,
@@ -308,7 +308,7 @@ pub(crate) mod test_support {
             "iss": origin,
             "sub": did,
             "aud": origin,
-            "iat": crate::time::unix_now_secs(),
+            "iat": custos_core::time::unix_now_secs(),
             "exp": exp,
             "jti": Uuid::new_v4().to_string(),
             "scope": scope,

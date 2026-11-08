@@ -5,11 +5,11 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 
 #[derive(Deserialize)]
 pub struct SpaceListReposParams {
@@ -29,7 +29,7 @@ pub struct SpaceListReposParams {
 /// simplespace config is one this host merely keeps repos in, and its authority is the one to
 /// ask, so it reads as `SpaceNotFound` — the same reply an unknown space gets.
 pub async fn space_list_repos(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,

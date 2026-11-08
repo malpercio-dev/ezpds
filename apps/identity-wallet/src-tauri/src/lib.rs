@@ -3,9 +3,9 @@
 //! `crate::claim::…` still resolves; the IPC table is `commands.rs`. What lives *here*:
 //!
 //! - `run()` — the iOS/Android entry point (`#[cfg_attr(mobile, tauri::mobile_entry_point)]`;
-//!   `main.rs` calls it on desktop). Its `setup` installs the platform adapters, restores the
-//!   configured PDS URL, runs `obsign_core::startup_reconcile`, deletes the retired OAuth
-//!   Keychain items, spawns the PLC monitoring loop, and on iOS
+//!   `main.rs` calls it on desktop). Its `setup` builds the platform adapters into the managed
+//!   `Core`, restores the configured PDS URL, runs `obsign_core::startup_reconcile`, deletes the
+//!   retired OAuth Keychain items, spawns the PLC monitoring loop, and on iOS
 //!   registers the background jobs and the APNs bridge.
 //! - `TauriEvents`, the `EventSink` adapter, and the `BGTaskScheduler` identifiers.
 
@@ -53,6 +53,8 @@ pub use obsign_core::share_recovery;
 pub use obsign_core::source_login;
 pub use obsign_core::sovereign_session;
 
+use std::sync::Arc;
+
 use tauri::{Emitter, Manager};
 
 /// The `BGTaskScheduler` identifier for the background backup job. MUST match the entry in
@@ -90,27 +92,56 @@ async fn run_monitoring_loop(app: tauri::AppHandle) {
     }
 }
 
+/// iOS only: register the background jobs with BGTaskScheduler (before app launch completes,
+/// which `setup` does) and hand the scheduler to the `Core`. Off-device there is none and
+/// background requests are dropped (scheduling is a device concern; the harness is untouched).
+#[cfg(target_os = "ios")]
+fn background_scheduler(
+    app: &tauri::AppHandle,
+) -> Option<Arc<dyn obsign_core::scheduler::Scheduler>> {
+    use obsign_core::scheduler::BackgroundJob;
+    use obsign_platform_ios::scheduler::{IosScheduler, TaskKind};
+    let app_handle = app.clone();
+    let scheduler = IosScheduler::new(
+        vec![
+            (
+                BackgroundJob::BackupMirror,
+                BACKUP_TASK_IDENTIFIER,
+                TaskKind::Processing,
+            ),
+            (
+                BackgroundJob::PlcCheck,
+                PLC_CHECK_TASK_IDENTIFIER,
+                TaskKind::AppRefresh,
+            ),
+        ],
+        Arc::new(move |job, on_done| {
+            let app = app_handle.clone();
+            let worker = tauri::async_runtime::spawn(async move {
+                obsign_core::scheduler::run(job, &app.state::<oauth::Core>()).await;
+                on_done();
+            });
+            Box::new(move || worker.abort())
+        }),
+    );
+    scheduler.register();
+    Some(Arc::new(scheduler))
+}
+
+#[cfg(not(target_os = "ios"))]
+fn background_scheduler(
+    _app: &tauri::AppHandle,
+) -> Option<Arc<dyn obsign_core::scheduler::Scheduler>> {
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(
     clippy::expect_used,
     reason = "Tauri's run only fails when the app cannot start, which is fatal"
 )]
 pub fn run() {
-    // First, before anything touches storage. A second `run()` in one process would be refused
-    // and keep the store already installed, which is the same Keychain.
-    let _ = obsign_core::keystore::install(Box::new(
-        obsign_platform_ios::keychain::AppleKeychain::new(keychain::SERVICE),
-    ));
-    // Every device key (each identity's, and the global one the create flow signs with): the
-    // Secure Enclave on a real device, software elsewhere.
-    #[cfg(all(target_os = "ios", not(target_env = "sim")))]
-    let _ =
-        obsign_core::signer::install(Box::new(obsign_platform_ios::enclave_signer::EnclaveSigner));
-    #[cfg(not(all(target_os = "ios", not(target_env = "sim"))))]
-    let _ = obsign_core::signer::install(Box::new(obsign_core::signer::SoftwareSigner));
-
     let builder = tauri::Builder::default()
-        .manage(oauth::Core::new())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Debug)
@@ -134,74 +165,58 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            // The platform seams that need the app handle: events to the UI, the backup
-            // location, and the bundle identifier push registration uses as its topic.
-            let _ = obsign_core::events::install(Box::new(TauriEvents(app.handle().clone())));
-            let _ = obsign_core::backup_store::install(Box::new(
-                obsign_platform_ios::icloud::ICloudBackupStore::new(
-                    app.path()
-                        .app_data_dir()
-                        .ok()
-                        .map(|dir| dir.join("blob-backup")),
-                ),
+            // The platform adapters, owned by the `Core` every command reaches. Built here
+            // because the event sink and the backup location need the app handle; commands
+            // cannot run before `setup` returns.
+            let keys: Arc<dyn obsign_core::keystore::KeyStore> = Arc::new(
+                obsign_platform_ios::keychain::AppleKeychain::new(keychain::SERVICE),
+            );
+            // Every device key (each identity's, and the global one the create flow signs
+            // with): the Secure Enclave on a real device, software elsewhere.
+            #[cfg(all(target_os = "ios", not(target_env = "sim")))]
+            let signer: Arc<dyn obsign_core::signer::Signer> = Arc::new(
+                obsign_platform_ios::enclave_signer::EnclaveSigner::new(keys.clone()),
+            );
+            #[cfg(not(all(target_os = "ios", not(target_env = "sim"))))]
+            let signer: Arc<dyn obsign_core::signer::Signer> =
+                Arc::new(obsign_core::signer::SoftwareSigner::new(keys.clone()));
+            let backup = Arc::new(obsign_platform_ios::icloud::ICloudBackupStore::new(
+                app.path()
+                    .app_data_dir()
+                    .ok()
+                    .map(|dir| dir.join("blob-backup")),
             ));
-            app.state::<oauth::Core>()
-                .set_app_identifier(app.config().identifier.clone());
+            app.manage(oauth::Core::new(obsign_core::platform::Platform {
+                keys,
+                signer,
+                events: Arc::new(TauriEvents(app.handle().clone())),
+                backup,
+                scheduler: background_scheduler(app.handle()),
+                clock: Arc::new(obsign_core::platform::SystemClock),
+            }));
+            let core = app.state::<oauth::Core>();
+            core.set_app_identifier(app.config().identifier.clone());
 
             // Restore PDS URL from Keychain if previously configured.
-            if let Some(url) = obsign_core::pds_config::configured_pds_url() {
-                app.state::<oauth::Core>().set_custos_client(url);
+            if let Some(url) = obsign_core::pds_config::configured_pds_url(&core) {
+                core.set_custos_client(url);
             }
 
             // Best-effort, idempotent, order-sensitive: the Share 1 launch hops, then the
-            // created-identity re-registration. Must follow the adapter installs above.
-            obsign_core::startup_reconcile::run();
+            // created-identity re-registration. Must follow the `Core` construction above.
+            obsign_core::startup_reconcile::run(&core);
 
             // Delete the Keychain items the retired create-flow OAuth login left behind.
-            keychain::retire_legacy_oauth_items();
+            keychain::retire_legacy_oauth_items(&core);
 
             // Start the PLC monitor's foreground timer (15-minute interval). It runs alongside
             // the background PLC job requested below, which covers the app being closed.
             let monitor_handle = app.handle().clone();
             tauri::async_runtime::spawn(run_monitoring_loop(monitor_handle));
 
-            // iOS only: register the background jobs with BGTaskScheduler (before app launch
-            // completes, which `setup` does) and install the scheduler. Off-device nothing is
-            // installed and background requests are dropped (scheduling is a device concern;
-            // the harness is untouched). Then submit the backup request the settings ask for and
-            // the PLC sweep request.
-            #[cfg(target_os = "ios")]
-            {
-                use obsign_core::scheduler::BackgroundJob;
-                use obsign_platform_ios::scheduler::{IosScheduler, TaskKind};
-                let app_handle = app.handle().clone();
-                let scheduler = IosScheduler::new(
-                    vec![
-                        (
-                            BackgroundJob::BackupMirror,
-                            BACKUP_TASK_IDENTIFIER,
-                            TaskKind::Processing,
-                        ),
-                        (
-                            BackgroundJob::PlcCheck,
-                            PLC_CHECK_TASK_IDENTIFIER,
-                            TaskKind::AppRefresh,
-                        ),
-                    ],
-                    std::sync::Arc::new(move |job, on_done| {
-                        let app = app_handle.clone();
-                        let worker = tauri::async_runtime::spawn(async move {
-                            obsign_core::scheduler::run(job, &app.state::<oauth::Core>()).await;
-                            on_done();
-                        });
-                        Box::new(move || worker.abort())
-                    }),
-                );
-                scheduler.register();
-                let _ = obsign_core::scheduler::install(Box::new(scheduler));
-            }
-            obsign_core::backup_policy::apply_schedule();
-            obsign_core::plc_monitor::schedule_background_check();
+            // Submit the backup request the settings ask for and the PLC sweep request.
+            obsign_core::backup_policy::apply_schedule(&core);
+            obsign_core::plc_monitor::schedule_background_check(&core);
 
             // iOS only: install the APNs device-token callbacks and ask for notification
             // permission. Must run in `setup` — the delegate methods have to exist before iOS

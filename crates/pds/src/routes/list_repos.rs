@@ -7,8 +7,8 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::lexicon::LexiconParams;
 use common::{ApiError, ApiResultExt};
+use custos_core::lexicon::LexiconParams;
 
 const DEFAULT_LIMIT: i64 = 500;
 
@@ -55,7 +55,7 @@ pub async fn list_repos(
     // because every DID sorts strictly after the empty string.
     let cursor = params.cursor.as_deref().unwrap_or("");
 
-    let rows = crate::db::accounts::list_repos(&state.db, cursor, limit)
+    let rows = custos_db::accounts::list_repos(&state.db, cursor, limit)
         .await
         .or_internal("failed to list repos")?;
 

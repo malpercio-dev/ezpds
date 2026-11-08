@@ -1,8 +1,8 @@
 //! The wallet's Keychain: its service name, access groups, every account name, and the
-//! cleanup of the retired OAuth-client items. `run()` installs
-//! `obsign_platform_ios::keychain::AppleKeychain` under [`SERVICE`] into `obsign_core::keystore`.
+//! cleanup of the retired OAuth-client items. `run()` hands its `Core`
+//! `obsign_platform_ios::keychain::AppleKeychain` under [`SERVICE`].
 //!
-//! The accessors every module calls (`store_item`, `get_item`, the `*_synced` family,
+//! The accessors every module calls (`Keys`: `store_item`, `get_item`, the `*_synced` family;
 //! `is_not_found`) and the cloud-slot allowlist live in `obsign_core::keystore`; that module
 //! doc owns the two-store and protection-class semantics. This file owns what is specific to
 //! iOS and to this app.
@@ -63,7 +63,7 @@
 //!   ([`RETIRED_OAUTH_ACCOUNTS`]).
 //! * the five `notification-*` accounts (`notifications::NOTIFICATION_ACCOUNTS` is the
 //!   inventory) — the key, the pinned sender-key document, and the extension's failure
-//!   log are written via `keystore::store_item_after_first_unlock`; none of the five ever syncs.
+//!   log are written via `Keys::store_item_after_first_unlock`; none of the five ever syncs.
 //! * `blob-backup-settings` and `background-backup-next-mirror` (`bg_backup`) — the
 //!   background-sweep policy and its mirror-alternation turn.
 //! * `recovery-share-1` — the deprecated app-global Share 1 slot, read only by the
@@ -123,9 +123,9 @@ pub(crate) const RETIRED_OAUTH_ACCOUNTS: [&str; 3] = [
 /// Delete the orphaned [`RETIRED_OAUTH_ACCOUNTS`] items. Idempotent and best-effort: an absent
 /// item is the normal case, and a failed delete only leaves an unread item behind, so it is
 /// logged and never blocks launch.
-pub fn retire_legacy_oauth_items() {
+pub fn retire_legacy_oauth_items(core: &crate::oauth::Core) {
     for account in RETIRED_OAUTH_ACCOUNTS {
-        match keystore::delete_item(account) {
+        match core.keys().delete_item(account) {
             Ok(()) => tracing::info!(account, "deleted retired OAuth Keychain item"),
             Err(e) if keystore::is_not_found(&e) => {}
             Err(e) => {
@@ -138,9 +138,8 @@ pub fn retire_legacy_oauth_items() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use obsign_core::keystore::{
-        delete_item_synced, get_item_synced, store_item_synced, syncs_to_icloud, KeyStoreError,
-    };
+    use obsign_core::keystore::{syncs_to_icloud, KeyStoreError, Keys};
+    use obsign_core::test_support::MemKeyStore;
 
     const DID: &str = "did:plc:sync0123456789abcdefghij";
 
@@ -384,7 +383,7 @@ mod tests {
                 "{account} must never reach the iCloud-synchronizable keychain"
             );
             assert!(matches!(
-                store_item_synced(account, b"x"),
+                Keys::new(&MemKeyStore::default()).store_item_synced(account, b"x"),
                 Err(KeyStoreError::SyncNotPermitted { .. })
             ));
         }
@@ -436,17 +435,17 @@ mod tests {
             );
             assert!(
                 matches!(
-                    store_item_synced(account, b"x"),
+                    Keys::new(&MemKeyStore::default()).store_item_synced(account, b"x"),
                     Err(KeyStoreError::SyncNotPermitted { .. })
                 ),
                 "{account} must be refused by the synchronizable write path"
             );
             assert!(matches!(
-                get_item_synced(account),
+                Keys::new(&MemKeyStore::default()).get_item_synced(account),
                 Err(KeyStoreError::SyncNotPermitted { .. })
             ));
             assert!(matches!(
-                delete_item_synced(account),
+                Keys::new(&MemKeyStore::default()).delete_item_synced(account),
                 Err(KeyStoreError::SyncNotPermitted { .. })
             ));
         }
@@ -464,26 +463,29 @@ mod adapters {
 
     #[test]
     fn retire_legacy_oauth_items_deletes_only_the_retired_accounts() {
-        keystore::clear_for_test();
+        let core = &obsign_core::test_support::core();
         for account in RETIRED_OAUTH_ACCOUNTS {
-            keystore::store_item(account, b"orphan").unwrap();
+            core.keys().store_item(account, b"orphan").unwrap();
         }
-        keystore::store_item("relay-base-url", b"https://pds.example").unwrap();
+        core.keys()
+            .store_item("relay-base-url", b"https://pds.example")
+            .unwrap();
 
-        retire_legacy_oauth_items();
+        retire_legacy_oauth_items(core);
 
         for account in RETIRED_OAUTH_ACCOUNTS {
             assert!(keystore::is_not_found(
-                &keystore::get_item(account).unwrap_err()
+                &core.keys().get_item(account).unwrap_err()
             ));
         }
         assert_eq!(
-            keystore::get_item("relay-base-url").unwrap(),
+            core.keys().get_item("relay-base-url").unwrap(),
             b"https://pds.example"
         );
 
-        // A second run, with nothing left to delete, is a no-op.
-        retire_legacy_oauth_items();
+        // A second run, with nothing left to delete (every delete reports not-found), is a
+        // no-op.
+        retire_legacy_oauth_items(core);
     }
 
     /// End-to-end check of the redaction pipeline through the wallet's real

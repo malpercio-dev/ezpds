@@ -53,10 +53,8 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::failure::SharedFailure;
-use crate::identity_store::IdentityStore;
 use crate::oauth_client::OAuthClient;
-use crate::pds_client::PdsClient;
-use crate::session_provider::full_access_session;
+use crate::session_provider::SessionProvider;
 
 // ── Keychain accounts ────────────────────────────────────────────────────────
 
@@ -227,8 +225,8 @@ struct NotificationFailureLog {
 /// Fail-open like the pin store, and for a sharper reason: this log is read precisely when
 /// notifications are already misbehaving. Erroring on a damaged record would take the one
 /// screen that explains the problem offline exactly when it is needed.
-fn load_failures() -> Vec<NotificationFailure> {
-    let raw = match crate::keystore::get_item(FAILURE_LOG_ACCOUNT) {
+fn load_failures(core: &crate::oauth::Core) -> Vec<NotificationFailure> {
+    let raw = match core.keys().get_item(FAILURE_LOG_ACCOUNT) {
         Ok(bytes) => bytes,
         Err(e) => {
             if !crate::keystore::is_not_found(&e) {
@@ -321,8 +319,8 @@ pub struct NotificationDiagnostics {
 /// Idempotent: every later call returns the same value, because the server's registration row is
 /// keyed by it and a fresh one on each launch would accumulate a dead row (and a live relay
 /// handle) per app start.
-pub fn device_uuid() -> Result<String, NotificationsError> {
-    match crate::keystore::get_item(DEVICE_UUID_ACCOUNT) {
+pub fn device_uuid(core: &crate::oauth::Core) -> Result<String, NotificationsError> {
+    match core.keys().get_item(DEVICE_UUID_ACCOUNT) {
         Ok(bytes) => {
             if let Ok(existing) = String::from_utf8(bytes) {
                 if !existing.is_empty() {
@@ -333,9 +331,9 @@ pub fn device_uuid() -> Result<String, NotificationsError> {
             // than wedging registration forever. The stale server row ages out with the relay's
             // handle when APNs reports the token gone.
             tracing::warn!("notification device uuid is unreadable; minting a replacement");
-            mint_device_uuid()
+            mint_device_uuid(core)
         }
-        Err(e) if crate::keystore::is_not_found(&e) => mint_device_uuid(),
+        Err(e) if crate::keystore::is_not_found(&e) => mint_device_uuid(core),
         Err(e) => Err(keychain_err(e)),
     }
 }
@@ -347,10 +345,12 @@ pub fn device_uuid() -> Result<String, NotificationsError> {
 /// having run, so the next launch mints another identifier and registers again — accumulating
 /// exactly the dead row and live relay handle per app start that [`device_uuid`] exists to
 /// prevent. Failing loudly costs one registration attempt; succeeding quietly costs one forever.
-fn mint_device_uuid() -> Result<String, NotificationsError> {
+fn mint_device_uuid(core: &crate::oauth::Core) -> Result<String, NotificationsError> {
     let uuid = uuid::Uuid::new_v4().to_string();
-    crate::keystore::store_item(DEVICE_UUID_ACCOUNT, uuid.as_bytes()).map_err(keychain_err)?;
-    match crate::keystore::get_item(DEVICE_UUID_ACCOUNT) {
+    core.keys()
+        .store_item(DEVICE_UUID_ACCOUNT, uuid.as_bytes())
+        .map_err(keychain_err)?;
+    match core.keys().get_item(DEVICE_UUID_ACCOUNT) {
         Ok(bytes) if bytes == uuid.as_bytes() => Ok(uuid),
         _ => Err(NotificationsError::Shared(SharedFailure::KeychainError {
             message: "the device uuid did not read back after storing".to_string(),
@@ -365,8 +365,10 @@ fn mint_device_uuid() -> Result<String, NotificationsError> {
 /// key is reported**, the same discipline every Share 1 writer uses. Here the failure it guards
 /// is quiet by construction: a key the app believes it stored but the extension cannot find
 /// turns every future notification into the unverified notice, with nothing anywhere saying why.
-fn load_or_create_notification_key() -> Result<String, NotificationsError> {
-    if let Some(scalar) = stored_notification_scalar()? {
+fn load_or_create_notification_key(
+    core: &crate::oauth::Core,
+) -> Result<String, NotificationsError> {
+    if let Some(scalar) = stored_notification_scalar(core)? {
         match crypto::p256_keypair_from_secret(&scalar) {
             Ok(keypair) => return Ok(keypair.key_id.0),
             // A stored 32-byte value that is not a valid scalar (zero, or past the curve order)
@@ -385,13 +387,11 @@ fn load_or_create_notification_key() -> Result<String, NotificationsError> {
         crypto::generate_p256_keypair().map_err(|e| NotificationsError::KeyGenerationFailed {
             message: e.to_string(),
         })?;
-    crate::keystore::store_item_after_first_unlock(
-        NOTIFICATION_KEY_ACCOUNT,
-        keypair.private_key_bytes.as_ref(),
-    )
-    .map_err(keychain_err)?;
+    core.keys()
+        .store_item_after_first_unlock(NOTIFICATION_KEY_ACCOUNT, keypair.private_key_bytes.as_ref())
+        .map_err(keychain_err)?;
 
-    match stored_notification_scalar()? {
+    match stored_notification_scalar(core)? {
         Some(read_back) if read_back.as_ref() == keypair.private_key_bytes.as_ref() => {
             Ok(keypair.key_id.0)
         }
@@ -406,8 +406,10 @@ fn load_or_create_notification_key() -> Result<String, NotificationsError> {
 /// A stored value of the wrong length is treated as absent so the caller mints a fresh key: the
 /// only thing lost is the ability to open payloads sealed to a key nobody can reconstruct
 /// anyway.
-fn stored_notification_scalar() -> Result<Option<Zeroizing<[u8; 32]>>, NotificationsError> {
-    match crate::keystore::get_item(NOTIFICATION_KEY_ACCOUNT) {
+fn stored_notification_scalar(
+    core: &crate::oauth::Core,
+) -> Result<Option<Zeroizing<[u8; 32]>>, NotificationsError> {
+    match core.keys().get_item(NOTIFICATION_KEY_ACCOUNT) {
         Ok(bytes) if bytes.len() == 32 => {
             let mut scalar = [0u8; 32];
             scalar.copy_from_slice(&bytes);
@@ -431,18 +433,23 @@ fn stored_notification_scalar() -> Result<Option<Zeroizing<[u8; 32]>>, Notificat
 /// `false` means the token is the one already stored, which is the common case: iOS delivers a
 /// token on every launch, and re-registering every identity each time would spend a round trip
 /// per identity per launch to write rows that already say this.
-pub fn record_apns_token(token: &str) -> Result<bool, NotificationsError> {
+pub fn record_apns_token(
+    core: &crate::oauth::Core,
+    token: &str,
+) -> Result<bool, NotificationsError> {
     let token = token.to_ascii_lowercase();
-    if stored_apns_token() == Some(token.clone()) {
+    if stored_apns_token(core) == Some(token.clone()) {
         return Ok(false);
     }
-    crate::keystore::store_item(APNS_TOKEN_ACCOUNT, token.as_bytes()).map_err(keychain_err)?;
+    core.keys()
+        .store_item(APNS_TOKEN_ACCOUNT, token.as_bytes())
+        .map_err(keychain_err)?;
     Ok(true)
 }
 
 /// The stored APNs device token, if this device has one.
-fn stored_apns_token() -> Option<String> {
-    match crate::keystore::get_item(APNS_TOKEN_ACCOUNT) {
+fn stored_apns_token(core: &crate::oauth::Core) -> Option<String> {
+    match core.keys().get_item(APNS_TOKEN_ACCOUNT) {
         Ok(bytes) => String::from_utf8(bytes)
             .ok()
             .map(|t| t.trim().to_ascii_lowercase())
@@ -466,8 +473,8 @@ pub fn hex_encode_apns_token(bytes: &[u8]) -> String {
 
 /// The pin store as it currently stands. Never fails: an unreadable document reads as empty
 /// (see [`PinnedSenderKeys`]).
-fn load_pins() -> PinnedSenderKeys {
-    let raw = match crate::keystore::get_item(PINNED_SENDER_KEYS_ACCOUNT) {
+fn load_pins(core: &crate::oauth::Core) -> PinnedSenderKeys {
+    let raw = match core.keys().get_item(PINNED_SENDER_KEYS_ACCOUNT) {
         Ok(bytes) => bytes,
         Err(e) => {
             if !crate::keystore::is_not_found(&e) {
@@ -517,11 +524,15 @@ fn load_pins() -> PinnedSenderKeys {
 /// synchronous function and never crosses an `.await`.
 static PIN_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn store_pins_for_host(host: &str, keys: &[SenderKey]) -> Result<(), NotificationsError> {
+fn store_pins_for_host(
+    core: &crate::oauth::Core,
+    host: &str,
+    keys: &[SenderKey],
+) -> Result<(), NotificationsError> {
     // A poisoned lock means some other thread panicked mid-write; the document is re-read below
     // either way, so recovering is strictly better than propagating the panic into a re-pin.
     let _guard = PIN_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut pins = load_pins();
+    let mut pins = load_pins(core);
     pins.version = PIN_DOCUMENT_VERSION;
     pins.hosts.insert(host.to_string(), keys.to_vec());
 
@@ -530,7 +541,8 @@ fn store_pins_for_host(host: &str, keys: &[SenderKey]) -> Result<(), Notificatio
             message: format!("could not encode pinned sender keys: {e}"),
         })
     })?;
-    crate::keystore::store_item_after_first_unlock(PINNED_SENDER_KEYS_ACCOUNT, &encoded)
+    core.keys()
+        .store_item_after_first_unlock(PINNED_SENDER_KEYS_ACCOUNT, &encoded)
         .map_err(keychain_err)
 }
 
@@ -631,32 +643,21 @@ async fn server_message(resp: reqwest::Response, fallback: &str) -> String {
 /// upserts on `(did, device_uuid)`, so a repeat is free — which is what lets the caller fire it
 /// without tracking whether it already has.
 pub async fn register_for_notifications(
-    state: &crate::oauth::Core,
+    core: &crate::oauth::Core,
     did: String,
 ) -> Result<RegistrationOutcome, NotificationsError> {
     // The topic is the app's own bundle identifier, read from the running configuration rather
     // than restated as a constant here — APNs routes on the identifier the binary was actually
     // built with, and a rename that missed a hardcoded copy would fail at the relay, one hop
     // away from anything that could explain it.
-    register_identity(state.app_identifier(), state.pds_client(), &did).await
-}
-
-/// Register one identity, given the APNs topic and a PDS client.
-///
-/// Split out from the command because the APNs token-change callback re-registers every managed
-/// identity from a context that has no Tauri `State` — and a second implementation of the same
-/// sequence is exactly how the two would drift.
-pub async fn register_identity(
-    apns_topic: &str,
-    pds_client: &PdsClient,
-    did: &str,
-) -> Result<RegistrationOutcome, NotificationsError> {
-    let device_uuid = device_uuid()?;
+    let apns_topic = core.app_identifier();
+    let did = did.as_str();
+    let device_uuid = device_uuid(core)?;
 
     // Checked before the key is generated or the session resolved: with no token there is
     // nothing to register, and minting key material for a registration that cannot happen would
     // pin this device to a key its host has never heard of.
-    let Some(apns_token) = stored_apns_token() else {
+    let Some(apns_token) = stored_apns_token(core) else {
         return Ok(RegistrationOutcome {
             status: RegistrationStatus::AwaitingApnsToken,
             device_uuid,
@@ -664,8 +665,8 @@ pub async fn register_identity(
         });
     };
 
-    let notification_key_id = load_or_create_notification_key()?;
-    let session = full_access_session(pds_client, did).await?;
+    let notification_key_id = load_or_create_notification_key(core)?;
+    let session = SessionProvider.full_access_client(core, did).await?;
 
     let registered = register_impl(
         &session.client,
@@ -681,7 +682,7 @@ pub async fn register_identity(
     // The same contact re-pins. The registration is the first moment this device could receive
     // anything from this host, so it is also the first moment it needs the keys to verify it.
     if registered {
-        if let Err(e) = pin_sender_keys(&session.client, &session.pds_url).await {
+        if let Err(e) = pin_sender_keys(core, &session.client, &session.pds_url).await {
             tracing::warn!(error = ?e, "registered for push but could not pin sender keys");
         }
     }
@@ -703,8 +704,8 @@ pub async fn register_identity(
 /// which may be a different server (or no Custos at all). Failures are logged and stepped over —
 /// one identity whose host is unreachable must not cost the others their new token, and the next
 /// contact retries anyway.
-pub async fn re_register_every_identity(apns_topic: &str, pds_client: &PdsClient) {
-    let dids = match IdentityStore.list_identities() {
+pub async fn re_register_every_identity(core: &crate::oauth::Core) {
+    let dids = match core.identities().list_identities() {
         Ok(dids) => dids,
         Err(e) => {
             tracing::warn!(error = ?e, "could not list identities to re-register for push");
@@ -712,7 +713,7 @@ pub async fn re_register_every_identity(apns_topic: &str, pds_client: &PdsClient
         }
     };
     for did in dids {
-        match register_identity(apns_topic, pds_client, &did).await {
+        match register_for_notifications(core, did.clone()).await {
             Ok(outcome) => {
                 tracing::info!(did = %did, status = ?outcome.status, "re-registered for push")
             }
@@ -721,18 +722,19 @@ pub async fn re_register_every_identity(apns_topic: &str, pds_client: &PdsClient
     }
 }
 
-/// Fetch and store one host's set. The re-pin cadence lives on `register_identity`, which calls
+/// Fetch and store one host's set. The re-pin cadence lives on `register_for_notifications`, which calls
 /// this on every successful contact — a sender key the operator revokes stops being trusted on
 /// this device at its next contact, which is what makes the cadence a security property rather
 /// than housekeeping.
 async fn pin_sender_keys(
+    core: &crate::oauth::Core,
     client: &OAuthClient,
     pds_url: &str,
 ) -> Result<SenderKeyPinning, NotificationsError> {
     let host = host_key(pds_url);
     match fetch_sender_keys_impl(client).await? {
         Some(keys) => {
-            store_pins_for_host(&host, &keys)?;
+            store_pins_for_host(core, &host, &keys)?;
             Ok(SenderKeyPinning {
                 host,
                 pinned: true,
@@ -740,7 +742,11 @@ async fn pin_sender_keys(
             })
         }
         None => {
-            let keys = load_pins().hosts.get(&host).cloned().unwrap_or_default();
+            let keys = load_pins(core)
+                .hosts
+                .get(&host)
+                .cloned()
+                .unwrap_or_default();
             Ok(SenderKeyPinning {
                 host,
                 pinned: false,
@@ -753,20 +759,22 @@ async fn pin_sender_keys(
 /// Tauri command: what this device holds. Read-only, no network, no identity required — it is
 /// the Settings answer to "why am I not getting notifications", and it must work in exactly the
 /// states where nothing else does.
-pub fn get_notification_diagnostics() -> NotificationDiagnostics {
+pub fn get_notification_diagnostics(core: &crate::oauth::Core) -> NotificationDiagnostics {
     NotificationDiagnostics {
-        device_uuid: crate::keystore::get_item(DEVICE_UUID_ACCOUNT)
+        device_uuid: core
+            .keys()
+            .get_item(DEVICE_UUID_ACCOUNT)
             .ok()
             .and_then(|b| String::from_utf8(b).ok())
             .filter(|s| !s.is_empty()),
-        notification_key_id: stored_notification_scalar()
+        notification_key_id: stored_notification_scalar(core)
             .ok()
             .flatten()
             .and_then(|scalar| crypto::p256_keypair_from_secret(&scalar).ok())
             .map(|keypair| keypair.key_id.0),
-        has_apns_token: stored_apns_token().is_some(),
-        pinned_hosts: load_pins().hosts,
-        recent_failures: load_failures(),
+        has_apns_token: stored_apns_token(core).is_some(),
+        pinned_hosts: load_pins(core).hosts,
+        recent_failures: load_failures(core),
     }
 }
 
@@ -778,8 +786,8 @@ pub fn get_notification_diagnostics() -> NotificationDiagnostics {
 /// noise, and noise is what stops the next real one from being read.
 ///
 /// Idempotent, and never an error: an absent log is the state this leaves behind anyway.
-pub fn clear_notification_failures() {
-    if let Err(e) = crate::keystore::delete_item(FAILURE_LOG_ACCOUNT) {
+pub fn clear_notification_failures(core: &crate::oauth::Core) {
+    if let Err(e) = core.keys().delete_item(FAILURE_LOG_ACCOUNT) {
         if !crate::keystore::is_not_found(&e) {
             tracing::warn!(error = %e, "could not clear notification failures");
         }
@@ -805,12 +813,12 @@ mod tests {
 
     #[test]
     fn the_device_uuid_is_minted_once_and_then_reused() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
 
-        let first = device_uuid().unwrap();
+        let first = device_uuid(core).unwrap();
         assert!(!first.is_empty());
         assert_eq!(
-            device_uuid().unwrap(),
+            device_uuid(core).unwrap(),
             first,
             "a second uuid would leave a dead server row and a live relay handle per launch"
         );
@@ -818,33 +826,34 @@ mod tests {
 
     #[test]
     fn an_unreadable_device_uuid_is_replaced_rather_than_wedging_registration() {
-        crate::keystore::clear_for_test();
-        crate::keystore::store_item(DEVICE_UUID_ACCOUNT, b"").unwrap();
+        let core = &crate::test_support::core();
+        core.keys().store_item(DEVICE_UUID_ACCOUNT, b"").unwrap();
 
-        let minted = device_uuid().unwrap();
+        let minted = device_uuid(core).unwrap();
         assert!(!minted.is_empty());
-        assert_eq!(device_uuid().unwrap(), minted);
+        assert_eq!(device_uuid(core).unwrap(), minted);
     }
 
     // ── the notification key ──
 
     #[test]
     fn the_notification_key_is_generated_once_under_the_locked_screen_class() {
-        crate::keystore::clear_for_test();
+        let (core, fakes) = crate::test_support::core_with_fakes();
+        let core = &core;
 
-        let key_id = load_or_create_notification_key().unwrap();
+        let key_id = load_or_create_notification_key(core).unwrap();
         assert!(key_id.starts_with("did:key:z"));
         crypto::p256_public_key_from_did_key(&key_id)
             .expect("the registered key must decode as P-256 — the server decodes it too");
 
         assert_eq!(
-            crate::keystore::accessibility_of(NOTIFICATION_KEY_ACCOUNT),
+            fakes.keys.accessibility_of(NOTIFICATION_KEY_ACCOUNT),
             Some(Accessibility::AfterFirstUnlock),
             "the extension decrypts on a locked screen; WhenUnlocked would make it unreachable"
         );
 
         assert_eq!(
-            load_or_create_notification_key().unwrap(),
+            load_or_create_notification_key(core).unwrap(),
             key_id,
             "a second keypair would orphan every payload already sealed to the first"
         );
@@ -852,11 +861,12 @@ mod tests {
 
     #[test]
     fn a_wrong_length_stored_key_is_replaced_not_used() {
-        crate::keystore::clear_for_test();
-        crate::keystore::store_item_after_first_unlock(NOTIFICATION_KEY_ACCOUNT, b"too short")
+        let core = &crate::test_support::core();
+        core.keys()
+            .store_item_after_first_unlock(NOTIFICATION_KEY_ACCOUNT, b"too short")
             .unwrap();
 
-        let key_id = load_or_create_notification_key().unwrap();
+        let key_id = load_or_create_notification_key(core).unwrap();
         crypto::p256_public_key_from_did_key(&key_id).expect("a usable key must replace it");
     }
 
@@ -871,21 +881,22 @@ mod tests {
             // Past the curve order (all-ones is well above P-256's n).
             [0xffu8; 32],
         ] {
-            crate::keystore::clear_for_test();
+            let core = &crate::test_support::core();
             assert!(
                 crypto::p256_keypair_from_secret(&invalid).is_err(),
                 "the fixture must actually be rejected by the curve, or this proves nothing"
             );
-            crate::keystore::store_item_after_first_unlock(NOTIFICATION_KEY_ACCOUNT, &invalid)
+            core.keys()
+                .store_item_after_first_unlock(NOTIFICATION_KEY_ACCOUNT, &invalid)
                 .unwrap();
 
-            let key_id = load_or_create_notification_key()
+            let key_id = load_or_create_notification_key(core)
                 .expect("an unusable stored scalar must not wedge registration forever");
             crypto::p256_public_key_from_did_key(&key_id).expect("a usable key must replace it");
 
             // And the replacement is durable, so the next launch reuses it rather than minting
             // a third key.
-            assert_eq!(load_or_create_notification_key().unwrap(), key_id);
+            assert_eq!(load_or_create_notification_key(core).unwrap(), key_id);
         }
     }
 
@@ -894,11 +905,11 @@ mod tests {
     /// launch and leave a dead server row (and a live relay handle) behind each one.
     #[test]
     fn a_minted_uuid_is_verified_durable_before_it_is_reported() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
 
-        let uuid = device_uuid().unwrap();
+        let uuid = device_uuid(core).unwrap();
         assert_eq!(
-            crate::keystore::get_item(DEVICE_UUID_ACCOUNT).unwrap(),
+            core.keys().get_item(DEVICE_UUID_ACCOUNT).unwrap(),
             uuid.as_bytes(),
             "the reported uuid must be the one actually in the slot"
         );
@@ -908,23 +919,23 @@ mod tests {
 
     #[test]
     fn recording_the_apns_token_reports_only_real_changes() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
 
         assert!(
-            record_apns_token("AABBCC").unwrap(),
+            record_apns_token(core, "AABBCC").unwrap(),
             "first token is a change"
         );
-        assert_eq!(stored_apns_token(), Some("aabbcc".to_string()));
+        assert_eq!(stored_apns_token(core), Some("aabbcc".to_string()));
         assert!(
-            !record_apns_token("aabbcc").unwrap(),
+            !record_apns_token(core, "aabbcc").unwrap(),
             "iOS hands over a token every launch; re-registering each time is a wasted round \
              trip per identity"
         );
         assert!(
-            record_apns_token("ddeeff").unwrap(),
+            record_apns_token(core, "ddeeff").unwrap(),
             "a rotated token is a change"
         );
-        assert_eq!(stored_apns_token(), Some("ddeeff".to_string()));
+        assert_eq!(stored_apns_token(core), Some("ddeeff".to_string()));
     }
 
     #[test]
@@ -939,18 +950,18 @@ mod tests {
 
     #[test]
     fn pinning_replaces_a_hosts_set_wholesale() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let host = "https://pds.example.com";
 
         let (retired, revoked, fresh) = (key(1), key(2), key(3));
-        store_pins_for_host(host, &[retired.clone(), revoked.clone()]).unwrap();
-        assert_eq!(load_pins().hosts[host], vec![retired.clone(), revoked]);
+        store_pins_for_host(core, host, &[retired.clone(), revoked.clone()]).unwrap();
+        assert_eq!(load_pins(core).hosts[host], vec![retired.clone(), revoked]);
 
         // The server rotated: a new key appears, the retired one is still published, and the
         // revoked one is simply gone from the response.
-        store_pins_for_host(host, &[fresh.clone(), retired.clone()]).unwrap();
+        store_pins_for_host(core, host, &[fresh.clone(), retired.clone()]).unwrap();
         assert_eq!(
-            load_pins().hosts[host],
+            load_pins(core).hosts[host],
             vec![fresh, retired],
             "a revoked key must vanish on the next contact, not linger through a merge"
         );
@@ -958,19 +969,19 @@ mod tests {
 
     #[test]
     fn pinning_one_host_leaves_the_others_alone() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
 
         // Two instances both start their kid sequence at 1 — the reason the store is per host.
         let (a, b) = (key(1), key(1));
-        store_pins_for_host("https://a.example.com", std::slice::from_ref(&a)).unwrap();
-        store_pins_for_host("https://b.example.com", std::slice::from_ref(&b)).unwrap();
+        store_pins_for_host(core, "https://a.example.com", std::slice::from_ref(&a)).unwrap();
+        store_pins_for_host(core, "https://b.example.com", std::slice::from_ref(&b)).unwrap();
 
-        let pins = load_pins();
+        let pins = load_pins(core);
         assert_eq!(pins.hosts["https://a.example.com"], vec![a]);
         assert_eq!(pins.hosts["https://b.example.com"], vec![b]);
 
-        store_pins_for_host("https://a.example.com", &[]).unwrap();
-        let pins = load_pins();
+        store_pins_for_host(core, "https://a.example.com", &[]).unwrap();
+        let pins = load_pins(core);
         assert!(pins.hosts["https://a.example.com"].is_empty());
         assert_eq!(
             pins.hosts["https://b.example.com"].len(),
@@ -981,23 +992,29 @@ mod tests {
 
     #[test]
     fn one_host_is_one_entry_however_its_url_is_spelled() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
 
-        store_pins_for_host(&host_key("https://Pds.Example.com/"), &[key(1)]).unwrap();
-        store_pins_for_host(&host_key("https://pds.example.com"), &[key(2), key(3)]).unwrap();
+        store_pins_for_host(core, &host_key("https://Pds.Example.com/"), &[key(1)]).unwrap();
+        store_pins_for_host(
+            core,
+            &host_key("https://pds.example.com"),
+            &[key(2), key(3)],
+        )
+        .unwrap();
 
-        let pins = load_pins();
+        let pins = load_pins(core);
         assert_eq!(pins.hosts.len(), 1, "spelling must not fork the pin store");
         assert_eq!(pins.hosts["https://pds.example.com"].len(), 2);
     }
 
     #[test]
     fn the_pinned_set_carries_the_locked_screen_class() {
-        crate::keystore::clear_for_test();
-        store_pins_for_host("https://pds.example.com", &[key(1)]).unwrap();
+        let (core, fakes) = crate::test_support::core_with_fakes();
+        let core = &core;
+        store_pins_for_host(core, "https://pds.example.com", &[key(1)]).unwrap();
 
         assert_eq!(
-            crate::keystore::accessibility_of(PINNED_SENDER_KEYS_ACCOUNT),
+            fakes.keys.accessibility_of(PINNED_SENDER_KEYS_ACCOUNT),
             Some(Accessibility::AfterFirstUnlock),
             "a key the extension cannot read is a payload it must call unverified"
         );
@@ -1007,39 +1024,45 @@ mod tests {
     /// contact, so refusing to read them would forfeit the very re-pin that repairs them.
     #[test]
     fn a_corrupt_pin_document_reads_as_empty_and_is_repaired_by_the_next_pin() {
-        crate::keystore::clear_for_test();
-        crate::keystore::store_item_after_first_unlock(
-            PINNED_SENDER_KEYS_ACCOUNT,
-            b"{not json at all",
-        )
-        .unwrap();
+        let core = &crate::test_support::core();
+        core.keys()
+            .store_item_after_first_unlock(PINNED_SENDER_KEYS_ACCOUNT, b"{not json at all")
+            .unwrap();
 
-        assert!(load_pins().hosts.is_empty());
+        assert!(load_pins(core).hosts.is_empty());
 
         let fresh = key(7);
-        store_pins_for_host("https://pds.example.com", std::slice::from_ref(&fresh)).unwrap();
-        assert_eq!(load_pins().hosts["https://pds.example.com"], vec![fresh]);
+        store_pins_for_host(
+            core,
+            "https://pds.example.com",
+            std::slice::from_ref(&fresh),
+        )
+        .unwrap();
+        assert_eq!(
+            load_pins(core).hosts["https://pds.example.com"],
+            vec![fresh]
+        );
     }
 
     #[test]
     fn a_pin_document_from_another_version_is_discarded_rather_than_misread() {
-        crate::keystore::clear_for_test();
-        crate::keystore::store_item_after_first_unlock(
+        let core = &crate::test_support::core();
+        core.keys().store_item_after_first_unlock(
             PINNED_SENDER_KEYS_ACCOUNT,
             br#"{"version":99,"hosts":{"https://pds.example.com":[{"kid":1,"publicKey":"x"}]}}"#,
         )
         .unwrap();
 
-        assert!(load_pins().hosts.is_empty());
+        assert!(load_pins(core).hosts.is_empty());
     }
 
     // ── diagnostics ──
 
     #[test]
     fn diagnostics_report_a_bare_device_without_inventing_state() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
 
-        let empty = get_notification_diagnostics();
+        let empty = get_notification_diagnostics(core);
         assert_eq!(empty.device_uuid, None);
         assert_eq!(empty.notification_key_id, None);
         assert!(!empty.has_apns_token);
@@ -1054,7 +1077,7 @@ mod tests {
     /// either side surfaces here rather than as a Settings screen that silently shows nothing.
     #[test]
     fn the_extensions_failure_log_is_read_as_the_extension_writes_it() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         // The literal `1` below is the version Swift's `NotifyFailureLog` writes. This assert
         // pins only the Rust half — a bump on the SWIFT side would leave it green — which is why
         // the actual cross-bundle equality is enforced by `just ios-template-check`, comparing
@@ -1064,15 +1087,16 @@ mod tests {
             FAILURE_LOG_VERSION, 1,
             "the fixture below is written at this version"
         );
-        crate::keystore::store_item_after_first_unlock(
-            FAILURE_LOG_ACCOUNT,
-            br#"{"version":1,"failures":[
+        core.keys()
+            .store_item_after_first_unlock(
+                FAILURE_LOG_ACCOUNT,
+                br#"{"version":1,"failures":[
                  {"at":"2026-07-27T10:00:00Z","reason":"UNKNOWN_KID","kid":4},
                  {"at":"2026-07-27T09:00:00Z","reason":"MALFORMED_PAYLOAD","kid":null}]}"#,
-        )
-        .unwrap();
+            )
+            .unwrap();
 
-        let failures = load_failures();
+        let failures = load_failures(core);
         assert_eq!(failures.len(), 2);
         assert_eq!(failures[0].reason, "UNKNOWN_KID");
         assert_eq!(failures[0].kid, Some(4));
@@ -1081,7 +1105,7 @@ mod tests {
             "a junk push has no envelope to read a kid from"
         );
         assert_eq!(
-            get_notification_diagnostics().recent_failures,
+            get_notification_diagnostics(core).recent_failures,
             failures,
             "diagnostics must report the log, not a second reading of it"
         );
@@ -1092,14 +1116,14 @@ mod tests {
     /// failure the user is asking about.
     #[test]
     fn an_unrecognized_reason_survives_the_read() {
-        crate::keystore::clear_for_test();
-        crate::keystore::store_item_after_first_unlock(
+        let core = &crate::test_support::core();
+        core.keys().store_item_after_first_unlock(
             FAILURE_LOG_ACCOUNT,
             br#"{"version":1,"failures":[{"at":"2026-07-27T10:00:00Z","reason":"SOMETHING_NEW"}]}"#,
         )
         .unwrap();
 
-        let failures = load_failures();
+        let failures = load_failures(core);
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].reason, "SOMETHING_NEW");
         assert_eq!(
@@ -1116,9 +1140,11 @@ mod tests {
             &b"{not json"[..],
             br#"{"version":99,"failures":[{"at":"t","reason":"OPEN_FAILED"}]}"#,
         ] {
-            crate::keystore::clear_for_test();
-            crate::keystore::store_item_after_first_unlock(FAILURE_LOG_ACCOUNT, raw).unwrap();
-            assert!(load_failures().is_empty());
+            let core = &crate::test_support::core();
+            core.keys()
+                .store_item_after_first_unlock(FAILURE_LOG_ACCOUNT, raw)
+                .unwrap();
+            assert!(load_failures(core).is_empty());
         }
     }
 
@@ -1126,41 +1152,45 @@ mod tests {
     /// — so the slot carries the same class as the key and the pins, not the framework default.
     #[test]
     fn the_failure_log_is_readable_on_a_locked_screen() {
-        crate::keystore::clear_for_test();
-        crate::keystore::store_item_after_first_unlock(FAILURE_LOG_ACCOUNT, b"{}").unwrap();
+        let (core, fakes) = crate::test_support::core_with_fakes();
+        let core = &core;
+        core.keys()
+            .store_item_after_first_unlock(FAILURE_LOG_ACCOUNT, b"{}")
+            .unwrap();
         assert_eq!(
-            crate::keystore::accessibility_of(FAILURE_LOG_ACCOUNT),
+            fakes.keys.accessibility_of(FAILURE_LOG_ACCOUNT),
             Some(Accessibility::AfterFirstUnlock)
         );
     }
 
     #[test]
     fn clearing_the_failures_is_idempotent_and_never_fatal() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         // Nothing stored yet: an absent log is already the state this leaves behind.
-        clear_notification_failures();
+        clear_notification_failures(core);
 
-        crate::keystore::store_item_after_first_unlock(
-            FAILURE_LOG_ACCOUNT,
-            br#"{"version":1,"failures":[{"at":"t","reason":"OPEN_FAILED"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(load_failures().len(), 1);
+        core.keys()
+            .store_item_after_first_unlock(
+                FAILURE_LOG_ACCOUNT,
+                br#"{"version":1,"failures":[{"at":"t","reason":"OPEN_FAILED"}]}"#,
+            )
+            .unwrap();
+        assert_eq!(load_failures(core).len(), 1);
 
-        clear_notification_failures();
-        assert!(load_failures().is_empty());
-        clear_notification_failures();
+        clear_notification_failures(core);
+        assert!(load_failures(core).is_empty());
+        clear_notification_failures(core);
     }
 
     #[test]
     fn diagnostics_report_the_public_half_only() {
-        crate::keystore::clear_for_test();
-        let uuid = device_uuid().unwrap();
-        let key_id = load_or_create_notification_key().unwrap();
-        record_apns_token("abcdef").unwrap();
-        store_pins_for_host("https://pds.example.com", &[key(1)]).unwrap();
+        let core = &crate::test_support::core();
+        let uuid = device_uuid(core).unwrap();
+        let key_id = load_or_create_notification_key(core).unwrap();
+        record_apns_token(core, "abcdef").unwrap();
+        store_pins_for_host(core, "https://pds.example.com", &[key(1)]).unwrap();
 
-        let diagnostics = get_notification_diagnostics();
+        let diagnostics = get_notification_diagnostics(core);
         assert_eq!(diagnostics.device_uuid, Some(uuid));
         assert_eq!(diagnostics.notification_key_id, Some(key_id));
         assert!(diagnostics.has_apns_token);
@@ -1331,10 +1361,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_fetched_set_replaces_the_pinned_one() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let server = httpmock::MockServer::start();
         let stale = key(1);
-        store_pins_for_host(&host_key(&server.base_url()), std::slice::from_ref(&stale)).unwrap();
+        store_pins_for_host(
+            core,
+            &host_key(&server.base_url()),
+            std::slice::from_ref(&stale),
+        )
+        .unwrap();
 
         let published = key(2);
         server.mock(|when, then| {
@@ -1345,14 +1380,14 @@ mod tests {
             }));
         });
 
-        let pinning = pin_sender_keys(&mock_client(&server.base_url()), &server.base_url())
+        let pinning = pin_sender_keys(core, &mock_client(&server.base_url()), &server.base_url())
             .await
             .unwrap();
 
         assert!(pinning.pinned);
         assert_eq!(pinning.keys, vec![published.clone()]);
         assert_eq!(
-            load_pins().hosts[&host_key(&server.base_url())],
+            load_pins(core).hosts[&host_key(&server.base_url())],
             vec![published],
             "the key the server stopped publishing is the one it revoked"
         );
@@ -1362,10 +1397,15 @@ mod tests {
     /// 501 would let one misconfigured deploy strip every device that checked in during it.
     #[tokio::test]
     async fn a_501_leaves_the_pinned_set_exactly_as_it_was() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let server = httpmock::MockServer::start();
         let pinned = key(5);
-        store_pins_for_host(&host_key(&server.base_url()), std::slice::from_ref(&pinned)).unwrap();
+        store_pins_for_host(
+            core,
+            &host_key(&server.base_url()),
+            std::slice::from_ref(&pinned),
+        )
+        .unwrap();
 
         server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1373,14 +1413,14 @@ mod tests {
             then.status(501);
         });
 
-        let pinning = pin_sender_keys(&mock_client(&server.base_url()), &server.base_url())
+        let pinning = pin_sender_keys(core, &mock_client(&server.base_url()), &server.base_url())
             .await
             .unwrap();
 
         assert!(!pinning.pinned);
         assert_eq!(pinning.keys, vec![pinned.clone()]);
         assert_eq!(
-            load_pins().hosts[&host_key(&server.base_url())],
+            load_pins(core).hosts[&host_key(&server.base_url())],
             vec![pinned]
         );
     }
@@ -1389,10 +1429,15 @@ mod tests {
     /// set: pinning nothing would leave this device unable to verify anything, with no signal.
     #[tokio::test]
     async fn an_unusable_key_set_is_an_error_and_changes_nothing() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let server = httpmock::MockServer::start();
         let pinned = key(5);
-        store_pins_for_host(&host_key(&server.base_url()), std::slice::from_ref(&pinned)).unwrap();
+        store_pins_for_host(
+            core,
+            &host_key(&server.base_url()),
+            std::slice::from_ref(&pinned),
+        )
+        .unwrap();
 
         server.mock(|when, then| {
             when.method(httpmock::Method::GET)
@@ -1402,7 +1447,7 @@ mod tests {
             }));
         });
 
-        let err = pin_sender_keys(&mock_client(&server.base_url()), &server.base_url())
+        let err = pin_sender_keys(core, &mock_client(&server.base_url()), &server.base_url())
             .await
             .unwrap_err();
         assert!(matches!(
@@ -1410,7 +1455,7 @@ mod tests {
             NotificationsError::Shared(SharedFailure::ServerError { status: 503, .. })
         ));
         assert_eq!(
-            load_pins().hosts[&host_key(&server.base_url())],
+            load_pins(core).hosts[&host_key(&server.base_url())],
             vec![pinned]
         );
     }

@@ -28,14 +28,14 @@ use chrono::SecondsFormat;
 use serde::Serialize;
 
 use super::{cleanup_expired_state, issue_access_token, TokenRequestForm};
-use crate::auth::agent_assertion::{parse_sqlite_datetime, POLL_INTERVAL_SECS};
-use crate::auth::token::sha256_hex;
-use crate::db::agent_auth::{
+use crate::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
+use custos_core::auth::agent_assertion::{parse_sqlite_datetime, POLL_INTERVAL_SECS};
+use custos_core::auth::token::sha256_hex;
+use custos_core::CoreState;
+use custos_db::agent_auth::{
     get_agent_identity, get_agent_identity_by_claim_token, latest_agent_claim_attempt_for_identity,
     AgentIdentityRow, AgentIdentityStatus,
 };
-use crate::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
-use custos_core::CoreState;
 
 /// Successful claim-polling response body. Like the jwt-bearer response it carries a plain Bearer
 /// access token and no refresh token, plus the post-claim `identity_assertion` the agent stores to
@@ -215,11 +215,11 @@ async fn claim_success(state: &CoreState, identity: &AgentIdentityRow) -> Respon
         Err(e) => return e.into_response(),
     };
 
-    if let Err(e) = crate::auth::agent_assertion::record_agent_audit(
+    if let Err(e) = custos_core::auth::agent_assertion::record_agent_audit(
         &state.db,
         &identity.id,
         Some(did),
-        crate::db::agent_audit::AgentAuditEventType::TokenExchanged,
+        custos_db::agent_audit::AgentAuditEventType::TokenExchanged,
         serde_json::json!({ "grant": "claim", "scope": scope }),
     )
     .await
@@ -479,7 +479,7 @@ mod tests {
             did,
             "reg_claimed",
             "repo:* blob:*/*",
-            crate::time::unix_now_secs() + 600,
+            custos_core::time::unix_now_secs() + 600,
         );
         ClaimableIdentity::new("reg_claimed", "clm_claimed")
             .did(did)

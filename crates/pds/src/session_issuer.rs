@@ -15,8 +15,8 @@ use common::{ApiError, ApiResultExt, ErrorCode};
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::auth::jwt::{app_pass_scope, issue_access_jwt, issue_refresh_jwt, SCOPE_ACCESS};
 use crate::db::app_passwords::AppPasswordGrants;
+use custos_core::auth::jwt::{app_pass_scope, issue_access_jwt, issue_refresh_jwt, SCOPE_ACCESS};
 
 /// The authority and revocation identity of a legacy ATProto session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,9 +197,9 @@ pub async fn issue_session_in_transaction(
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::auth::extractors::authenticate_bearer;
-    use crate::auth::jwt::AuthScope;
     use crate::routes::test_utils::insert_account_with_email;
+    use custos_core::auth::extractors::authenticate_bearer;
+    use custos_core::auth::jwt::AuthScope;
 
     async fn seed_account(state: &AppState, did: &str) {
         insert_account_with_email(&state.db, did, "owner@example.com").await;

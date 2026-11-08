@@ -19,13 +19,13 @@ use axum::{extract::State, http::StatusCode};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes;
-use crate::auth::token::generate_token;
 use crate::db::account_deletion_tokens::insert_account_deletion_token;
-use crate::db::accounts::get_session_account;
-use crate::no_input::NoInputBody;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes;
+use custos_core::auth::token::generate_token;
+use custos_core::no_input::NoInputBody;
+use custos_db::accounts::get_session_account;
 
 pub async fn request_account_delete(
     user: AuthenticatedUser,

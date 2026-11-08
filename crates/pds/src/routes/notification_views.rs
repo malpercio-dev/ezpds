@@ -13,8 +13,8 @@
 use serde::Serialize;
 
 use crate::app::AppState;
-use crate::auth::validation::validate_device_public_key;
 use common::{ApiError, ErrorCode};
+use custos_core::auth::validation::validate_device_public_key;
 
 /// Reject when the operator has not configured a relay.
 ///

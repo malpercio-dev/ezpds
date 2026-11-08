@@ -37,11 +37,11 @@ use crate::db::account_labels::{
     delete_label, delete_labels_for_unwatched, delete_seeds_for_unwatched, is_labeler_seeded,
     labels_for_labeler, mark_labeler_seeded, upsert_label,
 };
-use crate::identity::proxy::resolve_atproto_proxy_target;
 use crate::label_state::{active_labels, diff_labels, ActiveLabel, LabelEvent};
 use crate::notifications::NotificationPayload;
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
+use custos_core::identity::proxy::resolve_atproto_proxy_target;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 
 /// Ozone's `queryLabels` silently returns *nothing* (not an error) past 20 `uriPatterns`
 /// per request, so hosted-DID batches must cap there.
@@ -130,7 +130,7 @@ pub async fn run_labeler_watch(state: &AppState) -> LabelerWatchStats {
         tracing::error!(error = %e, "labeler watch: failed to prune unwatched labelers' seeding markers");
     }
 
-    let dids = match crate::db::accounts::all_account_dids(&state.db).await {
+    let dids = match custos_db::accounts::all_account_dids(&state.db).await {
         Ok(dids) => dids,
         Err(e) => {
             tracing::error!(error = %e, "labeler watch: failed to list hosted accounts; skipping pass");
@@ -181,7 +181,7 @@ pub async fn run_labeler_watch(state: &AppState) -> LabelerWatchStats {
     state
         .metrics
         .labeler_watch_last_run_timestamp
-        .record(crate::metrics::unix_now(), &[]);
+        .record(custos_core::metrics::unix_now(), &[]);
 
     stats
 }
@@ -341,7 +341,7 @@ struct QueryLabelsPage {
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::db::accounts::insert_bare_account as insert_account;
+    use custos_db::accounts::insert_bare_account as insert_account;
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -350,7 +350,7 @@ mod tests {
 
     /// Point the labeler DID's cached document at a mock labeler service.
     async fn seed_labeler_doc(db: &sqlx::SqlitePool, endpoint: &str) {
-        crate::db::dids::seed_did_document(
+        custos_db::dids::seed_did_document(
             db,
             LABELER,
             json!({

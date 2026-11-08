@@ -33,8 +33,8 @@ use serde::Serialize;
 use common::{ApiError, ApiResultExt};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin;
-use crate::sweep_status::{names, SweepRun};
+use custos_core::auth::guards::require_admin;
+use custos_core::sweep_status::{names, SweepRun};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -189,14 +189,14 @@ pub async fn admin_health(
     // Auth first so an unauthenticated caller cannot read instance-scale facts.
     require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
-    let stats = crate::db::server_stats::server_stats(&state.db)
+    let stats = custos_db::server_stats::server_stats(&state.db)
         .await
         .or_internal("failed to gather server stats")?;
 
     // Oldest retained event → backfill window. An unparseable timestamp would be a writer
     // bug (the writer emits one fixed format); degrade to `null` rather than failing the
     // whole readout over one field.
-    let backfill_window_seconds = match crate::db::firehose_seq::oldest_sequenced_at(&state.db)
+    let backfill_window_seconds = match custos_db::firehose_seq::oldest_sequenced_at(&state.db)
         .await
         .or_internal("failed to read oldest firehose event")?
     {
@@ -410,8 +410,8 @@ mod tests {
         .await
         .unwrap();
         state.sweeps.record(
-            crate::sweep_status::names::LABELER_WATCH,
-            crate::sweep_status::SweepRun {
+            custos_core::sweep_status::names::LABELER_WATCH,
+            custos_core::sweep_status::SweepRun {
                 completed_at: 1_760_000_000,
                 swept: 2,
                 errors: 0,
@@ -437,24 +437,24 @@ mod tests {
             .unwrap();
         // A completed blob-GC pass shows up with its literal facts.
         state.sweeps.record(
-            crate::sweep_status::names::BLOB_GC,
-            crate::sweep_status::SweepRun {
+            custos_core::sweep_status::names::BLOB_GC,
+            custos_core::sweep_status::SweepRun {
                 completed_at: 1_750_000_000,
                 swept: 7,
                 errors: 0,
             },
         );
         state.sweeps.record(
-            crate::sweep_status::names::BLOB_MIRROR,
-            crate::sweep_status::SweepRun {
+            custos_core::sweep_status::names::BLOB_MIRROR,
+            custos_core::sweep_status::SweepRun {
                 completed_at: 1_750_000_100,
                 swept: 3,
                 errors: 0,
             },
         );
         state.sweeps.record(
-            crate::sweep_status::names::BLOB_SCRUB,
-            crate::sweep_status::SweepRun {
+            custos_core::sweep_status::names::BLOB_SCRUB,
+            custos_core::sweep_status::SweepRun {
                 completed_at: 1_750_000_200,
                 swept: 1,
                 errors: 0,
@@ -486,8 +486,8 @@ mod tests {
     async fn health_reports_a_completed_sweep_that_skipped_work() {
         let state = test_state_with_admin_token().await;
         state.sweeps.record(
-            crate::sweep_status::names::BLOB_GC,
-            crate::sweep_status::SweepRun::now_with_errors(4, 2),
+            custos_core::sweep_status::names::BLOB_GC,
+            custos_core::sweep_status::SweepRun::now_with_errors(4, 2),
         );
 
         let router = app(state);
@@ -526,7 +526,7 @@ mod tests {
         for (name, swept) in slots {
             state.sweeps.record(
                 name,
-                crate::sweep_status::SweepRun {
+                custos_core::sweep_status::SweepRun {
                     completed_at: 1_700_000_000 + swept as i64,
                     swept,
                     errors: 0,

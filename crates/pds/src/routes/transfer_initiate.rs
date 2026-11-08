@@ -19,9 +19,9 @@ use uuid::Uuid;
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_session;
 use crate::code_gen::generate_code;
-use crate::db::transfers::{insert_transfer, InitiateOutcome};
+use custos_core::auth::guards::require_session;
+use custos_db::transfers::{insert_transfer, InitiateOutcome};
 
 /// Lifetime of a transfer code, in minutes. The canonical provisioning spec
 /// (`docs/provisioning-api-spec.md` §13) specifies 15 minutes; we follow the spec.
@@ -121,8 +121,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
-    use crate::auth::token::generate_token;
     use crate::routes::test_utils::body_json;
+    use custos_core::auth::token::generate_token;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

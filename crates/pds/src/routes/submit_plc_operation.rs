@@ -18,12 +18,14 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes;
-use crate::db::dids::upsert_did_document;
-use crate::identity::plc::{build_did_document_from_op, ensure_did_plc, fetch_current_plc_state};
-use crate::lexicon::LexiconInput;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes;
+use custos_core::identity::plc::{
+    build_did_document_from_op, ensure_did_plc, fetch_current_plc_state,
+};
+use custos_core::lexicon::LexiconInput;
+use custos_db::dids::upsert_did_document;
 
 #[derive(Deserialize)]
 pub struct SubmitPlcOperationRequest {
@@ -80,7 +82,7 @@ pub async fn submit_plc_operation(
         ));
     }
 
-    crate::identity::genesis::post_to_plc_directory(
+    custos_core::identity::genesis::post_to_plc_directory(
         &state.http_client,
         &state.config.plc_directory_url,
         did,
@@ -248,7 +250,8 @@ mod tests {
 
         // The identity change is announced on the firehose so relays/AppViews re-resolve the new
         // key/handle/PDS — without this, a key-changing migration op stays invisible to consumers.
-        let crate::firehose::FirehoseEvent::Identity(identity) = rx.try_recv().unwrap() else {
+        let custos_core::firehose::FirehoseEvent::Identity(identity) = rx.try_recv().unwrap()
+        else {
             panic!("expected an #identity firehose event after submitPlcOperation");
         };
         assert_eq!(identity.did, did);

@@ -50,8 +50,6 @@
 //! Serialization: the status/history types are camelCase, `MonitorError` is
 //! `SCREAMING_SNAKE_CASE`, `SweepTrigger` is lowercase; TypeScript counterparts must match.
 
-use crate::identity_store::IdentityStore;
-use crate::pds_client::PdsClient;
 use chrono::{DateTime, SecondsFormat, Utc};
 use crypto::{diff_audit_logs, parse_audit_log, verify_plc_operation, AuditEntry, DidKeyUri};
 use serde::{Deserialize, Serialize};
@@ -119,16 +117,16 @@ fn is_monitorable(did: &str) -> bool {
 }
 
 pub struct PlcMonitor<'a> {
-    pds_client: &'a PdsClient,
+    core: &'a crate::oauth::Core,
 }
 
 impl<'a> PlcMonitor<'a> {
-    pub fn new(pds_client: &'a PdsClient) -> Self {
-        Self { pds_client }
+    pub fn new(core: &'a crate::oauth::Core) -> Self {
+        Self { core }
     }
 
     pub async fn check_all(&self) -> Result<Vec<IdentityStatus>, MonitorError> {
-        let store = IdentityStore;
+        let store = self.core.identities();
         let dids = store
             .list_identities()
             .map_err(|e| MonitorError::IdentityStoreError {
@@ -170,23 +168,28 @@ impl<'a> PlcMonitor<'a> {
         did: &str,
     ) -> Result<Vec<UnauthorizedChange>, MonitorError> {
         // Fetch current audit log
-        let current_log_json = self.pds_client.fetch_audit_log(did).await.map_err(|e| {
-            tracing::warn!(did, error = %e, "failed to fetch audit log, will retry next cycle");
-            // A background identity check that can't reach the directory fails silently to
-            // the user. Record the transport case so an exported diagnostics log shows it —
-            // server verdicts are already captured at the XRPC classification seam, so this
-            // is gated to transport failures to avoid double-counting.
-            if matches!(e, crate::pds_client::PdsClientError::NetworkError { .. }) {
-                crate::diagnostics::record_transport(
-                    "plc_monitor.fetch_audit_log",
-                    None,
-                    "unreachable",
-                );
-            }
-            MonitorError::NetworkError {
-                message: e.to_string(),
-            }
-        })?;
+        let current_log_json = self
+            .core
+            .pds_client()
+            .fetch_audit_log(did)
+            .await
+            .map_err(|e| {
+                tracing::warn!(did, error = %e, "failed to fetch audit log, will retry next cycle");
+                // A background identity check that can't reach the directory fails silently to
+                // the user. Record the transport case so an exported diagnostics log shows it —
+                // server verdicts are already captured at the XRPC classification seam, so this
+                // is gated to transport failures to avoid double-counting.
+                if matches!(e, crate::pds_client::PdsClientError::NetworkError { .. }) {
+                    crate::diagnostics::record_transport(
+                        "plc_monitor.fetch_audit_log",
+                        None,
+                        "unreachable",
+                    );
+                }
+                MonitorError::NetworkError {
+                    message: e.to_string(),
+                }
+            })?;
 
         // Parse current log
         let current_entries = parse_audit_log(&current_log_json).map_err(|e| {
@@ -197,7 +200,7 @@ impl<'a> PlcMonitor<'a> {
         })?;
 
         // Load cached log
-        let store = IdentityStore;
+        let store = self.core.identities();
         let cached_entries = match store.get_plc_log(did) {
             Ok(Some(cached_json)) => match parse_audit_log(&cached_json) {
                 Ok(entries) => entries,
@@ -459,8 +462,8 @@ fn coalesces_into(newest: Option<&SweepRecord>, next: &SweepRecord, at: DateTime
 /// those records may hold the only copy of recovery material, so refusing to proceed
 /// protects the user. This one holds counts and timestamps. Erroring on it would cost the
 /// user the sweep that is running right now to preserve a readout of sweeps already past.
-fn load_history() -> MonitorHistory {
-    match crate::keystore::get_item(HISTORY_ACCOUNT) {
+fn load_history(core: &crate::oauth::Core) -> MonitorHistory {
+    match core.keys().get_item(HISTORY_ACCOUNT) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "monitor history unreadable, starting a fresh log");
             MonitorHistory::default()
@@ -485,7 +488,7 @@ static HISTORY_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::Once
 
 /// Fold a completed sweep into the stored history. Never fails a sweep: a write failure is
 /// logged and dropped, because losing the readout must not lose the protection.
-fn record_sweep(statuses: &[IdentityStatus], trigger: SweepTrigger) {
+fn record_sweep(core: &crate::oauth::Core, statuses: &[IdentityStatus], trigger: SweepTrigger) {
     // A poisoned lock guards no invariant worth preserving here — the record is rebuilt
     // from the Keychain on every call — so recover rather than propagate a panic into the
     // monitor.
@@ -493,10 +496,10 @@ fn record_sweep(statuses: &[IdentityStatus], trigger: SweepTrigger) {
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let next = fold_sweep(load_history(), statuses, trigger, Utc::now());
+    let next = fold_sweep(load_history(core), statuses, trigger, core.utc_now());
     match serde_json::to_vec(&next) {
         Ok(bytes) => {
-            if let Err(e) = crate::keystore::store_item(HISTORY_ACCOUNT, &bytes) {
+            if let Err(e) = core.keys().store_item(HISTORY_ACCOUNT, &bytes) {
                 tracing::warn!(error = %e, "failed to store monitor history");
             }
         }
@@ -506,12 +509,12 @@ fn record_sweep(statuses: &[IdentityStatus], trigger: SweepTrigger) {
 
 /// Tauri IPC command: what the monitor has been doing.
 ///
-/// Synchronous and stateless like the other `IdentityStore`-adjacent reads — the Keychain
-/// is a blocking API and there is no network here.
-pub fn get_monitor_history() -> MonitorHistory {
+/// Synchronous like the other `IdentityStore`-adjacent reads — the Keychain is a blocking API
+/// and there is no network here.
+pub fn get_monitor_history(core: &crate::oauth::Core) -> MonitorHistory {
     MonitorHistory {
         interval_secs: MONITOR_INTERVAL_SECS,
-        ..load_history()
+        ..load_history(core)
     }
 }
 
@@ -523,7 +526,7 @@ pub async fn run_monitoring_cycle(monitor: &PlcMonitor<'_>) -> Vec<IdentityStatu
             // Recorded only on a completed pass. A `check_all` that could not even list the
             // managed identities did not sweep anything, and logging it as a zero-identity
             // sweep would read as "nothing to check" — the reassuring inverse of the truth.
-            record_sweep(&statuses, SweepTrigger::Background);
+            record_sweep(monitor.core, &statuses, SweepTrigger::Background);
             statuses
         }
         Err(e) => {
@@ -537,9 +540,9 @@ pub async fn run_monitoring_cycle(monitor: &PlcMonitor<'_>) -> Vec<IdentityStatu
 /// UI if anything changed without authorization. The shell decides when to run it (every
 /// [`MONITOR_INTERVAL_SECS`] today).
 pub async fn run_monitoring_cycle_and_alert(state: &crate::oauth::Core) {
-    let monitor = PlcMonitor::new(state.pds_client());
+    let monitor = PlcMonitor::new(state);
     let statuses = run_monitoring_cycle(&monitor).await;
-    emit_if_alerts(&statuses);
+    emit_if_alerts(state, &statuses);
 }
 
 /// The floor between background sweeps. iOS picks the moment and may run it less often; a
@@ -550,8 +553,8 @@ pub const BACKGROUND_CHECK_AFTER: std::time::Duration = std::time::Duration::fro
 /// Ask the platform to run [`run_monitoring_cycle_and_alert`] while the app is closed. Called
 /// once at startup; the platform re-arms it each time it fires. Not configurable: the monitor
 /// is always on, and the foreground timer keeps running alongside it.
-pub fn schedule_background_check() {
-    crate::scheduler::schedule(crate::scheduler::JobRequest {
+pub fn schedule_background_check(core: &crate::oauth::Core) {
+    core.schedule(crate::scheduler::JobRequest {
         job: crate::scheduler::BackgroundJob::PlcCheck,
         earliest_after: BACKGROUND_CHECK_AFTER,
         requires_network: true,
@@ -562,9 +565,9 @@ pub fn schedule_background_check() {
 }
 
 /// Emit "plc_alert" event to the frontend if any identity has unauthorized changes.
-fn emit_if_alerts(statuses: &[IdentityStatus]) {
+fn emit_if_alerts(core: &crate::oauth::Core, statuses: &[IdentityStatus]) {
     if statuses.iter().any(|s| !s.unauthorized_changes.is_empty()) {
-        crate::events::emit("plc_alert", statuses);
+        core.emit("plc_alert", statuses);
     }
 }
 
@@ -573,16 +576,42 @@ fn emit_if_alerts(statuses: &[IdentityStatus]) {
 pub async fn check_identity_status(
     state: &crate::oauth::Core,
 ) -> Result<Vec<IdentityStatus>, MonitorError> {
-    let monitor = PlcMonitor::new(state.pds_client());
+    let monitor = PlcMonitor::new(state);
     let statuses = monitor.check_all().await?;
-    record_sweep(&statuses, SweepTrigger::Foreground);
-    emit_if_alerts(&statuses);
+    record_sweep(state, &statuses, SweepTrigger::Foreground);
+    emit_if_alerts(state, &statuses);
     Ok(statuses)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The UI hears about a sweep only when it found an operation the device key did not sign.
+    #[test]
+    fn only_a_sweep_with_unauthorized_changes_alerts() {
+        let (core, fakes) = crate::test_support::core_with_fakes();
+        let status = |changes: Vec<UnauthorizedChange>| IdentityStatus {
+            did: "did:plc:alerted".to_string(),
+            check_failed: false,
+            unauthorized_changes: changes,
+        };
+
+        emit_if_alerts(&core, &[status(Vec::new())]);
+        assert!(fakes.events.events().is_empty());
+
+        let change = UnauthorizedChange {
+            cid: "bafyunauthorized".to_string(),
+            created_at: "2026-11-07T00:00:00Z".to_string(),
+            signing_key: None,
+            operation: serde_json::json!({}),
+        };
+        emit_if_alerts(&core, &[status(vec![change])]);
+        let events = fakes.events.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "plc_alert");
+        assert_eq!(events[0].1[0]["did"], "did:plc:alerted");
+    }
 
     /// Test UnauthorizedChange serialization to ensure camelCase conversion.
     #[test]
@@ -650,13 +679,6 @@ mod tests {
         let json = serde_json::to_value(&status).expect("serialize");
         assert_eq!(json["unauthorizedChanges"].as_array().unwrap().len(), 1);
         assert_eq!(json["checkFailed"], false);
-    }
-
-    /// PlcMonitor borrows PdsClient; verify the reference is well-formed.
-    #[test]
-    fn test_plc_monitor_creation() {
-        let pds_client = PdsClient::new();
-        let _monitor = PlcMonitor::new(&pds_client);
     }
 
     /// Test MonitorError serialization with correct error tag.
@@ -908,8 +930,11 @@ mod tests {
     // and builds properly-signed PLC operations via the crypto crate.
 
     /// Register a DID in IdentityStore and return its device key info + private bytes.
-    fn setup_identity(did: &str) -> (crate::device_key::DevicePublicKey, [u8; 32]) {
-        let store = IdentityStore;
+    fn setup_identity(
+        core: &crate::oauth::Core,
+        did: &str,
+    ) -> (crate::device_key::DevicePublicKey, [u8; 32]) {
+        let store = core.identities();
         // add_identity may fail if already registered from a prior test — ignore
         let _ = store.add_identity(did);
         // Clear per-DID keychain entries to ensure fresh device key generation
@@ -921,12 +946,14 @@ mod tests {
             "plc-log",
             "oauth-tokens",
         ] {
-            let _ = crate::keystore::delete_item(&format!("{did}:{suffix}"));
+            let _ = core.keys().delete_item(&format!("{did}:{suffix}"));
         }
         let device_pub = store
             .get_or_create_device_key(did)
             .expect("device key generation failed");
-        let priv_bytes_vec = crate::keystore::get_item(&format!("{did}:device-key"))
+        let priv_bytes_vec = core
+            .keys()
+            .get_item(&format!("{did}:device-key"))
             .expect("device key not in keychain");
         let priv_bytes: [u8; 32] = priv_bytes_vec
             .try_into()
@@ -937,15 +964,17 @@ mod tests {
     /// Authorized change (device-key-signed) produces no alert and updates cache.
     #[tokio::test]
     async fn test_ac6_1_authorized_change_detected() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did = "did:plc:ac61auth";
 
-        let (device_pub, device_priv) = setup_identity(did);
+        let (device_pub, device_priv) = setup_identity(core, did);
 
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
-        let monitor = PlcMonitor::new(&client);
+        let core = &core.with_pds_client(client.clone());
+        let monitor = PlcMonitor::new(core);
 
         // Use a separate rotation key (rotationKeys[0]); device key signs as rotationKeys[1]
         let other_kp = crypto::generate_p256_keypair().expect("keygen");
@@ -991,13 +1020,14 @@ mod tests {
     /// (the device key signed it), independent of what the op does to the key set.
     #[tokio::test]
     async fn rekey_op_signed_by_device_key_is_authorized() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
         use p256::ecdsa::{signature::Signer, SigningKey};
         use p256::FieldBytes;
         use std::collections::BTreeMap;
 
         let did = "did:plc:rekeyauthorized";
-        let (device_pub, device_priv) = setup_identity(did);
+        let (device_pub, device_priv) = setup_identity(core, did);
         let device_uri = DidKeyUri(device_pub.key_id.clone());
 
         // The PDS repo key and the fresh recovery key (in reality HKDF-derived; any did:key
@@ -1073,7 +1103,8 @@ mod tests {
 
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
-        let monitor = PlcMonitor::new(&client);
+        let core = &core.with_pds_client(client.clone());
+        let monitor = PlcMonitor::new(core);
         mock_server.mock(|when, then| {
             when.method(GET).path(format!("/{did}/log/audit"));
             then.status(200)
@@ -1092,15 +1123,17 @@ mod tests {
     /// Unauthorized change (different key) creates an UnauthorizedChange alert.
     #[tokio::test]
     async fn test_ac6_2_unauthorized_change_detected() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did = "did:plc:ac62unauth";
 
-        let (device_pub, _device_priv) = setup_identity(did);
+        let (device_pub, _device_priv) = setup_identity(core, did);
 
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
-        let monitor = PlcMonitor::new(&client);
+        let core = &core.with_pds_client(client.clone());
+        let monitor = PlcMonitor::new(core);
 
         // Sign the genesis op with a DIFFERENT key (not the device key)
         let other_kp = crypto::generate_p256_keypair().expect("keygen");
@@ -1139,15 +1172,17 @@ mod tests {
     /// Alert created_at matches the audit log timestamp for deadline computation.
     #[tokio::test]
     async fn test_ac6_3_created_at_matches_audit_log() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did = "did:plc:ac63time";
 
-        let (device_pub, _device_priv) = setup_identity(did);
+        let (device_pub, _device_priv) = setup_identity(core, did);
 
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
-        let monitor = PlcMonitor::new(&client);
+        let core = &core.with_pds_client(client.clone());
+        let monitor = PlcMonitor::new(core);
 
         let expected_timestamp = "2026-03-29T12:34:56.789Z";
 
@@ -1194,7 +1229,8 @@ mod tests {
 
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
-        let monitor = PlcMonitor::new(&client);
+        let core = &crate::test_support::core().with_pds_client(client.clone());
+        let monitor = PlcMonitor::new(core);
 
         let did = "did:plc:ac67net";
 
@@ -1214,15 +1250,17 @@ mod tests {
     /// Empty audit log (newly created identity) returns no changes.
     #[tokio::test]
     async fn test_ac6_8_empty_audit_log() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did = "did:plc:ac68empty";
 
-        let _ = setup_identity(did);
+        let _ = setup_identity(core, did);
 
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
-        let monitor = PlcMonitor::new(&client);
+        let core = &core.with_pds_client(client.clone());
+        let monitor = PlcMonitor::new(core);
 
         mock_server.mock(|when, then| {
             when.method(GET).path(format!("/{did}/log/audit"));
@@ -1249,15 +1287,17 @@ mod tests {
     /// request is spent asking plc.directory about a DID it has never heard of.
     #[tokio::test]
     async fn did_web_identity_is_omitted_from_sweep() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did = "did:web:monitor-skip.example";
-        let store = IdentityStore;
+        let store = core.identities();
         let _ = store.add_identity(did);
 
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
-        let monitor = PlcMonitor::new(&client);
+        let core = &core.with_pds_client(client.clone());
+        let monitor = PlcMonitor::new(core);
 
         // Any audit-log fetch for this DID would land here. It must never be reached.
         let audit_mock = mock_server.mock(|when, then| {
@@ -1277,16 +1317,18 @@ mod tests {
     /// Multi-identity: both identities authorized, no alerts.
     #[tokio::test]
     async fn test_ac6_1_multi_identity_all_authorized() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did_alice = "did:plc:ac61alice";
         let did_bob = "did:plc:ac61bob";
-        let (alice_pub, alice_priv) = setup_identity(did_alice);
-        let (bob_pub, bob_priv) = setup_identity(did_bob);
+        let (alice_pub, alice_priv) = setup_identity(core, did_alice);
+        let (bob_pub, bob_priv) = setup_identity(core, did_bob);
 
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
-        let monitor = PlcMonitor::new(&client);
+        let core = &core.with_pds_client(client.clone());
+        let monitor = PlcMonitor::new(core);
 
         // Alice: genesis signed by alice's device key
         let alice_rot = crypto::generate_p256_keypair().expect("keygen");
@@ -1353,16 +1395,18 @@ mod tests {
     /// Multi-identity: one authorized, one unauthorized.
     #[tokio::test]
     async fn test_ac6_2_multi_identity_mixed_auth() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did_alice = "did:plc:ac62alice";
         let did_bob = "did:plc:ac62bob";
-        let (alice_pub, alice_priv) = setup_identity(did_alice);
-        let (bob_pub, _bob_priv) = setup_identity(did_bob);
+        let (alice_pub, alice_priv) = setup_identity(core, did_alice);
+        let (bob_pub, _bob_priv) = setup_identity(core, did_bob);
 
         let mock_server = MockServer::start();
         let client = crate::pds_client::new_for_test(mock_server.base_url());
-        let monitor = PlcMonitor::new(&client);
+        let core = &core.with_pds_client(client.clone());
+        let monitor = PlcMonitor::new(core);
 
         // Alice: genesis signed by alice's device key → authorized
         let alice_rot = crypto::generate_p256_keypair().expect("keygen");

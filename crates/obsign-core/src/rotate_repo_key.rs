@@ -52,8 +52,7 @@ use serde::Serialize;
 use crate::claim::{ClaimResult, OpDiff};
 use crate::failure::SharedFailure;
 use crate::handle_change::latest_full_state;
-use crate::identity_store::{IdentityStore, PerDidSignError};
-use crate::pds_client::PdsClient;
+use crate::identity_store::PerDidSignError;
 use crate::session_provider::SessionProvider;
 use crypto::PlcService;
 
@@ -368,19 +367,13 @@ async fn complete_rotation_on_pds(
 /// per-DID device key. The op is NOT submitted anywhere yet — it is returned for the
 /// review screen and parked for `submit_repo_key_rotation`.
 pub async fn build_repo_key_rotation(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<SignedRotationOp, RotationError> {
-    let now =
-        crate::sovereign_session::unix_timestamp().map_err(|_| RotationError::SigningFailed {
-            message: "system clock is unavailable".to_string(),
-        })?;
-    let store = IdentityStore;
+    let store = core.identities();
 
     // 1. Full-access session on the hosting PDS (the per-DID session-provider seam).
-    let session = SessionProvider
-        .full_access_client(pds_client, &store, did, now)
-        .await?;
+    let session = SessionProvider.full_access_client(core, did).await?;
 
     // 2. Stage a fresh replacement key on the PDS. Idempotency note: re-running build
     //    stages another fresh key, which simply replaces the previous staged one.
@@ -393,7 +386,8 @@ pub async fn build_repo_key_rotation(
     let device_key_id = device.key_id;
 
     // 4. Current audit log -> prev + full current state.
-    let log_json = pds_client
+    let log_json = core
+        .pds_client()
         .fetch_audit_log(did)
         .await
         .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch audit log", e))?;
@@ -430,12 +424,15 @@ pub async fn build_repo_key_rotation(
     guard_rotation_op(&inputs)?;
 
     // 7. Sign locally with the per-DID device key.
-    let sign_closure = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { .. } => {
-            RotationError::Shared(SharedFailure::IdentityNotFound)
-        }
-        PerDidSignError::SigningSetupFailed { message } => RotationError::SigningFailed { message },
-    })?;
+    let sign_closure =
+        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
+            PerDidSignError::DeviceKeyNotFound { .. } => {
+                RotationError::Shared(SharedFailure::IdentityNotFound)
+            }
+            PerDidSignError::SigningSetupFailed { message } => {
+                RotationError::SigningFailed { message }
+            }
+        })?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
         proposed_rotation_keys.clone(),
@@ -478,24 +475,19 @@ pub async fn build_repo_key_rotation(
 /// longer lists. `complete` is retry-safe on the PDS side, so a lost response is
 /// healed by calling this again with the same parked op.
 pub async fn submit_repo_key_rotation(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     signed_op: &serde_json::Value,
 ) -> Result<ClaimResult, RotationError> {
-    let now =
-        crate::sovereign_session::unix_timestamp().map_err(|_| RotationError::SigningFailed {
-            message: "system clock is unavailable".to_string(),
-        })?;
-    let store = IdentityStore;
+    let store = core.identities();
 
-    let session = SessionProvider
-        .full_access_client(pds_client, &store, did, now)
-        .await?;
+    let session = SessionProvider.full_access_client(core, did).await?;
     complete_rotation_on_pds(&session.client, signed_op).await?;
 
     // Refresh the cached PLC log + DID document (PLC *data* shape — the home card's
     // custody badge reads `rotationKeys[0]`; the W3C form would degrade it).
-    let updated_log = pds_client
+    let updated_log = core
+        .pds_client()
         .fetch_audit_log(did)
         .await
         .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch updated audit log", e))?;
@@ -504,7 +496,8 @@ pub async fn submit_repo_key_rotation(
         .map_err(|e| RotationError::SigningFailed {
             message: format!("failed to cache updated PLC log: {e}"),
         })?;
-    let did_doc = pds_client
+    let did_doc = core
+        .pds_client()
         .fetch_plc_data_document(did)
         .await
         .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch DID document", e))?;
@@ -530,7 +523,7 @@ pub async fn build_repo_key_rotation_cmd(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<SignedRotationOp, RotationError> {
-    let built = build_repo_key_rotation(state.pds_client(), &did).await?;
+    let built = build_repo_key_rotation(state, &did).await?;
     let mut pending = state.rotation_state.lock().await;
     *pending = Some(RotationState {
         did,
@@ -552,7 +545,7 @@ pub async fn submit_repo_key_rotation_cmd(
         }
     };
 
-    let result = submit_repo_key_rotation(state.pds_client(), &did, &signed_op).await?;
+    let result = submit_repo_key_rotation(state, &did, &signed_op).await?;
 
     // Only clear the parked op once the PDS confirmed the cutover — a failed or lost
     // submit stays retryable.

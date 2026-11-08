@@ -9,6 +9,7 @@
 // point the write routes call — because what is under test is the *read* side.
 
 use axum::http::StatusCode;
+use custos_core::CoreState;
 use tower::ServiceExt;
 
 use crate::space_record_write::{
@@ -16,29 +17,23 @@ use crate::space_record_write::{
 };
 use crate::test_support::xrpc_get as get;
 use crate::test_support::{access_jwt, body_json, seed_account_with_repo, state_with_master_key};
-use crate::SpacesState;
 
 const DID: &str = "did:plc:spacesyncaaaaaaaaaaaaaaa";
 const SPACE: &str = "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main";
 const COLLECTION: &str = "org.example.note";
 
-async fn setup() -> (SpacesState, crypto::P256Keypair) {
+async fn setup() -> (CoreState, crypto::P256Keypair) {
     let state = state_with_master_key().await;
     let kp = seed_account_with_repo(&state.db, DID).await;
     (state, kp)
 }
 
-fn space_ref() -> crate::space_uri::SpaceRef {
-    crate::space_uri::parse_space_ref(SPACE).unwrap()
+fn space_ref() -> custos_core::space_uri::SpaceRef {
+    custos_core::space_uri::parse_space_ref(SPACE).unwrap()
 }
 
 /// One committed write of a single op; returns the commit's rev.
-async fn write_one(
-    state: &SpacesState,
-    action: SpaceWriteAction,
-    rkey: &str,
-    text: &str,
-) -> String {
+async fn write_one(state: &CoreState, action: SpaceWriteAction, rkey: &str, text: &str) -> String {
     let value = (action != SpaceWriteAction::Delete).then(|| serde_json::json!({ "text": text }));
     apply_space_writes(
         state,
@@ -473,12 +468,15 @@ async fn get_repo_unknown_repo_is_repo_not_found() {
 // ── getBlob / listBlobs ─────────────────────────────────────────────────────
 
 /// Store `content` as a blob owned by DID; returns its CID.
-async fn add_blob(state: &SpacesState, content: &[u8]) -> String {
-    let stored =
-        crate::blob_store::store_blob(&state.config.data_dir, content, "application/octet-stream")
-            .await
-            .unwrap();
-    crate::db::blobs::insert_blob(
+async fn add_blob(state: &CoreState, content: &[u8]) -> String {
+    let stored = custos_core::blob_store::store_blob(
+        &state.config.data_dir,
+        content,
+        "application/octet-stream",
+    )
+    .await
+    .unwrap();
+    custos_db::blobs::insert_blob(
         &state.db,
         &stored.cid,
         DID,
@@ -502,7 +500,7 @@ fn blob_record(cid: &str) -> serde_json::Value {
 }
 
 /// Write a record referencing `blob_cid`; returns the commit rev.
-async fn write_blob_record(state: &SpacesState, rkey: &str, blob_cid: &str) -> String {
+async fn write_blob_record(state: &CoreState, rkey: &str, blob_cid: &str) -> String {
     apply_space_writes(
         state,
         &space_ref(),

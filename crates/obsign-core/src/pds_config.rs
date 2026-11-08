@@ -18,15 +18,15 @@ pub const PDS_URL_ACCOUNT: &str = "relay-base-url";
 /// Persist the user-configured PDS base URL to the Keychain.
 ///
 /// Overwrites any previously stored URL.
-pub fn store_pds_url(url: &str) -> Result<(), KeyStoreError> {
-    keystore::store_item(PDS_URL_ACCOUNT, url.as_bytes())
+pub fn store_pds_url(core: &crate::oauth::Core, url: &str) -> Result<(), KeyStoreError> {
+    core.keys().store_item(PDS_URL_ACCOUNT, url.as_bytes())
 }
 
 /// Retrieve the user-configured PDS base URL from the Keychain.
 ///
 /// Returns `None` if no URL has been saved yet (first run or after logout).
-pub fn load_pds_url() -> Option<String> {
-    match keystore::get_item(PDS_URL_ACCOUNT) {
+pub fn load_pds_url(core: &crate::oauth::Core) -> Option<String> {
+    match core.keys().get_item(PDS_URL_ACCOUNT) {
         Ok(bytes) => String::from_utf8(bytes)
             .map_err(|e| {
                 tracing::error!(error = ?e, "PDS URL in Keychain is not valid UTF-8; treating as absent");
@@ -38,13 +38,6 @@ pub fn load_pds_url() -> Option<String> {
             None
         }
     }
-}
-
-/// Remove the PDS URL from the Keychain. Test-only; used to reset state
-/// between tests that share the Keychain mock store.
-#[cfg(test)]
-pub fn delete_pds_url_test_only() {
-    let _ = keystore::delete_item(PDS_URL_ACCOUNT);
 }
 
 /// Error returned by PDS URL configuration commands.
@@ -95,16 +88,16 @@ fn migrate_retired_apex(url: String) -> String {
 
 /// The configured PDS base URL as every reader should see it — the stored value past
 /// [`migrate_retired_apex`]. `None` when the wallet was never configured.
-pub fn configured_pds_url() -> Option<String> {
-    load_pds_url().map(migrate_retired_apex)
+pub fn configured_pds_url(core: &crate::oauth::Core) -> Option<String> {
+    load_pds_url(core).map(migrate_retired_apex)
 }
 
 /// Return the saved PDS base URL, or `None` if not yet configured.
 ///
 /// The frontend calls this on mount to decide whether to show the PDS
 /// configuration screen.
-pub fn get_pds_url() -> Option<String> {
-    configured_pds_url()
+pub fn get_pds_url(core: &crate::oauth::Core) -> Option<String> {
+    configured_pds_url(core)
 }
 
 /// Validate `url`, confirm the PDS is reachable, save to Keychain, and
@@ -132,7 +125,7 @@ pub async fn save_pds_url(state: &Core, url: String) -> Result<(), PdsConfigErro
         // map to Unreachable — the frontend only needs to know "can't use this URL".
         return Err(PdsConfigError::Unreachable);
     }
-    store_pds_url(&normalized).map_err(|e| {
+    store_pds_url(state, &normalized).map_err(|e| {
         tracing::error!(error = %e, "failed to save PDS URL to Keychain");
         PdsConfigError::KeychainError
     })?;
@@ -171,7 +164,7 @@ pub async fn get_pds_capabilities(
 ) -> Result<pds_capabilities::ServerCapabilities, PdsConfigError> {
     let url = match pds_url {
         Some(url) => normalize_pds_url(&url)?,
-        None => match load_pds_url() {
+        None => match load_pds_url(state) {
             Some(url) => url,
             None => {
                 // No PDS configured yet: nothing to ask, and no error to report — the
@@ -280,19 +273,20 @@ mod tests {
 
     #[test]
     fn get_pds_url_returns_none_before_save() {
+        let core = &crate::test_support::core();
         // Relies on the keychain mock starting empty for this key. The sibling test
         // pds_url_round_trips_through_keychain cleans up via delete_pds_url_test_only(),
         // so ordering is not a concern as long as both tests run in the same process.
-        assert!(get_pds_url().is_none());
+        assert!(get_pds_url(core).is_none());
     }
 
     #[test]
     fn pds_url_round_trips_through_keychain() {
+        let core = &crate::test_support::core();
         let url = "https://PDS.example.com";
-        store_pds_url(url).unwrap();
-        let loaded = load_pds_url().unwrap();
+        store_pds_url(core, url).unwrap();
+        let loaded = load_pds_url(core).unwrap();
         assert_eq!(loaded, url);
         // Clean up so this test doesn't affect others sharing the mock store.
-        delete_pds_url_test_only();
     }
 }

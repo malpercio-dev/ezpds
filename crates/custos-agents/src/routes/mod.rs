@@ -1,5 +1,5 @@
 //! The auth.md agent route handlers, one file per surface. Only the handler functions leave this
-//! module; shared support lives outside it (`crate::agent_child_core`, `crate::auth`, `crate::db`).
+//! module; shared support lives outside it (`crate::agent_child_core`, `custos_core::auth`, `crate::db`).
 
 mod agent_child;
 mod agent_claim;

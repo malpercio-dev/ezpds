@@ -8,8 +8,8 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconInput;
 use repo_engine::WriteOp;
 
 #[derive(Deserialize)]
@@ -125,7 +125,7 @@ pub async fn apply_writes(
     // op) so the firehose `#commit` event can carry the value for creates/updates.
     let mut op_values: Vec<Option<serde_json::Value>> = Vec::with_capacity(body.writes.len());
     // Per-write `validationStatus` (`None` for deletes and when `validate: false` skips it).
-    let mut statuses: Vec<Option<crate::lexicon::RecordValidation>> =
+    let mut statuses: Vec<Option<custos_core::lexicon::RecordValidation>> =
         Vec::with_capacity(body.writes.len());
     for item in body.writes {
         let (kind, collection, rkey, value) = match item {
@@ -158,20 +158,20 @@ pub async fn apply_writes(
         // record of a known lexicon fails the whole batch before any mutation, mirroring the
         // reference's prepare-then-apply ordering. Deletes carry no record and no status.
         let status = if let Some(value) = &value {
-            crate::auth::validation::validate_record_formats(value)
+            custos_core::auth::validation::validate_record_formats(value)
                 .map_err(|message| ApiError::new(ErrorCode::InvalidRequest, message))?;
-            crate::lexicon::registry()
+            custos_core::lexicon::registry()
                 .validate_record(&collection, &rkey, value, body.validate)
-                .map_err(crate::lexicon::record_validation_error)?
+                .map_err(custos_core::lexicon::record_validation_error)?
         } else {
             None
         };
         statuses.push(status);
 
         let repo_action = match kind {
-            Kind::Create => crate::auth::oauth_scopes::RepoAction::Create,
-            Kind::Update => crate::auth::oauth_scopes::RepoAction::Update,
-            Kind::Delete => crate::auth::oauth_scopes::RepoAction::Delete,
+            Kind::Create => custos_core::auth::oauth_scopes::RepoAction::Create,
+            Kind::Update => custos_core::auth::oauth_scopes::RepoAction::Update,
+            Kind::Delete => custos_core::auth::oauth_scopes::RepoAction::Delete,
         };
         authorized.require_repo(&collection, repo_action)?;
 
@@ -234,7 +234,7 @@ pub async fn apply_writes(
     // cannot have this batch land. Each engine outcome maps back to its write's kind and
     // retained value to form a `#repoOp`.
     let new_root = locked.repo.root().to_string();
-    let fh_ops: Vec<crate::firehose::RepoOp> = kinds
+    let fh_ops: Vec<custos_core::firehose::RepoOp> = kinds
         .iter()
         .zip(outcomes.iter())
         .zip(op_values)
@@ -249,11 +249,11 @@ pub async fn apply_writes(
                 return None;
             }
             let (collection, rkey) = crate::record_write::split_record_path(&outcome.key);
-            Some(crate::firehose::RepoOp {
+            Some(custos_core::firehose::RepoOp {
                 action: match kind {
-                    Kind::Create => crate::firehose::OpAction::Create,
-                    Kind::Update => crate::firehose::OpAction::Update,
-                    Kind::Delete => crate::firehose::OpAction::Delete,
+                    Kind::Create => custos_core::firehose::OpAction::Create,
+                    Kind::Update => custos_core::firehose::OpAction::Update,
+                    Kind::Delete => custos_core::firehose::OpAction::Delete,
                 },
                 collection,
                 rkey,
@@ -505,7 +505,7 @@ mod tests {
         let (state, did) = setup().await;
         let token = access_jwt(&state.jwt_secret, &did);
         let db = state.db.clone();
-        let root_before = crate::db::accounts::get_repo_root_cid(&db, &did)
+        let root_before = custos_db::accounts::get_repo_root_cid(&db, &did)
             .await
             .unwrap();
         let app = crate::app::app(state);
@@ -529,7 +529,7 @@ mod tests {
         let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         // Nothing in the batch landed: the repo root is unchanged.
-        let root_after = crate::db::accounts::get_repo_root_cid(&db, &did)
+        let root_after = custos_db::accounts::get_repo_root_cid(&db, &did)
             .await
             .unwrap();
         assert_eq!(
@@ -700,7 +700,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_writes_emits_single_commit_event_with_all_ops() {
-        use crate::firehose::{FirehoseEvent, OpAction};
+        use custos_core::firehose::{FirehoseEvent, OpAction};
 
         let (state, did) = setup().await;
         let token = access_jwt(&state.jwt_secret, &did);
@@ -784,7 +784,7 @@ mod tests {
         // A delete of a never-existing record mutated nothing, so it must NOT appear as a
         // `#repoOp` (a delete frame with a null `prev` is not inductively validatable by a Sync
         // v1.1 relay). The client still gets a deleteResult for it, and the real create commits.
-        use crate::firehose::{FirehoseEvent, OpAction};
+        use custos_core::firehose::{FirehoseEvent, OpAction};
 
         let (state, did) = setup().await;
         let token = access_jwt(&state.jwt_secret, &did);

@@ -13,13 +13,13 @@ use axum::{extract::State, http::StatusCode};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes;
-use crate::db::accounts::{activate_account, AccountStateChange};
-use crate::db::blocks::SqliteBlockStore;
-use crate::firehose::SyncInput;
-use crate::no_input::NoInputBody;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes;
+use custos_core::firehose::SyncInput;
+use custos_core::no_input::NoInputBody;
+use custos_db::accounts::{activate_account, AccountStateChange};
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Cid;
 
 /// POST /xrpc/com.atproto.server.activateAccount
@@ -131,9 +131,10 @@ pub async fn activate_account_handler(
             // `finish`): force-refresh the cached document from the authoritative DID source, then
             // announce an `#identity` frame so relays/AppViews re-resolve the new key, handle, and
             // PDS. Both are best-effort — activation already succeeded and must not be failed here.
-            if let Err(e) =
-                crate::identity::resolution::resolve_did_document_force_refresh(&state, &user.did)
-                    .await
+            if let Err(e) = custos_core::identity::resolution::resolve_did_document_force_refresh(
+                &state, &user.did,
+            )
+            .await
             {
                 tracing::warn!(did = %user.did, error = %e, "failed to force-refresh DID document after activation (non-fatal)");
             }
@@ -156,7 +157,7 @@ pub async fn activate_account_handler(
 /// unparseable head CID, or a commit block that can't be read. Must be called *before* the caller
 /// opens its transaction: it reads the block store, which needs the pool's sole connection.
 async fn build_activation_sync(state: &AppState, did: &str) -> Option<SyncInput> {
-    let status = crate::db::accounts::get_repo_status(&state.db, did)
+    let status = custos_db::accounts::get_repo_status(&state.db, did)
         .await
         .ok()??;
     let head = status.head?;
@@ -186,8 +187,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, test_state_with_plc_url};
-    use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{access_jwt, body_json, scoped_access_jwt as scoped_jwt};
+    use custos_core::firehose::FirehoseEvent;
 
     async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str, deactivated: bool) {
         // Bind the deactivation timestamp as a value (a fixed instant suffices for tests) rather
@@ -258,8 +259,8 @@ mod tests {
         // A reactivated account that has a repo emits the `#account` (active) frame followed by a
         // Sync v1.1 `#sync` head assertion (a single-root CAR of the commit block), so a relay that
         // drifted while the account was deactivated can re-anchor to its current head.
-        use crate::firehose::FirehoseEvent;
         use crate::routes::test_utils::seed_account_with_repo;
+        use custos_core::firehose::FirehoseEvent;
 
         let plc = wiremock::MockServer::start().await;
         let state = test_state_with_plc_url(plc.uri()).await;
@@ -419,7 +420,7 @@ mod tests {
                 "serviceEndpoint": "https://old.example.com",
             }],
         });
-        crate::db::dids::upsert_did_document(&state.db, did, &stale_doc)
+        custos_db::dids::upsert_did_document(&state.db, did, &stale_doc)
             .await
             .unwrap();
 
@@ -432,7 +433,7 @@ mod tests {
 
         // The stale cached DID doc is rewritten with the authoritative one, so the server now
         // serves the correct PDS endpoint in getSession/describeRepo.
-        let cached = crate::db::dids::get_did_document(&db, did)
+        let cached = custos_db::dids::get_did_document(&db, did)
             .await
             .unwrap()
             .expect("a cached DID document must exist after activation");

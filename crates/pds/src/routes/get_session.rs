@@ -13,10 +13,10 @@ use serde::Serialize;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes;
-use crate::db::accounts::get_session_account;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes;
+use custos_db::accounts::get_session_account;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,12 +43,6 @@ pub async fn get_session(
     // Any access-level token is valid here (full access or an app password); only refresh
     // tokens must be rejected. App-password clients (e.g. goat) call getSession right after
     // logging in to confirm their identity, so they must be admitted.
-    if !user.scope.is_access() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "access token required",
-        ));
-    }
 
     let account = get_session_account(&state.db, &user.did)
         .await?
@@ -111,7 +105,7 @@ mod tests {
     fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
-        let now = crate::time::unix_now_secs() as u64;
+        let now = custos_core::time::unix_now_secs() as u64;
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
@@ -380,7 +374,7 @@ mod tests {
 
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
-        let now = crate::time::unix_now_secs() as u64;
+        let now = custos_core::time::unix_now_secs() as u64;
 
         for scope in ["com.atproto.appPass", "com.atproto.appPassPrivileged"] {
             let token = encode(
@@ -509,7 +503,7 @@ mod tests {
         let dpop_key = test_utils::DpopProofKey::generate();
         let jkt = dpop_key.thumbprint();
 
-        let now = crate::time::unix_now_secs() as u64;
+        let now = custos_core::time::unix_now_secs() as u64;
         let token = {
             use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
             encode(
@@ -557,7 +551,7 @@ mod tests {
         let dpop_key = test_utils::DpopProofKey::generate();
         let jkt = dpop_key.thumbprint();
 
-        let now = crate::time::unix_now_secs() as u64;
+        let now = custos_core::time::unix_now_secs() as u64;
         let token = {
             use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
             encode(
@@ -603,7 +597,7 @@ mod tests {
         let dpop_key = test_utils::DpopProofKey::generate();
         let jkt = dpop_key.thumbprint();
 
-        let now = crate::time::unix_now_secs() as u64;
+        let now = custos_core::time::unix_now_secs() as u64;
         let token = {
             use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
             encode(

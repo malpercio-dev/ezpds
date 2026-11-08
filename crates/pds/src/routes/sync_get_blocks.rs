@@ -17,8 +17,8 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 use repo_engine::{build_blocks_car, Cid};
 
 #[derive(Deserialize)]
@@ -57,7 +57,7 @@ pub async fn sync_get_blocks(
     // The repo must exist. The root CID itself is not used to build the CAR — getBlocks declares
     // no root — but the lookup is the existence/ownership precondition for the account, matching
     // the other sync read routes (RepoNotFound analog).
-    let _root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    let _root_cid_str = custos_db::accounts::get_repo_root_cid(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query repo root CID");
@@ -83,7 +83,7 @@ pub async fn sync_get_blocks(
     // `BlockNotFound`, so a caller cannot use a foreign repo's DID to probe whether a CID is
     // stored anywhere on the PDS.
     let requested_strings: Vec<String> = requested.iter().map(Cid::to_string).collect();
-    let rows = crate::db::blocks::get_blocks_for_account(&state.db, did, &requested_strings)
+    let rows = custos_db::blocks::get_blocks_for_account(&state.db, did, &requested_strings)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query blocks");

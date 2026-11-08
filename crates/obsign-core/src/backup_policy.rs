@@ -69,8 +69,8 @@ impl Mirror {
 /// Claim the lead position for this fire and durably hand the next fire to the other mirror.
 /// Missing/corrupt/unreadable state starts with blobs for backward compatibility. Keychain
 /// trouble is non-fatal: the sweep still protects data, and the next fire retries the flip.
-fn take_mirror_lead() -> Mirror {
-    let lead = match crate::keystore::get_item(NEXT_MIRROR_ACCOUNT) {
+fn take_mirror_lead(core: &crate::oauth::Core) -> Mirror {
+    let lead = match core.keys().get_item(NEXT_MIRROR_ACCOUNT) {
         Ok(raw) if raw == Mirror::Repo.encoded() => Mirror::Repo,
         Ok(raw) if raw == Mirror::Blob.encoded() => Mirror::Blob,
         Ok(_) => {
@@ -89,7 +89,10 @@ fn take_mirror_lead() -> Mirror {
         }
     };
 
-    if let Err(e) = crate::keystore::store_item(NEXT_MIRROR_ACCOUNT, lead.other().encoded()) {
+    if let Err(e) = core
+        .keys()
+        .store_item(NEXT_MIRROR_ACCOUNT, lead.other().encoded())
+    {
         tracing::warn!(
             error = %e,
             "background backup: could not persist the next mirror order"
@@ -139,43 +142,45 @@ pub enum BackgroundBackupError {
 /// Read the persisted settings, or the defaults when unset or unreadable. A corrupt/
 /// unreadable value reads as the defaults (background on), never an error — a diagnostic
 /// hiccup must not silently disable a backup the user relies on.
-pub fn load_settings() -> BackgroundBackupSettings {
-    crate::keystore::get_item(SETTINGS_ACCOUNT)
+pub fn load_settings(core: &crate::oauth::Core) -> BackgroundBackupSettings {
+    core.keys()
+        .get_item(SETTINGS_ACCOUNT)
         .ok()
         .and_then(|raw| serde_json::from_slice(&raw).ok())
         .unwrap_or_default()
 }
 
 /// Tauri command: the current background-backup settings, for the Settings screen.
-pub fn get_background_backup_settings() -> BackgroundBackupSettings {
-    load_settings()
+pub fn get_background_backup_settings(core: &crate::oauth::Core) -> BackgroundBackupSettings {
+    load_settings(core)
 }
 
 /// Tauri command: persist the background-backup settings and re-apply the schedule (submit or
 /// cancel the background request to match them).
 /// Returns the stored settings.
 pub fn set_background_backup_settings(
+    core: &crate::oauth::Core,
     settings: BackgroundBackupSettings,
 ) -> Result<BackgroundBackupSettings, BackgroundBackupError> {
     let json =
         serde_json::to_vec(&settings).map_err(|e| BackgroundBackupError::SerializationError {
             message: e.to_string(),
         })?;
-    crate::keystore::store_item(SETTINGS_ACCOUNT, &json).map_err(|e| {
-        BackgroundBackupError::KeychainError {
+    core.keys()
+        .store_item(SETTINGS_ACCOUNT, &json)
+        .map_err(|e| BackgroundBackupError::KeychainError {
             message: e.to_string(),
-        }
-    })?;
-    apply_schedule();
+        })?;
+    apply_schedule(core);
     Ok(settings)
 }
 
 /// Submit or withdraw the background request to match the current settings. Called at
 /// startup and whenever the settings change.
-pub fn apply_schedule() {
-    let settings = load_settings();
+pub fn apply_schedule(core: &crate::oauth::Core) {
+    let settings = load_settings(core);
     if settings.background_enabled {
-        crate::scheduler::schedule(JobRequest {
+        core.schedule(JobRequest {
             job: BackgroundJob::BackupMirror,
             earliest_after: EARLIEST_BEGIN_AFTER,
             // Both passes fetch over the network.
@@ -185,7 +190,7 @@ pub fn apply_schedule() {
         });
     } else {
         // Drop any pending request so a disabled setting takes effect immediately.
-        crate::scheduler::cancel(BackgroundJob::BackupMirror);
+        core.cancel_job(BackgroundJob::BackupMirror);
     }
 }
 
@@ -242,14 +247,12 @@ where
 /// alternating which leads on each fire (see the module doc). The scheduler has already
 /// applied the network conditions before calling this.
 pub async fn run_backup_sweep(core: &crate::oauth::Core) {
-    let dids = crate::identity_store::IdentityStore
-        .list_identities()
-        .unwrap_or_default();
+    let dids = core.identities().list_identities().unwrap_or_default();
 
     // The platform aborts the whole job when its bounded budget expires. Claim and flip the
     // durable lead turn before either pass starts, so repeated expirations cannot always
     // discard the same trailing mirror.
-    match take_mirror_lead() {
+    match take_mirror_lead(core) {
         Mirror::Blob => {
             run_blob_sweep(core, &dids).await;
             run_repo_sweep(core, &dids).await;
@@ -262,11 +265,15 @@ pub async fn run_backup_sweep(core: &crate::oauth::Core) {
 }
 
 async fn run_blob_sweep(core: &crate::oauth::Core, dids: &[String]) {
-    let blob = run_sweep_with(dids, blob_backup::is_backup_enabled, |did| async move {
-        blob_backup::run_backup_for_did(core, &did)
-            .await
-            .map(|_| ())
-    })
+    let blob = run_sweep_with(
+        dids,
+        |did| blob_backup::is_backup_enabled(core, did),
+        |did| async move {
+            blob_backup::run_backup_for_did(core, &did)
+                .await
+                .map(|_| ())
+        },
+    )
     .await;
     tracing::info!(
         attempted = blob.attempted,
@@ -278,11 +285,15 @@ async fn run_blob_sweep(core: &crate::oauth::Core, dids: &[String]) {
 }
 
 async fn run_repo_sweep(core: &crate::oauth::Core, dids: &[String]) {
-    let repo = run_sweep_with(dids, repo_backup::is_backup_enabled, |did| async move {
-        repo_backup::run_backup_for_did(core, &did)
-            .await
-            .map(|_| ())
-    })
+    let repo = run_sweep_with(
+        dids,
+        |did| repo_backup::is_backup_enabled(core, did),
+        |did| async move {
+            repo_backup::run_backup_for_did(core, &did)
+                .await
+                .map(|_| ())
+        },
+    )
     .await;
     tracing::info!(
         attempted = repo.attempted,
@@ -297,6 +308,42 @@ async fn run_repo_sweep(core: &crate::oauth::Core, dids: &[String]) {
 mod tests {
     use super::*;
     use crate::failure::SharedFailure;
+    use crate::test_support::SchedulerCall;
+
+    /// The request follows the settings: on submits it with the chosen conditions, off
+    /// withdraws it.
+    #[test]
+    fn settings_drive_the_background_request() {
+        let (core, fakes) = crate::test_support::core_with_fakes();
+        let on = BackgroundBackupSettings {
+            background_enabled: true,
+            require_external_power: true,
+            wifi_only: true,
+        };
+        set_background_backup_settings(&core, on.clone()).unwrap();
+        set_background_backup_settings(
+            &core,
+            BackgroundBackupSettings {
+                background_enabled: false,
+                ..on
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            fakes.scheduler.calls(),
+            vec![
+                SchedulerCall::Schedule(JobRequest {
+                    job: BackgroundJob::BackupMirror,
+                    earliest_after: EARLIEST_BEGIN_AFTER,
+                    requires_network: true,
+                    requires_external_power: true,
+                    unmetered_only: true,
+                }),
+                SchedulerCall::Cancel(BackgroundJob::BackupMirror),
+            ]
+        );
+    }
     use blob_backup::BlobBackupError;
     use repo_backup::RepoBackupError;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -525,27 +572,29 @@ mod tests {
 
     #[test]
     fn mirror_lead_alternates_durably_across_fires() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
 
-        assert_eq!(take_mirror_lead(), Mirror::Blob);
+        assert_eq!(take_mirror_lead(core), Mirror::Blob);
         assert_eq!(
-            crate::keystore::get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
+            core.keys().get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
             Mirror::Repo.encoded()
         );
-        assert_eq!(take_mirror_lead(), Mirror::Repo);
+        assert_eq!(take_mirror_lead(core), Mirror::Repo);
         assert_eq!(
-            crate::keystore::get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
+            core.keys().get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
             Mirror::Blob.encoded()
         );
-        assert_eq!(take_mirror_lead(), Mirror::Blob);
+        assert_eq!(take_mirror_lead(core), Mirror::Blob);
     }
 
     #[test]
     fn invalid_mirror_lead_state_recovers_to_blob_then_repo() {
-        crate::keystore::clear_for_test();
-        crate::keystore::store_item(NEXT_MIRROR_ACCOUNT, b"invalid").unwrap();
+        let core = &crate::test_support::core();
+        core.keys()
+            .store_item(NEXT_MIRROR_ACCOUNT, b"invalid")
+            .unwrap();
 
-        assert_eq!(take_mirror_lead(), Mirror::Blob);
-        assert_eq!(take_mirror_lead(), Mirror::Repo);
+        assert_eq!(take_mirror_lead(core), Mirror::Blob);
+        assert_eq!(take_mirror_lead(core), Mirror::Repo);
     }
 }

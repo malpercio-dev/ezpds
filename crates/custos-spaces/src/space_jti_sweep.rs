@@ -14,9 +14,9 @@
 use std::time::Duration;
 
 use crate::db::space_jti::{sweep_expired_jtis, sweep_expired_revocations};
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
 use axum::extract::FromRef;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 use custos_core::CoreState;
 
 /// Sweep every ten minutes: delegation and attestation rows carry horizons of

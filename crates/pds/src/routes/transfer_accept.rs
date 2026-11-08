@@ -15,8 +15,8 @@ use uuid::Uuid;
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::token::generate_token;
 use crate::transfer::{accept_transfer as accept_transfer_row, AcceptOutcome};
+use custos_core::auth::token::generate_token;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +70,7 @@ pub async fn transfer_accept(
     State(state): State<AppState>,
     Json(payload): Json<AcceptTransferRequest>,
 ) -> Result<(StatusCode, Json<AcceptTransferResponse>), ApiError> {
-    crate::auth::validation::validate_device_public_key(&payload.device_public_key)
+    custos_core::auth::validation::validate_device_public_key(&payload.device_public_key)
         .map_err(|msg| ApiError::new(ErrorCode::InvalidClaim, msg))?;
 
     let device_id = Uuid::new_v4().to_string();

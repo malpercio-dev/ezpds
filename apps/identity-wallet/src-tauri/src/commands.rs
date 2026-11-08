@@ -24,11 +24,11 @@ macro_rules! commands {
             $($seg)::+(&state, $($arg),*).await
         }
     };
-    (@one [async] $name:ident = $($seg:ident)::+ ($($arg:ident : $ty:ty),*) -> $ret:ty) => {
+    (@one [sync state] $name:ident = $($seg:ident)::+ ($($arg:ident : $ty:ty),*) -> $ret:ty) => {
         #[tauri::command]
         #[allow(clippy::too_many_arguments)]
-        pub async fn $name($($arg: $ty),*) -> $ret {
-            $($seg)::+($($arg),*).await
+        pub fn $name(state: tauri::State<'_, crate::oauth::Core>, $($arg: $ty),*) -> $ret {
+            $($seg)::+(&state, $($arg),*)
         }
     };
     (@one [sync] $name:ident = $($seg:ident)::+ ($($arg:ident : $ty:ty),*) -> $ret:ty) => {
@@ -43,7 +43,7 @@ macro_rules! commands {
 commands! {
     [async state] create_account = obsign_core::create_flow::create_account(claim_code: String, email: String, handle: String) -> Result<obsign_core::create_flow::CreateAccountResult, obsign_core::create_flow::CreateAccountError>;
     [async state] perform_did_ceremony = obsign_core::create_flow::perform_did_ceremony(handle: String, password: Option<String>) -> Result<obsign_core::create_flow::DIDCeremonyResult, obsign_core::create_flow::DIDCeremonyError>;
-    [sync] confirm_share_backup = obsign_core::create_flow::confirm_share_backup(did: String) -> Result<(), obsign_core::share_recovery::ShareBackupError>;
+    [sync state] confirm_share_backup = obsign_core::create_flow::confirm_share_backup(did: String) -> Result<(), obsign_core::share_recovery::ShareBackupError>;
     [async state] prepare_did_web_ceremony = obsign_core::create_flow::prepare_did_web_ceremony() -> Result<obsign_core::create_flow::DidWebPreparation, obsign_core::create_flow::DIDCeremonyError>;
     [async state] complete_did_web_ceremony = obsign_core::create_flow::complete_did_web_ceremony(document_text: String, password: Option<String>, enable_managed_hosting: bool) -> Result<obsign_core::create_flow::DIDCeremonyResult, obsign_core::create_flow::DIDCeremonyError>;
     [async state] register_handle = obsign_core::create_flow::register_handle(handle: String) -> Result<obsign_core::create_flow::RegisterHandleResult, obsign_core::create_flow::RegisterHandleError>;
@@ -51,15 +51,15 @@ commands! {
     [async state] import_did_web_identity = obsign_core::import_did_web::import_did_web_identity(input: String) -> Result<obsign_core::import_did_web::ImportedDidWebIdentity, obsign_core::import_did_web::ImportDidWebError>;
     [async state] check_handle_resolution = obsign_core::create_flow::check_handle_resolution(handle: String, expected_did: String) -> Result<bool, String>;
     [async state] get_available_user_domains = obsign_core::create_flow::get_available_user_domains() -> Result<Vec<String>, obsign_core::create_flow::AvailableDomainsError>;
-    [sync] list_identities = obsign_core::identity_store::list_identities() -> Result<Vec<String>, obsign_core::identity_store::IdentityStoreError>;
-    [sync] get_stored_did_doc = obsign_core::identity_store::get_stored_did_doc(did: String) -> Result<Option<serde_json::Value>, obsign_core::identity_store::IdentityStoreError>;
+    [sync state] list_identities = obsign_core::identity_store::list_identities() -> Result<Vec<String>, obsign_core::identity_store::IdentityStoreError>;
+    [sync state] get_stored_did_doc = obsign_core::identity_store::get_stored_did_doc(did: String) -> Result<Option<serde_json::Value>, obsign_core::identity_store::IdentityStoreError>;
     [async state] refresh_did_doc = obsign_core::identity_store::refresh_did_doc(did: String) -> Result<serde_json::Value, obsign_core::identity_store::RefreshDidDocError>;
-    [sync] get_device_key_id = obsign_core::identity_store::get_device_key_id(did: String) -> Result<String, obsign_core::identity_store::IdentityStoreError>;
-    [sync] get_pds_url = obsign_core::pds_config::get_pds_url() -> Option<String>;
+    [sync state] get_device_key_id = obsign_core::identity_store::get_device_key_id(did: String) -> Result<String, obsign_core::identity_store::IdentityStoreError>;
+    [sync state] get_pds_url = obsign_core::pds_config::get_pds_url() -> Option<String>;
     [async state] save_pds_url = obsign_core::pds_config::save_pds_url(url: String) -> Result<(), obsign_core::pds_config::PdsConfigError>;
     [async state] get_pds_capabilities = obsign_core::pds_config::get_pds_capabilities(pds_url: Option<String>) -> Result<obsign_core::pds_capabilities::ServerCapabilities, obsign_core::pds_config::PdsConfigError>;
-    [sync] get_appearance_preference = obsign_core::preferences::get_appearance_preference() -> Option<String>;
-    [sync] set_appearance_preference = obsign_core::preferences::set_appearance_preference(preference: String) -> Result<(), obsign_core::preferences::AppearanceError>;
+    [sync state] get_appearance_preference = obsign_core::preferences::get_appearance_preference() -> Option<String>;
+    [sync state] set_appearance_preference = obsign_core::preferences::set_appearance_preference(preference: String) -> Result<(), obsign_core::preferences::AppearanceError>;
     [sync] export_diagnostics = crate::diagnostics::export_diagnostics() -> String;
     [async state] resolve_identity = crate::claim::resolve_identity(handle_or_did: String) -> Result<crate::claim::IdentityInfo, crate::claim::ResolveError>;
     [async state] authenticate_source_pds = crate::claim::authenticate_source_pds(did: String, identifier: String, password: String, auth_factor_token: Option<String>) -> Result<(), crate::claim::ClaimError>;
@@ -71,7 +71,7 @@ commands! {
     [async state] get_agent_audit = crate::agents::get_agent_audit(did: String, registration_id: String, cursor: Option<String>) -> Result<crate::agents::AgentAuditPage, crate::agents::AgentsError>;
     [async state] preview_agent_claim = crate::agents::preview_agent_claim(did: String, user_code: String) -> Result<crate::agents::AgentClaimPreview, crate::agents::AgentsError>;
     [async state] confirm_agent_claim = crate::agents::confirm_agent_claim(did: String, user_code: String) -> Result<crate::agents::AgentClaimConfirmation, crate::agents::AgentsError>;
-    [sync] agent_accounts_provisioned = crate::agents::agent_accounts_provisioned(did: String) -> bool;
+    [sync state] agent_accounts_provisioned = crate::agents::agent_accounts_provisioned(did: String) -> bool;
     [async state] mint_child_from_claim = crate::agents::mint_child_from_claim(did: String, user_code: String, handle: String) -> Result<crate::agents::MintedChild, crate::agents::AgentsError>;
     [async state] list_children = crate::agents::list_children(did: String) -> Result<Vec<crate::agents::ChildSummary>, crate::agents::AgentsError>;
     [async state] revoke_child = crate::agents::revoke_child(did: String, child_did: String) -> Result<(), crate::agents::AgentsError>;
@@ -84,39 +84,39 @@ commands! {
     [async state] create_app_password = crate::app_passwords::create_app_password(did: String, name: String, privileged: bool, personal_details: bool) -> Result<crate::pds_client::AppPasswordCreated, crate::app_passwords::AppPasswordsError>;
     [async state] list_app_passwords = crate::app_passwords::list_app_passwords(did: String) -> Result<Vec<crate::pds_client::AppPasswordEntry>, crate::app_passwords::AppPasswordsError>;
     [async state] revoke_app_password = crate::app_passwords::revoke_app_password(did: String, name: String) -> Result<(), crate::app_passwords::AppPasswordsError>;
-    [async] get_blob_backup_status = crate::blob_backup::get_blob_backup_status(did: String) -> Result<crate::blob_backup::BlobBackupStatus, crate::blob_backup::BlobBackupError>;
-    [async] set_blob_backup_enabled = crate::blob_backup::set_blob_backup_enabled(did: String, enabled: bool) -> Result<crate::blob_backup::BlobBackupStatus, crate::blob_backup::BlobBackupError>;
+    [async state] get_blob_backup_status = crate::blob_backup::get_blob_backup_status(did: String) -> Result<crate::blob_backup::BlobBackupStatus, crate::blob_backup::BlobBackupError>;
+    [async state] set_blob_backup_enabled = crate::blob_backup::set_blob_backup_enabled(did: String, enabled: bool) -> Result<crate::blob_backup::BlobBackupStatus, crate::blob_backup::BlobBackupError>;
     [async state] run_blob_backup = crate::blob_backup::run_blob_backup(did: String) -> Result<crate::blob_backup::BlobBackupRunReport, crate::blob_backup::BlobBackupError>;
     [async state] restore_blob_backup = crate::blob_backup::restore_blob_backup(did: String) -> Result<crate::blob_backup::BlobRestoreReport, crate::blob_backup::BlobBackupError>;
-    [async] get_repo_backup_status = crate::repo_backup::get_repo_backup_status(did: String) -> Result<crate::repo_backup::RepoBackupStatus, crate::repo_backup::RepoBackupError>;
-    [async] set_repo_backup_enabled = crate::repo_backup::set_repo_backup_enabled(did: String, enabled: bool) -> Result<crate::repo_backup::RepoBackupStatus, crate::repo_backup::RepoBackupError>;
+    [async state] get_repo_backup_status = crate::repo_backup::get_repo_backup_status(did: String) -> Result<crate::repo_backup::RepoBackupStatus, crate::repo_backup::RepoBackupError>;
+    [async state] set_repo_backup_enabled = crate::repo_backup::set_repo_backup_enabled(did: String, enabled: bool) -> Result<crate::repo_backup::RepoBackupStatus, crate::repo_backup::RepoBackupError>;
     [async state] run_repo_backup = crate::repo_backup::run_repo_backup(did: String) -> Result<crate::repo_backup::RepoBackupRunReport, crate::repo_backup::RepoBackupError>;
-    [sync] get_background_backup_settings = crate::bg_backup::get_background_backup_settings() -> crate::bg_backup::BackgroundBackupSettings;
-    [sync] set_background_backup_settings = crate::bg_backup::set_background_backup_settings(settings: crate::bg_backup::BackgroundBackupSettings) -> Result<crate::bg_backup::BackgroundBackupSettings, crate::bg_backup::BackgroundBackupError>;
+    [sync state] get_background_backup_settings = crate::bg_backup::get_background_backup_settings() -> crate::bg_backup::BackgroundBackupSettings;
+    [sync state] set_background_backup_settings = crate::bg_backup::set_background_backup_settings(settings: crate::bg_backup::BackgroundBackupSettings) -> Result<crate::bg_backup::BackgroundBackupSettings, crate::bg_backup::BackgroundBackupError>;
     [async state] register_for_notifications = crate::notifications::register_for_notifications(did: String) -> Result<crate::notifications::RegistrationOutcome, crate::notifications::NotificationsError>;
-    [sync] get_notification_diagnostics = crate::notifications::get_notification_diagnostics() -> crate::notifications::NotificationDiagnostics;
-    [sync] clear_notification_failures = crate::notifications::clear_notification_failures() -> ();
+    [sync state] get_notification_diagnostics = crate::notifications::get_notification_diagnostics() -> crate::notifications::NotificationDiagnostics;
+    [sync state] clear_notification_failures = crate::notifications::clear_notification_failures() -> ();
     [sync] take_pending_notification_route = crate::notification_routes::take_pending_notification_route() -> Option<crate::notification_routes::PendingNotificationRoute>;
     [async state] check_identity_status = crate::plc_monitor::check_identity_status() -> Result<Vec<crate::plc_monitor::IdentityStatus>, crate::plc_monitor::MonitorError>;
-    [sync] get_monitor_history = crate::plc_monitor::get_monitor_history() -> crate::plc_monitor::MonitorHistory;
+    [sync state] get_monitor_history = crate::plc_monitor::get_monitor_history() -> crate::plc_monitor::MonitorHistory;
     [async state] build_recovery_override_cmd = crate::recovery::build_recovery_override_cmd(did: String, operation_cid: String) -> Result<crate::recovery::SignedRecoveryOp, crate::recovery::RecoveryError>;
     [async state] build_repo_key_rotation_cmd = crate::rotate_repo_key::build_repo_key_rotation_cmd(did: String) -> Result<crate::rotate_repo_key::SignedRotationOp, crate::rotate_repo_key::RotationError>;
     [async state] submit_repo_key_rotation_cmd = crate::rotate_repo_key::submit_repo_key_rotation_cmd(did: String) -> Result<crate::claim::ClaimResult, crate::rotate_repo_key::RotationError>;
     [async state] build_rekey_cmd = crate::rekey::build_rekey_cmd(did: String) -> Result<crate::rekey::RekeyPreview, crate::rekey::RekeyError>;
     [async state] submit_rekey_cmd = crate::rekey::submit_rekey_cmd(did: String) -> Result<crate::rekey::RekeyResult, crate::rekey::RekeyError>;
-    [sync] confirm_rekey_cmd = crate::rekey::confirm_rekey_cmd(did: String) -> Result<(), crate::rekey::RekeyError>;
-    [sync] rekey_in_progress_cmd = crate::rekey::rekey_in_progress_cmd(did: String) -> bool;
+    [sync state] confirm_rekey_cmd = crate::rekey::confirm_rekey_cmd(did: String) -> Result<(), crate::rekey::RekeyError>;
+    [sync state] rekey_in_progress_cmd = crate::rekey::rekey_in_progress_cmd(did: String) -> bool;
     [async state] build_self_held_kit_cmd = crate::self_held_kit::build_self_held_kit_cmd(did: String) -> Result<crate::self_held_kit::SelfHeldKitPreview, crate::self_held_kit::SelfHeldKitError>;
     [async state] submit_self_held_kit_cmd = crate::self_held_kit::submit_self_held_kit_cmd(did: String) -> Result<crate::self_held_kit::SelfHeldKitResult, crate::self_held_kit::SelfHeldKitError>;
-    [sync] confirm_self_held_kit_cmd = crate::self_held_kit::confirm_self_held_kit_cmd(did: String) -> Result<(), crate::self_held_kit::SelfHeldKitError>;
-    [sync] self_held_kit_in_progress_cmd = crate::self_held_kit::self_held_kit_in_progress_cmd(did: String) -> bool;
+    [sync state] confirm_self_held_kit_cmd = crate::self_held_kit::confirm_self_held_kit_cmd(did: String) -> Result<(), crate::self_held_kit::SelfHeldKitError>;
+    [sync state] self_held_kit_in_progress_cmd = crate::self_held_kit::self_held_kit_in_progress_cmd(did: String) -> bool;
     [async state] submit_recovery_override_cmd = crate::recovery::submit_recovery_override_cmd(did: String) -> Result<crate::claim::ClaimResult, crate::recovery::RecoveryError>;
     [async state] get_identity_removal_route = crate::identity_removal::get_identity_removal_route(did: String) -> Result<crate::identity_removal::RemovalRoute, crate::identity_removal::RemovalError>;
     [async state] request_identity_removal = crate::identity_removal::request_identity_removal(did: String) -> Result<(), crate::identity_removal::RemovalError>;
     [async state] confirm_identity_removal = crate::identity_removal::confirm_identity_removal(did: String, password: Option<String>, token: String) -> Result<crate::identity_removal::RemovalOutcome, crate::identity_removal::RemovalError>;
     [async state] tombstone_identity = crate::identity_removal::tombstone_identity(did: String) -> Result<crate::identity_removal::RemovalOutcome, crate::identity_removal::RemovalError>;
-    [sync] list_pending_removals = crate::identity_removal::list_pending_removals() -> Vec<String>;
-    [sync] forget_identity_locally = crate::identity_removal::forget_identity_locally(did: String) -> Result<bool, crate::identity_removal::RemovalError>;
+    [sync state] list_pending_removals = crate::identity_removal::list_pending_removals() -> Vec<String>;
+    [sync state] forget_identity_locally = crate::identity_removal::forget_identity_locally(did: String) -> Result<bool, crate::identity_removal::RemovalError>;
     [async state] detect_migration_path_cmd = crate::migrate::detect_migration_path_cmd(did: String) -> Result<crate::migrate::MigrationPathDecision, crate::migrate::MigrateError>;
     [async state] build_migration_op_cmd = crate::migrate::build_migration_op_cmd(did: String) -> Result<crate::migrate::SignedMigrationOp, crate::migrate::MigrateError>;
     [async state] submit_migration_op_cmd = crate::migrate::submit_migration_op_cmd(did: String) -> Result<crate::claim::ClaimResult, crate::migrate::MigrateError>;
@@ -151,6 +151,6 @@ commands! {
     [async state] verify_recovery_shares = crate::share_recovery::verify_recovery_shares() -> Result<crate::share_recovery::RecoveredIdentity, crate::share_recovery::ShareRecoveryError>;
     [async state] recover_identity = crate::share_recovery::recover_identity() -> Result<crate::share_recovery::RecoveryAnchor, crate::share_recovery::ShareRecoveryError>;
     [async state] run_recovery_epilogue = crate::share_recovery::run_recovery_epilogue(skip_escrow: Option<bool>) -> Result<crate::share_recovery::EpilogueResult, crate::share_recovery::ShareRecoveryError>;
-    [sync] get_pending_recovery_epilogue = crate::share_recovery::get_pending_recovery_epilogue() -> Result<Option<crate::share_recovery::PendingEpilogue>, crate::share_recovery::ShareRecoveryError>;
+    [sync state] get_pending_recovery_epilogue = crate::share_recovery::get_pending_recovery_epilogue() -> Result<Option<crate::share_recovery::PendingEpilogue>, crate::share_recovery::ShareRecoveryError>;
     [async state] confirm_recovery_backup = crate::share_recovery::confirm_recovery_backup() -> Result<(), crate::share_recovery::ShareBackupError>;
 }

@@ -34,9 +34,9 @@ use axum::{extract::State, http::HeaderMap, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::auth::guards::require_session;
-use crate::db::dids::{fetch_also_known_as, update_also_known_as};
 use common::{ApiError, ErrorCode};
+use custos_core::auth::guards::require_session;
+use custos_db::dids::{fetch_also_known_as, update_also_known_as};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,16 +66,16 @@ pub async fn create_handle_handler(
         ));
     }
 
-    let handle = crate::identity::handle::validate_handle(
+    let handle = custos_core::identity::handle::validate_handle(
         &payload.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,
     )
     .map_err(|msg| ApiError::new(ErrorCode::InvalidHandle, msg))?;
 
-    match crate::db::handles::insert_handle(&state.db, &payload.handle, &session.did).await? {
-        crate::db::handles::InsertHandleOutcome::Inserted => {}
-        crate::db::handles::InsertHandleOutcome::HandleTaken => {
+    match custos_db::handles::insert_handle(&state.db, &payload.handle, &session.did).await? {
+        custos_db::handles::InsertHandleOutcome::Inserted => {}
+        custos_db::handles::InsertHandleOutcome::HandleTaken => {
             return Err(ApiError::new(
                 ErrorCode::HandleTaken,
                 "handle is already taken",
@@ -151,12 +151,12 @@ pub async fn create_handle_handler(
 #[cfg(test)]
 mod tests {
     use crate::app::test_state;
-    use crate::auth::token::generate_token;
     use crate::routes::test_utils::{state_with_err_dns, state_with_ok_dns};
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
+    use custos_core::auth::token::generate_token;
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -475,7 +475,7 @@ mod tests {
             .await
             .expect("identity frame was emitted")
             .expect("receiver not closed");
-        let crate::firehose::FirehoseEvent::Identity(identity) = event else {
+        let custos_core::firehose::FirehoseEvent::Identity(identity) = event else {
             panic!("expected an #identity frame, got {event:?}");
         };
         assert_eq!(identity.did, ts.did);

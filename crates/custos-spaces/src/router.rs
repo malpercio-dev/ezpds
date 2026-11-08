@@ -14,14 +14,12 @@ use common::SpacesConfig;
 use custos_core::CoreState;
 
 use crate::routes::*;
-use crate::SpacesState;
 
 /// The public (CORS'd) half of the Spaces surface: every `com.atproto.space.*` and
 /// `com.atproto.simplespace.*` method. Empty when `[spaces] enabled` is off.
 pub fn router<S>(config: &SpacesConfig) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
-    SpacesState: FromRef<S>,
     CoreState: FromRef<S>,
 {
     if !config.enabled {
@@ -128,7 +126,6 @@ where
 pub fn internal_router<S>(config: &SpacesConfig) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
-    SpacesState: FromRef<S>,
     CoreState: FromRef<S>,
 {
     let router = Router::new()

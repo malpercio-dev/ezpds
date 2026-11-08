@@ -225,17 +225,17 @@ unsafe extern "C-unwind" fn did_register_with_token(
     }
     let token = crate::notifications::hex_encode_apns_token(&unsafe { &*device_token }.to_vec());
 
-    match crate::notifications::record_apns_token(&token) {
+    let Some(app) = APP.get().cloned() else {
+        tracing::warn!("APNs delivered a device token before the bridge was registered");
+        return;
+    };
+    match crate::notifications::record_apns_token(&app.state::<crate::oauth::Core>(), &token) {
         Ok(false) => tracing::debug!("APNs device token is unchanged"),
         Ok(true) => {
             tracing::info!("APNs device token changed; re-registering every identity");
-            let Some(app) = APP.get().cloned() else {
-                return;
-            };
             tauri::async_runtime::spawn(async move {
-                let topic = app.config().identifier.clone();
-                let state = app.state::<crate::oauth::Core>();
-                crate::notifications::re_register_every_identity(&topic, state.pds_client()).await;
+                let core = app.state::<crate::oauth::Core>();
+                crate::notifications::re_register_every_identity(&core).await;
             });
         }
         Err(e) => tracing::error!(error = ?e, "could not store the APNs device token"),

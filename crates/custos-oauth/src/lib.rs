@@ -9,10 +9,7 @@
 //! [`CAPABILITY`], plus (behind `test-support`) [`test_support`]. Handlers extract
 //! `State<CoreState>`: the feature owns no state of its own. See `AGENTS.md`.
 
-// Modules custos-core and common own, aliased at the crate root so `crate::identity::…` and its
-// siblings resolve as they did in `pds`.
 use common::code_gen;
-use custos_core::{identity, rate_limit, time};
 
 mod auth;
 mod capability;

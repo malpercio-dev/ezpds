@@ -7,8 +7,8 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 
 #[derive(Deserialize)]
 pub struct GetRepoStatusParams {
@@ -44,7 +44,7 @@ pub async fn sync_get_repo_status(
 ) -> Result<Json<GetRepoStatusResponse>, ApiError> {
     let did = &params.did;
 
-    let row = crate::db::accounts::get_repo_status(&state.db, did)
+    let row = custos_db::accounts::get_repo_status(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query repo status");

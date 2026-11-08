@@ -8,8 +8,8 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct PutRecordBody {
@@ -468,7 +468,7 @@ mod tests {
         let app = crate::app::app(state);
 
         // Read the current repo head, then put with swapCommit = head → succeeds.
-        let head = crate::db::accounts::get_repo_root_cid(&db, &did)
+        let head = custos_db::accounts::get_repo_root_cid(&db, &did)
             .await
             .unwrap()
             .unwrap();

@@ -23,11 +23,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::app::AppState;
-use crate::identity::resolution::{
+use custos_core::identity::resolution::{
     resolve_did_document, resolve_did_document_force_refresh, resolve_handle_to_did,
     verified_handle_for_did, verified_handle_for_identifier, INVALID_HANDLE,
 };
-use crate::lexicon::{LexiconInput, LexiconParams};
+use custos_core::lexicon::{LexiconInput, LexiconParams};
 
 #[derive(Deserialize)]
 pub struct ResolveDidQuery {
@@ -121,7 +121,7 @@ async fn prior_cached_document(state: &AppState, identifier: &str) -> Option<Val
             .ok()
             .flatten()?
     };
-    crate::db::dids::get_did_document(&state.db, &did)
+    custos_db::dids::get_did_document(&state.db, &did)
         .await
         .ok()
         .flatten()
@@ -146,7 +146,7 @@ async fn emit_identity_if_changed_and_hosted(
         return;
     }
 
-    match crate::db::accounts::account_exists(&state.db, &info.did).await {
+    match custos_db::accounts::account_exists(&state.db, &info.did).await {
         Ok(true) => {
             let handle = (info.handle != INVALID_HANDLE).then(|| info.handle.clone());
             if let Err(e) = state.firehose.emit_identity(info.did.clone(), handle).await {
@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let event = rx.try_recv().expect("an #identity frame must be emitted");
-        let crate::firehose::FirehoseEvent::Identity(identity) = event else {
+        let custos_core::firehose::FirehoseEvent::Identity(identity) = event else {
             panic!("expected an #identity frame, got {event:?}");
         };
         assert_eq!(identity.did, did);

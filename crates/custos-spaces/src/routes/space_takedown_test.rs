@@ -12,6 +12,7 @@
 
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
+use custos_core::CoreState;
 use tower::ServiceExt;
 
 use crate::test_support::test_app as app;
@@ -19,7 +20,6 @@ use crate::test_support::{
     access_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
 };
 use crate::test_support::{path_get as get, path_post as post, send};
-use crate::SpacesState;
 
 const ADMIN: &str = "test-admin-token";
 const DID: &str = "did:plc:spacetakedownaaaaaaaaaaa";
@@ -32,14 +32,14 @@ const GRANT: &str = "atproto space:org.example.bucket?authority=did:plc:foreigna
 &action=read_self";
 
 /// A state with both the signing-key master key (space commits are signed) and an admin token.
-async fn setup() -> SpacesState {
+async fn setup() -> CoreState {
     let base = state_with_master_key().await;
     let mut config = (*base.config).clone();
     config.admin_token = Some(common::Sensitive(ADMIN.to_string()));
-    let state = SpacesState::new(custos_core::CoreState {
+    let state = custos_core::CoreState {
         config: std::sync::Arc::new(config),
-        ..base.core
-    });
+        ..base
+    };
     seed_account_with_repo(&state.db, DID).await;
     state
 }
@@ -56,11 +56,7 @@ fn create_record(token: &str, rkey: &str) -> Request<Body> {
 }
 
 /// Apply or clear the takedown through the real admin route, as an operator would.
-async fn takedown(
-    state: &SpacesState,
-    uri: &str,
-    applied: bool,
-) -> (StatusCode, serde_json::Value) {
+async fn takedown(state: &CoreState, uri: &str, applied: bool) -> (StatusCode, serde_json::Value) {
     send(
         state,
         post(
@@ -252,11 +248,11 @@ async fn each_action_is_audited_against_the_space_uri() {
     takedown(&state, SPACE, false).await;
 
     // The query `GET /v1/admin/audit?subject=<uri>` serves; that route lives in `pds`.
-    let filter = crate::db::admin_audit::AdminAuditFilter {
+    let filter = custos_db::admin_audit::AdminAuditFilter {
         subject: Some(SPACE),
         ..Default::default()
     };
-    let events = crate::db::admin_audit::list_admin_audit_events(&state.db, filter, None, 50)
+    let events = custos_db::admin_audit::list_admin_audit_events(&state.db, filter, None, 50)
         .await
         .unwrap();
     let actions: Vec<&str> = events.iter().map(|e| e.action.as_str()).collect();

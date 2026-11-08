@@ -8,7 +8,7 @@
 
 use axum::http::HeaderMap;
 
-use crate::auth::{validate_dpop_for_token_endpoint, DpopTokenEndpointError};
+use custos_core::auth::{validate_dpop_for_token_endpoint, DpopTokenEndpointError};
 use custos_core::CoreState;
 
 use super::oauth_errors::OAuthTokenError;

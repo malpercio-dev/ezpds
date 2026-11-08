@@ -28,12 +28,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::blob_mirror::BlobMirror;
-use crate::blob_store;
-use crate::db::blobs::{self, PhysicalBlob};
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
 use axum::extract::FromRef;
+use custos_core::blob_store;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 use custos_core::CoreState;
+use custos_db::blobs::{self, PhysicalBlob};
 
 /// Tally of what one scrub pass did, for logging and tests.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -212,7 +212,7 @@ pub async fn run_blob_scrub(state: &CoreState, mirror: Option<&BlobMirror>) -> S
     state
         .metrics
         .blob_scrub_last_run_timestamp
-        .record(crate::metrics::unix_now(), &[]);
+        .record(custos_core::metrics::unix_now(), &[]);
 
     stats
 }

@@ -69,7 +69,7 @@ use serde::Serialize;
 use crate::claim::OpDiff;
 use crate::failure::SharedFailure;
 use crate::handle_change::CurrentHandleState;
-use crate::identity_store::{IdentityStore, PerDidSignError};
+use crate::identity_store::PerDidSignError;
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::rekey::store_and_verify_share1;
 use crypto::PlcService;
@@ -371,8 +371,8 @@ async fn require_no_escrow_capability(
 
 /// Record that this identity now carries a self-held kit. Best-effort — nothing must fail a
 /// completed kit over a marker write.
-fn mark_installed(did: &str) {
-    if let Err(e) = crate::keystore::store_item(&self_held_kit_account(did), b"true") {
+fn mark_installed(core: &crate::oauth::Core, did: &str) {
+    if let Err(e) = core.keys().store_item(&self_held_kit_account(did), b"true") {
         tracing::warn!(error = %e, "failed to record the self-held kit marker");
     }
 }
@@ -380,8 +380,8 @@ fn mark_installed(did: &str) {
 /// Whether this identity carries a self-held kit. Test-only: its one production reader (the
 /// escrow-upsell seam) was retired, so this now just proves the marker round-trips.
 #[cfg(test)]
-fn is_installed(did: &str) -> bool {
-    matches!(crate::keystore::get_item(&self_held_kit_account(did)), Ok(v) if v == b"true")
+fn is_installed(core: &crate::oauth::Core, did: &str) -> bool {
+    matches!(core.keys().get_item(&self_held_kit_account(did)), Ok(v) if v == b"true")
 }
 
 // ── Imperative shell: build / submit / confirm ───────────────────────────────
@@ -393,35 +393,36 @@ fn is_installed(did: &str) -> bool {
 /// re-running never orphans a prior attempt's material. Signs nothing; `submit` does the single
 /// device-key signature.
 pub async fn build_self_held_kit(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<SelfHeldKitPreview, SelfHeldKitError> {
     require_did_plc(did)?;
-    let store = IdentityStore;
+    let store = core.identities();
 
     let device = store
         .get_or_create_device_key(did)
         .map_err(SharedFailure::from)?;
 
-    let current = fetch_current_state(pds_client, did).await?;
+    let current = fetch_current_state(core.pds_client(), did).await?;
     let pds_url = pds_endpoint(&current);
 
     // Eligibility BEFORE generating anything. A kit already in flight (a staging slot exists)
     // is always resumable — even after its op landed — because Share 1 and the user's own
     // backup confirmation may still be unfinished.
-    let staging_exists = crate::share_ceremony::self_held_kit_staging_exists(did);
+    let staging_exists = crate::share_ceremony::self_held_kit_staging_exists(core, did);
     if !staging_exists {
         if current.rotation_keys.first() != Some(&device.key_id) {
             return Err(SelfHeldKitError::WalletNotAuthorized);
         }
-        require_no_escrow_capability(pds_client, &pds_url).await?;
+        require_no_escrow_capability(core.pds_client(), &pds_url).await?;
     }
 
-    let shares = crate::share_ceremony::load_or_create_for_self_held_kit(did).map_err(|e| {
-        SelfHeldKitError::ShareGenerationFailed {
-            message: e.to_string(),
-        }
-    })?;
+    let shares =
+        crate::share_ceremony::load_or_create_for_self_held_kit(core, did).map_err(|e| {
+            SelfHeldKitError::ShareGenerationFailed {
+                message: e.to_string(),
+            }
+        })?;
 
     // Run the strict guard only while the recovery key is not yet on-chain — i.e. this build
     // would additively insert it. On a resumed kit whose op already landed, the key is present
@@ -472,25 +473,26 @@ fn kit_inputs(
 /// Because the device key never leaves `rotationKeys[0]`, no intermediate state drops recovery
 /// capability below the pre-kit baseline (device key only).
 pub async fn submit_self_held_kit(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<SelfHeldKitResult, SelfHeldKitError> {
     require_did_plc(did)?;
-    let store = IdentityStore;
+    let store = core.identities();
 
     let device = store
         .get_or_create_device_key(did)
         .map_err(SharedFailure::from)?;
 
-    let current = fetch_current_state(pds_client, did).await?;
+    let current = fetch_current_state(core.pds_client(), did).await?;
 
     // Reload the exact staged set built in the preview (durable across app kills). Until the
     // confirmation gate this is the only home of the new seed material.
-    let shares = crate::share_ceremony::load_or_create_for_self_held_kit(did).map_err(|e| {
-        SelfHeldKitError::ShareGenerationFailed {
-            message: e.to_string(),
-        }
-    })?;
+    let shares =
+        crate::share_ceremony::load_or_create_for_self_held_kit(core, did).map_err(|e| {
+            SelfHeldKitError::ShareGenerationFailed {
+                message: e.to_string(),
+            }
+        })?;
     let recovery_key_id = shares.recovery_key_id.clone();
 
     // Step 1: post the additive rotation op — unless it already landed (a resumed kit).
@@ -498,8 +500,8 @@ pub async fn submit_self_held_kit(
         let inputs = kit_inputs(&device.key_id, &recovery_key_id, &current);
         guard_self_held_kit_op(&inputs)?;
 
-        let sign_closure =
-            crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
+        let sign_closure = crate::identity_store::per_did_sign_closure(core.signer(), did)
+            .map_err(|e| match e {
                 PerDidSignError::DeviceKeyNotFound { .. } => {
                     SelfHeldKitError::Shared(SharedFailure::IdentityNotFound)
                 }
@@ -524,7 +526,7 @@ pub async fn submit_self_held_kit(
                     message: format!("failed to parse signed op JSON: {e}"),
                 }
             })?;
-        pds_client
+        core.pds_client()
             .post_plc_operation(did, &signed_op)
             .await
             .map_err(|e| match e {
@@ -539,12 +541,13 @@ pub async fn submit_self_held_kit(
 
     // Step 2: write the durable per-DID Share 1 slot (verified read-back). No escrow step
     // follows — Shares 2 and 3 go home with the user.
-    store_and_verify_share1(did, &shares.share1)
+    store_and_verify_share1(core, did, &shares.share1)
         .map_err(|message| SelfHeldKitError::ShareStorageFailed { message })?;
 
     // Step 3: refresh the cached PLC log + DID document (PLC *data* shape — the identity card
     // reads rotationKeys, which the W3C form strips).
-    let updated_log = pds_client
+    let updated_log = core
+        .pds_client()
         .fetch_audit_log(did)
         .await
         .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch updated audit log", e))?;
@@ -553,7 +556,8 @@ pub async fn submit_self_held_kit(
         .map_err(|e| SelfHeldKitError::ShareStorageFailed {
             message: format!("failed to cache updated PLC log: {e}"),
         })?;
-    let did_doc = pds_client
+    let did_doc = core
+        .pds_client()
         .fetch_plc_data_document(did)
         .await
         .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch DID document", e))?;
@@ -563,7 +567,7 @@ pub async fn submit_self_held_kit(
             message: format!("failed to cache updated DID document: {e}"),
         })?;
 
-    mark_installed(did);
+    mark_installed(core, did);
 
     Ok(SelfHeldKitResult {
         updated_did_doc: did_doc,
@@ -579,8 +583,8 @@ pub async fn submit_self_held_kit(
 /// The teardown order is load-bearing: Share 1 must be verifiably present in its durable slot
 /// (written by `submit`) before the staging record — the last local copy of the seed and of
 /// Shares 2 and 3 — is destroyed. Idempotent.
-pub fn confirm_self_held_kit(did: &str) -> Result<(), SelfHeldKitError> {
-    match crate::rekey::load_share1(did) {
+pub fn confirm_self_held_kit(core: &crate::oauth::Core, did: &str) -> Result<(), SelfHeldKitError> {
+    match crate::rekey::load_share1(core, did) {
         Ok(bytes) if !bytes.is_empty() => {}
         Ok(_) => return Err(SelfHeldKitError::ShareNotStored),
         Err(ref e) if crate::keystore::is_not_found(e) => {
@@ -592,7 +596,7 @@ pub fn confirm_self_held_kit(did: &str) -> Result<(), SelfHeldKitError> {
             })
         }
     }
-    crate::share_ceremony::clear_self_held_kit_staging(did).map_err(|e| {
+    crate::share_ceremony::clear_self_held_kit_staging(core, did).map_err(|e| {
         SelfHeldKitError::ShareStorageFailed {
             message: format!("failed to clear the staging slot: {e}"),
         }
@@ -606,7 +610,7 @@ pub async fn build_self_held_kit_cmd(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<SelfHeldKitPreview, SelfHeldKitError> {
-    build_self_held_kit(state.pds_client(), &did).await
+    build_self_held_kit(state, &did).await
 }
 
 /// Tauri command: install the kit (post op + Share 1 + refresh). Idempotent/resumable.
@@ -614,12 +618,15 @@ pub async fn submit_self_held_kit_cmd(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<SelfHeldKitResult, SelfHeldKitError> {
-    submit_self_held_kit(state.pds_client(), &did).await
+    submit_self_held_kit(state, &did).await
 }
 
 /// Tauri command: confirm Shares 2 and 3 are saved and tear down the staging slot.
-pub fn confirm_self_held_kit_cmd(did: String) -> Result<(), SelfHeldKitError> {
-    confirm_self_held_kit(&did)
+pub fn confirm_self_held_kit_cmd(
+    core: &crate::oauth::Core,
+    did: String,
+) -> Result<(), SelfHeldKitError> {
+    confirm_self_held_kit(core, &did)
 }
 
 /// Tauri command: whether a kit is mid-flight for this DID (a staging slot exists).
@@ -627,8 +634,8 @@ pub fn confirm_self_held_kit_cmd(did: String) -> Result<(), SelfHeldKitError> {
 /// The identity surface resurfaces "finish your recovery kit" on this, which is what catches a
 /// kit whose PLC op landed (so the document already shows the recovery key) but whose Share 1
 /// or user confirmation never completed.
-pub fn self_held_kit_in_progress_cmd(did: String) -> bool {
-    crate::share_ceremony::self_held_kit_staging_exists(&did)
+pub fn self_held_kit_in_progress_cmd(core: &crate::oauth::Core, did: String) -> bool {
+    crate::share_ceremony::self_held_kit_staging_exists(core, &did)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -889,10 +896,10 @@ mod tests {
 
     #[test]
     fn installed_marker_round_trips_and_defaults_to_absent() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:kittest0123456789abcdef";
-        assert!(!is_installed(did), "a fresh identity carries no kit");
-        mark_installed(did);
-        assert!(is_installed(did));
+        assert!(!is_installed(core, did), "a fresh identity carries no kit");
+        mark_installed(core, did);
+        assert!(is_installed(core, did));
     }
 }

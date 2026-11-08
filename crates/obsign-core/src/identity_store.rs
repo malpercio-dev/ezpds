@@ -2,8 +2,8 @@
 
 //! Per-DID identity storage layer with Keychain-based persistence.
 //!
-//! `IdentityStore` is a stateless unit struct — all state lives in the Keychain, and
-//! methods take `&self`. A top-level `"managed-dids"` entry maintains a JSON array
+//! `IdentityStore` borrows a `Core`'s key store and signer (`core.identities()`); all state
+//! lives in the Keychain. A top-level `"managed-dids"` entry maintains a JSON array
 //! index of all managed DIDs; per-DID entries use the `"{did}:suffix"` naming (device
 //! keys, DID documents, PLC audit logs, sessions — the full account inventory is in
 //! `keychain`'s module docs). Per-DID methods require the DID to be registered first
@@ -12,7 +12,7 @@
 //! `{ code: "SCREAMING_SNAKE_CASE" }`.
 //!
 //! Device keys are lazily generated on first [`IdentityStore::get_or_create_device_key`]
-//! — never at registration — through the installed [`Signer`](crate::signer::Signer)
+//! — never at registration — through the `Core`'s [`Signer`](crate::signer::Signer)
 //! under `KeyId::Identity(did)`, the same path the global key takes under `KeyId::Global`;
 //! only the account namespacing differs (`"{did}:device-key"` instead of
 //! `"device-rotation-key-priv"`). On a real device the Secure Enclave signer **probes the
@@ -45,7 +45,8 @@
 //! All Keychain operations use the shared `keychain::SERVICE` prefix.
 
 use crate::device_key::DevicePublicKey;
-use crate::signer::{KeyId, SignerError};
+use crate::keystore::Keys;
+use crate::signer::{KeyId, Signer, SignerError};
 use serde::{Deserialize, Serialize};
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -194,13 +195,23 @@ pub fn child_index_account(did: &str) -> String {
 
 // ── IdentityStore ──────────────────────────────────────────────────────────────
 
-/// Unit struct for multi-identity Keychain management.
-///
-/// All methods are stateless — the Keychain is globally accessible.
-/// Methods take `&self` to allow future phases to hold `IdentityStore` in `AppState`.
-pub struct IdentityStore;
+/// Multi-identity Keychain management over one key store and signer; `core.identities()`.
+#[derive(Clone, Copy)]
+pub struct IdentityStore<'a> {
+    keys: Keys<'a>,
+    signer: &'a dyn Signer,
+}
 
-impl IdentityStore {
+impl<'a> IdentityStore<'a> {
+    pub fn new(keys: Keys<'a>, signer: &'a dyn Signer) -> Self {
+        Self { keys, signer }
+    }
+
+    fn per_did_device_key(&self, did: &str) -> Result<DevicePublicKey, IdentityStoreError> {
+        let compressed = self.signer.public_key(KeyId::Identity(did))?;
+        Ok(crate::device_key::make_device_public_key(&compressed))
+    }
+
     // ── Private helpers ────────────────────────────────────────────────────────
 
     /// Load the current list of managed DIDs from the Keychain.
@@ -208,7 +219,7 @@ impl IdentityStore {
     /// Returns an empty list if the entry doesn't exist.
     /// Returns `Err` if the entry exists but contains invalid JSON (data corruption).
     fn load_managed_dids(&self) -> Result<Vec<String>, IdentityStoreError> {
-        match crate::keystore::get_item(MANAGED_DIDS_ACCOUNT) {
+        match self.keys.get_item(MANAGED_DIDS_ACCOUNT) {
             Ok(bytes) => serde_json::from_slice::<Vec<String>>(&bytes).map_err(|e| {
                 tracing::error!(error = %e, "managed-dids Keychain entry contains invalid JSON");
                 IdentityStoreError::SerializationError {
@@ -228,11 +239,11 @@ impl IdentityStore {
             serde_json::to_vec(dids).map_err(|e| IdentityStoreError::SerializationError {
                 message: format!("failed to serialize managed-dids: {e}"),
             })?;
-        crate::keystore::store_item(MANAGED_DIDS_ACCOUNT, &json).map_err(|e| {
-            IdentityStoreError::KeychainError {
+        self.keys
+            .store_item(MANAGED_DIDS_ACCOUNT, &json)
+            .map_err(|e| IdentityStoreError::KeychainError {
                 message: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Check whether a DID is in the managed list.
@@ -250,7 +261,7 @@ impl IdentityStore {
     /// saving an empty list over an unreadable one would silently drop every other
     /// tombstone. Removal is retryable; a lost tombstone is not.
     fn load_forgotten_dids(&self) -> Result<Vec<String>, IdentityStoreError> {
-        match crate::keystore::get_item(FORGOTTEN_DIDS_ACCOUNT) {
+        match self.keys.get_item(FORGOTTEN_DIDS_ACCOUNT) {
             Ok(bytes) => serde_json::from_slice::<Vec<String>>(&bytes).map_err(|e| {
                 tracing::error!(error = %e, "forgotten-dids Keychain entry contains invalid JSON");
                 IdentityStoreError::SerializationError {
@@ -270,11 +281,11 @@ impl IdentityStore {
             serde_json::to_vec(dids).map_err(|e| IdentityStoreError::SerializationError {
                 message: format!("failed to serialize forgotten-dids: {e}"),
             })?;
-        crate::keystore::store_item(FORGOTTEN_DIDS_ACCOUNT, &json).map_err(|e| {
-            IdentityStoreError::KeychainError {
+        self.keys
+            .store_item(FORGOTTEN_DIDS_ACCOUNT, &json)
+            .map_err(|e| IdentityStoreError::KeychainError {
                 message: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Whether the user has deliberately unregistered this DID from this device.
@@ -399,7 +410,7 @@ impl IdentityStore {
         ];
 
         for entry in entries {
-            if let Err(e) = crate::keystore::delete_item(&entry) {
+            if let Err(e) = self.keys.delete_item(&entry) {
                 if !crate::keystore::is_not_found(&e) {
                     tracing::warn!(did = did, entry = entry, error = %e, "transient Keychain error during identity cleanup");
                 }
@@ -434,7 +445,7 @@ impl IdentityStore {
             return Err(IdentityStoreError::IdentityNotFound);
         }
 
-        get_or_create_per_did_device_key(did)
+        self.per_did_device_key(did)
     }
 
     /// Adopt the app's global device key ([`crate::device_key`]) as this
@@ -483,13 +494,13 @@ impl IdentityStore {
 
         let mut copied = 0;
         for (global_account, per_did_account) in mappings {
-            match crate::keystore::get_item(global_account) {
+            match self.keys.get_item(global_account) {
                 Ok(bytes) => {
-                    crate::keystore::store_item(&per_did_account, &bytes).map_err(|e| {
-                        IdentityStoreError::KeychainError {
+                    self.keys
+                        .store_item(&per_did_account, &bytes)
+                        .map_err(|e| IdentityStoreError::KeychainError {
                             message: e.to_string(),
-                        }
-                    })?;
+                        })?;
                     copied += 1;
                 }
                 // Account absent on this platform — expected; skip it.
@@ -526,11 +537,11 @@ impl IdentityStore {
             return Err(IdentityStoreError::IdentityNotFound);
         }
 
-        crate::keystore::store_item(&did_doc_account(did), doc_json.as_bytes()).map_err(|e| {
-            IdentityStoreError::KeychainError {
+        self.keys
+            .store_item(&did_doc_account(did), doc_json.as_bytes())
+            .map_err(|e| IdentityStoreError::KeychainError {
                 message: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Retrieve a DID document for a managed identity.
@@ -542,7 +553,7 @@ impl IdentityStore {
             return Err(IdentityStoreError::IdentityNotFound);
         }
 
-        match crate::keystore::get_item(&did_doc_account(did)) {
+        match self.keys.get_item(&did_doc_account(did)) {
             Ok(bytes) => {
                 let doc_json = String::from_utf8(bytes).map_err(|e| {
                     IdentityStoreError::SerializationError {
@@ -568,11 +579,11 @@ impl IdentityStore {
             return Err(IdentityStoreError::IdentityNotFound);
         }
 
-        crate::keystore::store_item(&plc_log_account(did), log_json.as_bytes()).map_err(|e| {
-            IdentityStoreError::KeychainError {
+        self.keys
+            .store_item(&plc_log_account(did), log_json.as_bytes())
+            .map_err(|e| IdentityStoreError::KeychainError {
                 message: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Retrieve a PLC audit log for a managed identity.
@@ -584,7 +595,7 @@ impl IdentityStore {
             return Err(IdentityStoreError::IdentityNotFound);
         }
 
-        match crate::keystore::get_item(&plc_log_account(did)) {
+        match self.keys.get_item(&plc_log_account(did)) {
             Ok(bytes) => {
                 let log_json = String::from_utf8(bytes).map_err(|e| {
                     IdentityStoreError::SerializationError {
@@ -616,19 +627,18 @@ impl IdentityStore {
             return Err(IdentityStoreError::IdentityNotFound);
         }
         let account = recovery_signing_key_account(did);
-        crate::keystore::store_item(&account, scalar).map_err(|e| {
-            IdentityStoreError::KeychainError {
+        self.keys
+            .store_item(&account, scalar)
+            .map_err(|e| IdentityStoreError::KeychainError {
                 message: e.to_string(),
-            }
-        })?;
+            })?;
         // Read-back verify: the enroll op is only safe to submit once the key that
         // will sign the offline JWT is provably durable.
-        let read_back =
-            zeroize::Zeroizing::new(crate::keystore::get_item(&account).map_err(|e| {
-                IdentityStoreError::KeychainError {
-                    message: format!("read-back verify failed: {e}"),
-                }
-            })?);
+        let read_back = zeroize::Zeroizing::new(self.keys.get_item(&account).map_err(|e| {
+            IdentityStoreError::KeychainError {
+                message: format!("read-back verify failed: {e}"),
+            }
+        })?);
         if read_back.as_slice() != scalar {
             return Err(IdentityStoreError::KeychainError {
                 message: "read-back verify mismatch for recovery signing key".to_string(),
@@ -647,7 +657,7 @@ impl IdentityStore {
         if !self.is_managed(did)? {
             return Err(IdentityStoreError::IdentityNotFound);
         }
-        match crate::keystore::get_item(&recovery_signing_key_account(did)) {
+        match self.keys.get_item(&recovery_signing_key_account(did)) {
             Ok(bytes) => {
                 let bytes = zeroize::Zeroizing::new(bytes);
                 let scalar: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
@@ -696,19 +706,18 @@ impl IdentityStore {
             };
         }
         let account = delegation_seed_account(did);
-        crate::keystore::store_item(&account, seed).map_err(|e| {
-            IdentityStoreError::KeychainError {
+        self.keys
+            .store_item(&account, seed)
+            .map_err(|e| IdentityStoreError::KeychainError {
                 message: e.to_string(),
-            }
-        })?;
+            })?;
         // Read-back verify: a child minted against a seed that never reached the
         // Keychain would be unrecoverable on the next launch.
-        let read_back =
-            zeroize::Zeroizing::new(crate::keystore::get_item(&account).map_err(|e| {
-                IdentityStoreError::KeychainError {
-                    message: format!("read-back verify failed: {e}"),
-                }
-            })?);
+        let read_back = zeroize::Zeroizing::new(self.keys.get_item(&account).map_err(|e| {
+            IdentityStoreError::KeychainError {
+                message: format!("read-back verify failed: {e}"),
+            }
+        })?);
         if read_back.as_slice() != seed.as_slice() {
             return Err(IdentityStoreError::KeychainError {
                 message: "read-back verify mismatch for delegation seed".to_string(),
@@ -723,7 +732,7 @@ impl IdentityStore {
         &self,
         did: &str,
     ) -> Result<Option<zeroize::Zeroizing<[u8; 32]>>, IdentityStoreError> {
-        match crate::keystore::get_item(&delegation_seed_account(did)) {
+        match self.keys.get_item(&delegation_seed_account(did)) {
             Ok(bytes) => {
                 let bytes = zeroize::Zeroizing::new(bytes);
                 let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
@@ -750,7 +759,7 @@ impl IdentityStore {
     /// A local optimization only — the PDS child list is authoritative — so an absent
     /// or malformed slot reads as 0 rather than failing.
     pub fn load_child_index(&self, did: &str) -> Result<u32, IdentityStoreError> {
-        match crate::keystore::get_item(&child_index_account(did)) {
+        match self.keys.get_item(&child_index_account(did)) {
             Ok(bytes) => Ok(bytes
                 .as_slice()
                 .try_into()
@@ -765,11 +774,11 @@ impl IdentityStore {
 
     /// Record the DID's next child-account index.
     pub fn store_child_index(&self, did: &str, index: u32) -> Result<(), IdentityStoreError> {
-        crate::keystore::store_item(&child_index_account(did), &index.to_be_bytes()).map_err(|e| {
-            IdentityStoreError::KeychainError {
+        self.keys
+            .store_item(&child_index_account(did), &index.to_be_bytes())
+            .map_err(|e| IdentityStoreError::KeychainError {
                 message: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Persist a full-access session in the selected DID's namespaced Keychain slot.
@@ -790,11 +799,11 @@ impl IdentityStore {
             serde_json::to_vec(record).map_err(|e| IdentityStoreError::SerializationError {
                 message: format!("failed to serialize oauth token record: {e}"),
             })?;
-        crate::keystore::store_item(&oauth_tokens_account(did), &json).map_err(|e| {
-            IdentityStoreError::KeychainError {
+        self.keys
+            .store_item(&oauth_tokens_account(did), &json)
+            .map_err(|e| IdentityStoreError::KeychainError {
                 message: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Load the selected DID's full-access session, if one has been stored.
@@ -805,7 +814,7 @@ impl IdentityStore {
         if !self.is_managed(did)? {
             return Err(IdentityStoreError::IdentityNotFound);
         }
-        let bytes = match crate::keystore::get_item(&oauth_tokens_account(did)) {
+        let bytes = match self.keys.get_item(&oauth_tokens_account(did)) {
             Ok(bytes) => bytes,
             Err(e) if crate::keystore::is_not_found(&e) => return Ok(None),
             Err(e) => {
@@ -831,7 +840,7 @@ impl IdentityStore {
         if !self.is_managed(did)? {
             return Err(IdentityStoreError::IdentityNotFound);
         }
-        match crate::keystore::delete_item(&oauth_tokens_account(did)) {
+        match self.keys.delete_item(&oauth_tokens_account(did)) {
             Ok(()) => Ok(()),
             Err(e) if crate::keystore::is_not_found(&e) => Ok(()),
             Err(e) => Err(IdentityStoreError::KeychainError {
@@ -843,9 +852,9 @@ impl IdentityStore {
 
 // ── Per-DID device key ──────────────────────────────────────────────────────────
 //
-// Each identity's device key is held by the installed `Signer` (Secure Enclave on a real
-// device, software everywhere else; see `crate::signer`). These two functions are the only
-// way the rest of the wallet reaches it.
+// Each identity's device key is held by the `Core`'s `Signer` (Secure Enclave on a real
+// device, software everywhere else; see `crate::signer`). `IdentityStore::get_or_create_device_key`
+// and `per_did_sign_closure` are the only ways the rest of the wallet reaches it.
 
 impl From<SignerError> for IdentityStoreError {
     fn from(e: SignerError) -> Self {
@@ -860,11 +869,6 @@ impl From<SignerError> for IdentityStoreError {
             },
         }
     }
-}
-
-fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, IdentityStoreError> {
-    let compressed = crate::signer::signer().public_key(KeyId::Identity(did))?;
-    Ok(crate::device_key::make_device_public_key(&compressed))
 }
 
 /// Error from constructing a per-DID device-key signing closure.
@@ -888,16 +892,15 @@ pub enum PerDidSignError {
 /// Setup failures are reported here, signing failures by the closure, so a caller can map
 /// a missing key and a refused signature to different errors.
 pub fn per_did_sign_closure(
+    signer: &dyn Signer,
     did: &str,
 ) -> Result<impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError>, PerDidSignError> {
-    let sign = crate::signer::signer()
-        .signer(KeyId::Identity(did))
-        .map_err(|e| match e {
-            SignerError::NotFound { message } => PerDidSignError::DeviceKeyNotFound { message },
-            other => PerDidSignError::SigningSetupFailed {
-                message: other.to_string(),
-            },
-        })?;
+    let sign = signer.signer(KeyId::Identity(did)).map_err(|e| match e {
+        SignerError::NotFound { message } => PerDidSignError::DeviceKeyNotFound { message },
+        other => PerDidSignError::SigningSetupFailed {
+            message: other.to_string(),
+        },
+    })?;
     Ok(move |data: &[u8]| sign(data).map_err(|e| crypto::CryptoError::PlcOperation(e.to_string())))
 }
 
@@ -912,8 +915,8 @@ pub fn per_did_sign_closure(
 ///
 /// The frontend calls this on mount to check for existing identities and decide whether
 /// to skip the mode selector.
-pub fn list_identities() -> Result<Vec<String>, IdentityStoreError> {
-    IdentityStore.list_identities()
+pub fn list_identities(core: &crate::oauth::Core) -> Result<Vec<String>, IdentityStoreError> {
+    core.identities().list_identities()
 }
 
 /// Retrieve the stored DID document for a claimed identity.
@@ -923,8 +926,11 @@ pub fn list_identities() -> Result<Vec<String>, IdentityStoreError> {
 ///
 /// The frontend uses this to extract identity information (handle, PDS URL) for
 /// multi-identity card display in IdentityListHome.
-pub fn get_stored_did_doc(did: String) -> Result<Option<serde_json::Value>, IdentityStoreError> {
-    let store = IdentityStore;
+pub fn get_stored_did_doc(
+    core: &crate::oauth::Core,
+    did: String,
+) -> Result<Option<serde_json::Value>, IdentityStoreError> {
+    let store = core.identities();
     match store.get_did_doc(&did)? {
         Some(json_str) => {
             let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
@@ -973,11 +979,11 @@ pub async fn refresh_did_doc(
     let json = serde_json::to_string(&did_doc).map_err(|e| RefreshDidDocError::StorageFailed {
         message: format!("failed to serialize DID document: {e}"),
     })?;
-    IdentityStore
-        .store_did_doc(&did, &json)
-        .map_err(|e| RefreshDidDocError::StorageFailed {
+    state.identities().store_did_doc(&did, &json).map_err(|e| {
+        RefreshDidDocError::StorageFailed {
             message: e.to_string(),
-        })?;
+        }
+    })?;
     Ok(did_doc)
 }
 
@@ -987,8 +993,11 @@ pub async fn refresh_did_doc(
 /// in the DID document to determine if the device key is the primary rotation key.
 ///
 /// The frontend uses this in IdentityListHome to show rotation key status badges.
-pub fn get_device_key_id(did: String) -> Result<String, IdentityStoreError> {
-    let store = IdentityStore;
+pub fn get_device_key_id(
+    core: &crate::oauth::Core,
+    did: String,
+) -> Result<String, IdentityStoreError> {
+    let store = core.identities();
     let device_key = store.get_or_create_device_key(&did)?;
     Ok(device_key.key_id)
 }
@@ -997,34 +1006,19 @@ pub fn get_device_key_id(did: String) -> Result<String, IdentityStoreError> {
 mod tests {
     use super::*;
 
-    fn clear_managed_dids() {
-        let _ = crate::keystore::delete_item(MANAGED_DIDS_ACCOUNT);
-    }
-
-    fn clear_per_did_entries(did: &str) {
-        let _ = crate::keystore::delete_item(&device_key_account(did));
-        let _ = crate::keystore::delete_item(&device_key_pub_account(did));
-        let _ = crate::keystore::delete_item(&device_key_app_label_account(did));
-        let _ = crate::keystore::delete_item(&did_doc_account(did));
-        let _ = crate::keystore::delete_item(&plc_log_account(did));
-        let _ = crate::keystore::delete_item(&oauth_tokens_account(did));
-    }
-
     // adopt_global_device_key must make the per-DID device key resolve to the
     // same key the create flow's genesis op signed with (the global device key),
     // so the DID doc's rotationKeys[0] matches getDeviceKeyId ("Root key" badge
     // is honest) and PLC monitoring does not flag the user's own operations.
     #[test]
     fn adopt_global_device_key_aliases_per_did_key_to_global() {
-        clear_managed_dids();
+        let core = &crate::test_support::core();
         let did = "did:plc:adoptglobal";
-        clear_per_did_entries(did);
-        let _ = crate::keystore::delete_item(crate::device_key::DEVICE_KEY_PRIV_ACCOUNT);
 
         // The global device key — what perform_did_ceremony uses as rotationKeys[0].
-        let global = crate::device_key::get_or_create().expect("global device key");
+        let global = crate::device_key::get_or_create(core.signer()).expect("global device key");
 
-        let store = IdentityStore;
+        let store = core.identities();
         store.add_identity(did).expect("add_identity");
         store
             .adopt_global_device_key(did)
@@ -1038,18 +1032,14 @@ mod tests {
             "per-DID device key must resolve to the global key after adoption"
         );
         assert_eq!(per_did.multibase, global.multibase);
-
-        clear_per_did_entries(did);
-        clear_managed_dids();
-        let _ = crate::keystore::delete_item(crate::device_key::DEVICE_KEY_PRIV_ACCOUNT);
     }
 
     // ── Forgotten-DID tombstones ──────────────────────────────────────────────
 
     #[test]
     fn removing_an_identity_tombstones_it() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:tombstoned";
 
         assert!(!store.is_forgotten(did), "nothing is forgotten by default");
@@ -1061,8 +1051,8 @@ mod tests {
 
     #[test]
     fn re_registering_a_forgotten_identity_retracts_its_tombstone() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:forgottenthenreadded";
 
         store.add_identity(did).expect("add_identity");
@@ -1078,8 +1068,8 @@ mod tests {
 
     #[test]
     fn a_tombstone_names_only_the_removed_identity() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         store.add_identity("did:plc:goes").expect("add goes");
         store.add_identity("did:plc:stays").expect("add stays");
@@ -1091,28 +1081,32 @@ mod tests {
 
     #[test]
     fn an_unreadable_tombstone_index_reports_every_did_as_forgotten() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         // Fail closed. Withholding a re-registration is recoverable — the user can import
         // the identity again — but resurrecting one they deliberately wiped from this device
         // is not, so corruption must never read as "safe to re-register".
-        crate::keystore::store_item(FORGOTTEN_DIDS_ACCOUNT, b"{not json").unwrap();
+        core.keys()
+            .store_item(FORGOTTEN_DIDS_ACCOUNT, b"{not json")
+            .unwrap();
 
         assert!(store.is_forgotten("did:plc:anything"));
     }
 
     #[test]
     fn removal_fails_closed_when_the_tombstone_cannot_be_recorded() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:tombstonewritefails";
         store.add_identity(did).expect("add_identity");
 
         // A corrupt tombstone index cannot be appended to without dropping the tombstones it
         // already holds. Removal must refuse rather than unregister the DID untombstoned —
         // that is exactly the state launch reconciliation would undo.
-        crate::keystore::store_item(FORGOTTEN_DIDS_ACCOUNT, b"{not json").unwrap();
+        core.keys()
+            .store_item(FORGOTTEN_DIDS_ACCOUNT, b"{not json")
+            .unwrap();
 
         assert!(store.remove_identity(did).is_err());
         assert_eq!(
@@ -1126,9 +1120,8 @@ mod tests {
 
     #[test]
     fn add_identity_and_list() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         assert!(store.add_identity("did:plc:test1").is_ok());
         let identities = store.list_identities().expect("list_identities failed");
@@ -1137,9 +1130,8 @@ mod tests {
 
     #[test]
     fn list_multiple_identities() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         assert!(store.add_identity("did:plc:alice").is_ok());
         assert!(store.add_identity("did:plc:bob").is_ok());
@@ -1154,9 +1146,8 @@ mod tests {
 
     #[test]
     fn remove_identity_from_list() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         assert!(store.add_identity("did:plc:alice").is_ok());
         assert!(store.add_identity("did:plc:bob").is_ok());
@@ -1169,9 +1160,8 @@ mod tests {
 
     #[test]
     fn add_identity_duplicate_fails() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         assert!(store.add_identity("did:plc:test1").is_ok());
 
@@ -1184,9 +1174,8 @@ mod tests {
 
     #[test]
     fn remove_identity_not_found() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         let result = store.remove_identity("did:plc:ghost");
         assert!(matches!(result, Err(IdentityStoreError::IdentityNotFound)));
@@ -1228,12 +1217,10 @@ mod tests {
 
     #[test]
     fn get_or_create_device_key_success() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         assert!(store.add_identity("did:plc:test1").is_ok());
-        clear_per_did_entries("did:plc:test1");
 
         let result = store.get_or_create_device_key("did:plc:test1");
         assert!(result.is_ok());
@@ -1253,12 +1240,10 @@ mod tests {
 
     #[test]
     fn get_or_create_device_key_idempotent() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         assert!(store.add_identity("did:plc:test1").is_ok());
-        clear_per_did_entries("did:plc:test1");
 
         let key1 = store
             .get_or_create_device_key("did:plc:test1")
@@ -1273,14 +1258,11 @@ mod tests {
 
     #[test]
     fn get_or_create_device_key_different_dids() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         assert!(store.add_identity("did:plc:alice").is_ok());
         assert!(store.add_identity("did:plc:bob").is_ok());
-        clear_per_did_entries("did:plc:alice");
-        clear_per_did_entries("did:plc:bob");
 
         let key_alice = store
             .get_or_create_device_key("did:plc:alice")
@@ -1295,9 +1277,8 @@ mod tests {
 
     #[test]
     fn get_or_create_device_key_unregistered_did_fails() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         let result = store.get_or_create_device_key("did:plc:unregistered");
         assert!(matches!(result, Err(IdentityStoreError::IdentityNotFound)));
@@ -1307,13 +1288,11 @@ mod tests {
 
     #[test]
     fn did_doc_round_trip() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:test1";
 
         assert!(store.add_identity(did).is_ok());
-        clear_per_did_entries(did);
 
         let doc = r#"{"id":"did:plc:test1","alsoKnownAs":["at://alice.test"]}"#;
         assert!(store.store_did_doc(did, doc).is_ok());
@@ -1327,13 +1306,11 @@ mod tests {
 
     #[test]
     fn plc_log_round_trip() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:test1";
 
         assert!(store.add_identity(did).is_ok());
-        clear_per_did_entries(did);
 
         let log = r#"[{"cid":"bafy...","operation":{}}]"#;
         assert!(store.store_plc_log(did, log).is_ok());
@@ -1360,8 +1337,8 @@ mod tests {
 
     #[test]
     fn oauth_tokens_round_trip_and_delete() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:tokens";
         store.add_identity(did).unwrap();
         let expected = token_record("https://pds.example.com");
@@ -1375,8 +1352,8 @@ mod tests {
 
     #[test]
     fn oauth_tokens_are_isolated_per_did_and_never_use_legacy_accounts() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let alice = "did:plc:alice";
         let bob = "did:plc:bob";
         store.add_identity(alice).unwrap();
@@ -1389,17 +1366,17 @@ mod tests {
 
         assert_eq!(store.load_oauth_tokens(alice).unwrap(), Some(alice_record));
         assert_eq!(store.load_oauth_tokens(bob).unwrap(), Some(bob_record));
-        assert!(crate::keystore::get_item("oauth-access-token").is_err());
-        assert!(crate::keystore::get_item("oauth-refresh-token").is_err());
+        assert!(core.keys().get_item("oauth-access-token").is_err());
+        assert!(core.keys().get_item("oauth-refresh-token").is_err());
     }
 
     #[test]
     fn oauth_tokens_reject_unknown_record_version() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:versioned";
         store.add_identity(did).unwrap();
-        crate::keystore::store_item(
+        core.keys().store_item(
             &oauth_tokens_account(did),
             br#"{"version":2,"accessJwt":"a","refreshJwt":"r","pdsUrl":"https://pds.example.com","serverDid":"did:web:pds.example.com","accessExpiresAt":null,"refreshExpiresAt":null,"storedAt":1}"#,
         )
@@ -1413,8 +1390,8 @@ mod tests {
 
     #[test]
     fn remove_identity_deletes_oauth_tokens_record() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:removedtokens";
         store.add_identity(did).unwrap();
         store
@@ -1422,18 +1399,16 @@ mod tests {
             .unwrap();
 
         store.remove_identity(did).unwrap();
-        assert!(crate::keystore::get_item(&oauth_tokens_account(did)).is_err());
+        assert!(core.keys().get_item(&oauth_tokens_account(did)).is_err());
     }
 
     #[test]
     fn get_did_doc_returns_none_if_not_stored() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:test1";
 
         assert!(store.add_identity(did).is_ok());
-        clear_per_did_entries(did);
 
         let retrieved = store.get_did_doc(did).expect("get_did_doc failed");
         assert!(retrieved.is_none());
@@ -1441,13 +1416,11 @@ mod tests {
 
     #[test]
     fn get_plc_log_returns_none_if_not_stored() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:test1";
 
         assert!(store.add_identity(did).is_ok());
-        clear_per_did_entries(did);
 
         let retrieved = store.get_plc_log(did).expect("get_plc_log failed");
         assert!(retrieved.is_none());
@@ -1455,9 +1428,8 @@ mod tests {
 
     #[test]
     fn store_did_doc_unregistered_did_fails() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         let result = store.store_did_doc("did:plc:ghost", "{}");
         assert!(matches!(result, Err(IdentityStoreError::IdentityNotFound)));
@@ -1465,9 +1437,8 @@ mod tests {
 
     #[test]
     fn get_did_doc_unregistered_did_fails() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         let result = store.get_did_doc("did:plc:ghost");
         assert!(matches!(result, Err(IdentityStoreError::IdentityNotFound)));
@@ -1475,9 +1446,8 @@ mod tests {
 
     #[test]
     fn store_plc_log_unregistered_did_fails() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         let result = store.store_plc_log("did:plc:ghost", "[]");
         assert!(matches!(result, Err(IdentityStoreError::IdentityNotFound)));
@@ -1485,9 +1455,8 @@ mod tests {
 
     #[test]
     fn get_plc_log_unregistered_did_fails() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
 
         let result = store.get_plc_log("did:plc:ghost");
         assert!(matches!(result, Err(IdentityStoreError::IdentityNotFound)));
@@ -1495,13 +1464,11 @@ mod tests {
 
     #[test]
     fn remove_identity_cleans_up_all_entries() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:test1";
 
         assert!(store.add_identity(did).is_ok());
-        clear_per_did_entries(did);
 
         // Store some data and generate a device key.
         let doc = r#"{"id":"did:plc:test1"}"#;
@@ -1537,9 +1504,8 @@ mod tests {
 
     #[test]
     fn delegation_seed_round_trips_and_reports_provisioned() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:delegation";
 
         assert!(!store.is_delegation_provisioned(did).unwrap());
@@ -1557,9 +1523,8 @@ mod tests {
 
     #[test]
     fn delegation_seed_is_write_once() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:writeonce";
 
         store.store_delegation_seed(did, &[0x11_u8; 32]).unwrap();
@@ -1578,9 +1543,8 @@ mod tests {
 
     #[test]
     fn child_index_defaults_to_zero_and_round_trips() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:childindex";
 
         assert_eq!(store.load_child_index(did).unwrap(), 0);
@@ -1590,13 +1554,11 @@ mod tests {
 
     #[test]
     fn remove_identity_deletes_delegation_seed_and_child_index() {
-        crate::keystore::clear_for_test();
-        clear_managed_dids();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         let did = "did:plc:delegationremoval";
 
         store.add_identity(did).unwrap();
-        clear_per_did_entries(did);
         store.store_delegation_seed(did, &[0x33_u8; 32]).unwrap();
         store.store_child_index(did, 3).unwrap();
 

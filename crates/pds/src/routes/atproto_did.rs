@@ -11,7 +11,7 @@ use axum::{
 };
 
 use crate::app::AppState;
-use crate::request_host::request_host;
+use custos_core::request_host::request_host;
 
 pub async fn atproto_did_handler(
     headers: HeaderMap,
@@ -25,7 +25,7 @@ pub async fn atproto_did_handler(
     // Strip port if present (e.g. "example.com:8080" → "example.com").
     let handle = host.split(':').next().unwrap_or(&host);
 
-    let row = match crate::db::handles::resolve_handle(&state.db, handle).await {
+    let row = match custos_db::handles::resolve_handle(&state.db, handle).await {
         Ok(row) => row,
         Err(e) => return e.into_response(),
     };

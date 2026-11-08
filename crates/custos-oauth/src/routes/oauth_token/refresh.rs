@@ -19,14 +19,14 @@ use super::{
     cleanup_expired_state, issue_access_token, token_response_headers, TokenRequestForm,
     TokenResponse,
 };
-use crate::auth::token::generate_token;
-use crate::db::oauth::{
+use crate::oauth_dpop::token_endpoint_dpop;
+use crate::oauth_errors::{require, OAuthTokenError};
+use custos_core::auth::token::generate_token;
+use custos_core::CoreState;
+use custos_db::oauth::{
     delete_oauth_refresh_session, get_oauth_refresh_token, store_rotated_oauth_refresh_token,
     supersede_oauth_refresh_token,
 };
-use crate::oauth_dpop::token_endpoint_dpop;
-use crate::oauth_errors::{require, OAuthTokenError};
-use custos_core::CoreState;
 
 pub(super) async fn handle_refresh_token(
     state: &CoreState,
@@ -66,7 +66,7 @@ pub(super) async fn handle_refresh_token(
 
     // Hash the presented refresh token for DB lookup.
     let token_hash = match URL_SAFE_NO_PAD.decode(refresh_token_plaintext.as_str()) {
-        Ok(bytes) => crate::auth::token::sha256_hex(&bytes),
+        Ok(bytes) => custos_core::auth::token::sha256_hex(&bytes),
         Err(_) => {
             return OAuthTokenError::new("invalid_grant", "refresh token not found or expired")
                 .into_response();
@@ -150,7 +150,7 @@ pub(super) async fn handle_refresh_token(
     // `AuthScope::Refresh` and fail every access-gated route, so coerce any scope
     // that isn't a valid atproto grant to the base `atproto` scope (full access
     // under the current session model).
-    let granted_scope = if crate::auth::oauth_scopes::is_atproto_oauth_scope(&stored.scope) {
+    let granted_scope = if custos_core::auth::oauth_scopes::is_atproto_oauth_scope(&stored.scope) {
         stored.scope
     } else {
         "atproto".to_string()

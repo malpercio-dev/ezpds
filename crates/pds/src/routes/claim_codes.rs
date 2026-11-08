@@ -27,11 +27,11 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::{require_admin, require_admin_json};
 use crate::code_gen::generate_code;
-use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 use crate::db::claim_codes::{list_claim_codes, revoke_claim_code, RevokeClaimCodeOutcome};
-use crate::db::insert_with_retry_on_collision;
+use custos_core::auth::guards::{require_admin, require_admin_json};
+use custos_db::admin_audit::{record_admin_audit_event, AdminAuditAction};
+use custos_db::insert_with_retry_on_collision;
 
 const MAX_COUNT: u32 = 10;
 const MAX_LIST_LIMIT: u32 = 200;
@@ -84,7 +84,7 @@ pub async fn claim_codes(
 
 async fn claim_codes_inner(
     state: &AppState,
-    actor: &crate::auth::guards::AdminActor,
+    actor: &custos_core::auth::guards::AdminActor,
     payload: ClaimCodesRequest,
 ) -> Result<Json<ClaimCodesResponse>, ApiError> {
     // --- Validate input ---
@@ -287,7 +287,7 @@ pub async fn revoke_claim_code_route(
 
 async fn revoke_inner(
     state: &AppState,
-    actor: &crate::auth::guards::AdminActor,
+    actor: &custos_core::auth::guards::AdminActor,
     payload: RevokeClaimCodeRequest,
 ) -> Result<Json<RevokeClaimCodeResponse>, ApiError> {
     let outcome = revoke_claim_code(&state.db, &payload.code)
@@ -339,7 +339,7 @@ fn generate_unique_codes(count: usize) -> Vec<String> {
 /// inventory, and one event per batch keeps the log readable).
 async fn insert_claim_codes(
     db: &sqlx::SqlitePool,
-    actor: &crate::auth::guards::AdminActor,
+    actor: &custos_core::auth::guards::AdminActor,
     codes: &[String],
     expires_in_hours: u32,
 ) -> Result<(), sqlx::Error> {
@@ -362,7 +362,7 @@ async fn insert_claim_codes(
         "expiresInHours": expires_in_hours,
     })
     .to_string();
-    crate::db::admin_audit::insert_admin_audit_event(
+    custos_db::admin_audit::insert_admin_audit_event(
         &mut *tx,
         actor.as_log_str().as_ref(),
         AdminAuditAction::ClaimCodesMinted,
@@ -684,11 +684,11 @@ mod tests {
 
     #[tokio::test]
     async fn signed_device_request_mints_a_code() {
-        use crate::auth::guards::{
+        use custos_core::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use custos_db::admin_devices::{insert_device, NewAdminDevice};
 
         // A state with NO master token: proves the device path is independent of it.
         let state = test_state().await;
@@ -708,7 +708,7 @@ mod tests {
 
         let body = r#"{"count":2,"expiresInHours":24}"#;
         let path = "/v1/accounts/claim-codes";
-        let ts = crate::time::unix_now_secs();
+        let ts = custos_core::time::unix_now_secs();
         let nonce = "e2e-nonce-1";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
@@ -735,11 +735,11 @@ mod tests {
 
     #[tokio::test]
     async fn signed_device_request_with_tampered_body_is_rejected() {
-        use crate::auth::guards::{
+        use custos_core::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use custos_db::admin_devices::{insert_device, NewAdminDevice};
 
         let state = test_state().await;
         let keypair = crypto::generate_p256_keypair().unwrap();
@@ -757,7 +757,7 @@ mod tests {
         .unwrap();
 
         let path = "/v1/accounts/claim-codes";
-        let ts = crate::time::unix_now_secs();
+        let ts = custos_core::time::unix_now_secs();
         let nonce = "e2e-nonce-2";
         // Sign over count:1 but send count:9 — the body hash will not match.
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, br#"{"count":1}"#);
@@ -931,11 +931,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_accepts_signed_device_request() {
-        use crate::auth::guards::{
+        use custos_core::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use custos_db::admin_devices::{insert_device, NewAdminDevice};
 
         let state = test_state().await;
         seed_code(&state.db, "WAITIN", "-1 minutes", "+24 hours", false, false).await;
@@ -955,7 +955,7 @@ mod tests {
 
         // A GET signs the empty body; the query string is not part of the signed path.
         let path = "/v1/accounts/claim-codes";
-        let ts = crate::time::unix_now_secs();
+        let ts = custos_core::time::unix_now_secs();
         let nonce = "inventory-nonce-1";
         let sign_string = admin_request_sign_string("GET", path, ts, nonce, b"");
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
@@ -1079,11 +1079,11 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_accepts_signed_device_request() {
-        use crate::auth::guards::{
+        use custos_core::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use custos_db::admin_devices::{insert_device, NewAdminDevice};
 
         let state = test_state().await;
         seed_code(&state.db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
@@ -1103,7 +1103,7 @@ mod tests {
 
         let body = r#"{"code":"LIVE01"}"#;
         let path = "/v1/accounts/claim-codes/revoke";
-        let ts = crate::time::unix_now_secs();
+        let ts = custos_core::time::unix_now_secs();
         let nonce = "revoke-nonce-1";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
@@ -1130,11 +1130,11 @@ mod tests {
         // The media-type guard runs before signature verification, so a wrong
         // Content-Type returns 415 without burning the nonce — the corrected retry
         // with the same signed request (same nonce) must still succeed.
-        use crate::auth::guards::{
+        use custos_core::auth::guards::{
             admin_request_sign_string, ADMIN_DEVICE_HEADER, ADMIN_NONCE_HEADER,
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
-        use crate::db::admin_devices::{insert_device, NewAdminDevice};
+        use custos_db::admin_devices::{insert_device, NewAdminDevice};
 
         let state = test_state().await;
         let keypair = crypto::generate_p256_keypair().unwrap();
@@ -1153,7 +1153,7 @@ mod tests {
 
         let body = r#"{"count":1}"#;
         let path = "/v1/accounts/claim-codes";
-        let ts = crate::time::unix_now_secs();
+        let ts = custos_core::time::unix_now_secs();
         let nonce = "ct-order-nonce";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());

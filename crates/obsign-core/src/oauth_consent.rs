@@ -27,8 +27,8 @@
 //! Mirrors `sovereign_session.rs`: the per-DID device key is resolved before any
 //! request, the same `pds_url_is_secure` and DID-doc-match checks, the same canonical
 //! envelope discipline. The biometric gate lives in the frontend, in front of
-//! `confirmOAuthConsent`, so a cancelled prompt signs and sends nothing. Request cores
-//! are `_impl` functions taking `&PdsClient`, tested against httpmock.
+//! `confirmOAuthConsent`, so a cancelled prompt signs and sends nothing. Tests drive the
+//! commands through a `Core` over fakes against httpmock.
 //!
 //! `ConsentError` (REQUEST_NOT_FOUND,
 //! APPROVAL_REJECTED, MATCH_CODE_MISMATCH — the server's 403 "number mismatch"; the
@@ -43,9 +43,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 
 use crate::failure::SharedFailure;
-use crate::identity_store::{IdentityStore, PerDidSignError};
+use crate::identity_store::PerDidSignError;
 use crate::pds_client::PdsClient;
-use crate::sovereign_session::{fresh_nonce, unix_timestamp};
+use crate::sovereign_session::fresh_nonce;
 
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(
@@ -226,40 +226,32 @@ pub async fn confirm_oauth_consent(
     granted_scope: String,
     match_code: Option<String>,
 ) -> Result<ConsentDecision, ConsentError> {
-    let nonce = fresh_nonce();
-    let timestamp = unix_timestamp().map_err(|_| {
-        ConsentError::Shared(SharedFailure::InvalidResponse {
-            message: "system clock is before Unix epoch".into(),
-        })
-    })?;
-    confirm_oauth_consent_impl(
-        state.pds_client(),
-        &IdentityStore,
+    confirm_with_nonce(
+        state,
         &did,
         &request_id,
         &client_id,
         &decision,
         &granted_scope,
         match_code.as_deref(),
-        timestamp,
-        &nonce,
+        &fresh_nonce(),
     )
     .await
 }
 
+/// [`confirm_oauth_consent`] with the caller's proof nonce, so a test can pin the signed request.
 #[allow(clippy::too_many_arguments)]
-pub async fn confirm_oauth_consent_impl(
-    pds_client: &PdsClient,
-    store: &IdentityStore,
+pub(crate) async fn confirm_with_nonce(
+    core: &crate::oauth::Core,
     did: &str,
     request_id: &str,
     client_id: &str,
     decision: &str,
     granted_scope: &str,
     match_code: Option<&str>,
-    timestamp: i64,
     nonce: &str,
 ) -> Result<ConsentDecision, ConsentError> {
+    let timestamp = core.unix_timestamp();
     if decision != crypto::OAUTH_CONSENT_DECISION_APPROVE
         && decision != crypto::OAUTH_CONSENT_DECISION_DENY
     {
@@ -270,18 +262,22 @@ pub async fn confirm_oauth_consent_impl(
 
     // Resolve the signing key before any request — enforces managed-DID membership and guarantees
     // the selected DID's device key is the signer.
-    let device_key = store
+    let device_key = core
+        .identities()
         .get_or_create_device_key(did)
         .map_err(SharedFailure::from)?;
-    let signer = crate::identity_store::per_did_sign_closure(did).map_err(|error| match error {
-        PerDidSignError::DeviceKeyNotFound { message }
-        | PerDidSignError::SigningSetupFailed { message } => {
-            ConsentError::SigningFailed { message }
-        }
-    })?;
+    let signer = crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(
+        |error| match error {
+            PerDidSignError::DeviceKeyNotFound { message }
+            | PerDidSignError::SigningSetupFailed { message } => {
+                ConsentError::SigningFailed { message }
+            }
+        },
+    )?;
 
-    let pds_url = resolve_safe_pds(pds_client, did).await?;
-    let server = pds_client
+    let pds_url = resolve_safe_pds(core.pds_client(), did).await?;
+    let server = core
+        .pds_client()
         .describe_server(&pds_url)
         .await
         .map_err(SharedFailure::from_discovery)?;
@@ -320,7 +316,8 @@ pub async fn confirm_oauth_consent_impl(
         pds_url.trim_end_matches('/'),
         crypto::OAUTH_CONSENT_APPROVE_PATH
     );
-    let response = pds_client
+    let response = core
+        .pds_client()
         .client()
         .post(url)
         .json(&request)
@@ -397,10 +394,9 @@ mod tests {
     const REQUEST_ID: &str = "poauth_test";
     const TIMESTAMP: i64 = 1_720_000_000;
 
-    fn reset_identity(did: &str) -> DevicePublicKey {
-        crate::keystore::clear_for_test();
-        IdentityStore.add_identity(did).unwrap();
-        IdentityStore.get_or_create_device_key(did).unwrap()
+    fn reset_identity(core: &crate::oauth::Core, did: &str) -> DevicePublicKey {
+        core.identities().add_identity(did).unwrap();
+        core.identities().get_or_create_device_key(did).unwrap()
     }
 
     async fn discovery_mocks<'a>(server: &'a MockServer) -> (Mock<'a>, Mock<'a>, Mock<'a>) {
@@ -442,7 +438,8 @@ mod tests {
 
     #[tokio::test]
     async fn preview_returns_the_pending_request() {
-        reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server).await;
         let preview = server
@@ -477,7 +474,8 @@ mod tests {
 
     #[tokio::test]
     async fn preview_by_request_id_queries_the_request_id_dimension() {
-        reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server).await;
         // The scan path re-fetches the request server-side by request_id — never trusting the QR
@@ -512,7 +510,8 @@ mod tests {
 
     #[tokio::test]
     async fn preview_maps_404_to_request_not_found() {
-        reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server).await;
         let _preview = server
@@ -535,7 +534,8 @@ mod tests {
 
     #[tokio::test]
     async fn confirm_sends_the_signed_envelope_and_returns_status() {
-        let key = reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        let key = reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server).await;
         let nonce = URL_SAFE_NO_PAD.encode([7u8; 32]);
@@ -551,7 +551,8 @@ mod tests {
             &nonce,
         );
         let signature =
-            crate::identity_store::per_did_sign_closure(DID).unwrap()(&envelope).unwrap();
+            crate::identity_store::per_did_sign_closure(core.signer(), DID).unwrap()(&envelope)
+                .unwrap();
         // Clone the values the matcher closure consumes so `nonce` stays live for the call below.
         let nonce_body = nonce.clone();
         let signing_key = key.key_id.clone();
@@ -575,16 +576,15 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = confirm_oauth_consent_impl(
-            &client,
-            &IdentityStore,
+        let core = &core.with_pds_client(client);
+        let result = confirm_with_nonce(
+            core,
             DID,
             REQUEST_ID,
             CLIENT_ID,
             "approve",
             "atproto transition:generic",
             None,
-            TIMESTAMP,
             &nonce,
         )
         .await
@@ -600,7 +600,8 @@ mod tests {
     /// error so the screen can keep the review open for a retype.
     #[tokio::test]
     async fn confirm_sends_the_match_code_and_maps_a_mismatch_distinctly() {
-        let key = reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        let key = reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server).await;
         let nonce = URL_SAFE_NO_PAD.encode([9u8; 32]);
@@ -616,7 +617,8 @@ mod tests {
             &nonce,
         );
         let signature =
-            crate::identity_store::per_did_sign_closure(DID).unwrap()(&envelope).unwrap();
+            crate::identity_store::per_did_sign_closure(core.signer(), DID).unwrap()(&envelope)
+                .unwrap();
         let nonce_body = nonce.clone();
         let signing_key = key.key_id.clone();
         let approve = server
@@ -640,16 +642,15 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = confirm_oauth_consent_impl(
-            &client,
-            &IdentityStore,
+        let core = &core.with_pds_client(client);
+        let result = confirm_with_nonce(
+            core,
             DID,
             REQUEST_ID,
             CLIENT_ID,
             "approve",
             "atproto",
             Some("42"),
-            TIMESTAMP,
             &nonce,
         )
         .await;
@@ -662,7 +663,8 @@ mod tests {
     /// requirement off, so old hosts keep working unchanged.
     #[tokio::test]
     async fn preview_defaults_match_required_off_for_older_servers() {
-        reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server).await;
         let _preview = server
@@ -691,8 +693,10 @@ mod tests {
     #[tokio::test]
     async fn confirm_maps_status_codes_to_typed_errors() {
         for (status, want_already_resolved) in [(400, true), (401, false), (404, false)] {
-            reset_identity(DID);
             let server = MockServer::start_async().await;
+            let core = &crate::test_support::core_at(TIMESTAMP as u64)
+                .with_pds_client(crate::pds_client::new_for_test(server.base_url()));
+            reset_identity(core, DID);
             let (_plc, _head, _describe) = discovery_mocks(&server).await;
             let _approve = server
                 .mock_async(move |when, then| {
@@ -701,17 +705,8 @@ mod tests {
                 })
                 .await;
             let nonce = URL_SAFE_NO_PAD.encode([status as u8; 32]);
-            let result = confirm_oauth_consent_impl(
-                &crate::pds_client::new_for_test(server.base_url()),
-                &IdentityStore,
-                DID,
-                REQUEST_ID,
-                CLIENT_ID,
-                "approve",
-                "atproto",
-                None,
-                TIMESTAMP,
-                &nonce,
+            let result = confirm_with_nonce(
+                core, DID, REQUEST_ID, CLIENT_ID, "approve", "atproto", None, &nonce,
             )
             .await;
             if want_already_resolved {

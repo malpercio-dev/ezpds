@@ -52,8 +52,8 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::auth::OAuthSigningKey;
     use crate::test_support::{test_app, test_state};
+    use custos_core::auth::OAuthSigningKey;
     use custos_core::CoreState;
 
     async fn jwks_json() -> serde_json::Value {

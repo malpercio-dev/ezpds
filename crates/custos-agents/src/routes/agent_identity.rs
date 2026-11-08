@@ -52,22 +52,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::auth::agent_assertion::{
+use custos_core::auth::agent_assertion::{
     claim_block, mint_identity_assertion, record_agent_audit, scopes_to_json, start_claim_attempt,
     to_sqlite_datetime, verification_uri, AgentAuthError,
 };
-use crate::auth::issuer_trust::{
+use custos_core::auth::issuer_trust::{
     select_issuer, unverified_claim, verify_trusted_jwt, TrustedJwtError,
 };
-use crate::auth::token::generate_token;
-use crate::db::accounts::resolve_by_email;
-use crate::db::agent_audit::AgentAuditEventType;
-use crate::db::agent_auth::{
+use custos_core::auth::token::generate_token;
+use custos_core::CoreState;
+use custos_db::accounts::resolve_by_email;
+use custos_db::agent_audit::AgentAuditEventType;
+use custos_db::agent_auth::{
     get_agent_identity_by_issuer_subject, insert_agent_identity, set_agent_identity_assertion,
     AgentIdentityRow, AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity,
     RegistrationType,
 };
-use custos_core::CoreState;
 
 /// The one assertion type this server accepts for the `identity_assertion` flow.
 const ID_JAG_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:token-type:id-jag";
@@ -177,7 +177,7 @@ async fn handle_anonymous(
         .filter(|h| !h.is_empty())
     {
         Some(hint) => {
-            crate::identity::handle::validate_handle_structure(hint).map_err(|message| {
+            custos_core::identity::handle::validate_handle_structure(hint).map_err(|message| {
                 AgentAuthError::new(StatusCode::BAD_REQUEST, "invalid_request", message)
             })?;
             Some(hint.to_string())
@@ -499,7 +499,7 @@ async fn existing_identity_assertion(
             // Clamp the scopes stored at registration to the operator's *current* config, so
             // narrowing `[agent_auth] granted_scopes` narrows the minted assertion without
             // re-registration and the mint can never exceed the stored grant.
-            let scopes = crate::auth::oauth_scopes::intersect_scope_tokens(
+            let scopes = custos_core::auth::oauth_scopes::intersect_scope_tokens(
                 &parse_scopes(&existing.scopes),
                 &state.config.agent_auth.granted_scopes,
             );
@@ -779,7 +779,7 @@ mod tests {
         jsonwebtoken::encode(&header, &claims, &key).unwrap()
     }
 
-    /// A counting mock [`crate::auth::jwks::JwksFetcher`]: returns `set` (or a failure) and records how
+    /// A counting mock [`custos_core::auth::jwks::JwksFetcher`]: returns `set` (or a failure) and records how
     /// many times it was called, so a test can assert the cache elided a second fetch.
     struct TestJwksFetcher {
         set: jsonwebtoken::jwk::JwkSet,
@@ -787,14 +787,17 @@ mod tests {
         fail: bool,
     }
 
-    impl crate::auth::jwks::JwksFetcher for TestJwksFetcher {
+    impl custos_core::auth::jwks::JwksFetcher for TestJwksFetcher {
         fn fetch<'a>(
             &'a self,
             _url: &'a str,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<
-                        Output = Result<jsonwebtoken::jwk::JwkSet, crate::auth::jwks::JwksError>,
+                        Output = Result<
+                            jsonwebtoken::jwk::JwkSet,
+                            custos_core::auth::jwks::JwksError,
+                        >,
                     > + Send
                     + 'a,
             >,
@@ -805,7 +808,7 @@ mod tests {
             Box::pin(async move {
                 calls.fetch_add(1, Ordering::SeqCst);
                 if fail {
-                    Err(crate::auth::jwks::JwksError(
+                    Err(custos_core::auth::jwks::JwksError(
                         "mock fetch failed".to_string(),
                     ))
                 } else {
@@ -828,7 +831,7 @@ mod tests {
             calls: calls.clone(),
             fail: false,
         });
-        let jwks_cache = Arc::new(crate::auth::jwks::JwksCache::new(
+        let jwks_cache = Arc::new(custos_core::auth::jwks::JwksCache::new(
             fetcher,
             std::time::Duration::from_secs(3600),
             // Cooldown disabled: these tests pin fetch counts, not the cooldown (jwks.rs does).
@@ -845,7 +848,7 @@ mod tests {
             calls: Arc::new(AtomicUsize::new(0)),
             fail: true,
         });
-        let jwks_cache = Arc::new(crate::auth::jwks::JwksCache::new(
+        let jwks_cache = Arc::new(custos_core::auth::jwks::JwksCache::new(
             fetcher,
             std::time::Duration::from_secs(3600),
             std::time::Duration::ZERO,

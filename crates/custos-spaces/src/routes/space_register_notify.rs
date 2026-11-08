@@ -5,11 +5,11 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::IntoResponse;
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconInput;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct RegisterNotifyInput {
@@ -29,7 +29,7 @@ pub struct RegisterNotifyInput {
 /// space credential (or the owner's own OAuth grant) — the same admission
 /// `simplespace.getSpace` uses. Re-registering renews the existing row's expiry.
 pub async fn space_register_notify(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -60,6 +60,8 @@ pub async fn space_register_notify(
 
     Ok((
         StatusCode::OK,
-        axum::Json(serde_json::json!({ "expiresAt": crate::time::to_rfc3339_utc(&expires_at) })),
+        axum::Json(
+            serde_json::json!({ "expiresAt": custos_core::time::to_rfc3339_utc(&expires_at) }),
+        ),
     ))
 }

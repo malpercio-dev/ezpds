@@ -93,7 +93,7 @@ use serde::Serialize;
 
 use crate::failure::SharedFailure;
 use crate::identity_store::{IdentityStore, PerDidSignError};
-use crate::pds_client::{DeleteAccountProof, DeleteCredential, PdsClient, PdsClientError};
+use crate::pds_client::{DeleteAccountProof, DeleteCredential, PdsClientError};
 use crate::session_provider::SessionProvider;
 
 /// Keychain account holding the durable "removal in progress (post-delete)" index:
@@ -114,8 +114,10 @@ pub const PENDING_REMOVALS_ACCOUNT: &str = "pending-removals";
 /// (`mark_removal_pending` / `clear_removal_pending`) do a read-modify-write, so
 /// silently treating a transient read failure as "empty" would let the subsequent
 /// save overwrite the Keychain and drop any *other* DIDs' pending markers.
-fn load_pending_removals_strict() -> Result<Vec<String>, crate::keystore::KeyStoreError> {
-    match crate::keystore::get_item(PENDING_REMOVALS_ACCOUNT) {
+fn load_pending_removals_strict(
+    core: &crate::oauth::Core,
+) -> Result<Vec<String>, crate::keystore::KeyStoreError> {
+    match core.keys().get_item(PENDING_REMOVALS_ACCOUNT) {
         Ok(bytes) => Ok(serde_json::from_slice::<Vec<String>>(&bytes).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "pending-removals Keychain entry is not valid JSON; treating as empty");
             Vec::new()
@@ -131,8 +133,8 @@ fn load_pending_removals_strict() -> Result<Vec<String>, crate::keystore::KeySto
 /// unconditionally on every launch and must never surface an error that could block it.
 /// Read-modify-write callers must use [`load_pending_removals_strict`] instead, so a
 /// transient read failure cannot clobber unrelated markers.
-fn load_pending_removals() -> Vec<String> {
-    load_pending_removals_strict().unwrap_or_else(|e| {
+fn load_pending_removals(core: &crate::oauth::Core) -> Vec<String> {
+    load_pending_removals_strict(core).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "Keychain error loading pending-removals; treating as empty");
         Vec::new()
     })
@@ -144,9 +146,12 @@ fn load_pending_removals() -> Vec<String> {
     clippy::expect_used,
     reason = "a Vec<String> always serializes to JSON"
 )]
-fn save_pending_removals(dids: &[String]) -> Result<(), crate::keystore::KeyStoreError> {
+fn save_pending_removals(
+    core: &crate::oauth::Core,
+    dids: &[String],
+) -> Result<(), crate::keystore::KeyStoreError> {
     if dids.is_empty() {
-        return match crate::keystore::delete_item(PENDING_REMOVALS_ACCOUNT) {
+        return match core.keys().delete_item(PENDING_REMOVALS_ACCOUNT) {
             Ok(()) => Ok(()),
             Err(e) if crate::keystore::is_not_found(&e) => Ok(()),
             Err(e) => Err(e),
@@ -154,29 +159,35 @@ fn save_pending_removals(dids: &[String]) -> Result<(), crate::keystore::KeyStor
     }
     // Vec<String> → JSON is infallible; unwrap keeps the signature Keychain-only.
     let json = serde_json::to_vec(dids).expect("Vec<String> always serializes to JSON");
-    crate::keystore::store_item(PENDING_REMOVALS_ACCOUNT, &json)
+    core.keys().store_item(PENDING_REMOVALS_ACCOUNT, &json)
 }
 
 /// Mark `did` as having a pending post-delete removal (idempotent).
 ///
 /// Called the instant `deleteAccount` succeeds, before the tombstone network round
 /// trip — the step iOS is most likely to interrupt by backgrounding the app.
-fn mark_removal_pending(did: &str) -> Result<(), crate::keystore::KeyStoreError> {
-    let mut dids = load_pending_removals_strict()?;
+fn mark_removal_pending(
+    core: &crate::oauth::Core,
+    did: &str,
+) -> Result<(), crate::keystore::KeyStoreError> {
+    let mut dids = load_pending_removals_strict(core)?;
     if !dids.iter().any(|d| d == did) {
         dids.push(did.to_string());
-        save_pending_removals(&dids)?;
+        save_pending_removals(core, &dids)?;
     }
     Ok(())
 }
 
 /// Clear `did`'s pending-removal marker once the tombstone + wipe have completed.
-fn clear_removal_pending(did: &str) -> Result<(), crate::keystore::KeyStoreError> {
-    let mut dids = load_pending_removals_strict()?;
+fn clear_removal_pending(
+    core: &crate::oauth::Core,
+    did: &str,
+) -> Result<(), crate::keystore::KeyStoreError> {
+    let mut dids = load_pending_removals_strict(core)?;
     let before = dids.len();
     dids.retain(|d| d != did);
     if dids.len() != before {
-        save_pending_removals(&dids)?;
+        save_pending_removals(core, &dids)?;
     }
     Ok(())
 }
@@ -186,8 +197,8 @@ fn clear_removal_pending(did: &str) -> Result<(), crate::keystore::KeyStoreError
 /// A failure here is non-fatal: the removal already succeeded, and a lingering marker
 /// only re-offers the (now idempotent, wipe-only) tombstone retry on the next launch,
 /// which clears it. Never fail the removal over marker cleanup.
-fn clear_removal_pending_best_effort(did: &str) {
-    if let Err(e) = clear_removal_pending(did) {
+fn clear_removal_pending_best_effort(core: &crate::oauth::Core, did: &str) {
+    if let Err(e) = clear_removal_pending(core, did) {
         tracing::warn!(did = did, error = %e, "failed to clear pending-removal marker after removal");
     }
 }
@@ -302,7 +313,7 @@ fn map_delete_account_error(e: PdsClientError, sent_password: bool) -> RemovalEr
 /// DID the envelope's audience binds — so a host that cannot be reached surfaces as the network
 /// failure it is, rather than as a demand for a password the identity may not have.
 async fn build_delete_credential(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     pds_url: &str,
     did: &str,
     password: Option<String>,
@@ -313,11 +324,15 @@ async fn build_delete_credential(
 
     // The audience is the server's own DID, read from the host itself — the same binding the
     // sovereign-session and consent envelopes use, so a proof cannot be relayed to another server.
-    let server = pds_client.describe_server(pds_url).await.map_err(|e| {
-        RemovalError::Shared(SharedFailure::NetworkError {
-            message: format!("could not identify the hosting server: {e}"),
-        })
-    })?;
+    let server = core
+        .pds_client()
+        .describe_server(pds_url)
+        .await
+        .map_err(|e| {
+            RemovalError::Shared(SharedFailure::NetworkError {
+                message: format!("could not identify the hosting server: {e}"),
+            })
+        })?;
     let capabilities = crate::pds_capabilities::ServerCapabilities::from(server.custos.as_ref());
     if !capabilities.wallet_account_delete() {
         return Err(RemovalError::PasswordRequired);
@@ -325,23 +340,21 @@ async fn build_delete_credential(
 
     // Resolve the key before signing, so membership of the managed set is enforced and the
     // signer is unambiguously *this* identity's key (the `sovereign_session` ordering).
-    let device_key = IdentityStore
+    let device_key = core
+        .identities()
         .get_or_create_device_key(did)
         .map_err(SharedFailure::from)?;
-    let sign = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { .. } => {
-            RemovalError::Shared(SharedFailure::IdentityNotFound)
-        }
-        PerDidSignError::SigningSetupFailed { message } => {
-            RemovalError::ProofSigningFailed { message }
-        }
-    })?;
+    let sign =
+        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
+            PerDidSignError::DeviceKeyNotFound { .. } => {
+                RemovalError::Shared(SharedFailure::IdentityNotFound)
+            }
+            PerDidSignError::SigningSetupFailed { message } => {
+                RemovalError::ProofSigningFailed { message }
+            }
+        })?;
 
-    let timestamp = crate::sovereign_session::unix_timestamp().map_err(|_| {
-        RemovalError::Shared(SharedFailure::NetworkError {
-            message: "system clock is unavailable".to_string(),
-        })
-    })?;
+    let timestamp = core.unix_timestamp();
     let nonce = crate::sovereign_session::fresh_nonce();
     let envelope = crypto::encode_account_delete_envelope(
         &server.did,
@@ -411,31 +424,29 @@ fn has_plc_tombstone(did: &str) -> bool {
 ///     `None`: retiring the DID network-wide means taking its document off the domain,
 ///     which is the operator's action, not the wallet's.
 async fn retire_and_wipe(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<Option<String>, RemovalError> {
     if !has_plc_tombstone(did) {
-        wipe_local(&IdentityStore, did)?;
+        wipe_local(&core.identities(), did)?;
         return Ok(None);
     }
-    tombstone_and_wipe(pds_client, did).await.map(Some)
+    tombstone_and_wipe(core, did).await.map(Some)
 }
 
 /// Build + sign + submit the did:plc tombstone, then wipe local Keychain material.
 ///
 /// did:plc only — reached exclusively through [`retire_and_wipe`], which owns the method
 /// branch. Returns the tombstone CID on success.
-async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String, RemovalError> {
-    let store = IdentityStore;
+async fn tombstone_and_wipe(core: &crate::oauth::Core, did: &str) -> Result<String, RemovalError> {
+    let store = core.identities();
 
     // 1. Fetch + parse the audit log and locate the head (newest non-nullified) operation.
-    let audit_log_json =
-        pds_client
-            .fetch_audit_log(did)
-            .await
-            .map_err(|e| RemovalError::InvalidAuditLog {
-                message: format!("failed to fetch audit log: {e}"),
-            })?;
+    let audit_log_json = core.pds_client().fetch_audit_log(did).await.map_err(|e| {
+        RemovalError::InvalidAuditLog {
+            message: format!("failed to fetch audit log: {e}"),
+        }
+    })?;
     let audit_log =
         crypto::parse_audit_log(&audit_log_json).map_err(|e| RemovalError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
@@ -474,14 +485,15 @@ async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String,
     }
 
     // 2. Obtain the per-DID device-key signing closure (rotationKeys[0]).
-    let sign = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { .. } => {
-            RemovalError::Shared(SharedFailure::IdentityNotFound)
-        }
-        PerDidSignError::SigningSetupFailed { message } => {
-            RemovalError::TombstoneSigningFailed { message }
-        }
-    })?;
+    let sign =
+        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
+            PerDidSignError::DeviceKeyNotFound { .. } => {
+                RemovalError::Shared(SharedFailure::IdentityNotFound)
+            }
+            PerDidSignError::SigningSetupFailed { message } => {
+                RemovalError::TombstoneSigningFailed { message }
+            }
+        })?;
 
     // 3. Build + sign the tombstone (prev = the head CID).
     let tombstone = crypto::build_did_plc_tombstone_op(&head_cid, sign).map_err(|e| {
@@ -513,7 +525,7 @@ async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String,
     let did_owned = did.to_string();
     submit_then_wipe(
         async {
-            pds_client
+            core.pds_client()
                 .post_plc_operation(&did_owned, &op_value)
                 .await
                 .map_err(|e| {
@@ -556,8 +568,8 @@ fn wipe_local(store: &IdentityStore, did: &str) -> Result<(), RemovalError> {
 
 /// `true` if no managed identities remain — the UI returns to onboarding rather than the
 /// identity list. Shared by the tombstone-completing paths and the local-only forget path.
-fn no_identities_remain() -> Result<bool, RemovalError> {
-    IdentityStore
+fn no_identities_remain(core: &crate::oauth::Core) -> Result<bool, RemovalError> {
+    core.identities()
         .list_identities()
         .map(|ids| ids.is_empty())
         .map_err(|e| RemovalError::LocalWipeFailed {
@@ -566,10 +578,13 @@ fn no_identities_remain() -> Result<bool, RemovalError> {
 }
 
 /// Compute the `RemovalOutcome` after a successful `retire_and_wipe`.
-fn removal_outcome(tombstone_cid: Option<String>) -> Result<RemovalOutcome, RemovalError> {
+fn removal_outcome(
+    core: &crate::oauth::Core,
+    tombstone_cid: Option<String>,
+) -> Result<RemovalOutcome, RemovalError> {
     Ok(RemovalOutcome {
         tombstone_cid,
-        was_last_identity: no_identities_remain()?,
+        was_last_identity: no_identities_remain(core)?,
     })
 }
 
@@ -601,7 +616,7 @@ pub async fn get_identity_removal_route(
     did: String,
 ) -> Result<RemovalRoute, RemovalError> {
     let pds_client = state.pds_client();
-    let pds_url = resolve_pds_url(pds_client, &did).await?;
+    let pds_url = resolve_pds_url(state, &did).await?;
     let requires_password = !crate::pds_capabilities::probe(pds_client, &pds_url)
         .await
         .wallet_account_delete();
@@ -621,14 +636,7 @@ pub async fn request_identity_removal(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<(), RemovalError> {
-    let now = crate::sovereign_session::unix_timestamp().map_err(|_| {
-        RemovalError::Shared(SharedFailure::NetworkError {
-            message: "system clock is unavailable".to_string(),
-        })
-    })?;
-    let session = SessionProvider
-        .full_access_client(state.pds_client(), &IdentityStore, &did, now)
-        .await?;
+    let session = SessionProvider.full_access_client(state, &did).await?;
 
     crate::pds_client::request_account_delete(&session.client)
         .await
@@ -652,8 +660,8 @@ pub async fn confirm_identity_removal(
     // The account's PDS base URL comes from its still-present token record (the wipe is
     // last). Falling back to live discovery keeps a stale/absent record from stranding
     // an otherwise-deletable account.
-    let pds_url = resolve_pds_url(state.pds_client(), &did).await?;
-    let credential = build_delete_credential(state.pds_client(), &pds_url, &did, password).await?;
+    let pds_url = resolve_pds_url(state, &did).await?;
+    let credential = build_delete_credential(state, &pds_url, &did, password).await?;
     let sent_password = matches!(credential, DeleteCredential::Password(_));
 
     // 1. Permanently delete the account on the PDS (body-authed; no session needed).
@@ -670,14 +678,14 @@ pub async fn confirm_identity_removal(
     // would fail against the deleted account). A marker-write failure is logged but never
     // blocks the removal: the account is already deleted, so aborting here would only strand
     // the identity harder.
-    if let Err(e) = mark_removal_pending(&did) {
+    if let Err(e) = mark_removal_pending(state, &did) {
         tracing::warn!(did = %did, error = %e, "failed to persist pending-removal marker after deleteAccount");
     }
 
     // 2 + 3. Retire the DID (tombstone, did:plc only), then wipe local material.
-    let tombstone_cid = retire_and_wipe(state.pds_client(), &did).await?;
-    clear_removal_pending_best_effort(&did);
-    removal_outcome(tombstone_cid)
+    let tombstone_cid = retire_and_wipe(state, &did).await?;
+    clear_removal_pending_best_effort(state, &did);
+    removal_outcome(state, tombstone_cid)
 }
 
 /// Tauri command: resume a removal whose PDS account was already deleted.
@@ -693,9 +701,9 @@ pub async fn tombstone_identity(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<RemovalOutcome, RemovalError> {
-    let tombstone_cid = retire_and_wipe(state.pds_client(), &did).await?;
-    clear_removal_pending_best_effort(&did);
-    removal_outcome(tombstone_cid)
+    let tombstone_cid = retire_and_wipe(state, &did).await?;
+    clear_removal_pending_best_effort(state, &did);
+    removal_outcome(state, tombstone_cid)
 }
 
 /// Tauri command: list DIDs with a pending post-delete removal.
@@ -705,8 +713,8 @@ pub async fn tombstone_identity(
 /// can resume it (idempotent `tombstone_identity`) instead of re-entering the request
 /// flow. Infallible — any Keychain/decoding trouble reads as an empty list, so it can be
 /// called unconditionally on every launch.
-pub fn list_pending_removals() -> Vec<String> {
-    load_pending_removals()
+pub fn list_pending_removals(core: &crate::oauth::Core) -> Vec<String> {
+    load_pending_removals(core)
 }
 
 /// Tauri command: forget an identity's local material WITHOUT any network step.
@@ -727,21 +735,24 @@ pub fn list_pending_removals() -> Vec<String> {
 ///
 /// Returns `was_last_identity` (mirroring `RemovalOutcome`) so the UI can route back to
 /// onboarding rather than the identity list when the wallet is now empty.
-pub fn forget_identity_locally(did: String) -> Result<bool, RemovalError> {
-    wipe_local(&IdentityStore, &did)?;
-    clear_removal_pending_best_effort(&did);
-    no_identities_remain()
+pub fn forget_identity_locally(
+    core: &crate::oauth::Core,
+    did: String,
+) -> Result<bool, RemovalError> {
+    wipe_local(&core.identities(), &did)?;
+    clear_removal_pending_best_effort(core, &did);
+    no_identities_remain(core)
 }
 
 /// Resolve the PDS base URL for `did`: the stored token record first, then live
 /// discovery. Used only to address the body-authed `deleteAccount` endpoint.
-async fn resolve_pds_url(pds_client: &PdsClient, did: &str) -> Result<String, RemovalError> {
-    if let Ok(Some(record)) = IdentityStore.load_oauth_tokens(did) {
+async fn resolve_pds_url(core: &crate::oauth::Core, did: &str) -> Result<String, RemovalError> {
+    if let Ok(Some(record)) = core.identities().load_oauth_tokens(did) {
         if !record.pds_url.is_empty() {
             return Ok(record.pds_url);
         }
     }
-    let (pds_url, _doc) = pds_client.discover_pds(did).await.map_err(|e| {
+    let (pds_url, _doc) = core.pds_client().discover_pds(did).await.map_err(|e| {
         RemovalError::Shared(SharedFailure::NetworkError {
             message: format!("could not resolve the identity's PDS: {e}"),
         })
@@ -962,8 +973,10 @@ mod tests {
     /// unreachable server here stands for.
     #[tokio::test]
     async fn a_host_without_the_capability_refuses_a_passwordless_removal() {
-        crate::keystore::clear_for_test();
-        IdentityStore.add_identity("did:plc:nocapability").unwrap();
+        let core = &crate::test_support::core();
+        core.identities()
+            .add_identity("did:plc:nocapability")
+            .unwrap();
         let server = httpmock::MockServer::start();
         let describe = server.mock(|when, then| {
             when.any_request();
@@ -975,7 +988,7 @@ mod tests {
         let pds_client = crate::pds_client::new_for_test(server.base_url());
 
         let result = build_delete_credential(
-            &pds_client,
+            &core.with_pds_client(pds_client.clone()),
             &server.base_url(),
             "did:plc:nocapability",
             None,
@@ -991,10 +1004,10 @@ mod tests {
     /// identity's device key, with a fresh 32-byte nonce.
     #[tokio::test]
     async fn an_advertising_host_yields_a_device_key_signed_proof() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let did = "did:plc:withcapability";
-        IdentityStore.add_identity(did).unwrap();
-        let device_key = IdentityStore.get_or_create_device_key(did).unwrap();
+        core.identities().add_identity(did).unwrap();
+        let device_key = core.identities().get_or_create_device_key(did).unwrap();
         let server = httpmock::MockServer::start();
         server.mock(|when, then| {
             when.any_request();
@@ -1006,9 +1019,14 @@ mod tests {
         });
         let pds_client = crate::pds_client::new_for_test(server.base_url());
 
-        let credential = build_delete_credential(&pds_client, &server.base_url(), did, None)
-            .await
-            .unwrap();
+        let credential = build_delete_credential(
+            &core.with_pds_client(pds_client.clone()),
+            &server.base_url(),
+            did,
+            None,
+        )
+        .await
+        .unwrap();
 
         let DeleteCredential::Proof(proof) = credential else {
             panic!("an advertising host must yield a proof");
@@ -1045,7 +1063,7 @@ mod tests {
     /// one is removed exactly as before, against any host.
     #[tokio::test]
     async fn a_typed_password_is_used_without_probing_the_host() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let server = httpmock::MockServer::start();
         let catch_all = server.mock(|when, then| {
             when.any_request();
@@ -1054,7 +1072,7 @@ mod tests {
         let pds_client = crate::pds_client::new_for_test(server.base_url());
 
         let credential = build_delete_credential(
-            &pds_client,
+            &core.with_pds_client(pds_client.clone()),
             &server.base_url(),
             "did:plc:haspassword",
             Some("hunter2".to_string()),
@@ -1073,47 +1091,55 @@ mod tests {
 
     #[test]
     fn pending_removal_marker_round_trip() {
-        crate::keystore::clear_for_test();
-        assert!(load_pending_removals().is_empty());
+        let core = &crate::test_support::core();
+        assert!(load_pending_removals(core).is_empty());
 
-        mark_removal_pending("did:plc:alice").unwrap();
-        assert_eq!(load_pending_removals(), vec!["did:plc:alice".to_string()]);
+        mark_removal_pending(core, "did:plc:alice").unwrap();
+        assert_eq!(
+            load_pending_removals(core),
+            vec!["did:plc:alice".to_string()]
+        );
 
         // Idempotent: marking the same DID twice does not duplicate it.
-        mark_removal_pending("did:plc:alice").unwrap();
-        assert_eq!(load_pending_removals(), vec!["did:plc:alice".to_string()]);
-
-        mark_removal_pending("did:plc:bob").unwrap();
+        mark_removal_pending(core, "did:plc:alice").unwrap();
         assert_eq!(
-            load_pending_removals(),
+            load_pending_removals(core),
+            vec!["did:plc:alice".to_string()]
+        );
+
+        mark_removal_pending(core, "did:plc:bob").unwrap();
+        assert_eq!(
+            load_pending_removals(core),
             vec!["did:plc:alice".to_string(), "did:plc:bob".to_string()]
         );
 
-        clear_removal_pending("did:plc:alice").unwrap();
-        assert_eq!(load_pending_removals(), vec!["did:plc:bob".to_string()]);
+        clear_removal_pending(core, "did:plc:alice").unwrap();
+        assert_eq!(load_pending_removals(core), vec!["did:plc:bob".to_string()]);
 
         // Clearing the last DID empties the set (and removes the backing entry).
-        clear_removal_pending("did:plc:bob").unwrap();
-        assert!(load_pending_removals().is_empty());
+        clear_removal_pending(core, "did:plc:bob").unwrap();
+        assert!(load_pending_removals(core).is_empty());
     }
 
     #[test]
     fn clearing_absent_marker_is_a_noop() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         // Never marked — clearing must not error and must leave the set empty.
-        clear_removal_pending("did:plc:ghost").unwrap();
-        assert!(load_pending_removals().is_empty());
-        clear_removal_pending_best_effort("did:plc:ghost");
-        assert!(load_pending_removals().is_empty());
+        clear_removal_pending(core, "did:plc:ghost").unwrap();
+        assert!(load_pending_removals(core).is_empty());
+        clear_removal_pending_best_effort(core, "did:plc:ghost");
+        assert!(load_pending_removals(core).is_empty());
     }
 
     #[test]
     fn corrupt_marker_entry_reads_as_empty() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         // A non-JSON blob must never surface as an error — the marker is a best-effort
         // safety net, and `list_pending_removals` is called unconditionally on launch.
-        crate::keystore::store_item(PENDING_REMOVALS_ACCOUNT, b"not json").unwrap();
-        assert!(load_pending_removals().is_empty());
+        core.keys()
+            .store_item(PENDING_REMOVALS_ACCOUNT, b"not json")
+            .unwrap();
+        assert!(load_pending_removals(core).is_empty());
     }
 
     // ── Local-only "forget" escape hatch ──────────────────────────────────────
@@ -1124,17 +1150,17 @@ mod tests {
 
     #[test]
     fn forget_identity_locally_wipes_and_clears_marker() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         store.add_identity("did:plc:gone").unwrap();
         assert_eq!(
             store.list_identities().unwrap(),
             vec!["did:plc:gone".to_string()]
         );
         // A stale marker from an interrupted prior attempt must be cleared too.
-        mark_removal_pending("did:plc:gone").unwrap();
+        mark_removal_pending(core, "did:plc:gone").unwrap();
 
-        let was_last = forget_identity_locally("did:plc:gone".to_string()).unwrap();
+        let was_last = forget_identity_locally(core, "did:plc:gone".to_string()).unwrap();
 
         assert!(
             was_last,
@@ -1145,17 +1171,17 @@ mod tests {
             "the identity is gone from the managed set"
         );
         assert!(
-            load_pending_removals().is_empty(),
+            load_pending_removals(core).is_empty(),
             "the pending-removal marker was cleared"
         );
     }
 
     #[test]
     fn forget_identity_locally_is_idempotent_for_unknown_did() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         // Never registered — a wipe of a not-found identity is success, not an error, so a
         // second "forget" (or one against a DID some other path already removed) never wedges.
-        let was_last = forget_identity_locally("did:plc:never".to_string()).unwrap();
+        let was_last = forget_identity_locally(core, "did:plc:never".to_string()).unwrap();
         assert!(was_last, "an empty wallet reports wasLast=true");
     }
 
@@ -1178,8 +1204,8 @@ mod tests {
     /// mock server is registered to answer *anything*, so a stray request would be a hit.
     #[tokio::test]
     async fn did_web_retire_never_contacts_plc_directory() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         store.add_identity("did:web:example.com").unwrap();
 
         let server = httpmock::MockServer::start();
@@ -1189,9 +1215,12 @@ mod tests {
         });
         let pds_client = crate::pds_client::new_for_test(server.base_url());
 
-        let cid = retire_and_wipe(&pds_client, "did:web:example.com")
-            .await
-            .expect("a did:web removal completes without a tombstone");
+        let cid = retire_and_wipe(
+            &core.with_pds_client(pds_client.clone()),
+            "did:web:example.com",
+        )
+        .await
+        .expect("a did:web removal completes without a tombstone");
 
         assert_eq!(cid, None, "a did:web removal reports no tombstone CID");
         catch_all.assert_calls(0);
@@ -1206,11 +1235,11 @@ mod tests {
     /// re-offered forever.
     #[tokio::test]
     async fn did_web_resume_clears_the_pending_marker() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         store.add_identity("did:web:example.com").unwrap();
         // What `confirm_identity_removal` leaves behind when the app dies post-delete.
-        mark_removal_pending("did:web:example.com").unwrap();
+        mark_removal_pending(core, "did:web:example.com").unwrap();
 
         let server = httpmock::MockServer::start();
         let catch_all = server.mock(|when, then| {
@@ -1219,15 +1248,18 @@ mod tests {
         });
         let pds_client = crate::pds_client::new_for_test(server.base_url());
 
-        let cid = retire_and_wipe(&pds_client, "did:web:example.com")
-            .await
-            .unwrap();
-        clear_removal_pending_best_effort("did:web:example.com");
+        let cid = retire_and_wipe(
+            &core.with_pds_client(pds_client.clone()),
+            "did:web:example.com",
+        )
+        .await
+        .unwrap();
+        clear_removal_pending_best_effort(core, "did:web:example.com");
 
         assert_eq!(cid, None);
         catch_all.assert_calls(0);
         assert!(
-            load_pending_removals().is_empty(),
+            load_pending_removals(core).is_empty(),
             "the marker cleared without a tombstone — no permanent retry state"
         );
         assert!(store.list_identities().unwrap().is_empty());
@@ -1237,24 +1269,27 @@ mod tests {
     /// some earlier partial run already removed must not fail the resume.
     #[tokio::test]
     async fn did_web_retire_is_idempotent_for_an_already_wiped_did() {
-        crate::keystore::clear_for_test();
+        let core = &crate::test_support::core();
         let server = httpmock::MockServer::start();
         let pds_client = crate::pds_client::new_for_test(server.base_url());
 
-        let cid = retire_and_wipe(&pds_client, "did:web:never.example")
-            .await
-            .expect("wiping an unregistered DID is success, not an error");
+        let cid = retire_and_wipe(
+            &core.with_pds_client(pds_client.clone()),
+            "did:web:never.example",
+        )
+        .await
+        .expect("wiping an unregistered DID is success, not an error");
         assert_eq!(cid, None);
     }
 
     #[test]
     fn forget_identity_locally_reports_not_last_when_others_remain() {
-        crate::keystore::clear_for_test();
-        let store = IdentityStore;
+        let core = &crate::test_support::core();
+        let store = core.identities();
         store.add_identity("did:plc:gone").unwrap();
         store.add_identity("did:plc:keep").unwrap();
 
-        let was_last = forget_identity_locally("did:plc:gone".to_string()).unwrap();
+        let was_last = forget_identity_locally(core, "did:plc:gone".to_string()).unwrap();
 
         assert!(!was_last, "another identity remains, so not the last");
         assert_eq!(

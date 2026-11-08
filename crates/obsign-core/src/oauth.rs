@@ -1,6 +1,12 @@
 // pattern: Mixed (unavoidable)
 
-//! `Core` (the app-wide Tauri-managed state): the flow-state slots and both clients.
+//! `Core` (the app-wide Tauri-managed state): the platform adapters, the flow-state slots,
+//! and both clients.
+//!
+//! **Adapters.** `Core` owns the [`Platform`] the shell hands [`Core::new`]: the key store
+//! ([`Core::keys`]), the signer, the event sink ([`Core::emit`]), the backup store, the
+//! scheduler, and the clock. Nothing is installed process-wide, so a test builds its own
+//! `Core` over fakes (`crate::test_support::core`).
 //!
 //! **`Core` slots.** `custos_client` (`OnceLock`, set once from the Keychain URL or
 //! first-launch config, compile-time default otherwise); `pds_client` (eager — cheap and
@@ -19,8 +25,18 @@
 //! TypeScript union must match.
 
 use std::sync::OnceLock;
+use std::time::SystemTime;
+
+use serde::Serialize;
 
 pub use custos_client::OAuthError;
+
+use crate::backup_store::BackupStore;
+use crate::identity_store::IdentityStore;
+use crate::keystore::Keys;
+use crate::platform::Platform;
+use crate::scheduler::{BackgroundJob, JobRequest};
+use crate::signer::Signer;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -29,6 +45,7 @@ pub use custos_client::OAuthError;
 /// Flow slots are Option-wrapped so they are cleanly empty before a flow starts and after it
 /// completes.
 pub struct Core {
+    platform: Platform,
     /// Runtime custos client. Populated from Keychain on startup or by
     /// `save_pds_url` on first launch. Falls back to the compile-time default if unset.
     custos_client: OnceLock<crate::http::CustosClient>,
@@ -70,8 +87,9 @@ pub struct Core {
 }
 
 impl Core {
-    pub fn new() -> Self {
+    pub fn new(platform: Platform) -> Self {
         Self {
+            platform,
             custos_client: OnceLock::new(),
             pds_client: crate::pds_client::new_with_diagnostics(),
             claim_state: tokio::sync::Mutex::new(None),
@@ -119,10 +137,71 @@ impl Core {
     pub fn pds_client(&self) -> &crate::pds_client::PdsClient {
         &self.pds_client
     }
-}
 
-impl Default for Core {
-    fn default() -> Self {
-        Self::new()
+    /// A `Core` over the same adapters with `pds_client` in place of this one's, for tests
+    /// pointing plc.directory at a mock server. The flow slots start empty.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_pds_client(&self, pds_client: crate::pds_client::PdsClient) -> Self {
+        let mut core = Self::new(self.platform.clone());
+        core.pds_client = pds_client;
+        core
+    }
+
+    /// The key store's accessors.
+    pub fn keys(&self) -> Keys<'_> {
+        Keys::new(self.platform.keys.as_ref())
+    }
+
+    /// The device-key signer.
+    pub fn signer(&self) -> &dyn Signer {
+        self.platform.signer.as_ref()
+    }
+
+    /// The managed identities, over this `Core`'s key store and signer.
+    pub fn identities(&self) -> IdentityStore<'_> {
+        IdentityStore::new(self.keys(), self.signer())
+    }
+
+    /// Send `event` with `payload` to the UI. Fire-and-forget.
+    pub fn emit(&self, event: &str, payload: impl Serialize) {
+        match serde_json::to_value(payload) {
+            Ok(value) => self.platform.events.emit(event, value),
+            Err(e) => tracing::warn!(event, error = %e, "event payload did not serialize"),
+        }
+    }
+
+    /// Where the user-held backup lives.
+    pub fn backup_store(&self) -> &dyn BackupStore {
+        self.platform.backup.as_ref()
+    }
+
+    /// Submit `request` to the scheduler, if this platform has one.
+    pub fn schedule(&self, request: JobRequest) {
+        match &self.platform.scheduler {
+            Some(scheduler) => scheduler.schedule(request),
+            None => tracing::debug!(job = ?request.job, "no scheduler; request dropped"),
+        }
+    }
+
+    /// Withdraw `job` from the scheduler, if this platform has one.
+    pub fn cancel_job(&self, job: BackgroundJob) {
+        if let Some(scheduler) = &self.platform.scheduler {
+            scheduler.cancel(job);
+        }
+    }
+
+    /// Wall time.
+    pub fn now(&self) -> SystemTime {
+        self.platform.clock.now()
+    }
+
+    /// Wall time as Unix seconds.
+    pub fn unix_timestamp(&self) -> i64 {
+        self.platform.clock.unix_timestamp()
+    }
+
+    /// Wall time as a chrono UTC instant.
+    pub fn utc_now(&self) -> chrono::DateTime<chrono::Utc> {
+        self.platform.clock.utc_now()
     }
 }

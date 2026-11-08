@@ -13,11 +13,11 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::lexicon::LexiconParams;
-use crate::SpacesState;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconParams;
 
 #[derive(Deserialize)]
 pub struct SpaceGetBlobParams {
@@ -28,7 +28,7 @@ pub struct SpaceGetBlobParams {
 
 /// GET /xrpc/com.atproto.space.getBlob
 pub async fn space_get_blob(
-    State(state): State<SpacesState>,
+    State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -52,7 +52,7 @@ pub async fn space_get_blob(
         return Err(blob_not_found());
     }
 
-    let blob = crate::db::blobs::get_owned_blob(&state.db, &params.repo, &params.cid)
+    let blob = custos_db::blobs::get_owned_blob(&state.db, &params.repo, &params.cid)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cid = %params.cid, "failed to query blob metadata");
@@ -60,7 +60,7 @@ pub async fn space_get_blob(
         })?
         .ok_or_else(blob_not_found)?;
 
-    let content = crate::blob_store::read_blob(&state.config.data_dir, &blob.storage_path)
+    let content = custos_core::blob_store::read_blob(&state.config.data_dir, &blob.storage_path)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, cid = %params.cid, path = %blob.storage_path, "failed to read blob from filesystem");
@@ -69,7 +69,7 @@ pub async fn space_get_blob(
 
     // Same integrity gate as the public route: content-addressed bytes are re-hashed before
     // serving, and corrupt bytes read as absent rather than ever going out.
-    let computed = crate::blob_store::compute_cid(&content);
+    let computed = custos_core::blob_store::compute_cid(&content);
     if computed != blob.cid {
         tracing::error!(
             cid = %blob.cid,

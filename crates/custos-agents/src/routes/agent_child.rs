@@ -15,16 +15,16 @@ use uuid::Uuid;
 use common::{ApiError, ErrorCode};
 
 use crate::agent_child_core::{mint_child_account, ChildRegistration};
-use crate::auth::agent_assertion::{mint_identity_assertion, parse_sqlite_datetime};
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
-use crate::db::accounts::{deactivate_account, AccountStateChange};
-use crate::db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
-use crate::db::agent_auth::{
+use crate::db::agent_child_deletions::{list_child_deletions_of_parent, upsert_child_deletion};
+use custos_core::auth::agent_assertion::{mint_identity_assertion, parse_sqlite_datetime};
+use custos_core::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use custos_core::CoreState;
+use custos_db::accounts::{deactivate_account, AccountStateChange};
+use custos_db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
+use custos_db::agent_auth::{
     get_child_of_parent, list_children_of_parent, revoke_agent_identity,
     set_agent_identity_assertion, AgentIdentityStatus, RegistrationType,
 };
-use crate::db::agent_child_deletions::{list_child_deletions_of_parent, upsert_child_deletion};
-use custos_core::CoreState;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,7 +139,7 @@ pub async fn mint_child(
     let parent_did = authenticate_account_owner(&headers, &method, &uri, &state)
         .await
         .map_err(owner_error)?;
-    if !crate::db::accounts::account_exists(&state.db, &parent_did).await? {
+    if !custos_db::accounts::account_exists(&state.db, &parent_did).await? {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
             "parent account is not local",
@@ -189,7 +189,7 @@ pub async fn list_children(
     let mut children = Vec::with_capacity(rows.len());
     for row in rows {
         let did = row.did.unwrap_or_default();
-        let handle = crate::db::handles::get_handle_by_did(&state.db, &did)
+        let handle = custos_db::handles::get_handle_by_did(&state.db, &did)
             .await?
             .unwrap_or_default();
         children.push(ChildView {
@@ -261,7 +261,7 @@ pub async fn remint_child_assertion(
         ));
     }
 
-    let scopes = crate::auth::oauth_scopes::intersect_scope_tokens(
+    let scopes = custos_core::auth::oauth_scopes::intersect_scope_tokens(
         &serde_json::from_str::<Vec<String>>(&child.scopes).unwrap_or_default(),
         &state.config.agent_auth.granted_scopes,
     );
@@ -338,7 +338,7 @@ pub async fn delete_child(
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "child agent not found"))?;
 
     // The tombstone carries the handle because the `handles` row is purged with the child.
-    let handle = crate::db::handles::get_handle_by_did(&state.db, &request.did)
+    let handle = custos_db::handles::get_handle_by_did(&state.db, &request.did)
         .await?
         .unwrap_or_default();
     let grace = i64::try_from(state.config.accounts.child_deletion_grace_secs).unwrap_or(i64::MAX);
@@ -425,12 +425,12 @@ mod tests {
     };
 
     use super::*;
-    use crate::firehose::FirehoseEvent;
     use crate::test_support::{
         access_jwt, agent_jwt, child_genesis_op as genesis, child_request as request,
         cnf_bound_access_jwt, get_request, mint_child_for, reserve_repo_key as reserve,
         seed_account_with_repo, state_with_grace, state_with_plc, test_app, DpopProofKey,
     };
+    use custos_core::firehose::FirehoseEvent;
 
     /// Minting a child emits an `#identity` firehose frame carrying the child's handle, so relays
     /// and AppViews learn the new DID's handle binding immediately — without it, every app shows
@@ -476,8 +476,8 @@ mod tests {
             loop {
                 let event = rx.recv().await.expect("receiver not closed");
                 match event {
-                    crate::firehose::FirehoseEvent::Account(_) => saw_account = true,
-                    crate::firehose::FirehoseEvent::Identity(identity) => break identity,
+                    custos_core::firehose::FirehoseEvent::Account(_) => saw_account = true,
+                    custos_core::firehose::FirehoseEvent::Identity(identity) => break identity,
                     _ => {}
                 }
             }
@@ -519,11 +519,11 @@ mod tests {
         let minted: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let child = minted["did"].as_str().unwrap();
         assert_ne!(child, parent);
-        assert!(crate::db::accounts::account_exists(&state.db, child)
+        assert!(custos_db::accounts::account_exists(&state.db, child)
             .await
             .unwrap());
         assert_eq!(
-            crate::db::handles::resolve_handle(&state.db, handle)
+            custos_db::handles::resolve_handle(&state.db, handle)
                 .await
                 .unwrap()
                 .as_deref(),
@@ -573,7 +573,7 @@ mod tests {
             .unwrap();
         assert_eq!(row.status, AgentIdentityStatus::Revoked);
         assert!(
-            crate::db::accounts::account_exists(&state.db, child)
+            custos_db::accounts::account_exists(&state.db, child)
                 .await
                 .unwrap(),
             "revocation preserves the sovereign identity and recovery path"
@@ -705,7 +705,7 @@ mod tests {
         let handle = "alice-retry.example.com";
         let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
         let rotation_key = op["rotationKeys"][0].as_str().unwrap();
-        let child = crate::identity::genesis::verify_and_validate_genesis_op(
+        let child = custos_core::identity::genesis::verify_and_validate_genesis_op(
             rotation_key,
             &op,
             handle,
@@ -1082,7 +1082,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
         // The child is untouched: still active, capability intact, nothing scheduled.
-        assert!(crate::db::accounts::account_exists(&state.db, &child)
+        assert!(custos_db::accounts::account_exists(&state.db, &child)
             .await
             .unwrap());
         assert_eq!(
@@ -1116,7 +1116,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(crate::db::accounts::account_exists(&state.db, &child)
+        assert!(custos_db::accounts::account_exists(&state.db, &child)
             .await
             .unwrap());
         assert_eq!(

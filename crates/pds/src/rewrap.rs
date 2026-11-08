@@ -18,7 +18,7 @@
 
 use sqlx::SqlitePool;
 
-use crate::db::kek::{
+use custos_db::kek::{
     get_kek_generation, list_wrapped_secrets, set_kek_generation, update_wrapped_secret,
     SecretFamily,
 };
@@ -109,7 +109,7 @@ pub async fn rewrap_master_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::test_pool;
+    use custos_db::test_pool;
 
     const OLD_KEY: [u8; 32] = [0x11; 32];
     const NEW_KEY: [u8; 32] = [0x22; 32];
@@ -393,7 +393,7 @@ mod tests {
     /// same secrets under the new key while the old key is refused.
     #[tokio::test]
     async fn server_loaders_round_trip_across_a_rotation() {
-        use crate::auth::{load_or_create_iroh_secret_key, load_or_create_jwt_secret};
+        use custos_core::auth::{load_or_create_iroh_secret_key, load_or_create_jwt_secret};
 
         let pool = test_pool().await;
         let jwt_before = load_or_create_jwt_secret(&pool, Some(&OLD_KEY))

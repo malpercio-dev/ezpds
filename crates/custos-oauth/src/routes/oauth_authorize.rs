@@ -37,15 +37,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::auth::oauth_response_mode::ResponseMode;
-use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
-use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
-use crate::auth::token::generate_token;
 use crate::code_gen::{generate_login_code, generate_match_code};
-use crate::db::accounts::{active_local_account_exists, resolve_identifier};
-use crate::db::oauth::{
-    consume_par_request, get_oauth_client, store_authorization_code, ClientMetadata,
-    StoredPARParams,
-};
 use crate::db::pending_oauth_authorizations::{
     cleanup_expired_pending_authorizations, insert_oauth_consent_audit_event,
     insert_pending_authorization, set_push_dispatched, NewPendingOAuthAuthorization,
@@ -54,8 +46,16 @@ use crate::db::pending_oauth_authorizations::{
 use crate::oauth_templates::{
     build_code_redirect, error_page, error_redirect, render_consent_page, WalletConsentPath,
 };
+use custos_core::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
+use custos_core::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
+use custos_core::auth::token::generate_token;
 use custos_core::notify::NotificationPayload;
 use custos_core::CoreState;
+use custos_db::accounts::{active_local_account_exists, resolve_identifier};
+use custos_db::oauth::{
+    consume_par_request, get_oauth_client, store_authorization_code, ClientMetadata,
+    StoredPARParams,
+};
 
 /// Time-to-live of a pending wallet-consent request (~5 minutes, per the design).
 const PENDING_REQUEST_TTL_SECS: i64 = 300;
@@ -146,7 +146,7 @@ pub struct ConsentForm {
     /// checkbox checked (the common case) while working fine with zero or two-plus.
     #[serde(
         default,
-        deserialize_with = "crate::auth::permission_sets::string_or_vec"
+        deserialize_with = "custos_core::auth::permission_sets::string_or_vec"
     )]
     pub granted_scope: Vec<String>,
 }
@@ -379,9 +379,10 @@ async fn lookup_and_validate_client(
     // The reverse-FQDN rule for private-use-scheme redirects, enforced here as well as
     // at PAR so a forged consent POST (hidden fields are attacker-controllable) can't
     // sidestep it.
-    if let Err(desc) =
-        crate::auth::oauth_client_resolution::validate_private_use_redirect(client_id, redirect_uri)
-    {
+    if let Err(desc) = custos_core::auth::oauth_client_resolution::validate_private_use_redirect(
+        client_id,
+        redirect_uri,
+    ) {
         return Err(ClientValidationError::PrivateUseRedirectMismatch(desc));
     }
 
@@ -460,7 +461,7 @@ pub async fn get_authorization(
     // filter would silently drop everything from that set — a real (if narrow) desync between
     // what the user saw/approved and what gets granted. Failing the page outright avoids that
     // class of bug entirely, at the cost of requiring a retry on a transient blip.
-    let display_scope = match crate::auth::permission_sets::expand_include_scopes(
+    let display_scope = match custos_core::auth::permission_sets::expand_include_scopes(
         &state,
         &state.permission_set_cache,
         &params.scope,
@@ -548,7 +549,7 @@ async fn create_pending_request(
     client_name: &str,
     display_scope: &str,
 ) -> Option<PendingWalletRequest> {
-    let client_ip = crate::rate_limit::client_ip_from_headers(headers);
+    let client_ip = custos_core::rate_limit::client_ip_from_headers(headers);
     if state
         .rate_limiter
         .check_oauth_consent_creation(&params.client_id, &client_ip)
@@ -658,10 +659,10 @@ async fn create_pending_request(
 /// never drive outbound handle resolution (the SSRF/amplification posture); an account not on
 /// this instance has no registered wallet devices to push to anyway.
 async fn resolve_login_hint_to_local_did(state: &CoreState, hint: &str) -> Option<String> {
-    let did = match crate::identity::handle::normalize_login_hint(hint)? {
-        crate::identity::handle::LoginHint::Did(did) => did,
-        crate::identity::handle::LoginHint::Handle(handle) => {
-            crate::db::handles::resolve_handle(&state.db, &handle)
+    let did = match custos_core::identity::handle::normalize_login_hint(hint)? {
+        custos_core::identity::handle::LoginHint::Did(did) => did,
+        custos_core::identity::handle::LoginHint::Handle(handle) => {
+            custos_db::handles::resolve_handle(&state.db, &handle)
                 .await
                 .ok()??
         }
@@ -977,16 +978,17 @@ pub async fn post_authorization(
     // credentials, and an invalid `include:` reference can't be probed pre-auth either. Hidden
     // form fields are attacker-controllable, so this is re-checked here even though the PAR
     // endpoint already validated it.
-    let normalized_scope = match crate::auth::oauth_scopes::normalize_scope_request(&form.scope) {
-        Ok(s) => s,
-        Err(desc) => return redirect_err("invalid_scope", &desc),
-    };
+    let normalized_scope =
+        match custos_core::auth::oauth_scopes::normalize_scope_request(&form.scope) {
+            Ok(s) => s,
+            Err(desc) => return redirect_err("invalid_scope", &desc),
+        };
 
     // Resolve any `include:<nsid>` permission-set references to their granular scopes.
     // Authoritative — re-run regardless of what the GET already displayed (hidden form fields
     // are attacker-controllable); fails closed for the same reason `get_authorization`'s
     // render-only expansion does (see the comment there).
-    let expanded_scope = match crate::auth::permission_sets::expand_include_scopes(
+    let expanded_scope = match custos_core::auth::permission_sets::expand_include_scopes(
         &state,
         &state.permission_set_cache,
         &normalized_scope,
@@ -1007,7 +1009,7 @@ pub async fn post_authorization(
         .filter(|t| *t == "atproto" || form.granted_scope.iter().any(|g| g == t))
         .collect();
     let granted_scope =
-        match crate::auth::oauth_scopes::normalize_scope_request(&granted_tokens.join(" ")) {
+        match custos_core::auth::oauth_scopes::normalize_scope_request(&granted_tokens.join(" ")) {
             Ok(s) => s,
             Err(desc) => return redirect_err("invalid_scope", &desc),
         };
@@ -1063,10 +1065,10 @@ mod tests {
     use tower::ServiceExt;
 
     use super::resolve_login_hint_to_local_did;
-    use crate::auth::token::hash_bearer_token;
-    use crate::db::oauth::register_oauth_client;
     use crate::test_support;
     use crate::test_support::{test_app, test_state};
+    use custos_core::auth::token::hash_bearer_token;
+    use custos_db::oauth::register_oauth_client;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";
@@ -1172,7 +1174,7 @@ mod tests {
             "urn:ietf:params:oauth:request_uri:test-{}",
             SEQ.fetch_add(1, Ordering::Relaxed)
         );
-        crate::db::oauth::store_par_request(
+        custos_db::oauth::store_par_request(
             &state.db,
             &request_uri,
             CLIENT_ID,
@@ -1408,6 +1410,77 @@ mod tests {
             !html.contains("id=\"match-code\""),
             "no number panel without a dispatched push"
         );
+        let match_codes: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_oauth_authorizations WHERE match_code IS NOT NULL",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(match_codes, 0);
+    }
+
+    /// A hinted login whose push reached a device latches a match code, renders the number,
+    /// and keeps the number out of the payload: it is the proof the approver can see the page.
+    #[tokio::test]
+    async fn hinted_login_with_a_delivered_push_requires_the_number() {
+        let mut state = state_with_client_and_mobile_account().await;
+        let notifier = test_support::RecordingNotifier::new(1);
+        state.notifier = Some(notifier.clone());
+        let mut params = par_params();
+        params["login_hint"] = TEST_HANDLE.into();
+
+        let resp = get_authorize_via_par(state.clone(), params).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+
+        let (request_id, match_code): (String, String) = sqlx::query_as(
+            "SELECT request_id, match_code FROM pending_oauth_authorizations \
+             WHERE match_code IS NOT NULL",
+        )
+        .fetch_one(&state.db)
+        .await
+        .expect("a delivered push latches a match code");
+        assert!(
+            html.contains("id=\"match-code\""),
+            "the number panel renders"
+        );
+        assert!(
+            html.contains(&match_code),
+            "the page shows the latched number"
+        );
+
+        let sends = notifier.account_sends();
+        assert_eq!(sends.len(), 1);
+        let (did, payload) = &sends[0];
+        assert_eq!(did, DID);
+        assert_eq!(payload.kind, "login-approval");
+        let data = payload.data.as_ref().expect("routing data");
+        assert_eq!(data["requestId"], request_id.as_str());
+        assert!(
+            !serde_json::to_string(payload)
+                .unwrap()
+                .contains(&match_code),
+            "the match code must never ride in the payload"
+        );
+    }
+
+    /// A push that reached no device latches nothing, so the page asks for no number.
+    #[tokio::test]
+    async fn hinted_login_whose_push_reached_no_device_requires_no_number() {
+        let mut state = state_with_client_and_mobile_account().await;
+        let notifier = test_support::RecordingNotifier::new(0);
+        state.notifier = Some(notifier.clone());
+        let mut params = par_params();
+        params["login_hint"] = TEST_HANDLE.into();
+
+        let resp = get_authorize_via_par(state.clone(), params).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+
+        assert_eq!(notifier.account_sends().len(), 1, "the push was attempted");
+        assert!(!html.contains("id=\"match-code\""));
         let match_codes: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pending_oauth_authorizations WHERE match_code IS NOT NULL",
         )
@@ -1782,7 +1855,7 @@ mod tests {
 
     #[tokio::test]
     async fn post_approve_rate_limited_rerenders_form() {
-        use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
+        use custos_core::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         // Exhaust the failure budget.
         for _ in 0..RATE_LIMIT_MAX_FAILURES {

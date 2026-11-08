@@ -431,7 +431,8 @@ async fn wallet_authorized_outbound_migration_transfers_repo_and_blobs_to_a_peer
         StatusCode::OK,
         "source deactivateAccount"
     );
-    let crate::firehose::FirehoseEvent::Account(event) = source_firehose.try_recv().unwrap() else {
+    let custos_core::firehose::FirehoseEvent::Account(event) = source_firehose.try_recv().unwrap()
+    else {
         panic!("expected an #account firehose event announcing the source's deactivation");
     };
     assert_eq!(event.did, MIGRATING_DID);

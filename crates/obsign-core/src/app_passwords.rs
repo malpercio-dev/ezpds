@@ -41,7 +41,7 @@ use serde::Serialize;
 
 use crate::failure::SharedFailure;
 use crate::pds_client::{self, AppPasswordCreated, AppPasswordEntry, PdsClientError};
-use crate::session_provider::full_access_session;
+use crate::session_provider::SessionProvider;
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -107,7 +107,7 @@ pub async fn create_app_password(
     privileged: bool,
     personal_details: bool,
 ) -> Result<AppPasswordCreated, AppPasswordsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = SessionProvider.full_access_client(state, &did).await?;
     pds_client::create_app_password(&session.client, &name, privileged, personal_details)
         .await
         .map_err(map_pds_error)
@@ -118,7 +118,7 @@ pub async fn list_app_passwords(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<Vec<AppPasswordEntry>, AppPasswordsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = SessionProvider.full_access_client(state, &did).await?;
     pds_client::list_app_passwords(&session.client)
         .await
         .map_err(map_pds_error)
@@ -131,7 +131,7 @@ pub async fn revoke_app_password(
     did: String,
     name: String,
 ) -> Result<(), AppPasswordsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
+    let session = SessionProvider.full_access_client(state, &did).await?;
     pds_client::revoke_app_password(&session.client, &name)
         .await
         .map_err(map_pds_error)

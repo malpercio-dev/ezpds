@@ -33,9 +33,9 @@
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
-use crate::db::oauth::{get_oauth_client, ClientMetadata};
 use crate::oauth_errors::OAuthTokenError;
 use custos_core::CoreState;
+use custos_db::oauth::{get_oauth_client, ClientMetadata};
 
 pub(super) const CLIENT_ASSERTION_TYPE_JWT_BEARER: &str =
     "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
@@ -147,7 +147,7 @@ async fn verify_private_key_jwt(
             .claims
             .iat
             .ok_or_else(|| invalid_client("client_assertion must carry exp or iat"))?;
-        let now = crate::time::unix_now_secs();
+        let now = custos_core::time::unix_now_secs();
         if iat > now + CLOCK_TOLERANCE_SECS as i64 {
             return Err(invalid_client("client_assertion iat is in the future"));
         }
@@ -171,13 +171,13 @@ async fn verify_private_key_jwt(
 ///
 /// The inline-`jwks`/`jwks_uri` resolution — including the `jwks_uri` transport policy and the
 /// cached, SSRF-hardened fetch — is shared with Atproto Spaces client attestations; see
-/// [`crate::auth::jwks::client_verification_key`].
+/// [`custos_core::auth::jwks::client_verification_key`].
 async fn resolve_client_key(
     state: &CoreState,
     metadata: &ClientMetadata,
     kid: Option<&str>,
 ) -> Result<DecodingKey, OAuthTokenError> {
-    crate::auth::jwks::client_verification_key(
+    custos_core::auth::jwks::client_verification_key(
         &state.oauth_client_jwks_cache,
         metadata.jwks.as_ref(),
         metadata.jwks_uri.as_deref(),
@@ -204,10 +204,10 @@ mod tests {
     use p256::elliptic_curve::Generate as _;
 
     use super::*;
-    use crate::db::oauth::upsert_oauth_client;
     use crate::test_support::ec_jwk;
     use crate::test_support::test_state;
     use custos_core::CoreState;
+    use custos_db::oauth::upsert_oauth_client;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
 
@@ -247,8 +247,8 @@ mod tests {
             "iss": iss_sub,
             "sub": iss_sub,
             "aud": "https://test.example.com",
-            "iat": crate::time::unix_now_secs(),
-            "exp": crate::time::unix_now_secs() + 60,
+            "iat": custos_core::time::unix_now_secs(),
+            "exp": custos_core::time::unix_now_secs() + 60,
             "jti": "assertion-jti-1",
         })
     }
@@ -368,14 +368,14 @@ mod tests {
 
         // Expired well beyond the 30s tolerance: rejected.
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 120);
+        claims["exp"] = serde_json::json!(custos_core::time::unix_now_secs() - 120);
         let assertion = sign_assertion(&key, "k1", claims);
         expect_invalid_client(&state, &assertion).await;
 
         // Expired 10s ago: inside the 30s clock tolerance, accepted (interop with clients
         // whose clocks drift — the reference's zero-tolerance check is a known trap).
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 10);
+        claims["exp"] = serde_json::json!(custos_core::time::unix_now_secs() - 10);
         let assertion = sign_assertion(&key, "k1", claims);
         authenticate_token_client(
             &state,
@@ -420,7 +420,7 @@ mod tests {
         // Stale: iat beyond the 60s max age + 30s tolerance.
         let mut claims = valid_claims(CLIENT_ID);
         claims.as_object_mut().unwrap().remove("exp");
-        claims["iat"] = serde_json::json!(crate::time::unix_now_secs() - 120);
+        claims["iat"] = serde_json::json!(custos_core::time::unix_now_secs() - 120);
         let assertion = sign_assertion(&key, "k1", claims);
         expect_invalid_client(&state, &assertion).await;
 

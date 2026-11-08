@@ -19,10 +19,8 @@
 //! authenticated Bearer client from the stored record for XRPC helpers. The re-exported
 //! [`bearer_jwt_claims`] and [`audience_matches_server`] are the single source of the
 //! sub/aud binding check, reused by `session_provider` and `password_unlock`. `fresh_nonce`
-//! and `unix_timestamp` are also re-exported here — several other device-key-signed
-//! ceremonies (`agents`, `app_passwords`, `identity_removal`, `migration_orchestrator`, and
-//! more) reuse them as `crate::sovereign_session::{fresh_nonce, unix_timestamp}` for their
-//! own request envelopes, not just this module's own ceremony.
+//! is also re-exported here for the other device-key-signed ceremonies' request envelopes;
+//! their timestamps come from the `Core`'s clock.
 //! `SovereignLoginError` serializes as `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase
 //! fields — this app's own enum, distinct from (and a superset of, for pre-flight failures)
 //! `custos_client::sovereign_session::SovereignLoginError`.
@@ -30,12 +28,11 @@
 use serde::Serialize;
 
 use crate::failure::SharedFailure;
-use crate::identity_store::{IdentityStore, PerDidSignError, SovereignTokenRecord};
+use crate::identity_store::{PerDidSignError, SovereignTokenRecord};
 use crate::oauth_client::OAuthClient;
-use crate::pds_client::PdsClient;
 
 pub use custos_client::sovereign_session::{
-    audience_matches_server, bearer_jwt_claims, fresh_nonce, unix_timestamp,
+    audience_matches_server, bearer_jwt_claims, fresh_nonce,
 };
 
 #[derive(Debug, Serialize, thiserror::Error)]
@@ -99,33 +96,34 @@ pub async fn sovereign_login(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<SovereignLoginResult, SovereignLoginError> {
-    let nonce = fresh_nonce();
-    let timestamp = unix_timestamp()?;
-    sovereign_login_impl(state.pds_client(), &IdentityStore, &did, timestamp, &nonce).await
+    login_with_nonce(state, &did, &fresh_nonce()).await
 }
 
-pub async fn sovereign_login_impl(
-    pds_client: &PdsClient,
-    store: &IdentityStore,
+/// [`sovereign_login`] with the caller's proof nonce, so a test can pin the signed request.
+pub(crate) async fn login_with_nonce(
+    core: &crate::oauth::Core,
     did: &str,
-    timestamp: i64,
     nonce: &str,
 ) -> Result<SovereignLoginResult, SovereignLoginError> {
+    let store = core.identities();
+    let timestamp = core.unix_timestamp();
     // Resolve the key before any request to the hosting PDS. This both enforces
     // managed-DID membership and guarantees the selected DID's key is the signer.
     let device_key = store
         .get_or_create_device_key(did)
         .map_err(SharedFailure::from)?;
-    let signer = crate::identity_store::per_did_sign_closure(did).map_err(|error| match error {
-        PerDidSignError::DeviceKeyNotFound { message }
-        | PerDidSignError::SigningSetupFailed { message } => {
-            SovereignLoginError::SigningFailed { message }
-        }
-    })?;
+    let signer = crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(
+        |error| match error {
+            PerDidSignError::DeviceKeyNotFound { message }
+            | PerDidSignError::SigningSetupFailed { message } => {
+                SovereignLoginError::SigningFailed { message }
+            }
+        },
+    )?;
     let sign = move |data: &[u8]| signer(data).map_err(|e| e.to_string());
 
     let response = custos_client::sovereign_session::sovereign_login(
-        pds_client,
+        core.pds_client(),
         did,
         &device_key.key_id,
         timestamp,
@@ -162,8 +160,12 @@ pub async fn sovereign_login_impl(
 }
 
 /// Restore a selected DID's persisted full-access session as an authenticated XRPC client.
-pub fn stored_bearer_client(did: &str) -> Result<Option<OAuthClient>, SovereignLoginError> {
-    let Some(record) = IdentityStore
+pub fn stored_bearer_client(
+    core: &crate::oauth::Core,
+    did: &str,
+) -> Result<Option<OAuthClient>, SovereignLoginError> {
+    let Some(record) = core
+        .identities()
         .load_oauth_tokens(did)
         .map_err(SharedFailure::from)?
     else {
@@ -226,10 +228,9 @@ mod tests {
         format!("e30.{payload}.signature")
     }
 
-    fn reset_identity(did: &str) -> DevicePublicKey {
-        crate::keystore::clear_for_test();
-        IdentityStore.add_identity(did).unwrap();
-        IdentityStore.get_or_create_device_key(did).unwrap()
+    fn reset_identity(core: &crate::oauth::Core, did: &str) -> DevicePublicKey {
+        core.identities().add_identity(did).unwrap();
+        core.identities().get_or_create_device_key(did).unwrap()
     }
 
     async fn discovery_mocks<'a>(
@@ -278,7 +279,8 @@ mod tests {
 
     #[tokio::test]
     async fn sends_exact_per_did_signed_request_and_persists_session() {
-        let key = reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        let key = reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server, DID, DID, SERVER_DID).await;
         let nonce = URL_SAFE_NO_PAD.encode([7u8; NONCE_BYTES]);
@@ -290,7 +292,8 @@ mod tests {
             &nonce,
         );
         let signature =
-            crate::identity_store::per_did_sign_closure(DID).unwrap()(&envelope).unwrap();
+            crate::identity_store::per_did_sign_closure(core.signer(), DID).unwrap()(&envelope)
+                .unwrap();
         let access_jwt = jwt(1_720_003_600);
         let refresh_jwt = jwt(1_720_086_400);
         let request = server
@@ -315,22 +318,23 @@ mod tests {
             .await;
 
         let client = crate::pds_client::new_for_test(server.base_url());
-        let result = sovereign_login_impl(&client, &IdentityStore, DID, TIMESTAMP, &nonce)
+        let result = login_with_nonce(&core.with_pds_client(client.clone()), DID, &nonce)
             .await
             .unwrap();
 
         request.assert_async().await;
         assert_eq!(result.did, DID);
-        let stored = IdentityStore.load_oauth_tokens(DID).unwrap().unwrap();
+        let stored = core.identities().load_oauth_tokens(DID).unwrap().unwrap();
         assert_eq!(stored.pds_url, server.base_url());
         assert_eq!(stored.access_expires_at, Some(1_720_003_600));
         assert_eq!(stored.refresh_expires_at, Some(1_720_086_400));
-        assert!(stored_bearer_client(DID).unwrap().is_some());
+        assert!(stored_bearer_client(core, DID).unwrap().is_some());
     }
 
     #[tokio::test]
     async fn response_did_mismatch_does_not_persist_tokens() {
-        reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server, DID, DID, SERVER_DID).await;
         let _request = server
@@ -345,22 +349,21 @@ mod tests {
             .await;
         let nonce = URL_SAFE_NO_PAD.encode([8u8; NONCE_BYTES]);
 
-        let result = sovereign_login_impl(
-            &crate::pds_client::new_for_test(server.base_url()),
-            &IdentityStore,
+        let result = login_with_nonce(
+            &core.with_pds_client(crate::pds_client::new_for_test(server.base_url())),
             DID,
-            TIMESTAMP,
             &nonce,
         )
         .await;
 
         assert!(matches!(result, Err(SovereignLoginError::DidMismatch)));
-        assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+        assert_eq!(core.identities().load_oauth_tokens(DID).unwrap(), None);
     }
 
     #[tokio::test]
     async fn malformed_success_does_not_persist_tokens() {
-        reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server, DID, DID, SERVER_DID).await;
         let _request = server
@@ -371,11 +374,9 @@ mod tests {
             .await;
         let nonce = URL_SAFE_NO_PAD.encode([9u8; NONCE_BYTES]);
 
-        let result = sovereign_login_impl(
-            &crate::pds_client::new_for_test(server.base_url()),
-            &IdentityStore,
+        let result = login_with_nonce(
+            &core.with_pds_client(crate::pds_client::new_for_test(server.base_url())),
             DID,
-            TIMESTAMP,
             &nonce,
         )
         .await;
@@ -386,12 +387,13 @@ mod tests {
                 SharedFailure::InvalidResponse { .. }
             ))
         ));
-        assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+        assert_eq!(core.identities().load_oauth_tokens(DID).unwrap(), None);
     }
 
     #[tokio::test]
     async fn token_server_audience_mismatch_does_not_persist_tokens() {
-        reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server, DID, DID, SERVER_DID).await;
         let _request = server
@@ -406,22 +408,21 @@ mod tests {
             .await;
         let nonce = URL_SAFE_NO_PAD.encode([10u8; NONCE_BYTES]);
 
-        let result = sovereign_login_impl(
-            &crate::pds_client::new_for_test(server.base_url()),
-            &IdentityStore,
+        let result = login_with_nonce(
+            &core.with_pds_client(crate::pds_client::new_for_test(server.base_url())),
             DID,
-            TIMESTAMP,
             &nonce,
         )
         .await;
 
         assert!(matches!(result, Err(SovereignLoginError::ServerMismatch)));
-        assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+        assert_eq!(core.identities().load_oauth_tokens(DID).unwrap(), None);
     }
 
     #[tokio::test]
     async fn public_pds_url_is_accepted_as_the_legacy_session_audience() {
-        reset_identity(DID);
+        let core = &crate::test_support::core_at(TIMESTAMP as u64);
+        reset_identity(core, DID);
         let server = MockServer::start_async().await;
         let (_plc, _head, _describe) = discovery_mocks(&server, DID, DID, SERVER_DID).await;
         let pds_url = server.base_url();
@@ -439,17 +440,15 @@ mod tests {
             .await;
         let nonce = URL_SAFE_NO_PAD.encode([11u8; NONCE_BYTES]);
 
-        sovereign_login_impl(
-            &crate::pds_client::new_for_test(server.base_url()),
-            &IdentityStore,
+        login_with_nonce(
+            &core.with_pds_client(crate::pds_client::new_for_test(server.base_url())),
             DID,
-            TIMESTAMP,
             &nonce,
         )
         .await
         .unwrap();
 
-        assert!(stored_bearer_client(DID).unwrap().is_some());
+        assert!(stored_bearer_client(core, DID).unwrap().is_some());
     }
 
     #[tokio::test]
@@ -460,7 +459,8 @@ mod tests {
             (429, "rate_limit"),
             (503, "server"),
         ] {
-            reset_identity(DID);
+            let core = &crate::test_support::core_at(TIMESTAMP as u64);
+            reset_identity(core, DID);
             let server = MockServer::start_async().await;
             let (_plc, _head, _describe) = discovery_mocks(&server, DID, DID, SERVER_DID).await;
             let _request = server
@@ -470,11 +470,9 @@ mod tests {
                 })
                 .await;
             let nonce = URL_SAFE_NO_PAD.encode([status as u8; NONCE_BYTES]);
-            let result = sovereign_login_impl(
-                &crate::pds_client::new_for_test(server.base_url()),
-                &IdentityStore,
+            let result = login_with_nonce(
+                &core.with_pds_client(crate::pds_client::new_for_test(server.base_url())),
                 DID,
-                TIMESTAMP,
                 &nonce,
             )
             .await;
@@ -499,7 +497,7 @@ mod tests {
                 ) => true,
                 _ => false,
             });
-            assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+            assert_eq!(core.identities().load_oauth_tokens(DID).unwrap(), None);
         }
     }
 }

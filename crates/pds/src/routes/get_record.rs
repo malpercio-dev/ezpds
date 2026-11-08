@@ -8,8 +8,8 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::db::blocks::SqliteBlockStore;
 use common::{ApiError, ErrorCode};
+use custos_db::blocks::SqliteBlockStore;
 use repo_engine::Repository;
 
 #[derive(Deserialize)]
@@ -46,7 +46,7 @@ pub async fn get_record(
     // validation runs, or a `did=`-only request would 400 as "missing repo". `repo` wins when
     // both are given, and an explicitly empty `repo=` doesn't shadow a valid `did=` — both match
     // the pre-lexicon behavior this replaces.
-    let mut raw = crate::lexicon::parse_raw_query(uri.query().unwrap_or_default())?;
+    let mut raw = custos_core::lexicon::parse_raw_query(uri.query().unwrap_or_default())?;
     let repo_effectively_absent = raw
         .get("repo")
         .is_none_or(|values| values.iter().all(String::is_empty));
@@ -55,7 +55,7 @@ pub async fn get_record(
             raw.insert("repo".to_string(), did_values);
         }
     }
-    let value = crate::lexicon::validate_params_map("com.atproto.repo.getRecord", &raw)?;
+    let value = custos_core::lexicon::validate_params_map("com.atproto.repo.getRecord", &raw)?;
     let params: GetRecordParams = serde_json::from_value(value).map_err(|e| {
         ApiError::new(
             ErrorCode::InvalidRequest,
@@ -68,7 +68,7 @@ pub async fn get_record(
     let rkey = &params.rkey;
 
     // Look up the repo root CID.
-    let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)
+    let root_cid_str = custos_db::accounts::get_repo_root_cid(&state.db, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, did = %did, "failed to query repo root CID");
@@ -546,7 +546,7 @@ mod tests {
         let other = json!({"n": 1});
         let ipld = repo_engine::json_to_record_value(&other).unwrap();
         let bytes = serde_ipld_dagcbor::to_vec(&ipld).unwrap();
-        let mut bs = crate::db::blocks::SqliteBlockStore::new(state.db.clone(), did.clone());
+        let mut bs = custos_db::blocks::SqliteBlockStore::new(state.db.clone(), did.clone());
         let other_cid = bs
             .write_block(DAG_CBOR, SHA2_256, &bytes)
             .await

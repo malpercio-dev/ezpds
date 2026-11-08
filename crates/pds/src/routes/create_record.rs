@@ -8,8 +8,8 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
+use custos_core::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct CreateRecordBody {
@@ -844,7 +844,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_record_emits_firehose_commit_event() {
-        use crate::firehose::FirehoseEvent;
+        use custos_core::firehose::FirehoseEvent;
 
         let (state, did) = setup_account_with_repo().await;
         let token = access_jwt(&state.jwt_secret, &did);
@@ -887,7 +887,7 @@ mod tests {
         // One create op, matching the record we wrote.
         assert_eq!(event.ops.len(), 1);
         let op = &event.ops[0];
-        assert_eq!(op.action, crate::firehose::OpAction::Create);
+        assert_eq!(op.action, custos_core::firehose::OpAction::Create);
         assert_eq!(op.collection, "app.bsky.feed.post");
         assert_eq!(op.rkey, "fire1");
         assert_eq!(op.cid.as_deref(), Some(resp.cid.as_str()));
@@ -917,7 +917,7 @@ mod tests {
         // Sync v1.1 inductive validation: each commit's `prevData` must be the MST root (`data`)
         // of the commit it supersedes. Across two consecutive writes, commit N+1's `prevData` must
         // equal commit N's MST root, and the first write's `prevData` the seeded genesis root's.
-        use crate::firehose::FirehoseEvent;
+        use custos_core::firehose::FirehoseEvent;
 
         let (state, did) = setup_account_with_repo().await;
         let token = access_jwt(&state.jwt_secret, &did);
@@ -937,7 +937,7 @@ mod tests {
             let db = db.clone();
             let did = did.clone();
             async move {
-                let store = crate::db::blocks::SqliteBlockStore::new(db, did);
+                let store = custos_db::blocks::SqliteBlockStore::new(db, did);
                 let cid = repo_engine::Cid::try_from(cid.as_str()).unwrap();
                 let repo = repo_engine::Repository::open(store, cid).await.unwrap();
                 repo.commit().data().to_string()
@@ -1039,7 +1039,7 @@ mod tests {
         let app = crate::app::app(state);
 
         // Read the current repo head, then create with swapCommit = head → succeeds.
-        let head = crate::db::accounts::get_repo_root_cid(&db, &did)
+        let head = custos_db::accounts::get_repo_root_cid(&db, &did)
             .await
             .unwrap()
             .unwrap();

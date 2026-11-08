@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
-use crate::db::blobs;
-use crate::lexicon::LexiconParams;
+use custos_core::lexicon::LexiconParams;
 use custos_core::CoreState;
+use custos_db::blobs;
 
 // ── Query parameters ────────────────────────────────────────────────────────
 
@@ -98,7 +98,7 @@ mod tests {
 
         for i in 0..count {
             let cid = format!("bafkrilist{i:03}");
-            crate::db::blobs::insert_blob(
+            custos_db::blobs::insert_blob(
                 &state.db,
                 &cid,
                 did,

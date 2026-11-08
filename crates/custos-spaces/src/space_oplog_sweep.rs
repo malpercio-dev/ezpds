@@ -12,9 +12,9 @@
 use std::time::Duration;
 
 use crate::db::space_repos::sweep_old_repo_ops;
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
 use axum::extract::FromRef;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 use custos_core::CoreState;
 
 /// Hourly cadence: ops accrue at write rate, far below the jti table's request rate.
@@ -65,7 +65,7 @@ mod tests {
     #[tokio::test]
     async fn sweep_prunes_only_ops_past_retention() {
         let state = test_state().await;
-        let space = crate::space_uri::parse_space_ref(
+        let space = custos_core::space_uri::parse_space_ref(
             "at://did:plc:oplogauthorityaaaaaaaaa/space/org.example.bucket/main",
         )
         .unwrap();
@@ -110,7 +110,7 @@ mod tests {
         .await
         .unwrap();
 
-        let pass = crate::sweep::run_once(&SpaceOplogSweep, &state)
+        let pass = custos_core::sweep::run_once(&SpaceOplogSweep, &state)
             .await
             .unwrap();
         assert_eq!(pass.swept, 1);
@@ -124,7 +124,7 @@ mod tests {
 
         // A second pass is a no-op — the sweep is storage reclamation, not a ratchet.
         assert_eq!(
-            crate::sweep::run_once(&SpaceOplogSweep, &state)
+            custos_core::sweep::run_once(&SpaceOplogSweep, &state)
                 .await
                 .unwrap()
                 .swept,

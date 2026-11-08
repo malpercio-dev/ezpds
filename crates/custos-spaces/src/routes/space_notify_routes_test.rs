@@ -16,16 +16,16 @@
 
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
+use custos_core::CoreState;
 
 use crate::auth::space::{mint_space_credential, unix_now};
-use crate::db::dids::seed_did_document;
 use crate::space_record_write::{
     apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
 };
-use crate::space_uri::parse_space_ref;
 use crate::test_support::{access_jwt, seed_account_with_repo, state_with_master_key, SpaceSigKey};
 use crate::test_support::{send, xrpc_get as get, xrpc_post as post};
-use crate::SpacesState;
+use custos_core::space_uri::parse_space_ref;
+use custos_db::dids::seed_did_document;
 
 const ALICE: &str = "did:plc:alicenotifyaaaaaaaaaaaa";
 const BOB: &str = "did:plc:bobnotifyaaaaaaaaaaaaaa";
@@ -37,7 +37,7 @@ const SPACE: &str = "at://did:plc:alicenotifyaaaaaaaaaaaa/space/org.example.buck
 const FOREIGN_SPACE: &str = "at://did:plc:foreignauthorityaaaaaaa/space/org.example.bucket/main";
 
 /// Alice hosts an account and a simplespace of her own; Bob is a second local account.
-async fn setup() -> SpacesState {
+async fn setup() -> CoreState {
     let state = state_with_master_key().await;
     seed_account_with_repo(&state.db, ALICE).await;
     seed_account_with_repo(&state.db, BOB).await;
@@ -63,7 +63,7 @@ async fn setup() -> SpacesState {
 
 /// A DID document with a verification method but **no** service entry: enough for service-auth
 /// verification, never enough to deliver to.
-async fn seed_undeliverable(state: &SpacesState, did: &str, kp: &crypto::P256Keypair) {
+async fn seed_undeliverable(state: &CoreState, did: &str, kp: &crypto::P256Keypair) {
     let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
     seed_did_document(
         &state.db,
@@ -80,7 +80,7 @@ async fn seed_undeliverable(state: &SpacesState, did: &str, kp: &crypto::P256Key
 
 /// One committed write into `space` by `did`. The notification it spawns has no local effect
 /// to wait for: delivery is covered by `space_notify`'s tests.
-async fn write_one(state: &SpacesState, space_uri: &str, did: &str, rkey: &str) -> String {
+async fn write_one(state: &CoreState, space_uri: &str, did: &str, rkey: &str) -> String {
     let space = parse_space_ref(space_uri).unwrap();
     let outcome = apply_space_writes(
         state,
@@ -398,7 +398,7 @@ fn signed_post(
 /// A syncer DID document that *does* carry a service endpoint, so `registerNotify`'s
 /// resolvability check passes — pointed at an RFC 2606 `.invalid` host, which by definition has
 /// no DNS answer, so a fan-out that reached delivery would still never leave the machine.
-async fn seed_syncer_document(state: &SpacesState, kp: &crypto::P256Keypair) {
+async fn seed_syncer_document(state: &CoreState, kp: &crypto::P256Keypair) {
     let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
     seed_did_document(
         &state.db,
@@ -644,13 +644,13 @@ fn notify_body(space: &str, repo: &str, rev: &str) -> serde_json::Value {
 
 /// A foreign account (DID document seeded, no local account row) plus a service-auth token it
 /// signed for `lxm`, addressed to this server.
-async fn foreign_repo_token(state: &SpacesState, lxm: &str) -> (String, String) {
+async fn foreign_repo_token(state: &CoreState, lxm: &str) -> (String, String) {
     const CAROL: &str = "did:plc:carolnotifyaaaaaaaaaaaa";
     let kp = crypto::generate_p256_keypair().unwrap();
     seed_undeliverable(state, CAROL, &kp).await;
     let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
     let now = crate::auth::space::unix_now().unwrap();
-    let token = crate::auth::jwt::mint_service_auth_jwt(
+    let token = custos_core::auth::jwt::mint_service_auth_jwt(
         |b| signer.sign(b),
         CAROL,
         &state.config.resolve_server_did(),
@@ -662,12 +662,12 @@ async fn foreign_repo_token(state: &SpacesState, lxm: &str) -> (String, String) 
 }
 
 /// A service-auth token signed by a *local* account's repo key.
-async fn service_auth_for(state: &SpacesState, did: &str, lxm: &str) -> String {
+async fn service_auth_for(state: &CoreState, did: &str, lxm: &str) -> String {
     let kp = crypto::generate_p256_keypair().unwrap();
     seed_undeliverable(state, did, &kp).await;
     let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
     let now = crate::auth::space::unix_now().unwrap();
-    crate::auth::jwt::mint_service_auth_jwt(
+    custos_core::auth::jwt::mint_service_auth_jwt(
         |b| signer.sign(b),
         did,
         &state.config.resolve_server_did(),
@@ -721,7 +721,7 @@ async fn deleting_a_space_drops_its_writer_set() {
 /// A foreign authority with a resolvable key, a space of its own Alice has written into (so the
 /// space is known here), and a credential it issued for that space.
 async fn foreign_space_credential(
-    state: &SpacesState,
+    state: &CoreState,
 ) -> (repo_engine::CommitSigner, SpaceSigKey, String) {
     let foreign_kp = crypto::generate_p256_keypair().unwrap();
     seed_undeliverable(state, FOREIGN, &foreign_kp).await;
@@ -750,7 +750,7 @@ fn credential_jti(credential: &str) -> String {
 
 fn revoke_token(signer: &repo_engine::CommitSigner, iss: &str, aud: &str) -> String {
     let now = unix_now().unwrap();
-    crate::auth::jwt::mint_service_auth_jwt(
+    custos_core::auth::jwt::mint_service_auth_jwt(
         |b| signer.sign(b),
         iss,
         aud,

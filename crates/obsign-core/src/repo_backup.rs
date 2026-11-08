@@ -528,8 +528,9 @@ async fn write_car(root: &Path, did: &str, bytes: &[u8]) -> Result<(), RepoBacku
 /// Referenced by `IdentityStore::remove_identity` for cleanup.
 pub use crate::identity_store::repo_backup_enabled_account as backup_enabled_account;
 
-fn load_enabled(did: &str) -> bool {
-    crate::keystore::get_item(&backup_enabled_account(did))
+fn load_enabled(core: &crate::oauth::Core, did: &str) -> bool {
+    core.keys()
+        .get_item(&backup_enabled_account(did))
         .map(|v| v == b"true")
         .unwrap_or(false)
 }
@@ -539,17 +540,21 @@ fn load_enabled(did: &str) -> bool {
 /// read is `false` (never back up without an explicit opt-in). Read independently of the
 /// blob opt-in, so a user can enable one mirror and not the other. Only the iOS background
 /// sweep calls this; the foreground surface reads `load_enabled` via `status_core`.
-pub fn is_backup_enabled(did: &str) -> bool {
-    load_enabled(did)
+pub fn is_backup_enabled(core: &crate::oauth::Core, did: &str) -> bool {
+    load_enabled(core, did)
 }
 
-fn store_enabled(did: &str, enabled: bool) -> Result<(), RepoBackupError> {
+fn store_enabled(
+    core: &crate::oauth::Core,
+    did: &str,
+    enabled: bool,
+) -> Result<(), RepoBackupError> {
     let value: &[u8] = if enabled { b"true" } else { b"false" };
-    crate::keystore::store_item(&backup_enabled_account(did), value).map_err(|e| {
-        RepoBackupError::KeychainError {
+    core.keys()
+        .store_item(&backup_enabled_account(did), value)
+        .map_err(|e| RepoBackupError::KeychainError {
             message: e.to_string(),
-        }
-    })
+        })
 }
 
 // ── Per-DID lock ─────────────────────────────────────────────────────────────
@@ -571,6 +576,7 @@ fn repo_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
 
 /// Build the status readout from the manifest on disk.
 async fn status_core(
+    core: &crate::oauth::Core,
     root: Option<&Path>,
     location: Option<BackupLocation>,
     did: &str,
@@ -589,7 +595,7 @@ async fn status_core(
         None => (None, None, 0, None),
     };
     Ok(RepoBackupStatus {
-        enabled: load_enabled(did),
+        enabled: load_enabled(core, did),
         location,
         root_cid,
         rev,
@@ -604,7 +610,7 @@ async fn status_core(
 /// advances (`updated: false`). A CAR that fails validation is rejected as `CAR_INVALID` before any
 /// write, leaving the prior good snapshot intact.
 pub async fn run_backup_core(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     root: &Path,
     did: &str,
     pds_url: &str,
@@ -621,9 +627,9 @@ pub async fn run_backup_core(
     // request, and a PDS that cools down repeat full exports of one rev never sees a repeat.
     // Any failure here just falls through to the full download, which reports its own errors.
     if let (true, Some(mut manifest)) = (car_present, existing.clone()) {
-        match pds_client.fetch_latest_commit(pds_url, did).await {
+        match core.pds_client().fetch_latest_commit(pds_url, did).await {
             Ok(latest) if latest.rev == manifest.rev => {
-                let now = chrono::Utc::now().to_rfc3339();
+                let now = core.utc_now().to_rfc3339();
                 manifest.last_backup_at = Some(now.clone());
                 save_manifest(root, did, &manifest).await?;
                 return Ok(RepoBackupRunReport {
@@ -641,7 +647,8 @@ pub async fn run_backup_core(
         }
     }
 
-    let car = pds_client
+    let car = core
+        .pds_client()
         .fetch_repo_car(pds_url, did)
         .await
         .map_err(|e| map_fetch_error("failed to fetch repo snapshot", e))?;
@@ -650,7 +657,7 @@ pub async fn run_backup_core(
     let unchanged = car_present && existing.as_ref().is_some_and(|m| m.rev == validated.rev);
 
     let size_bytes = car.len() as u64;
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = core.utc_now().to_rfc3339();
 
     if !unchanged {
         write_car(root, did, &car).await?;
@@ -740,28 +747,32 @@ pub async fn run_backup_for_did(
     state: &crate::oauth::Core,
     did: &str,
 ) -> Result<RepoBackupRunReport, RepoBackupError> {
-    let (root, _location) = resolve_backup_root().ok_or(RepoBackupError::BackupUnavailable)?;
+    let (root, _location) = resolve_backup_root(state).ok_or(RepoBackupError::BackupUnavailable)?;
     let pds_client = state.pds_client();
     let pds_url = hosting_pds_url(pds_client, did).await?;
-    run_backup_core(pds_client, &root, did, &pds_url).await
+    run_backup_core(state, &root, did, &pds_url).await
 }
 
 /// Tauri command: the backup surface's status readout — mirror location (or its absence), the
 /// opt-in flag, and the snapshot's size + rev (shown before and after opting in).
-pub async fn get_repo_backup_status(did: String) -> Result<RepoBackupStatus, RepoBackupError> {
-    match resolve_backup_root() {
-        Some((root, location)) => status_core(Some(&root), Some(location), &did).await,
-        None => status_core(None, None, &did).await,
+pub async fn get_repo_backup_status(
+    core: &crate::oauth::Core,
+    did: String,
+) -> Result<RepoBackupStatus, RepoBackupError> {
+    match resolve_backup_root(core) {
+        Some((root, location)) => status_core(core, Some(&root), Some(location), &did).await,
+        None => status_core(core, None, None, &did).await,
     }
 }
 
 /// Tauri command: flip the explicit opt-in flag. Returns the refreshed status.
 pub async fn set_repo_backup_enabled(
+    core: &crate::oauth::Core,
     did: String,
     enabled: bool,
 ) -> Result<RepoBackupStatus, RepoBackupError> {
-    store_enabled(&did, enabled)?;
-    get_repo_backup_status(did).await
+    store_enabled(core, &did, enabled)?;
+    get_repo_backup_status(core, did).await
 }
 
 /// Tauri command: run one backup pass for the identity. Reads only the public `getRepo`, so it
@@ -1094,7 +1105,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let client = PdsClient::new();
-        let report = run_backup_core(&client, dir.path(), did, &server.base_url())
+        let core = &crate::test_support::core().with_pds_client(client);
+        let report = run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
 
@@ -1115,7 +1127,7 @@ mod tests {
         assert!(manifest.last_backup_at.is_some());
 
         // Status surfaces it.
-        let status = status_core(Some(dir.path()), Some(BackupLocation::Local), did)
+        let status = status_core(core, Some(dir.path()), Some(BackupLocation::Local), did)
             .await
             .unwrap();
         assert_eq!(status.root_cid.as_deref(), Some(root.as_str()));
@@ -1131,7 +1143,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let client = PdsClient::new();
-        let first = run_backup_core(&client, dir.path(), did, &server.base_url())
+        let core = &crate::test_support::core().with_pds_client(client);
+        let first = run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
         assert!(first.updated);
@@ -1143,7 +1156,7 @@ mod tests {
             .unwrap()
             .modified()
             .unwrap();
-        let second = run_backup_core(&client, dir.path(), did, &server.base_url())
+        let second = run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
         assert!(!second.updated, "unchanged rev should short-circuit");
@@ -1174,9 +1187,10 @@ mod tests {
         });
 
         let dir = tempfile::tempdir().unwrap();
-        let client = PdsClient::new();
+        let (core, fakes) = crate::test_support::core_with_fakes();
+        let core = &core.with_pds_client(PdsClient::new());
         // First pass: nothing on disk yet, so no pre-check — straight to the full fetch.
-        run_backup_core(&client, dir.path(), did, &server.base_url())
+        run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
         assert_eq!(latest.calls(), 0);
@@ -1186,8 +1200,8 @@ mod tests {
             .unwrap()
             .last_backup_at;
 
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        let second = run_backup_core(&client, dir.path(), did, &server.base_url())
+        fakes.clock.advance(std::time::Duration::from_secs(5));
+        let second = run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
         assert!(!second.updated);
@@ -1213,14 +1227,15 @@ mod tests {
         mock_get_repo(&good_server, &good_car);
         let dir = tempfile::tempdir().unwrap();
         let client = PdsClient::new();
-        run_backup_core(&client, dir.path(), did, &good_server.base_url())
+        let core = &crate::test_support::core().with_pds_client(client);
+        run_backup_core(core, dir.path(), did, &good_server.base_url())
             .await
             .unwrap();
 
         // Now the PDS serves garbage. The pass must reject it as CAR_INVALID.
         let bad_server = MockServer::start_async().await;
         mock_get_repo(&bad_server, b"corrupt not-a-car bytes");
-        let err = run_backup_core(&client, dir.path(), did, &bad_server.base_url())
+        let err = run_backup_core(core, dir.path(), did, &bad_server.base_url())
             .await
             .unwrap_err();
         assert!(matches!(err, RepoBackupError::CarInvalid { .. }));
@@ -1244,11 +1259,12 @@ mod tests {
         mock_get_repo(&server, &car);
         let dir = tempfile::tempdir().unwrap();
         let client = PdsClient::new();
+        let core = &crate::test_support::core().with_pds_client(client);
 
         // No snapshot yet → None (fail-closed, so the migration surfaces its own source failure).
         assert!(mirror_repo_car(dir.path(), did).await.is_none());
 
-        run_backup_core(&client, dir.path(), did, &server.base_url())
+        run_backup_core(core, dir.path(), did, &server.base_url())
             .await
             .unwrap();
         assert_eq!(mirror_repo_car(dir.path(), did).await, Some(car));
@@ -1259,6 +1275,7 @@ mod tests {
 
     #[tokio::test]
     async fn corrupt_manifest_fails_closed() {
+        let core = &crate::test_support::core();
         let did = "did:plc:manifest";
         let dir = tempfile::tempdir().unwrap();
         tokio::fs::create_dir_all(repo_dir(dir.path()))
@@ -1267,7 +1284,7 @@ mod tests {
         tokio::fs::write(manifest_path(dir.path(), did), b"{ not valid json")
             .await
             .unwrap();
-        let err = status_core(Some(dir.path()), Some(BackupLocation::Local), did)
+        let err = status_core(core, Some(dir.path()), Some(BackupLocation::Local), did)
             .await
             .unwrap_err();
         assert!(matches!(err, RepoBackupError::ManifestCorrupt { .. }));

@@ -34,13 +34,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::auth::guards::authenticate_owner;
 use crate::db::recovery_audit::{insert_recovery_audit_event, RecoveryAuditEventType};
 use crate::db::recovery_escrow::{
     delete_escrow_share, escrow_share_exists, insert_escrow_share, null_legacy_recovery_share,
     replace_escrow_share,
 };
 use common::{ApiError, ApiResultExt, ErrorCode};
+use custos_core::auth::guards::authenticate_owner;
 
 /// The escrow slot always holds Share 2 — the index reserved for Custos in the 2-of-3 split.
 const ESCROW_SHARE_INDEX: u8 = 2;
@@ -187,9 +187,9 @@ pub async fn delete_escrow_share_handler(
 mod tests {
     use super::*;
     use crate::app::{test_state, AppState};
-    use crate::db::accounts::insert_bare_account as seed_account;
     use crate::routes::test_utils::test_master_key;
     use axum::http::HeaderValue;
+    use custos_db::accounts::insert_bare_account as seed_account;
     use std::sync::Arc;
 
     /// Test state with the master key configured (wrapping requires it).
@@ -210,7 +210,7 @@ mod tests {
 
     /// Insert a wallet session for the DID and return headers bearing its token.
     async fn session_headers(db: &sqlx::SqlitePool, did: &str) -> HeaderMap {
-        let token = crate::auth::token::generate_token();
+        let token = custos_core::auth::token::generate_token();
         sqlx::query(
             "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
              VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 hour'))",

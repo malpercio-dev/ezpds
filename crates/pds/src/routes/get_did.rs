@@ -13,7 +13,7 @@ use common::{ApiError, ErrorCode};
 use serde_json::Value;
 
 use crate::app::AppState;
-use crate::db::dids::get_did_document;
+use custos_db::dids::get_did_document;
 
 pub async fn get_did_handler(
     Path(did): Path<String>,

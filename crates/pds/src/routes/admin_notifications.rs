@@ -26,13 +26,13 @@ use axum::{
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::auth::guards::{require_admin, require_admin_json, AdminActor};
 use crate::db::notifications as store;
 use crate::notify_relay_client::{NotifyJob, RegistrationOwner};
 use crate::routes::notification_views::{
     require_notifications_enabled, sender_keys_response, validate_registration_fields,
 };
 use common::{ApiError, ErrorCode};
+use custos_core::auth::guards::{require_admin, require_admin_json, AdminActor};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -196,8 +196,9 @@ mod tests {
         use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 
         let timestamp = chrono::Utc::now().timestamp();
-        let sign_string =
-            crate::auth::guards::admin_request_sign_string(method, path, timestamp, nonce, body);
+        let sign_string = custos_core::auth::guards::admin_request_sign_string(
+            method, path, timestamp, nonce, body,
+        );
         let signing_key = SigningKey::from_slice(&*keypair.private_key_bytes).unwrap();
         let signature: Signature = signing_key.sign(sign_string.as_bytes());
         // Normalize to low-S, as a real admin device must. `SigningKey::sign` does not do this

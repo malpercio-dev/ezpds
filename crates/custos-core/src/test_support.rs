@@ -1317,3 +1317,63 @@ where
         .merge(crate::internal_surface(internal, &core))
         .with_state(state)
 }
+
+/// A [`Notifier`](crate::notify::Notifier) that records every send and reports `devices`
+/// payloads enqueued for each account send, so a test can drive a trigger's "a push went out"
+/// and "nothing could be sent" branches without a relay.
+pub struct RecordingNotifier {
+    devices: usize,
+    account_sends: Mutex<Vec<(String, crate::notify::NotificationPayload)>>,
+    admin_sends: Mutex<Vec<crate::notify::NotificationPayload>>,
+}
+
+impl RecordingNotifier {
+    pub fn new(devices: usize) -> Arc<Self> {
+        Arc::new(Self {
+            devices,
+            account_sends: Mutex::new(Vec::new()),
+            admin_sends: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Every account send, in order: the target DID and the payload.
+    pub fn account_sends(&self) -> Vec<(String, crate::notify::NotificationPayload)> {
+        self.account_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Every operator-alert send, in order.
+    pub fn admin_sends(&self) -> Vec<crate::notify::NotificationPayload> {
+        self.admin_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl crate::notify::Notifier for RecordingNotifier {
+    fn notify_account<'a>(
+        &'a self,
+        did: &'a str,
+        payload: crate::notify::NotificationPayload,
+    ) -> Pin<Box<dyn Future<Output = usize> + Send + 'a>> {
+        self.account_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((did.to_string(), payload));
+        Box::pin(std::future::ready(self.devices))
+    }
+
+    fn notify_admins(
+        &self,
+        payload: crate::notify::NotificationPayload,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.admin_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(payload);
+        Box::pin(std::future::ready(()))
+    }
+}

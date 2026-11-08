@@ -13,11 +13,11 @@ use serde::Deserialize;
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes;
-use crate::db::accounts::{deactivate_account, AccountStateChange};
-use crate::lexicon::LexiconInput;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes;
+use custos_core::lexicon::LexiconInput;
+use custos_db::accounts::{deactivate_account, AccountStateChange};
 
 /// The non-active status reported on the firehose `#account` event for a deactivation.
 const STATUS_DEACTIVATED: &str = "deactivated";
@@ -125,11 +125,11 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{
         access_jwt, body_json, insert_account_with_email as insert_account,
         scoped_access_jwt as scoped_jwt,
     };
+    use custos_core::firehose::FirehoseEvent;
 
     fn deactivate_request(token: &str, body: Body) -> Request<Body> {
         Request::builder()

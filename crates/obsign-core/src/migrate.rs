@@ -53,9 +53,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::claim::{ChangeType, ClaimResult, OpDiff, ServiceChange};
-use crate::identity_store::{IdentityStore, PerDidSignError};
+use crate::identity_store::PerDidSignError;
 use crate::oauth_client::OAuthClient;
-use crate::pds_client::{get_recommended_did_credentials, PdsClient, RecommendedCredentials};
+use crate::pds_client::{get_recommended_did_credentials, RecommendedCredentials};
 use crypto::{AuditEntry, PlcService};
 
 /// The atproto PDS service id in a PLC operation's `services` map.
@@ -185,8 +185,10 @@ pub async fn build_did_web_migration_document_cmd(
             message: "missing services.atproto_pds.endpoint".into(),
         })?
         .to_string();
-    let device = crate::device_key::get_or_create().map_err(|e| MigrateError::SigningFailed {
-        message: e.to_string(),
+    let device = crate::device_key::get_or_create(state.signer()).map_err(|e| {
+        MigrateError::SigningFailed {
+            message: e.to_string(),
+        }
     })?;
 
     let mut methods = Vec::new();
@@ -301,7 +303,7 @@ pub async fn submit_did_web_migration_document_cmd(
         serde_json::from_str(&document_text).map_err(|e| MigrateError::GuardRejected {
             reason: format!("reviewed did.json is invalid: {e}"),
         })?;
-    let store = IdentityStore;
+    let store = state.identities();
     if let Err(e) = store.add_identity(&did) {
         if !matches!(
             e,
@@ -642,7 +644,7 @@ pub fn decide_migration_path(
 }
 
 /// Fetch current PLC state and decide which migration path should be used.
-pub async fn detect_migration_path(pds_client: &PdsClient, did: &str) -> MigrationPathDecision {
+pub async fn detect_migration_path(core: &crate::oauth::Core, did: &str) -> MigrationPathDecision {
     // A did:web identity has no PLC audit log or rotationKeys to classify — its identity
     // leg is the domain's did.json edit, which the wallet drives. Asking plc.directory
     // would 404 and dead-end every did:web migration as CannotDetermine.
@@ -650,7 +652,7 @@ pub async fn detect_migration_path(pds_client: &PdsClient, did: &str) -> Migrati
         // Unlike did:plc, there is no interop fallback for a DID the wallet does not
         // manage — the did.json edit needs the wallet's device key — so an unmanaged
         // DID fails closed instead of advertising a path the wallet cannot drive.
-        let device_key_id = match IdentityStore.get_or_create_device_key(did) {
+        let device_key_id = match core.identities().get_or_create_device_key(did) {
             Ok(key) => Some(key.key_id),
             Err(crate::identity_store::IdentityStoreError::IdentityNotFound) => {
                 return MigrationPathDecision {
@@ -679,7 +681,7 @@ pub async fn detect_migration_path(pds_client: &PdsClient, did: &str) -> Migrati
         };
     }
 
-    let log_json = match pds_client.fetch_audit_log(did).await {
+    let log_json = match core.pds_client().fetch_audit_log(did).await {
         Ok(log_json) => log_json,
         Err(e) => {
             return MigrationPathDecision {
@@ -703,7 +705,7 @@ pub async fn detect_migration_path(pds_client: &PdsClient, did: &str) -> Migrati
         }
     };
 
-    let store = IdentityStore;
+    let store = core.identities();
     let device_key_id = match store.get_or_create_device_key(did) {
         Ok(key) => Some(key.key_id),
         Err(crate::identity_store::IdentityStoreError::IdentityNotFound) => None,
@@ -867,11 +869,11 @@ pub fn build_migration_diff(
 /// key. `dest_client` is an already-authenticated client for the DESTINATION PDS,
 /// supplied by the migration orchestrator.
 pub async fn build_migration_op(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     dest_client: &OAuthClient,
     did: &str,
 ) -> Result<SignedMigrationOp, MigrateError> {
-    let store = IdentityStore;
+    let store = core.identities();
 
     // 1. Per-DID device key.
     let device_pub =
@@ -884,7 +886,7 @@ pub async fn build_migration_op(
 
     // 2. Current audit log -> prev + current state.
     let log_json =
-        pds_client
+        core.pds_client()
             .fetch_audit_log(did)
             .await
             .map_err(|e| MigrateError::NetworkError {
@@ -946,12 +948,15 @@ pub async fn build_migration_op(
     guard_migration_op(&inputs)?;
 
     // 6. Sign locally with the per-DID device key.
-    let sign_closure = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
-        PerDidSignError::DeviceKeyNotFound { message } => {
-            MigrateError::IdentityNotFound { message }
-        }
-        PerDidSignError::SigningSetupFailed { message } => MigrateError::SigningFailed { message },
-    })?;
+    let sign_closure =
+        crate::identity_store::per_did_sign_closure(core.signer(), did).map_err(|e| match e {
+            PerDidSignError::DeviceKeyNotFound { message } => {
+                MigrateError::IdentityNotFound { message }
+            }
+            PerDidSignError::SigningSetupFailed { message } => {
+                MigrateError::SigningFailed { message }
+            }
+        })?;
     let signed = crypto::build_did_plc_rotation_op(
         &current.prev_cid,
         proposed_rotation_keys.clone(),
@@ -982,18 +987,18 @@ pub async fn build_migration_op(
 /// Submit the signed migration op to plc.directory and refresh the local cache.
 /// Mirrors `recovery::submit_recovery_override`.
 pub async fn submit_migration_op(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     signed_op: &serde_json::Value,
 ) -> Result<ClaimResult, MigrateError> {
-    pds_client
+    core.pds_client()
         .post_plc_operation(did, signed_op)
         .await
         .map_err(|e| MigrateError::PlcDirectoryError {
             message: format!("plc.directory rejected the operation: {e}"),
         })?;
 
-    refresh_migration_cache(pds_client, did).await
+    refresh_migration_cache(core, did).await
 }
 
 /// Refresh the per-identity cache (PLC audit log + DID document) from plc.directory
@@ -1001,28 +1006,28 @@ pub async fn submit_migration_op(
 /// caller does not already hold the post-landing log (the direct-submit success path,
 /// which must re-read plc.directory *after* the POST).
 async fn refresh_migration_cache(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
 ) -> Result<ClaimResult, MigrateError> {
     let updated_log =
-        pds_client
+        core.pds_client()
             .fetch_audit_log(did)
             .await
             .map_err(|e| MigrateError::NetworkError {
                 message: format!("failed to fetch updated audit log: {e}"),
             })?;
-    refresh_migration_cache_with_log(pds_client, did, &updated_log).await
+    refresh_migration_cache_with_log(core, did, &updated_log).await
 }
 
 /// Cache an already-fetched audit log + the DID document, returning the equivalent
 /// `ClaimResult`. Lets the reconciliation path reuse the log it just read to detect the
 /// landing instead of fetching it twice.
 async fn refresh_migration_cache_with_log(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     updated_log: &str,
 ) -> Result<ClaimResult, MigrateError> {
-    let store = IdentityStore;
+    let store = core.identities();
 
     store
         .store_plc_log(did, updated_log)
@@ -1035,13 +1040,13 @@ async fn refresh_migration_cache_with_log(
     // custody badge, `extractPdsFromPlcDoc`'s `services` map) — expects the PLC
     // shape. The W3C form carries no `rotationKeys`, so caching it degrades the
     // badge to "Unknown".
-    let did_doc =
-        pds_client
-            .fetch_plc_data_document(did)
-            .await
-            .map_err(|e| MigrateError::NetworkError {
-                message: format!("failed to fetch DID document: {e}"),
-            })?;
+    let did_doc = core
+        .pds_client()
+        .fetch_plc_data_document(did)
+        .await
+        .map_err(|e| MigrateError::NetworkError {
+            message: format!("failed to fetch DID document: {e}"),
+        })?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| MigrateError::SigningFailed {
@@ -1070,12 +1075,12 @@ fn migration_op_landed(audit_log: &[AuditEntry], op_cid: &str) -> bool {
 /// unchanged. A fetch/parse failure is surfaced as a (retryable) error so the caller
 /// leaves the op parked rather than assuming either state.
 async fn reconcile_landed_migration_op(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     op_cid: &str,
 ) -> Result<Option<ClaimResult>, MigrateError> {
     let log_json =
-        pds_client
+        core.pds_client()
             .fetch_audit_log(did)
             .await
             .map_err(|e| MigrateError::NetworkError {
@@ -1089,7 +1094,7 @@ async fn reconcile_landed_migration_op(
     if migration_op_landed(&audit_log, op_cid) {
         // Reuse the log we just read — it already reflects the landing.
         Ok(Some(
-            refresh_migration_cache_with_log(pds_client, did, &log_json).await?,
+            refresh_migration_cache_with_log(core, did, &log_json).await?,
         ))
     } else {
         Ok(None)
@@ -1113,24 +1118,24 @@ async fn reconcile_landed_migration_op(
 /// step 1. Double-apply is impossible: reconcile-first suppresses a re-POST after a
 /// landing, and PLC `prev`-chaining rejects a stale re-POST even under a concurrent race.
 pub async fn submit_migration_op_reconciling(
-    pds_client: &PdsClient,
+    core: &crate::oauth::Core,
     did: &str,
     signed_op: &serde_json::Value,
     op_cid: &str,
 ) -> Result<ClaimResult, MigrateError> {
     // 1. Reconcile-first: never re-POST an op that already landed.
-    if let Some(result) = reconcile_landed_migration_op(pds_client, did, op_cid).await? {
+    if let Some(result) = reconcile_landed_migration_op(core, did, op_cid).await? {
         tracing::info!(did = %did, "migration op already landed; reconciled without re-submitting");
         return Ok(result);
     }
 
     // 2. POST the op.
-    match submit_migration_op(pds_client, did, signed_op).await {
+    match submit_migration_op(core, did, signed_op).await {
         Ok(result) => Ok(result),
         Err(post_err) => {
             // 3. Reconcile-after: a lost response can hide an op that plc.directory
             //    actually committed (or the POST succeeded but the cache refresh failed).
-            if let Some(result) = reconcile_landed_migration_op(pds_client, did, op_cid).await? {
+            if let Some(result) = reconcile_landed_migration_op(core, did, op_cid).await? {
                 tracing::warn!(did = %did, error = %post_err, "submit response ambiguous but op landed; reconciled");
                 return Ok(result);
             }
@@ -1152,7 +1157,7 @@ pub async fn detect_migration_path_cmd(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<MigrationPathDecision, MigrateError> {
-    Ok(detect_migration_path(state.pds_client(), &did).await)
+    Ok(detect_migration_path(state, &did).await)
 }
 
 /// Tauri command: build + sign the migration op, parking it in `MigrationState`.
@@ -1179,7 +1184,7 @@ pub async fn build_migration_op_cmd(
         ms.dest_oauth_client.clone()
     };
 
-    let result = build_migration_op(state.pds_client(), &dest_client, &did).await?;
+    let result = build_migration_op(state, &dest_client, &did).await?;
 
     // Re-acquire and re-validate: a concurrent migration could have replaced the
     // state while we awaited, so we must not park this DID's op into another's slot.
@@ -1243,8 +1248,7 @@ pub async fn submit_migration_op_cmd(
         }
     };
 
-    let result =
-        submit_migration_op_reconciling(state.pds_client(), &did, &signed_op, &op_cid).await?;
+    let result = submit_migration_op_reconciling(state, &did, &signed_op, &op_cid).await?;
 
     // Landed (posted or reconciled) — clear the state, but only if it is still the
     // exact op we just submitted. Matching the DID alone is not enough: a concurrent
@@ -1729,13 +1733,14 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_build_and_submit_migration_self_signs_repoint() {
+        let core = &crate::test_support::core();
         use httpmock::prelude::*;
 
         let did = "did:plc:migratetest";
         const DEST_SIGN: &str = "did:key:zDESTSIGN";
 
         // Identity + per-DID device key (the wallet's rotationKeys[0]).
-        let store = IdentityStore;
+        let store = core.identities();
         let _ = store.remove_identity(did);
         store.add_identity(did).expect("add_identity");
         let device_pub = store
@@ -1788,6 +1793,7 @@ mod tests {
                 }));
         });
         let pds_client = crate::pds_client::new_for_test(plc.base_url());
+        let core = &core.with_pds_client(pds_client);
 
         // Destination PDS mock: getRecommendedDidCredentials for the NEW PDS.
         let dest = MockServer::start();
@@ -1806,7 +1812,7 @@ mod tests {
         let dest_client = crate::oauth_client::bearer_for_test("test-access", dest.base_url());
 
         // Build the self-signed repoint op.
-        let built = build_migration_op(&pds_client, &dest_client, did)
+        let built = build_migration_op(core, &dest_client, did)
             .await
             .expect("build_migration_op should succeed");
         audit_mock.assert();
@@ -1836,7 +1842,7 @@ mod tests {
         );
 
         // Submit accepts and refreshes the cache.
-        submit_migration_op(&pds_client, did, &built.signed_op)
+        submit_migration_op(core, did, &built.signed_op)
             .await
             .expect("submit_migration_op should succeed");
         submit_mock.assert();
@@ -1931,6 +1937,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn submit_reconciling_skips_post_when_op_already_landed() {
+        let core = &crate::test_support::core();
         // Reconcile-first: the op's CID is already in the audit log (a prior attempt
         // whose response was lost), so submit finalizes from current state and NEVER
         // re-POSTs the non-idempotent op.
@@ -1939,7 +1946,7 @@ mod tests {
         let did = "did:plc:reconcilelanded";
         let op_cid = "bafyLANDEDOP";
 
-        let store = IdentityStore;
+        let store = core.identities();
         let _ = store.remove_identity(did);
         store.add_identity(did).expect("add_identity");
 
@@ -1972,10 +1979,11 @@ mod tests {
             then.status(200).json_body(serde_json::json!({}));
         });
         let pds_client = crate::pds_client::new_for_test(plc.base_url());
+        let core = &core.with_pds_client(pds_client);
 
         // A dummy op body — reconcile-first must return before this is ever POSTed.
         let dummy_op = serde_json::json!({ "type": "plc_operation" });
-        let result = submit_migration_op_reconciling(&pds_client, did, &dummy_op, op_cid)
+        let result = submit_migration_op_reconciling(core, did, &dummy_op, op_cid)
             .await
             .expect("reconcile should succeed when the op already landed");
 
@@ -1993,6 +2001,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn submit_reconciling_posts_when_op_not_landed() {
+        let core = &crate::test_support::core();
         // Happy path: the op's CID is absent from the audit log, so reconcile-first
         // returns "not landed" and the op is POSTed, then the cache is refreshed.
         use httpmock::prelude::*;
@@ -2000,7 +2009,7 @@ mod tests {
         let did = "did:plc:reconcilefresh";
         let op_cid = "bafyPENDINGOP";
 
-        let store = IdentityStore;
+        let store = core.identities();
         let _ = store.remove_identity(did);
         store.add_identity(did).expect("add_identity");
 
@@ -2026,9 +2035,10 @@ mod tests {
             then.status(200).json_body(serde_json::json!({}));
         });
         let pds_client = crate::pds_client::new_for_test(plc.base_url());
+        let core = &core.with_pds_client(pds_client);
 
         let op = serde_json::json!({ "type": "plc_operation" });
-        submit_migration_op_reconciling(&pds_client, did, &op, op_cid)
+        submit_migration_op_reconciling(core, did, &op, op_cid)
             .await
             .expect("submit should succeed when the op has not landed");
 
@@ -2070,9 +2080,10 @@ mod tests {
             then.status(400).body("bad op");
         });
         let pds_client = crate::pds_client::new_for_test(plc.base_url());
+        let core = &crate::test_support::core().with_pds_client(pds_client);
 
         let op = serde_json::json!({ "type": "plc_operation" });
-        let err = submit_migration_op_reconciling(&pds_client, did, &op, op_cid)
+        let err = submit_migration_op_reconciling(core, did, &op, op_cid)
             .await
             .expect_err("a rejected op that did not land must surface an error");
 

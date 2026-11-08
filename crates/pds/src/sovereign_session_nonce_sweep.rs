@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use crate::app::AppState;
 use crate::db::sovereign_session_nonces::sweep_stale_nonces;
-use crate::sweep::{Pass, Sweep};
-use crate::sweep_status::names;
+use custos_core::sweep::{Pass, Sweep};
+use custos_core::sweep_status::names;
 
 /// Sweep hourly, matching the retention cadence of the other nonce store.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -75,7 +75,7 @@ mod tests {
         .await
         .unwrap();
 
-        let pass = crate::sweep::run_once(&SovereignSessionNonceSweep, &state)
+        let pass = custos_core::sweep::run_once(&SovereignSessionNonceSweep, &state)
             .await
             .unwrap();
         assert_eq!(pass.swept, 1);

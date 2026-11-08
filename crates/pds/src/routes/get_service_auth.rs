@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
-use crate::auth::oauth_scopes;
-use crate::lexicon::LexiconParams;
+use custos_core::auth::extractors::AuthenticatedUser;
+use custos_core::auth::jwt::AuthScope;
+use custos_core::auth::oauth_scopes;
+use custos_core::lexicon::LexiconParams;
 
 /// Max future window for a *method-bound* token (`lxm` present): one hour. Mirrors the reference
 /// PDS, which bounds scoped service tokens to a short life so a leaked token expires quickly.
@@ -100,16 +100,10 @@ pub async fn get_service_auth(
     // token for the destination's createAccount (and retry it) right up to and after the point
     // its own PDS deactivates it — gating on activity here would break exactly the flow this
     // endpoint exists to serve.
-    // Refresh tokens never mint service auth. Full-access and app-password sessions are both
+    // Full-access and app-password sessions are both
     // admitted here; the per-method authorization gate below (once `lxm` is resolved) enforces
     // exactly what each may mint — matching the reference PDS, whose `getServiceAuth` accepts app
     // passwords for non-protected, non-privileged methods (the video-upload path).
-    if user.scope == AuthScope::Refresh {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "access token required",
-        ));
-    }
 
     let aud = params.aud.trim();
     if !is_valid_aud(aud) {
@@ -124,7 +118,7 @@ pub async fn get_service_auth(
     // multiple fragments, so a single `split_once` cleanly yields the base DID.
     let aud_claim = aud.split_once('#').map_or(aud, |(did, _)| did);
 
-    let now = crate::time::unix_now()?;
+    let now = custos_core::time::unix_now()?;
 
     // An empty `lxm` is treated as absent (method-unrestricted) rather than a token bound to the
     // empty method, which no service would honour.
@@ -173,8 +167,8 @@ pub async fn get_service_auth(
                 ));
             }
         }
-        // Rejected before parameter validation above.
-        AuthScope::Refresh => unreachable!("refresh scope is rejected before authorization"),
+        // `AuthenticatedUser` is never refresh-scoped (see its guarantee).
+        AuthScope::Refresh => unreachable!("AuthenticatedUser is never refresh-scoped"),
     }
 
     // Sign with the account's per-account repo key (decrypted with the configured master key);
@@ -191,7 +185,7 @@ pub async fn get_service_auth(
             )
         })?;
 
-    let token = crate::auth::signing_key::mint_account_service_auth(
+    let token = custos_core::auth::signing_key::mint_account_service_auth(
         &state.db, master_key, &user.did, aud_claim, lxm, now, exp,
     )
     .await?;
@@ -285,7 +279,7 @@ mod tests {
     }
 
     fn now() -> u64 {
-        crate::time::unix_now_secs() as u64
+        custos_core::time::unix_now_secs() as u64
     }
 
     #[tokio::test]

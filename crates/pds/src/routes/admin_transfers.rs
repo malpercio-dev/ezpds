@@ -29,10 +29,10 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin;
-use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
-use crate::db::transfers::list_inflight_transfers;
 use crate::transfer::{cancel_transfer, CancelOutcome};
+use custos_core::auth::guards::require_admin;
+use custos_db::admin_audit::{record_admin_audit_event, AdminAuditAction};
+use custos_db::transfers::list_inflight_transfers;
 
 const MAX_LIST_LIMIT: u32 = 200;
 
@@ -406,7 +406,7 @@ mod tests {
 
         // `cancelled` is terminal: the partial unique index slot is free, so the account
         // can open a fresh transfer.
-        let outcome = crate::db::transfers::insert_transfer(
+        let outcome = custos_db::transfers::insert_transfer(
             &state.db,
             "t-atc1b",
             "did:plc:atc1",
@@ -417,7 +417,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             outcome,
-            crate::db::transfers::InitiateOutcome::Created { .. }
+            custos_db::transfers::InitiateOutcome::Created { .. }
         ));
     }
 
@@ -444,7 +444,7 @@ mod tests {
                 .unwrap();
         assert!(revoked_at.is_some());
         assert!(
-            !crate::db::transfers::transfer_device_token_exists(
+            !custos_db::transfers::transfer_device_token_exists(
                 &state.db,
                 "dev-atc2",
                 "hash-dev-atc2"

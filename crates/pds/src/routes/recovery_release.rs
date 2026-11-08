@@ -40,13 +40,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::auth::guards::authenticate_owner;
-use crate::auth::token::{generate_token, hash_bearer_token};
-use crate::db::accounts::{account_email, resolve_identifier};
 use crate::db::recovery_audit::{insert_recovery_audit_event, RecoveryAuditEventType};
 use crate::db::recovery_escrow::{clear_release, get_release_state, open_release};
 use crate::db::recovery_otps::{consume_recovery_otp, insert_recovery_otp};
 use common::{ApiError, ErrorCode};
+use custos_core::auth::guards::authenticate_owner;
+use custos_core::auth::token::{generate_token, hash_bearer_token};
+use custos_db::accounts::{account_email, resolve_identifier};
 
 /// The single uniform failure for the release flow: wrong/expired/replayed OTP, unknown handle,
 /// and escrow-deleted account all surface identically so nothing about account or escrow presence
@@ -439,11 +439,11 @@ async fn notify(state: &AppState, did: &str, kind: &str) {
 mod tests {
     use super::*;
     use crate::app::{app, test_state, AppState};
-    use crate::db::accounts::insert_bare_account as seed_account;
     use crate::email::{EmailError, EmailMessage, EmailSender};
     use crate::routes::test_utils::test_master_key;
     use axum::body::Body;
     use axum::http::{HeaderValue, Request, StatusCode};
+    use custos_db::accounts::insert_bare_account as seed_account;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
@@ -579,7 +579,7 @@ mod tests {
     }
 
     async fn session_headers(db: &sqlx::SqlitePool, did: &str) -> HeaderMap {
-        let token = crate::auth::token::generate_token();
+        let token = custos_core::auth::token::generate_token();
         sqlx::query(
             "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
              VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 hour'))",
@@ -793,7 +793,7 @@ mod tests {
         deposit_escrow(&h.state.db, did, 1).await;
 
         // Wrong OTP.
-        let wrong = crate::auth::token::generate_token().plaintext;
+        let wrong = custos_core::auth::token::generate_token().plaintext;
         assert_eq!(
             release(&h.state, did, Some(&wrong))
                 .await
@@ -837,7 +837,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_handle_at_release_is_401() {
         let h = harness_with_delay(0).await;
-        let otp = crate::auth::token::generate_token().plaintext;
+        let otp = custos_core::auth::token::generate_token().plaintext;
         assert_eq!(
             release(&h.state, "did:plc:nobody", Some(&otp))
                 .await
@@ -880,7 +880,7 @@ mod tests {
     async fn initiate_and_release_share_one_per_ip_budget() {
         // cap = 3, shared across both endpoints: 3 calls in any mix pass, the 4th is 429.
         let mut state = test_state().await;
-        state.core.rate_limiter = Arc::new(crate::rate_limit::RateLimiterState::new(
+        state.core.rate_limiter = Arc::new(custos_core::rate_limit::RateLimiterState::new(
             &common::RateLimitConfig {
                 enabled: true,
                 recovery_per_5min: 3,

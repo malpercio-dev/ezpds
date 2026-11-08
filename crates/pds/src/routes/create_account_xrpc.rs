@@ -36,19 +36,19 @@ use crate::account_genesis::{
     announce_active_account, insert_account_row, stage_genesis_repo, GenesisRepo, NewAccountRow,
 };
 use crate::app::AppState;
-use crate::auth::password::{hash_password, resolve_password};
-use crate::auth::service_auth::verify_service_auth_resolving_key;
-use crate::db::dids::upsert_did_document;
-use crate::db::is_unique_violation;
-use crate::db::repo_keys::{
-    get_reserved_repo_key_by_did, get_reserved_repo_key_by_id, insert_did_signing_key,
-    RepoSigningKey,
-};
-use crate::lexicon::LexiconInput;
 use crate::session_issuer::{
     issue_session, issue_session_in_transaction, IssuedSession, SessionKind,
 };
 use crate::uniqueness::{email_taken, handle_taken};
+use custos_core::auth::password::{hash_password, resolve_password};
+use custos_core::auth::service_auth::verify_service_auth_resolving_key;
+use custos_core::lexicon::LexiconInput;
+use custos_db::dids::upsert_did_document;
+use custos_db::is_unique_violation;
+use custos_db::repo_keys::{
+    get_reserved_repo_key_by_did, get_reserved_repo_key_by_id, insert_did_signing_key,
+    RepoSigningKey,
+};
 
 /// The lexicon method a migration service-auth token must authorize (when it carries an `lxm`).
 const CREATE_ACCOUNT_LXM: &str = "com.atproto.server.createAccount";
@@ -128,7 +128,7 @@ async fn create_account_new(
         payload.password.as_deref(),
         state.config.accounts.password_optional,
     )?;
-    if let Err(msg) = crate::identity::handle::validate_handle(
+    if let Err(msg) = custos_core::identity::handle::validate_handle(
         &payload.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,
@@ -157,7 +157,7 @@ async fn create_account_new(
             )
         })?;
 
-    let (verified, signed_op_str) = crate::identity::genesis::verify_and_validate_genesis_op(
+    let (verified, signed_op_str) = custos_core::identity::genesis::verify_and_validate_genesis_op(
         rotation_key_public,
         plc_op,
         &payload.handle,
@@ -226,16 +226,17 @@ async fn create_account_new(
                 ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
             })?;
     let genesis_root_str = genesis_root.to_string();
-    let genesis_car = crate::identity::genesis::build_genesis_car(genesis_root, &genesis_blocks);
+    let genesis_car =
+        custos_core::identity::genesis::build_genesis_car(genesis_root, &genesis_blocks);
     let genesis_sync_car =
-        crate::identity::genesis::build_commit_block_car(genesis_root, &genesis_blocks)
+        custos_core::identity::genesis::build_commit_block_car(genesis_root, &genesis_blocks)
             .ok_or_else(|| {
                 tracing::error!(did = %did, "genesis commit block missing from built blocks");
                 ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
             })?;
 
     check_did_not_promoted(state, &did).await?;
-    crate::identity::genesis::post_to_plc_directory(
+    custos_core::identity::genesis::post_to_plc_directory(
         &state.http_client,
         &state.config.plc_directory_url,
         &did,
@@ -243,7 +244,7 @@ async fn create_account_new(
     )
     .await?;
 
-    let did_document = crate::identity::genesis::build_did_document(&verified)?;
+    let did_document = custos_core::identity::genesis::build_did_document(&verified)?;
     // Only now, with the handle validated and the genesis op verified, is the argon2 hash worth
     // paying for — the same point in the flow it occupied before the policy split.
     let password_hash = password_plan.hash()?;
@@ -392,7 +393,7 @@ async fn create_account_migration(
         did,
         &server_did,
         CREATE_ACCOUNT_LXM,
-        crate::time::unix_now()?,
+        custos_core::time::unix_now()?,
     )
     .await?;
 
@@ -407,9 +408,9 @@ async fn create_account_migration(
     // new session for the existing account instead. Only a still-deactivated account
     // resumes (no invite code is consumed): an active account is a genuine conflict, and
     // moderation states stay closed.
-    match crate::db::accounts::account_lifecycle(&state.db, did).await? {
+    match custos_db::accounts::account_lifecycle(&state.db, did).await? {
         None => {}
-        Some(crate::db::accounts::AccountLifecycle::Deactivated) => {
+        Some(custos_db::accounts::AccountLifecycle::Deactivated) => {
             tracing::info!(did = %did, "createAccount (migration): resuming existing deactivated account");
             let session = issue_session(state, did, &SessionKind::FullAccess).await?;
             return Ok(Json(CreateAccountResponse {
@@ -430,13 +431,13 @@ async fn create_account_migration(
 
     // The migrating identity's handle is foreign (e.g. its old domain), so only structural
     // validity is required — not this server's served-domain policy.
-    if let Err(msg) = crate::identity::handle::validate_handle_structure(&payload.handle) {
+    if let Err(msg) = custos_core::identity::handle::validate_handle_structure(&payload.handle) {
         return Err(ApiError::new(ErrorCode::InvalidHandle, msg));
     }
     // But if the handle *is* on one of our served domains, honor the reserved-name policy:
     // migration also inserts the handle locally, so without this a migration could claim a
     // reserved infrastructure name (e.g. identitywallet.obsign.org) that registration refuses.
-    if crate::identity::handle::reserved_on_served_domain(
+    if custos_core::identity::handle::reserved_on_served_domain(
         &payload.handle,
         &state.config.available_user_domains,
         &state.config.reserved_handles,
@@ -594,7 +595,7 @@ async fn ensure_email_and_handle_free(
 
 /// Confirm the DID is not already a fully-provisioned account.
 async fn check_did_not_promoted(state: &AppState, did: &str) -> Result<(), ApiError> {
-    if crate::db::accounts::account_exists(&state.db, did).await? {
+    if custos_db::accounts::account_exists(&state.db, did).await? {
         return Err(ApiError::new(
             ErrorCode::DidAlreadyExists,
             "an account for this DID already exists",
@@ -737,10 +738,10 @@ mod tests {
         let private_key_encrypted =
             crypto::encrypt_private_key(&kp.private_key_bytes, &test_master_key())
                 .expect("encrypt");
-        crate::db::repo_keys::insert_reserved_repo_key(
+        custos_db::repo_keys::insert_reserved_repo_key(
             db,
             did,
-            &crate::db::repo_keys::RepoSigningKey {
+            &custos_db::repo_keys::RepoSigningKey {
                 key_id: kp.key_id.to_string(),
                 public_key: kp.public_key.clone(),
                 private_key_encrypted,
@@ -853,7 +854,7 @@ mod tests {
         assert_eq!(sessions, 1);
 
         // Self-announce: genesis #commit, #sync, then #account (active).
-        use crate::firehose::FirehoseEvent;
+        use custos_core::firehose::FirehoseEvent;
         assert!(
             matches!(fh_rx.try_recv(), Ok(FirehoseEvent::Commit(c)) if c.repo == did),
             "expected a genesis #commit"
@@ -1117,8 +1118,15 @@ mod tests {
     ) -> String {
         let key = *kp.private_key_bytes;
         let signer = repo_engine::CommitSigner::from_bytes(&key).expect("signer");
-        let now = crate::time::unix_now_secs() as u64;
-        crate::auth::jwt::mint_service_auth_jwt(|b| signer.sign(b), iss, aud, lxm, now, now + 300)
+        let now = custos_core::time::unix_now_secs() as u64;
+        custos_core::auth::jwt::mint_service_auth_jwt(
+            |b| signer.sign(b),
+            iss,
+            aud,
+            lxm,
+            now,
+            now + 300,
+        )
     }
 
     #[tokio::test]
