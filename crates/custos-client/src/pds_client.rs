@@ -351,10 +351,18 @@ pub struct PdsTokenExchangeRequest<'a> {
 }
 
 fn default_client() -> Client {
-    Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| Client::new())
+    // The browser's fetch client has no client-wide timeout; the per-request ones below still apply.
+    #[cfg(target_arch = "wasm32")]
+    {
+        Client::new()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    }
 }
 
 /// PDS client for discovery and OAuth operations against arbitrary PDS endpoints.
@@ -1378,6 +1386,19 @@ pub fn rotation_keys_from_audit_log(raw_json: &str) -> Vec<String> {
 /// `pub` (not just crate-private) so a caller's own handle-resolution pre-flight (e.g. a
 /// change-handle DNS check) can report this vantage separately from the hosting PDS's own
 /// resolution.
+#[cfg(target_arch = "wasm32")]
+pub async fn try_resolve_dns(
+    _handle: &str,
+    _observer: &dyn TransportObserver,
+) -> Result<Option<String>, PdsClientError> {
+    // No raw DNS from a browser: report it as the transport failure it is, so `resolve_handle`
+    // still falls through to the HTTPS well-known lookup and a pre-flight never reads "no record".
+    Err(PdsClientError::NetworkError {
+        message: "DNS TXT lookup is not available on this target".to_string(),
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn try_resolve_dns(
     handle: &str,
     observer: &dyn TransportObserver,

@@ -20,7 +20,7 @@ exist.
 
 | File | What it is |
 |---|---|
-| `src/error.rs` | `PdsClientError` (the XRPC failure shape), `classify_xrpc_error`/`parse_xrpc_error_envelope` (pure), `classify_xrpc_response`/`xrpc_ok`/`xrpc_json` (the classification tail), `TransportObserver` |
+| `src/error.rs` | `PdsClientError` (the XRPC failure shape), `classify_xrpc_error`/`parse_xrpc_error_envelope` (pure), `classify_xrpc_response`/`xrpc_ok`/`xrpc_json` (the classification tail), `TransportObserver`, and `transport_category` (the fixed, URL-free label a `reqwest::Error` reduces to; here rather than in the wallet because `is_connect` does not exist on wasm) |
 | `src/oauth_client.rs` | `OAuthClient` — Bearer sessions, lazy in-memory refresh via `refreshSession` |
 | `src/custos_client.rs` | `CustosClient` — the pre-session HTTP client for one configured PDS (plain JSON/Bearer requests, PAR/token-exchange) |
 | `src/identity.rs` | typed XRPC methods for `com.atproto.identity.*` (the claim trio: `requestPlcOperationSignature`, `signPlcOperation`, `getRecommendedDidCredentials`) |
@@ -62,6 +62,13 @@ exist.
 
 - No `tauri`, `security-framework`, or app-specific Keychain/diagnostics code here — those are
   what `TransportObserver` exists to keep out.
+- This crate compiles for `wasm32-unknown-unknown` because `obsign-core` does (`just wasm-check`).
+  The four `cfg(target_arch = "wasm32")` sites are the whole wasm story: `pds_client.rs`'s
+  `try_resolve_dns` fails as a transport error there (a browser has no raw DNS; `hickory-resolver`
+  is a non-wasm dependency) and its `default_client` skips the client-wide timeout the fetch
+  backend lacks; `error.rs`'s `read_body_capped` buffers then truncates, since that backend has no
+  chunk reader, and its `transport_category` has no `connect` label there. Keep new reqwest calls
+  to the surface both backends share.
 - The wallet's own OAuth client identity (`CANONICAL_CLIENT_ID`, `REDIRECT_URI`,
   `client_id_for_pds`'s loopback exception, and the compile-time default PDS base URL) stays in
   `crates/obsign-core/src/pds_client.rs`/`http.rs` — it names the app itself, not a thing

@@ -44,6 +44,14 @@ cid = { workspace = true }
 ipld-core = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
 
+# The one target table here, and not platform code: wasm32-unknown-unknown has no OS entropy
+# source, so `just wasm-check` needs getrandom's JS backend selected for both majors in the graph
+# (rand_core 0.6 → 0.2, crypto-bigint → 0.4) and uuid's. Inert on every other target.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+getrandom02 = { workspace = true, features = ["js"] }
+uuid = { workspace = true, features = ["js"] }
+
 [dev-dependencies]
 httpmock = { workspace = true }
 tempfile = { workspace = true }
