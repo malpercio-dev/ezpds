@@ -128,6 +128,40 @@ if ! grep -qF -- "${WALLET_CONTAINER}" "${REPO_ROOT}/apps/identity-wallet/src-ta
   echo "ios-template-check: FAIL — wallet Info.ios.plist lost the NSUbiquitousContainers entry for ${WALLET_CONTAINER} (the backup mirror would be invisible in the Files app)" >&2
   fail=1
 fi
+# Every BGTaskScheduler identifier lib.rs registers must be permitted in Info.ios.plist, and
+# each task kind needs its UIBackgroundModes entry. iOS refuses anything else with no error the
+# app sees: the job just never runs in the background. Values are read from inside each array,
+# so the plist's explanatory comments can't satisfy the check.
+WALLET_LIB="${REPO_ROOT}/apps/identity-wallet/src-tauri/src/lib.rs"
+WALLET_PLIST="${REPO_ROOT}/apps/identity-wallet/src-tauri/Info.ios.plist"
+plist_array() {
+  awk -v key="<key>$1</key>" '
+    index($0, key) { inside = 1; next }
+    inside && /<\/array>/ { exit }
+    inside { if (match($0, /<string>[^<]*<\/string>/)) print substr($0, RSTART + 8, RLENGTH - 17) }
+  ' "${WALLET_PLIST}"
+}
+permitted="$(plist_array BGTaskSchedulerPermittedIdentifiers)"
+modes="$(plist_array UIBackgroundModes)"
+task_ids="$(sed -n 's/^const [A-Z_]*_TASK_IDENTIFIER: &str = "\([^"]*\)";$/\1/p' "${WALLET_LIB}")"
+if [ -z "${task_ids}" ]; then
+  echo "ios-template-check: FAIL — no 'const *_TASK_IDENTIFIER: &str' in ${WALLET_LIB} (did the declaration format change? update this script's sed)" >&2
+  fail=1
+fi
+for id in ${task_ids}; do
+  if ! printf '%s\n' "${permitted}" | grep -qxF -- "${id}"; then
+    echo "ios-template-check: FAIL — wallet Info.ios.plist BGTaskSchedulerPermittedIdentifiers lacks ${id} (lib.rs registers it; iOS will refuse it silently)" >&2
+    fail=1
+  fi
+done
+# The background mode each obsign-platform-ios `TaskKind` variant needs; a new variant goes here.
+for pair in 'TaskKind::Processing=processing' 'TaskKind::AppRefresh=fetch'; do
+  kind="${pair%%=*}" mode="${pair##*=}"
+  if grep -qF -- "${kind}" "${WALLET_LIB}" && ! printf '%s\n' "${modes}" | grep -qxF -- "${mode}"; then
+    echo "ios-template-check: FAIL — wallet Info.ios.plist UIBackgroundModes lacks '${mode}' (lib.rs submits a ${kind} task)" >&2
+    fail=1
+  fi
+done
 # Least privilege: the operator console must NOT grow iCloud entitlements — only
 # the wallet's blob backup is entitled to a ubiquity container. Case-insensitive,
 # and 'ubiquity' included: the ubiquity-container key has no "icloud" substring,

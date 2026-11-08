@@ -226,6 +226,29 @@ build phase connects to; bypassing it yields "Connection refused" (see Troublesh
 
 For a non-iOS build (CI or any machine without Xcode): `cargo build` from the workspace root.
 
+### Checking the background PLC sweep on a device
+
+No CI lane can run `BGTaskScheduler` (the Simulator has none), so a change to the background
+PLC check or its notification is verified by hand:
+
+1. On a device, with notifications allowed at the launch prompt, hold a did:plc identity
+   whose rotation keys include one this device doesn't hold: an account claimed from
+   bsky.social and still hosted there keeps that PDS's key.
+2. Send the app to the background and leave it there. Reopening it runs a foreground check,
+   which consumes the change before the background sweep can see it.
+3. Make a directory change the device doesn't sign: change the handle through the old PDS
+   (bsky.app → Settings → Handle).
+4. Attach Xcode's debugger (Debug → Attach to Process), pause, and run
+   `e -l objc -- (void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"dev.malpercio.identitywallet.plc-check"]`,
+   then continue.
+5. Expect the "Unapproved change to your identity" banner within seconds, and a background
+   sweep with one unauthorized change in Protection's history. Tapping the banner opens the
+   app on that identity's alarm; a second simulated launch must not notify again.
+
+Without the debugger iOS picks the moment, no sooner than four hours after the last request.
+It never runs for an app the user force-quit, or with Background App Refresh or Low Power
+Mode off.
+
 ## CI / TestFlight
 
 The iOS app builds in GitHub Actions (`.github/workflows/ios-testflight.yml`, free

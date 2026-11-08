@@ -170,6 +170,11 @@ impl Core {
         }
     }
 
+    /// Show a system notification. Fire-and-forget; see [`EventSink::notify`](crate::events::EventSink::notify).
+    pub fn notify(&self, title: &str, body: &str) {
+        self.platform.events.notify(title, body);
+    }
+
     /// Where the user-held backup lives.
     pub fn backup_store(&self) -> &dyn BackupStore {
         self.platform.backup.as_ref()

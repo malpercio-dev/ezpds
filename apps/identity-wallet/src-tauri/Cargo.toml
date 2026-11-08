@@ -89,9 +89,10 @@ objc2-foundation = { workspace = true, features = ["NSString", "NSError", "NSDat
 # reach the live delegate whose class the callbacks are installed on) and
 # `UNUserNotificationCenter` (the permission prompt, whose completion handler is a `block2`
 # block). Both are the same objc2 0.3 generated-bindings family already in the lockfile via the
-# vendored auth-session plugin, so neither adds a major.
+# vendored auth-session plugin, so neither adds a major. `UNNotificationSound`/`Trigger` are for
+# the local PLC alert (`apns::post_local_notification`).
 objc2-ui-kit = { workspace = true, features = ["UIApplication", "UIResponder"] }
-objc2-user-notifications = { workspace = true, features = ["UNUserNotificationCenter", "UNNotificationResponse", "UNNotification", "UNNotificationRequest", "UNNotificationContent", "block2"] }
+objc2-user-notifications = { workspace = true, features = ["UNUserNotificationCenter", "UNNotificationResponse", "UNNotification", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger", "block2"] }
 # `objc2` and `block2` for the APNs bridge's delegate methods and completion blocks (apns.rs).
 objc2 = { workspace = true }
 block2 = { workspace = true }

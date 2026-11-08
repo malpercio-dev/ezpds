@@ -23,6 +23,9 @@
 //! and classifies each new entry by verifying its signature against the per-DID device
 //! key: device-key-signed entries are authorized and silently consumed, anything else is
 //! an [`UnauthorizedChange`] (signer identified best-effort by `identify_signing_key`).
+//! An unauthorized change then *stands*, kept in the per-DID `plc-alerts` record and reported
+//! by every sweep until the directory nullifies it ([`standing_changes`]); the
+//! frontend's launch takeover is built on that.
 //!
 //! **Cadence.** `run_monitoring_loop` is spawned once in `lib.rs::setup()`: skips the
 //! first immediate tick, then every [`MONITOR_INTERVAL_SECS`] (15 min) with
@@ -30,8 +33,8 @@
 //! `"plc_alert"` Tauri event (`Vec<IdentityStatus>`) when unauthorized changes are found.
 //! While the app is closed the same sweep runs as the
 //! [`PlcCheck`](crate::scheduler::BackgroundJob::PlcCheck) job (requested by
-//! [`schedule_background_check`], at most every [`BACKGROUND_CHECK_AFTER`]); its result
-//! reaches the user through the sweep history and the next foreground check.
+//! [`schedule_background_check`], at most every [`BACKGROUND_CHECK_AFTER`]). Every sweep also
+//! raises a system notification ([`PLC_ALERT_TITLE`]) on an unauthorized change.
 //! `check_identity_status` is the synchronous foreground IPC check over the same set.
 //!
 //! **Sweep history.** Every completed pass — either trigger — is folded by the pure,
@@ -54,8 +57,9 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use crypto::{diff_audit_logs, parse_audit_log, verify_plc_operation, AuditEntry, DidKeyUri};
 use serde::{Deserialize, Serialize};
 
-/// An unauthorized PLC operation detected by the monitor.
-#[derive(Debug, Clone, Serialize)]
+/// An unauthorized PLC operation detected by the monitor. Stored per identity while it
+/// stands (see [`standing_changes`]), so the UI keeps reporting it after the sweep that found it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnauthorizedChange {
     /// CID of the unauthorized operation.
@@ -68,6 +72,10 @@ pub struct UnauthorizedChange {
     pub signing_key: Option<String>,
     /// The raw PLC operation JSON for display in alert detail.
     pub operation: serde_json::Value,
+    /// Found by this sweep rather than an earlier one: what raises the system notification.
+    /// Never serialized, so a change read back from the store is not new.
+    #[serde(skip)]
+    pub is_new: bool,
 }
 
 /// Result of checking a single identity's PLC status.
@@ -217,55 +225,111 @@ impl<'a> PlcMonitor<'a> {
             }
         };
 
-        // Diff
         let new_entries = diff_audit_logs(&cached_entries, &current_entries);
+        let found = if new_entries.is_empty() {
+            Vec::new()
+        } else {
+            self.classify(did, &new_entries, &current_entries)?
+        };
 
-        // If no new entries, return
-        if new_entries.is_empty() {
-            return Ok(vec![]);
+        let previous = match store.get_plc_alerts(did) {
+            Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_else(|e| {
+                tracing::warn!(did, error = %e, "unreadable standing PLC alerts, treating as none");
+                Vec::new()
+            }),
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                return Err(MonitorError::IdentityStoreError {
+                    message: e.to_string(),
+                })
+            }
+        };
+        let standing = standing_changes(&previous, found, &current_entries);
+
+        // The standing set is written before the cache advances: a change the cache has
+        // consumed but the store never held would never be reported again. So if the write
+        // fails, the cache stays put and the next sweep finds the change afresh.
+        if standing != previous {
+            let stored = serde_json::to_string(&standing)
+                .map_err(|e| e.to_string())
+                .and_then(|json| {
+                    store
+                        .store_plc_alerts(did, &json)
+                        .map_err(|e| e.to_string())
+                });
+            if let Err(e) = stored {
+                tracing::warn!(did, error = %e, "failed to store standing PLC alerts; audit-log cache left unchanged");
+                return Ok(standing);
+            }
         }
 
-        // Get device key
-        let device_key =
-            store
-                .get_or_create_device_key(did)
-                .map_err(|e| MonitorError::IdentityStoreError {
-                    message: e.to_string(),
-                })?;
+        if !new_entries.is_empty() {
+            if let Err(e) = store.store_plc_log(did, &current_log_json) {
+                tracing::warn!(did, error = %e, "failed to update cached audit log, changes may be re-detected next cycle");
+            }
+        }
+
+        Ok(standing)
+    }
+
+    /// The new entries the device key did not sign, each marked new.
+    fn classify(
+        &self,
+        did: &str,
+        new_entries: &[AuditEntry],
+        current_entries: &[AuditEntry],
+    ) -> Result<Vec<UnauthorizedChange>, MonitorError> {
+        let device_key = self
+            .core
+            .identities()
+            .get_or_create_device_key(did)
+            .map_err(|e| MonitorError::IdentityStoreError {
+                message: e.to_string(),
+            })?;
         let device_key_uri = DidKeyUri(device_key.key_id);
 
-        // Classify each new entry
         let mut unauthorized = Vec::new();
-        for entry in &new_entries {
+        for entry in new_entries {
             let op_json =
                 serde_json::to_string(&entry.operation).map_err(|e| MonitorError::ParseError {
                     message: e.to_string(),
                 })?;
 
-            // Try device key first
             if verify_plc_operation(&op_json, std::slice::from_ref(&device_key_uri)).is_ok() {
-                // Authorized — signed by our device key
                 continue;
             }
-
-            // Unauthorized — try to identify signing key
-            let signing_key = identify_signing_key(&op_json, &current_entries, entry);
 
             unauthorized.push(UnauthorizedChange {
                 cid: entry.cid.clone(),
                 created_at: entry.created_at.clone(),
-                signing_key,
+                signing_key: identify_signing_key(&op_json, current_entries, entry),
                 operation: entry.operation.clone(),
+                is_new: true,
             });
         }
-
-        // Update cached log — warn on failure but still return detected changes
-        if let Err(e) = store.store_plc_log(did, &current_log_json) {
-            tracing::warn!(did, error = %e, "failed to update cached audit log, changes may be re-detected next cycle");
-        }
-
         Ok(unauthorized)
     }
+}
+
+/// The unauthorized changes standing for one identity after a sweep: the earlier ones, then
+/// this sweep's `found`, keeping each only while its operation is in the directory's `log`
+/// and not nullified. A successful override nullifies the operation, which is what ends an
+/// alarm; an expired recovery window does not. A found change already standing stays as it
+/// was, not new.
+fn standing_changes(
+    previous: &[UnauthorizedChange],
+    found: Vec<UnauthorizedChange>,
+    log: &[AuditEntry],
+) -> Vec<UnauthorizedChange> {
+    let live = |cid: &str| log.iter().any(|e| e.cid == cid && !e.nullified);
+    let mut standing: Vec<UnauthorizedChange> =
+        previous.iter().filter(|c| live(&c.cid)).cloned().collect();
+    for change in found {
+        if live(&change.cid) && !standing.iter().any(|c| c.cid == change.cid) {
+            standing.push(change);
+        }
+    }
+    standing
 }
 
 /// Try each rotation key from the previous operation to identify who signed this entry.
@@ -564,10 +628,22 @@ pub fn schedule_background_check(core: &crate::oauth::Core) {
     });
 }
 
-/// Emit "plc_alert" event to the frontend if any identity has unauthorized changes.
+/// The system notification a sweep with an unauthorized change raises. Lock-screen text, so it
+/// names no identity. It promises no recovery window: that exists only when this device's key
+/// outranks the signer's.
+pub const PLC_ALERT_TITLE: &str = "Unapproved change to your identity";
+pub const PLC_ALERT_BODY: &str =
+    "This device didn't approve a recent change. Open Obsign soon to review it.";
+
+/// If any identity has an unauthorized change standing, emit "plc_alert" to the UI; if this
+/// sweep found a new one, also raise a system notification. A standing change notifies once.
 fn emit_if_alerts(core: &crate::oauth::Core, statuses: &[IdentityStatus]) {
-    if statuses.iter().any(|s| !s.unauthorized_changes.is_empty()) {
+    let changes = || statuses.iter().flat_map(|s| &s.unauthorized_changes);
+    if changes().next().is_some() {
         core.emit("plc_alert", statuses);
+    }
+    if changes().any(|c| c.is_new) {
+        core.notify(PLC_ALERT_TITLE, PLC_ALERT_BODY);
     }
 }
 
@@ -587,7 +663,8 @@ pub async fn check_identity_status(
 mod tests {
     use super::*;
 
-    /// The UI hears about a sweep only when it found an operation the device key did not sign.
+    /// The UI hears about every sweep with an operation the device key did not sign standing;
+    /// the system notification, only about one that found a new one.
     #[test]
     fn only_a_sweep_with_unauthorized_changes_alerts() {
         let (core, fakes) = crate::test_support::core_with_fakes();
@@ -599,18 +676,30 @@ mod tests {
 
         emit_if_alerts(&core, &[status(Vec::new())]);
         assert!(fakes.events.events().is_empty());
+        assert!(fakes.events.notifications().is_empty());
 
-        let change = UnauthorizedChange {
+        let change = |is_new| UnauthorizedChange {
             cid: "bafyunauthorized".to_string(),
             created_at: "2026-11-07T00:00:00Z".to_string(),
             signing_key: None,
             operation: serde_json::json!({}),
+            is_new,
         };
-        emit_if_alerts(&core, &[status(vec![change])]);
+
+        // A change already reported: the UI still hears it stands, the user isn't re-notified.
+        emit_if_alerts(&core, &[status(vec![change(false)])]);
+        assert_eq!(fakes.events.events().len(), 1);
+        assert!(fakes.events.notifications().is_empty());
+
+        emit_if_alerts(&core, &[status(vec![change(true)])]);
         let events = fakes.events.events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "plc_alert");
-        assert_eq!(events[0].1[0]["did"], "did:plc:alerted");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].0, "plc_alert");
+        assert_eq!(events[1].1[0]["did"], "did:plc:alerted");
+        assert_eq!(
+            fakes.events.notifications(),
+            vec![(PLC_ALERT_TITLE.to_string(), PLC_ALERT_BODY.to_string())]
+        );
     }
 
     /// Test UnauthorizedChange serialization to ensure camelCase conversion.
@@ -621,6 +710,7 @@ mod tests {
             created_at: "2026-03-29T00:00:00Z".to_string(),
             signing_key: Some("did:key:z6Mkhello".to_string()),
             operation: serde_json::json!({"type": "plc_operation"}),
+            is_new: false,
         };
 
         let json = serde_json::to_value(&change).expect("serialize");
@@ -628,6 +718,10 @@ mod tests {
         assert_eq!(json["createdAt"], "2026-03-29T00:00:00Z");
         assert_eq!(json["signingKey"], "did:key:z6Mkhello");
         assert_eq!(json["operation"]["type"], "plc_operation");
+        assert!(
+            json.get("isNew").is_none(),
+            "newness is the core's, not the UI's"
+        );
     }
 
     /// Test UnauthorizedChange with no signing key.
@@ -638,6 +732,7 @@ mod tests {
             created_at: "2026-03-30T00:00:00Z".to_string(),
             signing_key: None,
             operation: serde_json::json!({"type": "plc_operation"}),
+            is_new: false,
         };
 
         let json = serde_json::to_value(&change).expect("serialize");
@@ -668,6 +763,7 @@ mod tests {
             created_at: "2026-03-29T00:00:00Z".to_string(),
             signing_key: Some("did:key:z6Mk".to_string()),
             operation: serde_json::json!({"type": "plc_operation"}),
+            is_new: false,
         };
 
         let status = IdentityStatus {
@@ -735,6 +831,7 @@ mod tests {
                     created_at: "2026-07-26T00:00:00Z".to_string(),
                     signing_key: None,
                     operation: serde_json::json!({}),
+                    is_new: false,
                 })
                 .collect(),
         }
@@ -1167,6 +1264,70 @@ mod tests {
         let changes = monitor.check_for_changes(did).await.expect("check failed");
         assert_eq!(changes.len(), 1, "Should detect one unauthorized change");
         assert_eq!(changes[0].cid, "bafy_ac62_genesis");
+    }
+
+    /// A change the monitor found stays reported on later sweeps, marked new only on the first,
+    /// until the directory nullifies it. The audit-log cache advancing must not consume it.
+    #[tokio::test]
+    async fn an_unauthorized_change_stands_until_nullified() {
+        let core = &crate::test_support::core();
+        use httpmock::prelude::*;
+
+        let did = "did:plc:standingalert";
+        let (device_pub, _) = setup_identity(core, did);
+        let mock_server = MockServer::start();
+        let core = &core.with_pds_client(crate::pds_client::new_for_test(mock_server.base_url()));
+        let monitor = PlcMonitor::new(core);
+
+        let other_kp = crypto::generate_p256_keypair().expect("keygen");
+        let op = crypto::build_did_plc_genesis_op(
+            &DidKeyUri(device_pub.key_id.clone()),
+            &other_kp.key_id,
+            &other_kp.private_key_bytes,
+            "test.bsky.social",
+            "https://pds.test",
+        )
+        .expect("build genesis op");
+        let operation: serde_json::Value =
+            serde_json::from_str(&op.signed_op_json).expect("parse op json");
+        let log = |nullified: bool| {
+            serde_json::json!([{
+                "did": did,
+                "cid": "bafy_standing",
+                "createdAt": "2026-11-07T01:00:00Z",
+                "nullified": nullified,
+                "operation": operation.clone()
+            }])
+        };
+        let serve = |body: serde_json::Value| {
+            mock_server.mock(|when, then| {
+                when.method(GET).path(format!("/{did}/log/audit"));
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .json_body(body);
+            })
+        };
+
+        let mut live = serve(log(false));
+        let first = monitor.check_for_changes(did).await.expect("first sweep");
+        assert_eq!(first.len(), 1);
+        assert!(
+            first[0].is_new,
+            "the sweep that finds a change reports it as new"
+        );
+
+        let second = monitor.check_for_changes(did).await.expect("second sweep");
+        assert_eq!(second.len(), 1, "a found change stands on the next sweep");
+        assert_eq!(second[0].cid, "bafy_standing");
+        assert!(!second[0].is_new, "a standing change is not news twice");
+
+        live.delete();
+        serve(log(true));
+        let after = monitor
+            .check_for_changes(did)
+            .await
+            .expect("sweep after override");
+        assert!(after.is_empty(), "a nullified change no longer stands");
     }
 
     /// Alert created_at matches the audit log timestamp for deadline computation.

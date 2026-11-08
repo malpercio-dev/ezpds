@@ -10,7 +10,8 @@
 //! - `TauriEvents`, the `EventSink` adapter, and the `BGTaskScheduler` identifiers.
 
 pub use obsign_core::agents;
-/// The iOS APNs device-token bridge. iOS-only because it is nothing *but* platform plumbing:
+/// The iOS notification bridge: the APNs device token, taps, and local notifications. iOS-only
+/// because it is nothing *but* platform plumbing:
 /// every part with logic worth testing lives in [`notifications`].
 #[cfg(target_os = "ios")]
 pub mod apns;
@@ -76,6 +77,13 @@ impl obsign_core::events::EventSink for TauriEvents {
         if let Err(e) = self.0.emit(event, payload) {
             tracing::warn!(event, error = %e, "failed to emit event");
         }
+    }
+
+    fn notify(&self, title: &str, body: &str) {
+        #[cfg(target_os = "ios")]
+        apns::post_local_notification(title, body);
+        #[cfg(not(target_os = "ios"))]
+        let _ = (title, body);
     }
 }
 
