@@ -13,12 +13,12 @@
     type AgentsError,
   } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
-  import { describeScopes } from '$lib/agent-scopes';
   import { AGENT_EVENT_LABELS, CHILD_STATUS, agentDetailLine, childState } from '$lib/agent-display';
   import { formatTimestamp } from '$lib/datetime';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
+  import ScopeWidening from './PROTOTYPE_ScopeWidening.svelte';
 
   // The detail view for one sovereign child — an account of the user's own making, not a
   // credential on theirs. Lifetime is the selection, so no cross-child stale-guards are needed:
@@ -238,28 +238,7 @@
     </p>
   {/if}
 
-  <p class="section-label">Permissions</p>
-  {#if child.scopes.length === 0}
-    <p class="empty-trail">No permissions were granted to this account.</p>
-  {:else}
-    <ul class="grants u-list-reset">
-      {#each describeScopes(child.scopes) as scope (scope.token)}
-        <li class="grant" class:grant--elevated={scope.elevated}>
-          {#if scope.elevated}
-            <span class="grant-warn-row">
-              <span class="grant-warn-ic" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.2 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-              </span>
-              <span class="grant-t">{scope.summary} <em class="grant-warn">(elevated access)</em></span>
-            </span>
-          {:else}
-            <span class="grant-t">{scope.summary}</span>
-          {/if}
-          <code class="grant-token">{scope.token}</code>
-        </li>
-      {/each}
-    </ul>
-  {/if}
+  <ScopeWidening scopes={child.scopes} noun="agent account" inactive={state_ !== 'live'} />
 
   <p class="section-label">Activity record</p>
   <p class="section-sub">
