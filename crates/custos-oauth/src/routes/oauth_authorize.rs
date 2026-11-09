@@ -1472,12 +1472,31 @@ mod tests {
         assert_eq!(payload.kind, "login-approval");
         let data = payload.data.as_ref().expect("routing data");
         assert_eq!(data["requestId"], request_id.as_str());
+        // Structural, not substring: a two-digit code appears by chance inside the UUID
+        // `requestId` and the DID, so check field values and words instead.
+        fn leaks(value: &serde_json::Value, code: &str) -> bool {
+            match value {
+                serde_json::Value::String(s) => s == code,
+                serde_json::Value::Number(n) => n.to_string() == code,
+                serde_json::Value::Array(items) => items.iter().any(|v| leaks(v, code)),
+                serde_json::Value::Object(map) => map
+                    .iter()
+                    .any(|(k, v)| k.to_ascii_lowercase().contains("match") || leaks(v, code)),
+                _ => false,
+            }
+        }
         assert!(
-            !serde_json::to_string(payload)
-                .unwrap()
-                .contains(&match_code),
-            "the match code must never ride in the payload"
+            !leaks(data, &match_code),
+            "the match code must never ride in the payload's data"
         );
+        for text in [&payload.title, &payload.body] {
+            assert!(
+                !text
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .any(|word| word == match_code),
+                "the match code must never ride in the notification text: {text:?}"
+            );
+        }
     }
 
     /// A push that reached no device latches nothing, so the page asks for no number.
