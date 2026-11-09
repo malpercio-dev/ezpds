@@ -43,3 +43,15 @@ _Avoid_: agent scopes, stored scopes
 **Scope profile**:
 The operator's ceiling on what any agent on the instance may be granted.
 _Avoid_: granted scopes (names the setting, not the concept)
+
+**Connector**:
+A third-party MCP client that reaches Custos through the hosted MCP sidecar and authenticates with the MCP-spec OAuth handshake, which uses neither PAR nor DPoP.
+_Avoid_: MCP client (too broad), agent (an auth.md agent uses the identity-assertion exchange, not this handshake)
+
+**Acts-as-you**:
+The attribution model in which a delegate's actions carry the user's own DID and land in the user's repo.
+_Avoid_: delegate mode, impersonation
+
+**Sovereign child**:
+A separate identity with its own DID, repo and handle, owned by a parent account on the same PDS, whose recovery key the parent's wallet holds.
+_Avoid_: sub-account, child agent (a child need not be an agent)
