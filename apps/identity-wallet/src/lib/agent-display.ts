@@ -23,10 +23,21 @@ export const AGENT_TYPE_LABELS: Record<AgentSummary['registrationType'], string>
   service_auth: 'Server-requested',
   identity_assertion: 'Identity-provider vouched',
   anonymous: 'Self-registered',
+  connector: 'MCP connector',
+  oauth_app: 'Signed-in app',
 };
 
 export function agentName(agent: AgentSummary): string {
-  return agent.subject ?? agent.registrationId;
+  return agent.subject ?? (agent.clientId ? clientHost(agent.clientId) : agent.registrationId);
+}
+
+/** An OAuth client_id is its metadata URL; its host is the readable part. */
+function clientHost(clientId: string): string {
+  try {
+    return new URL(clientId).host || clientId;
+  } catch {
+    return clientId;
+  }
 }
 
 /** Mechanical detail facts → one short human line; unknown shapes stay hidden behind the label. */
@@ -51,7 +62,9 @@ export function agentDetailLine(event: AgentAuditEvent): string | null {
     return [mime, size].filter(Boolean).join(', ') || null;
   }
   if (event.eventType === 'token_exchanged' && typeof d.grant === 'string') {
-    return d.grant === 'claim' ? 'collected its first credential' : 'renewed its credential';
+    if (d.grant === 'claim') return 'collected its first credential';
+    if (d.grant === 'authorization_code') return 'after you approved it';
+    return 'renewed its credential';
   }
   return null;
 }

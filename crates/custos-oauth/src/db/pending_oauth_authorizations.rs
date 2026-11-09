@@ -56,6 +56,8 @@ pub struct NewPendingOAuthAuthorization<'a> {
     /// The DPoP key thumbprint bound at PAR time (V062), carried into the authorization
     /// code this request eventually yields. `None` when the flow proved no key.
     pub dpop_jkt: Option<&'a str>,
+    /// The RFC 8707 resource indicator pushed at PAR (V077), carried into the code.
+    pub resource: Option<&'a str>,
     /// Time-to-live in seconds (~300 for the 5-minute window).
     pub ttl_secs: i64,
 }
@@ -75,6 +77,8 @@ pub struct CompletedAuthorization {
     pub account_did: String,
     /// The DPoP key bound at PAR time (V062), stamped onto the issued authorization code.
     pub dpop_jkt: Option<String>,
+    /// The resource indicator pushed at PAR (V077), stamped onto the issued code.
+    pub resource: Option<String>,
 }
 
 const SELECT_COLUMNS: &str = "request_id, client_id, client_name, redirect_uri, requested_scope, \
@@ -110,8 +114,9 @@ where
         "INSERT INTO pending_oauth_authorizations \
          (request_id, user_code, client_id, client_name, redirect_uri, code_challenge, \
           code_challenge_method, state, response_type, response_mode, requested_scope, \
-          login_hint, origin, ip, user_agent, dpop_jkt, status, created_at, expires_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'), \
+          login_hint, origin, ip, user_agent, dpop_jkt, resource, status, created_at, \
+          expires_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'), \
                  datetime('now', ?))",
     )
     .bind(new.request_id)
@@ -130,6 +135,7 @@ where
     .bind(new.ip)
     .bind(new.user_agent)
     .bind(new.dpop_jkt)
+    .bind(new.resource)
     // A signed modifier string ("+300 seconds" / "-10 seconds"); `{:+}` keeps a negative TTL valid
     // (a plain "+{ttl}" would render "+-10 seconds", which SQLite rejects → NULL expiry).
     .bind(format!("{:+} seconds", new.ttl_secs))
@@ -306,7 +312,7 @@ where
         "UPDATE pending_oauth_authorizations SET status = 'completed' \
          WHERE request_id = ? AND status = 'approved' \
          RETURNING client_id, redirect_uri, code_challenge, code_challenge_method, state, \
-                   response_mode, granted_scope, account_did, dpop_jkt",
+                   response_mode, granted_scope, account_did, dpop_jkt, resource",
     )
     .bind(request_id)
     .fetch_optional(executor)
@@ -324,6 +330,7 @@ where
         state: r.get("state"),
         response_mode: r.get("response_mode"),
         dpop_jkt: r.get("dpop_jkt"),
+        resource: r.get("resource"),
         // NOT NULL in practice: only an approved row is selected, and approval always sets it.
         granted_scope: r.try_get("granted_scope").unwrap_or_default(),
         account_did: r.try_get("account_did").unwrap_or_default(),

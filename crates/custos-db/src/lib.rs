@@ -527,6 +527,108 @@ mod tests {
         );
     }
 
+    /// V077 rebuilds `agent_identities` to admit the OAuth grant types. Exercised over populated
+    /// rows because a fresh-DB run cannot catch a child table the rebuild forgot to stash.
+    #[tokio::test]
+    async fn v077_rebuild_preserves_agent_rows_and_admits_grant_records() {
+        let pool = in_memory_pool().await;
+        apply_migrations_before(&pool, 77).await;
+
+        for sql in [
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:v077owner', 'v077@example.com', 'hash', datetime('now'), datetime('now'))",
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, assertion_expires_at, claim_token_hash, \
+              handle_hint, created_at, updated_at) \
+             VALUES ('reg_v077', 'did:plc:v077owner', 'anonymous', '[]', datetime('now'), \
+                     'hash_v077', 'hint.test', datetime('now'), datetime('now'))",
+            "INSERT INTO agent_claim_attempts \
+             (id, identity_id, user_code, user_code_expires_at, created_at) \
+             VALUES ('cla_v077', 'reg_v077', '654321', datetime('now', '+10 minutes'), datetime('now'))",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        // A deleted first event leaves the survivor at rowid 2: the refill must keep absolute
+        // rowids, which the audit cursor pages on.
+        for id in ["evt_v077_a", "evt_v077_b"] {
+            sqlx::query(
+                "INSERT INTO agent_audit_events \
+                 (id, registration_id, did, event_type, detail, created_at) \
+                 VALUES (?, 'reg_v077', 'did:plc:v077owner', 'registered', NULL, datetime('now'))",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("DELETE FROM agent_audit_events WHERE id = 'evt_v077_a'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let v077 = MIGRATIONS.iter().find(|m| m.version == 77).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(v077.sql)
+            .execute(&mut *tx)
+            .await
+            .expect("V077 must apply over a populated agent-auth schema");
+        tx.commit().await.unwrap();
+
+        let (hint, hash): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT handle_hint, claim_token_hash FROM agent_identities WHERE id = 'reg_v077'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(hint.as_deref(), Some("hint.test"));
+        assert_eq!(hash.as_deref(), Some("hash_v077"));
+        let (attempts,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM agent_claim_attempts WHERE identity_id = 'reg_v077'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(attempts, 1, "claim attempt must survive the rebuild");
+        let (rowid,): (i64,) =
+            sqlx::query_as("SELECT rowid FROM agent_audit_events WHERE id = 'evt_v077_b'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rowid, 2, "audit event must keep its original rowid");
+
+        let orphan = sqlx::query(
+            "INSERT INTO agent_audit_events \
+             (id, registration_id, did, event_type, detail, created_at) \
+             VALUES ('evt_orphan', 'reg_missing', NULL, 'registered', NULL, datetime('now'))",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            orphan.is_err(),
+            "audit events must still FK-check the rebuilt table"
+        );
+
+        let grant = |id: &'static str, client_id: Option<&'static str>| {
+            sqlx::query(
+                "INSERT INTO agent_identities \
+                 (id, did, registration_type, client_id, scopes, assertion_expires_at, status, \
+                  created_at, updated_at) \
+                 VALUES (?, 'did:plc:v077owner', 'connector', ?, '[]', datetime('now'), \
+                         'claimed', datetime('now'), datetime('now'))",
+            )
+            .bind(id)
+            .bind(client_id)
+            .execute(&pool)
+        };
+        grant("reg_conn", Some("https://client.example/meta.json"))
+            .await
+            .expect("a connector record with a client_id is admitted");
+        assert!(
+            grant("reg_conn_noclient", None).await.is_err(),
+            "a grant record must name its client"
+        );
+    }
+
     /// V055 drops `pending_accounts.pending_share_{1,2,3}`. The fresh-DB migration run
     /// has no rows during the DROP COLUMN, so this exercises the production upgrade path: seed a
     /// populated pending_accounts row (with share columns set) at the pre-V055 schema, apply

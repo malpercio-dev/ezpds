@@ -156,38 +156,75 @@ pub(super) async fn handle_refresh_token(
         "atproto".to_string()
     };
 
-    // Issue new ES256 access token.
+    // Store the rotated refresh token — same session family, the session's absolute expiry
+    // carried forward verbatim (rotation never extends a session), same grant record — and audit
+    // the use, together. A family issued before grant records existed (V077) gets its record
+    // here, as a plain app: the resource it was approved for was never kept.
+    let new_refresh = generate_token();
+    let rotated = async {
+        // The account DID the grant was approved for; one that does not parse is a corrupt row.
+        let did = common::Did::parse(stored.did.as_str())?;
+        let mut tx = state.db.begin().await?;
+        let (registration_id, registration_type) = match stored.registration {
+            Some(registration) => registration,
+            None => {
+                super::link_grant_record(
+                    &mut tx,
+                    state,
+                    &did,
+                    &stored.client_id,
+                    None,
+                    &granted_scope,
+                )
+                .await?
+            }
+        };
+        store_rotated_oauth_refresh_token(
+            &mut *tx,
+            &new_refresh.hash,
+            &stored.client_id,
+            did.as_str(),
+            &granted_scope,
+            &jkt,
+            &stored.session_id,
+            &stored.expires_at,
+            &registration_id,
+        )
+        .await?;
+        super::audit_token_exchanged(
+            &mut tx,
+            &registration_id,
+            &did,
+            serde_json::json!({ "grant": "refresh_token" }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((registration_id, registration_type))
+    }
+    .await;
+    let (registration_id, registration_type) = match rotated {
+        Ok(rotated) => rotated,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to store rotated refresh token");
+            return OAuthTokenError::new("server_error", "database error").into_response();
+        }
+    };
+
+    // Issue new ES256 access token; only a connector's is agent-marked.
     let access_token = match issue_access_token(
         &state.oauth_signing_keypair,
         &stored.did,
         &granted_scope,
         Some(&jkt),
-        None,
+        registration_type
+            .marks_oauth_tokens()
+            .then_some(registration_id.as_str()),
         &state.config.public_url,
         state.config.oauth.access_token_ttl_secs,
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
-
-    // Generate and store the rotated refresh token: same session family, and the session's
-    // absolute expiry carried forward verbatim — rotation never extends a session.
-    let new_refresh = generate_token();
-    if let Err(e) = store_rotated_oauth_refresh_token(
-        &state.db,
-        &new_refresh.hash,
-        &stored.client_id,
-        &stored.did,
-        &granted_scope,
-        &jkt,
-        &stored.session_id,
-        &stored.expires_at,
-    )
-    .await
-    {
-        tracing::error!(error = %e, "failed to store rotated refresh token");
-        return OAuthTokenError::new("server_error", "database error").into_response();
-    }
 
     // Issue fresh DPoP nonce for the next request.
     let fresh_nonce = state.dpop_nonces.issue();

@@ -123,6 +123,7 @@
   <dl class="meta">
     <dt>Kind</dt><dd>{AGENT_TYPE_LABELS[agent.registrationType] ?? agent.registrationType}</dd>
     {#if agent.issuer}<dt>Issuer</dt><dd class="mono">{agent.issuer}</dd>{/if}
+    {#if agent.clientId}<dt>App</dt><dd class="mono">{agent.clientId}</dd>{/if}
     <dt>Registration</dt><dd class="mono">{agent.registrationId}</dd>
     <dt>Added</dt><dd>{formatTimestamp(agent.createdAt)}</dd>
     {#if agent.lastUsedAt}<dt>Last used</dt><dd>{formatTimestamp(agent.lastUsedAt)}</dd>{/if}

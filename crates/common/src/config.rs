@@ -779,6 +779,14 @@ pub struct OAuthConfig {
     /// request. `0` disables the cooldown. Default 30.
     #[serde(default = "default_oauth_client_jwks_refetch_cooldown_secs")]
     pub client_jwks_refetch_cooldown_secs: u64,
+    /// RFC 8707 resource indicators that mark a grant as an MCP connector, e.g.
+    /// `["https://mcp.obsign.org"]`. A client that names one of these as `resource` at PAR is
+    /// recorded as a `connector` agent: its tokens carry the record's `registration_id`, so its
+    /// writes are audited and owner-only routes refuse it. Every other grant is recorded as a
+    /// plain `oauth_app`. The resource is client-declared, so this classifies grants rather than
+    /// guarding anything. Empty (the default) makes every grant an `oauth_app`.
+    #[serde(default)]
+    pub connector_resources: Vec<String>,
 }
 
 fn default_access_token_ttl_secs() -> u64 {
@@ -799,6 +807,7 @@ impl Default for OAuthConfig {
             access_token_ttl_secs: default_access_token_ttl_secs(),
             client_jwks_cache_ttl_secs: default_oauth_client_jwks_cache_ttl_secs(),
             client_jwks_refetch_cooldown_secs: default_oauth_client_jwks_refetch_cooldown_secs(),
+            connector_resources: Vec::new(),
         }
     }
 }
@@ -1889,6 +1898,14 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_OAUTH_CLIENT_JWKS_REFETCH_COOLDOWN_SECS") {
         raw.oauth.client_jwks_refetch_cooldown_secs =
             parse_u64("EZPDS_OAUTH_CLIENT_JWKS_REFETCH_COOLDOWN_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_OAUTH_CONNECTOR_RESOURCES") {
+        raw.oauth.connector_resources = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
     }
     // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
     // (each carrying a PEM key or a JWKS URL), which does not map to a flat env var — it stays

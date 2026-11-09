@@ -40,6 +40,16 @@ docs {
         "createdAt": "2026-01-01T00:00:00.000Z",
         "updatedAt": "2026-01-01T00:05:00.000Z",
         "lastUsedAt": "2026-01-02T12:00:00.000Z"
+      },
+      {
+        "registrationId": "reg_...",
+        "registrationType": "connector",
+        "clientId": "https://mcp-client.example/oauth-client-metadata.json",
+        "scopes": ["atproto", "transition:generic"],
+        "status": "claimed",
+        "createdAt": "2026-01-03T00:00:00.000Z",
+        "updatedAt": "2026-01-03T00:00:00.000Z",
+        "lastUsedAt": "2026-01-03T00:15:00.000Z"
       }
     ]
   }
@@ -48,4 +58,6 @@ docs {
   `status` is `active` (registered, awaiting the claim ceremony), `claimed`, or `revoked`.
   `issuer`/`subject` appear only for `identity_assertion` registrations; `lastUsedAt` is the most
   recent token exchange / repo write / blob upload, absent for a never-used agent.
+  `connector` (an MCP connector) and `oauth_app` (any other OAuth app) are OAuth grants: they carry
+  `clientId`, start `claimed`, and drop off the list once every session of theirs has ended.
 }

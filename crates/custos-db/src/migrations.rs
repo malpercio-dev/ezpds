@@ -326,4 +326,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 76,
         sql: include_str!("migrations/V076__agent_credentials_hashed_at_rest.sql"),
     },
+    Migration {
+        version: 77,
+        sql: include_str!("migrations/V077__oauth_grant_agent_records.sql"),
+    },
 ];

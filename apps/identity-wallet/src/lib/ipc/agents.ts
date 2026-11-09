@@ -11,9 +11,12 @@ import type { UnlockReason } from './identity';
 /** One agent identity bound to this account. */
 export type AgentSummary = {
   registrationId: string;
-  registrationType: 'service_auth' | 'identity_assertion' | 'anonymous';
+  /** `connector` and `oauth_app` are OAuth grants: an MCP connector, or any other app. */
+  registrationType: 'service_auth' | 'identity_assertion' | 'anonymous' | 'connector' | 'oauth_app';
   issuer?: string;
   subject?: string;
+  /** The OAuth client a `connector` / `oauth_app` grant was approved for. */
+  clientId?: string;
   scopes: string[];
   /** `active` = registered, awaiting the claim ceremony; then `claimed` or `revoked`. */
   status: 'active' | 'claimed' | 'revoked';

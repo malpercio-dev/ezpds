@@ -749,6 +749,7 @@ mod tests {
             "https://app.example.com/callback",
             "atproto transition:generic",
             None,
+            None,
         )
         .await
         .unwrap();

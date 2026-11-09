@@ -168,36 +168,65 @@ pub(super) async fn handle_authorization_code(
     // scope claim on every authenticated request.
     let granted_scope = auth_code.scope;
 
-    // Issue ES256 access token.
+    // The grant's agent record, the refresh token that belongs to it, and the audit event that
+    // marks it used commit together: no refresh family exists that My agents cannot revoke.
+    let refresh = generate_token();
+    let linked = async {
+        // The account DID the grant was approved for; one that does not parse is a corrupt row.
+        let did = common::Did::parse(auth_code.did.as_str())?;
+        let mut tx = state.db.begin().await?;
+        let (registration_id, registration_type) = super::link_grant_record(
+            &mut tx,
+            state,
+            &did,
+            &auth_code.client_id,
+            auth_code.resource.as_deref(),
+            &granted_scope,
+        )
+        .await?;
+        store_initial_oauth_refresh_token(
+            &mut *tx,
+            &refresh.hash,
+            &auth_code.client_id,
+            did.as_str(),
+            &granted_scope,
+            &jkt,
+            &registration_id,
+        )
+        .await?;
+        super::audit_token_exchanged(
+            &mut tx,
+            &registration_id,
+            &did,
+            serde_json::json!({ "grant": "authorization_code" }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((registration_id, registration_type))
+    }
+    .await;
+    let (registration_id, registration_type) = match linked {
+        Ok(linked) => linked,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to record OAuth grant and refresh token");
+            return OAuthTokenError::new("server_error", "database error").into_response();
+        }
+    };
+
     let access_token = match issue_access_token(
         &state.oauth_signing_keypair,
         &auth_code.did,
         &granted_scope,
         Some(&jkt),
-        None,
+        registration_type
+            .marks_oauth_tokens()
+            .then_some(registration_id.as_str()),
         &state.config.public_url,
         state.config.oauth.access_token_ttl_secs,
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
-
-    // Generate and store refresh token, persisting the granted scope so rotation
-    // carries it forward.
-    let refresh = generate_token();
-    if let Err(e) = store_initial_oauth_refresh_token(
-        &state.db,
-        &refresh.hash,
-        &auth_code.client_id,
-        &auth_code.did,
-        &granted_scope,
-        &jkt,
-    )
-    .await
-    {
-        tracing::error!(error = %e, "failed to store refresh token");
-        return OAuthTokenError::new("server_error", "database error").into_response();
-    }
 
     // Structured trace of successful issuance, the counterpart of the rejection log in
     // `oauth_errors.rs` (and of `oauth_consent`'s approve log): which client completed an
@@ -285,6 +314,7 @@ mod tests {
             "https://app.example.com/callback",
             "atproto",
             dpop_jkt,
+            None,
         )
         .await
         .unwrap();
@@ -788,6 +818,7 @@ mod tests {
             "https://app.example.com/callback",
             "com.atproto.access",
             None,
+            None,
         )
         .await
         .unwrap();
@@ -932,6 +963,186 @@ mod tests {
             resp.status(),
             StatusCode::OK,
             "the key the flow was bound to must still redeem the code"
+        );
+    }
+
+    // ── Grant records (agent_identities) ──────────────────────────────────────
+
+    const MCP_RESOURCE: &str = "https://mcp.example.com";
+    const ACCOUNT: &str = "did:plc:testaccount000000000000";
+    const CLIENT: &str = "https://app.example.com/client-metadata.json";
+
+    /// A test state whose `[oauth] connector_resources` names [`MCP_RESOURCE`], with the client
+    /// and account [`redeem`] issues codes for already seeded.
+    async fn connector_state() -> CoreState {
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.oauth.connector_resources = vec![MCP_RESOURCE.to_string()];
+        let state = CoreState {
+            config: std::sync::Arc::new(config),
+            ..base
+        };
+        register_oauth_client(
+            &state.db,
+            CLIENT,
+            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        )
+        .await
+        .unwrap();
+        test_support::seed_handle(&state.db, "authcode.test.example.com", ACCOUNT).await;
+        state
+    }
+
+    fn jwt_payload(token: &str) -> serde_json::Value {
+        let b64 = token.split('.').nth(1).unwrap();
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(b64).unwrap()).unwrap()
+    }
+
+    /// Seed a fresh code for `resource` and redeem it; returns the token response.
+    async fn redeem(
+        state: &CoreState,
+        key: &test_support::DpopProofKey,
+        resource: Option<&str>,
+    ) -> serde_json::Value {
+        let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
+        let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+        let code = generate_token();
+        store_authorization_code(
+            &state.db,
+            &code.hash,
+            CLIENT,
+            ACCOUNT,
+            &code_challenge,
+            "S256",
+            "https://app.example.com/callback",
+            "atproto",
+            None,
+            resource,
+        )
+        .await
+        .unwrap();
+        let body = format!(
+            "grant_type=authorization_code\
+             &code={}\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &code_verifier={code_verifier}",
+            code.plaintext
+        );
+        let resp = test_app(state.clone())
+            .oneshot(post_token_with_dpop(
+                &body,
+                &test_support::token_proof(state, key),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        json_body(resp).await
+    }
+
+    async fn refresh(
+        state: &CoreState,
+        key: &test_support::DpopProofKey,
+        refresh_token: &str,
+    ) -> axum::response::Response {
+        let body = format!(
+            "grant_type=refresh_token&refresh_token={refresh_token}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
+        );
+        test_app(state.clone())
+            .oneshot(post_token_with_dpop(
+                &body,
+                &test_support::token_proof(state, key),
+            ))
+            .await
+            .unwrap()
+    }
+
+    /// A grant for a configured connector resource becomes a `connector` agent record: its tokens
+    /// carry the record's `registration_id`, and revoking the record ends the grant.
+    #[tokio::test]
+    async fn connector_grant_creates_agent_record_and_revocation_ends_it() {
+        use custos_db::agent_auth::{
+            list_agent_identities_for_did, revoke_agent_identity, AgentIdentityStatus,
+            RegistrationType,
+        };
+        let state = connector_state().await;
+        let key = test_support::DpopProofKey::generate();
+
+        let tokens = redeem(&state, &key, Some(MCP_RESOURCE)).await;
+
+        let records = list_agent_identities_for_did(&state.db, ACCOUNT)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1, "the grant must create one agent record");
+        let record = &records[0];
+        assert_eq!(record.registration_type, RegistrationType::Connector);
+        assert_eq!(record.client_id.as_deref(), Some(CLIENT));
+        assert_eq!(record.status, AgentIdentityStatus::Claimed);
+        assert!(record.last_used_at.is_some(), "the exchange counts as use");
+
+        let access = jwt_payload(tokens["access_token"].as_str().unwrap());
+        assert_eq!(access["registration_id"], record.id.as_str());
+
+        let resp = refresh(&state, &key, tokens["refresh_token"].as_str().unwrap()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rotated = json_body(resp).await;
+        let access = jwt_payload(rotated["access_token"].as_str().unwrap());
+        assert_eq!(
+            access["registration_id"],
+            record.id.as_str(),
+            "rotation must keep the tokens attributed"
+        );
+
+        assert!(revoke_agent_identity(&state.db, &record.id).await.unwrap());
+        let resp = refresh(&state, &key, rotated["refresh_token"].as_str().unwrap()).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(resp).await["error"], "invalid_grant");
+    }
+
+    /// A plain app grant is listed and revocable too, but its tokens stay unmarked, and a second
+    /// approval of the same client links to the record instead of adding one.
+    #[tokio::test]
+    async fn plain_app_grant_is_listed_unmarked_and_relinked() {
+        use custos_db::agent_auth::{list_agent_identities_for_did, RegistrationType};
+        let state = connector_state().await;
+        let key = test_support::DpopProofKey::generate();
+
+        let first = redeem(&state, &key, None).await;
+        // A resource the operator never named is just an app.
+        let second = redeem(&state, &key, Some("https://elsewhere.example.com")).await;
+
+        let records = list_agent_identities_for_did(&state.db, ACCOUNT)
+            .await
+            .unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "re-approval must link to the active record"
+        );
+        assert_eq!(records[0].registration_type, RegistrationType::OauthApp);
+        assert_eq!(records[0].client_id.as_deref(), Some(CLIENT));
+        for tokens in [first, second] {
+            let access = jwt_payload(tokens["access_token"].as_str().unwrap());
+            assert!(
+                access.get("registration_id").is_none(),
+                "an app's tokens must not be agent-marked"
+            );
+        }
+
+        // Once every session has ended (here the admin credential sweep's own statement), the
+        // record has nothing left to revoke and leaves the list rather than reading "connected".
+        sqlx::query("DELETE FROM oauth_tokens WHERE did = ?")
+            .bind(ACCOUNT)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let records = list_agent_identities_for_did(&state.db, ACCOUNT)
+            .await
+            .unwrap();
+        assert!(
+            records.is_empty(),
+            "a grant with no live session is not listed"
         );
     }
 }

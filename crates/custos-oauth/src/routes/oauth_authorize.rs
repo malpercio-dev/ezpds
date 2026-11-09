@@ -98,6 +98,9 @@ pub struct AuthorizeQuery {
     /// The DPoP key thumbprint bound at PAR time (RFC 9449 §10), when the pushing
     /// client proved a key. `None` when it pushed without one.
     pub dpop_jkt: Option<String>,
+    /// The RFC 8707 resource indicator pushed at PAR, which decides whether the grant is
+    /// recorded as an MCP connector (see the token endpoint's `link_grant_record`).
+    pub resource: Option<String>,
 }
 
 /// Raw query parameters for `GET /oauth/authorize`.
@@ -131,6 +134,11 @@ pub struct ConsentForm {
     /// they are all attacker-controllable.
     #[serde(default)]
     pub response_mode: String,
+    /// Round-tripped hidden field: the PAR's resource indicator, empty when it named none.
+    /// Classifies the grant rather than granting anything, and the client already chose it at
+    /// PAR, so a hidden field is a fine carrier here (unlike the DPoP binding).
+    #[serde(default)]
+    pub resource: String,
     /// Handle or DID entered by the user to identify the account being authorized.
     /// `None` when the field is absent (e.g. deny submissions don't send credentials).
     pub identifier: Option<String>,
@@ -273,6 +281,7 @@ async fn resolve_authorize_params(
         scope: stored.scope,
         login_hint: stored.login_hint,
         dpop_jkt: stored.dpop_jkt,
+        resource: stored.resource,
     })
 }
 
@@ -516,6 +525,7 @@ pub async fn get_authorization(
         &display_scope,
         &params.response_type,
         params.response_mode,
+        params.resource.as_deref(),
         &state.config.public_url,
         params.login_hint.as_deref(),
         None,
@@ -601,6 +611,7 @@ async fn create_pending_request(
         ip: Some(client_ip.as_str()),
         user_agent: user_agent.as_deref(),
         dpop_jkt: params.dpop_jkt.as_deref(),
+        resource: params.resource.as_deref(),
         ttl_secs: PENDING_REQUEST_TTL_SECS,
     };
     if insert_pending_authorization(&state.db, &new).await.is_err() {
@@ -787,6 +798,8 @@ pub async fn post_authorization(
             Err(e) => return e.into_error_page(),
         };
 
+    let resource = Some(form.resource.as_str()).filter(|r| !r.is_empty());
+
     // The hidden response_mode field is attacker-controllable like every other hidden
     // field. An unknown value gets the no-redirect error page: guessing a delivery mode
     // the client never asked for would hand the response to a place it isn't looking.
@@ -864,6 +877,7 @@ pub async fn post_authorization(
             &form.scope,
             &form.response_type,
             mode,
+            resource,
             &state.config.public_url,
             hint,
             Some(error),
@@ -1035,6 +1049,7 @@ pub async fn post_authorization(
         // binding an attacker can simply omit is no binding at all. The wallet-consent path
         // keeps its pending request server-side and does bind (see `oauth_consent.rs`).
         None,
+        resource,
     )
     .await
     {
@@ -2371,6 +2386,42 @@ mod tests {
             html.contains("name=\"response_mode\" value=\"fragment\""),
             "the consent form must round-trip the requested mode"
         );
+    }
+
+    /// The PAR's resource indicator reaches the issued code on the password path, by way of the
+    /// consent form's hidden field, so the exchange can classify the grant.
+    #[tokio::test]
+    async fn resource_indicator_rides_the_consent_form_into_the_code() {
+        let state = state_with_client().await;
+        let mut params = par_params();
+        params["resource"] = "https://mcp.example.com".into();
+        let html = body_string(get_authorize_via_par(state, params).await).await;
+        assert!(
+            html.contains("name=\"resource\" value=\"https://mcp.example.com\""),
+            "the consent form must round-trip the resource indicator"
+        );
+
+        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
+        let form = format!(
+            "{}&resource=https%3A%2F%2Fmcp.example.com",
+            approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD)
+        );
+        let resp = post_authorize(state.clone(), &form).await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        let code = location
+            .split(['?', '&'])
+            .find_map(|kv| kv.strip_prefix("code="))
+            .unwrap();
+        let code_hash = custos_core::auth::token::sha256_hex(
+            &base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, code)
+                .unwrap(),
+        );
+        let row = custos_db::oauth::get_authorization_code(&state.db, &code_hash)
+            .await
+            .unwrap()
+            .expect("the code was issued");
+        assert_eq!(row.resource.as_deref(), Some("https://mcp.example.com"));
     }
 
     #[tokio::test]

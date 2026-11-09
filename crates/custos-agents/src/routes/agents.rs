@@ -63,6 +63,9 @@ pub struct AgentView {
     issuer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     subject: Option<String>,
+    /// The OAuth client a `connector` / `oauth_app` grant record was approved for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_id: Option<String>,
     scopes: Vec<String>,
     status: &'static str,
     created_at: String,
@@ -156,6 +159,7 @@ pub async fn list_agents(
             registration_type: row.registration_type.as_str(),
             issuer: row.issuer,
             subject: row.subject,
+            client_id: row.client_id,
             scopes: serde_json::from_str(&row.scopes).unwrap_or_default(),
             status: row.status.as_str(),
             created_at: rfc3339(&row.created_at),
