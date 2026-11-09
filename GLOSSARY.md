@@ -29,3 +29,17 @@ _Avoid_: device share, local share
 **Startup reconcile**:
 The pass at launch that moves Share 1 and the created-identity record into their current slots.
 _Avoid_: migration (reserved for moving an account between PDSes)
+
+### Agents
+
+**Agent claim**:
+The owner confirming that an agent is bound to their identity, after which the agent acts under that owner.
+_Avoid_: claim (on its own, a claim means taking over an existing did:plc account's rotation key)
+
+**Agent scope grant**:
+The set of scopes an owner consented to for one agent, kept with that agent.
+_Avoid_: agent scopes, stored scopes
+
+**Scope profile**:
+The operator's ceiling on what any agent on the instance may be granted.
+_Avoid_: granted scopes (names the setting, not the concept)
