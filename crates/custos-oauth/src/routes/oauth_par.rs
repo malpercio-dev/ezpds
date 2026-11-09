@@ -16,6 +16,11 @@
 //!
 //! Accepts and stores `response_mode` (`query`/`fragment`; anything else is `invalid_request`)
 //! for the authorization endpoint to honor on its redirects.
+//!
+//! Accepts an optional RFC 8707 `resource` indicator (an absolute URI with no fragment, else
+//! `invalid_target`) and carries it through consent to the code. At the token exchange it selects
+//! the grant's `agent_identities` record type: a value naming one of the operator's
+//! `[oauth] connector_resources` records a `connector` grant, every other grant an `oauth_app`.
 
 use axum::{
     extract::State,

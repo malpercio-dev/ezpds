@@ -61,7 +61,8 @@ type ClaimAttemptSqlRow = (
     bool,
 );
 
-/// Registration method recorded for an auth.md agent identity.
+/// How an `agent_identities` record came to exist: an auth.md agent registration (the first four)
+/// or an OAuth grant surfaced in My agents (`connector` / `oauth_app`, V077).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistrationType {
     IdentityAssertion,

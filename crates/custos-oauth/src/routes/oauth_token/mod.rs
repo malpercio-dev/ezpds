@@ -215,8 +215,9 @@ pub(super) const AGENT_ACCESS_TOKEN_TTL_SECS: u64 = 300;
 
 /// Sign an ES256 `at+jwt` access token. `jkt` is the DPoP key thumbprint for a sender-constrained
 /// token, or `None` for a plain Bearer token (jwt-bearer grant) that carries no `cnf` binding.
-/// `registration_id` is set only for agent-derived tokens (jwt-bearer), marking them as such and
-/// tying them to their `agent_identities` row; `None` for ordinary session/OAuth grants.
+/// `registration_id` is set for agent-derived tokens — the jwt-bearer grant and a `connector`
+/// OAuth grant (`RegistrationType::marks_oauth_tokens`) — marking them as such and tying them to
+/// their `agent_identities` row; `None` for a session, an `oauth_app` grant, or any other grant.
 /// `ttl_secs` is the token's lifetime — [`custos_core::CoreState`]'s configured
 /// `oauth.access_token_ttl_secs` for OAuth grants, [`AGENT_ACCESS_TOKEN_TTL_SECS`] for agent ones.
 fn issue_access_token(
