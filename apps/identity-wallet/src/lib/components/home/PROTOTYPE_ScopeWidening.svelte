@@ -9,6 +9,7 @@
   import { authenticateBiometric } from '$lib/biometric';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
+  import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
 
   let {
     scopes,
@@ -151,6 +152,8 @@
 
 <!-- Shared consent step: the full profile, new scopes marked, one biometric tap. -->
 {#snippet consent()}
+  <div class="consent-screen u-screen">
+  <ScreenHeader title="More permissions" onback={() => (consenting = false)} backLabel="Back to agent" />
   <div class="consent" role="group" aria-label="Approve more permissions">
     <p class="consent-h">Give this {noun} everything your server allows?</p>
     <p class="consent-p">
@@ -175,6 +178,7 @@
     <Button variant="secondary" onclick={() => (consenting = false)} disabled={approving}>
       Not now
     </Button>
+  </div>
   </div>
 {/snippet}
 
@@ -372,6 +376,13 @@
     border: 1px solid var(--color-line);
     border-radius: var(--radius-lg);
     padding: var(--space-md);
+  }
+  .consent-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    overflow-y: auto;
+    background: var(--color-bg);
   }
   .consent-h {
     font-size: var(--text-title);
