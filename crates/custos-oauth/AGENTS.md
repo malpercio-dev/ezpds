@@ -5,7 +5,9 @@ Last verified: 2026-10-21
 The OAuth authorization server feature crate: PAR, `/oauth/authorize` and its wallet-confirmed
 consent half, the token endpoint (authorization code, refresh, and the auth.md jwt-bearer and
 claim-polling grants), revocation, the two discovery documents, the server's JWKS and client
-metadata, and the `walletConsent` capability entry. It depends on
+metadata, and the `walletConsent` capability entry. Approving a grant also records it as an
+`agent_identities` row (`connector` or `oauth_app`), so the owner sees and revokes it in
+[`custos-agents`](../custos-agents/AGENTS.md)' "My agents" alongside auth.md agents (V077). It depends on
 [`custos-core`](../custos-core/AGENTS.md) and [`custos-db`](../custos-db/AGENTS.md), never on `pds`
 or a sibling feature, so `cargo test -p custos-oauth` builds neither Spaces nor the rest of `pds`.
 The feature-crate contract is [`custos-spaces`' map](../custos-spaces/AGENTS.md#what-pds-consumes);
@@ -28,7 +30,9 @@ This file is a map; mechanism and invariants live in each module's `//!` doc.
 Handlers extract `State<CoreState>`. Everything the OAuth server reads that another feature also
 reads lives in core: the claim-poll tracker and agent assertion machinery (the token endpoint's
 agent grants), the account notifier (the login-approval push), and the space type cache (the
-consent page's `space:` labels, `custos_core::scope_display`).
+consent page's `space:` labels, `custos_core::scope_display`). The token endpoint also writes the
+`agent_identities` table `custos-agents` reads (`custos_db::agent_auth::link_oauth_grant`); the
+table is shared, the route handlers are not.
 
 ## Module Map
 
@@ -58,8 +62,8 @@ src/
 |---|---|
 | `oauth_authorize.rs` | `GET/POST /oauth/authorize` — consent page + code issuance; PAR-only (a GET without a PAR `request_uri`, or carrying a JAR `request` object, is refused), and the GET's wallet path owns the Phase C login-approval push dispatch |
 | `oauth_consent.rs` | `GET /oauth/authorize/{consent-request,status}`, `POST /oauth/authorize/{approve,complete}` — the wallet-confirmed (passwordless) consent half; approval is a device-key envelope verified against `identity::authority`, never the cached DID doc |
-| `oauth_par.rs` | `POST /oauth/par` — RFC 9126; enforces the atproto reverse-FQDN private-use-redirect rule (`custos_core::auth::oauth_client_resolution`) and stores `response_mode` |
-| `oauth_token/` | `POST /oauth/token` — one route module, per-grant submodules (`authorization_code`, `refresh`, `jwt_bearer`, `claim_polling`); grants incl. the RFC 7523 jwt-bearer exchange and the `urn:workos:agent-auth:grant-type:claim` poll — each submodule's doc carries its grant's rules |
+| `oauth_par.rs` | `POST /oauth/par` — RFC 9126; enforces the atproto reverse-FQDN private-use-redirect rule (`custos_core::auth::oauth_client_resolution`) and stores `response_mode` plus the RFC 8707 `resource` indicator (`connector` vs `oauth_app` at the exchange) |
+| `oauth_token/` | `POST /oauth/token` — one route module, per-grant submodules (`authorization_code`, `refresh`, `jwt_bearer`, `claim_polling`); grants incl. the RFC 7523 jwt-bearer exchange and the `urn:workos:agent-auth:grant-type:claim` poll — each submodule's doc carries its grant's rules. The `authorization_code`/`refresh` exchange also links the grant's `agent_identities` record for My agents (`link_grant_record`) |
 | `oauth_revoke.rs` | `POST /oauth/revoke` — RFC 7009; refresh tokens only, DPoP proof-of-possession, uniform 200-empty non-disclosure |
 | `oauth_protected_resource.rs` | `GET /.well-known/oauth-protected-resource` |
 | `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |

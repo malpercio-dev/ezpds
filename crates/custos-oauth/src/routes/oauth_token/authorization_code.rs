@@ -4,6 +4,12 @@
 // DPoP proof at the token endpoint, verify the PKCE S256 challenge and client_id/redirect_uri
 // against the stored authorization code, consume the code, then mint a DPoP-bound access token +
 // rotating refresh token.
+//
+// The same transaction links the grant to its `agent_identities` record (`super::link_grant_record`
+// — `connector` vs `oauth_app`, chosen by the code's stored `resource`) so the owner sees and can
+// revoke it in My agents, and stores the refresh token under that record's `registration_id`. A
+// `connector` grant's access token carries that `registration_id` (`marks_oauth_tokens`); an
+// `oauth_app` token stays unmarked.
 
 use axum::{
     http::{HeaderMap, StatusCode},
