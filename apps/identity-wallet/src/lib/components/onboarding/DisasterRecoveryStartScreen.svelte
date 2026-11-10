@@ -6,6 +6,7 @@
     isCodedError,
     type PreparedRecovery,
   } from '$lib/ipc';
+  import { formatTimestamp } from '$lib/datetime';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -53,7 +54,7 @@
       const status = await getRepoBackupStatus(did);
       if (status.rev) {
         const mb = (status.sizeBytes / (1024 * 1024)).toFixed(1);
-        backupSummary = `Post backup found (${mb} MB${status.lastBackupAt ? `, last backed up ${status.lastBackupAt.slice(0, 10)}` : ''}).`;
+        backupSummary = `Post backup found (${mb} MB${status.lastBackupAt ? `, last backed up ${formatTimestamp(status.lastBackupAt)}` : ''}).`;
       } else {
         backupMissing = true;
       }

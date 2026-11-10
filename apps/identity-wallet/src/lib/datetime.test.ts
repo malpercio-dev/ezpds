@@ -16,6 +16,10 @@ describe('formatTimestamp', () => {
     expect(formatTimestamp('2026-07-14T15:45:00Z')).toBe(formatTimestamp('2027-07-14T15:45:00Z'));
   });
 
+  it('reads a zone-less SQLite datetime ("YYYY-MM-DD HH:MM:SS") as UTC', () => {
+    expect(formatTimestamp('2026-07-16 12:00:00')).toBe(formatTimestamp('2026-07-16T12:00:00Z'));
+  });
+
   it('returns a non-empty string for a valid timestamp', () => {
     expect(formatTimestamp('2026-07-14T15:45:00Z').length).toBeGreaterThan(0);
   });
