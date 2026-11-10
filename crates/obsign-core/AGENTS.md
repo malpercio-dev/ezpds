@@ -1,6 +1,6 @@
 # obsign-core
 
-Last verified: 2026-11-07
+Last verified: 2026-11-10
 
 ## Purpose
 
@@ -47,6 +47,7 @@ The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decis
 | `src/rotate_repo_key.rs` | sovereign repo signing-key rotation (ADR-0025): PDS stages, wallet signs, PDS submits + cuts over under the repo write lock — see module doc |
 | `src/self_held_kit.rs` | escrow-less self-held Shamir kit for claimed identities: build/submit/confirm; share custody and the plc.directory-only posture in the module doc |
 | `src/session_provider.rs` | the per-DID session seam every authenticated operation goes through: restore / coalesced single-flight refresh / host-change discard, distinct terminal errors, and the `ensure_identity_session` pre-flight. The refresh network call + sub/aud re-validation is `custos_client::sovereign_session::refresh_bearer_session`; this module owns the decision ladder, the coalescing lock, and persisting/discarding the `IdentityStore` record — see module doc |
+| `src/failure.rs` | `SharedFailure`, the one error vocabulary every ceremony shares (locked session, rate-limit, discovery / plc.directory / identity-store reads): each lower-layer error is classified here once, and a command's error enum embeds it as a flat `#[from]` + `#[serde(untagged)]` variant so it serializes under its own `code` (ADR-0031) without redeclaring these codes — see module doc |
 | `src/share_recovery.rs` | the "Recover existing identity" ceremony (9 IPC commands) and its resumable rotation epilogue — see module doc |
 | `src/startup_reconcile.rs` | the startup reconcile: `run()`, the one launch entry point a shell calls after installing the adapters — the two additive Share 1 hops (app-global → per-DID → synchronizable), then the created-identity re-registration (never resurrects a forgotten identity); order and best-effort rules in the module doc |
 | `src/sovereign_session.rs` | passwordless per-DID sovereign login: resolves the device key + signer from `IdentityStore`, delegates the network ceremony to `custos_client::sovereign_session::sovereign_login`, and persists a validated Bearer session to `{did}:oauth-tokens`; re-exports the crate's `bearer_jwt_claims`/`audience_matches_server` sub/aud binding helpers and its `fresh_nonce`/`unix_timestamp` (reused by several other device-key-signed flows, not just this one) — see module doc |
