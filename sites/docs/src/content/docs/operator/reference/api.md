@@ -65,6 +65,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/agents/claim-preview` | Custos HTTP |
 | `/v1/agents/{registration_id}/audit` | Custos HTTP |
 | `/v1/agents/{registration_id}/revoke` | Custos HTTP |
+| `/v1/agents/{registration_id}/scopes` | Custos HTTP |
 | `/v1/devices` | Custos HTTP |
 | `/v1/devices/{id}/pds` | Custos HTTP |
 | `/v1/did-web/document` | Custos HTTP |

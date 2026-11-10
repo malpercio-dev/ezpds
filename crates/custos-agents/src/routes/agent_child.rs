@@ -53,8 +53,11 @@ pub struct ChildView {
     handle: String,
     status: &'static str,
     created_at: String,
-    /// The child's granted scopes — what the parent consented to when it minted the account.
+    /// The child's granted scopes — what the parent consented to when it minted the account, plus
+    /// any widening the parent approved since.
     scopes: Vec<String>,
+    /// `scopes` clamped to the current scope profile: what the child holds now.
+    effective_scopes: Vec<String>,
     /// Present only for a child whose deletion is scheduled: the instant after which the reaper
     /// purges it permanently. Deletion revokes as a side effect, so without this a retired child
     /// and a merely revoked one would be indistinguishable in the list.
@@ -199,6 +202,10 @@ pub async fn list_children(
             handle,
             status: row.status.as_str(),
             created_at: row.created_at,
+            effective_scopes: custos_core::auth::agent_assertion::effective_agent_scopes(
+                &row.scopes,
+                &state.config.agent_auth.granted_scopes,
+            ),
             scopes: serde_json::from_str(&row.scopes).unwrap_or_default(),
         });
     }
@@ -261,8 +268,8 @@ pub async fn remint_child_assertion(
         ));
     }
 
-    let scopes = custos_core::auth::oauth_scopes::intersect_scope_tokens(
-        &serde_json::from_str::<Vec<String>>(&child.scopes).unwrap_or_default(),
+    let scopes = custos_core::auth::agent_assertion::effective_agent_scopes(
+        &child.scopes,
         &state.config.agent_auth.granted_scopes,
     );
     let minted = mint_identity_assertion(
