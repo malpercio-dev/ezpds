@@ -126,6 +126,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `unlock_identity_with_password` | App command |
 | `verify_import` | App command |
 | `verify_recovery_shares` | App command |
+| `widen_agent_scopes` | App command |
 
 ## Brass Console
 

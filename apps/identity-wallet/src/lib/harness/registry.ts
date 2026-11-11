@@ -13,6 +13,7 @@
  *    asserts each is a key here — so a command added to `ipc.ts` without a handler fails
  *    `pnpm test` even if the union was not updated.
  */
+import { isOAuthGrant } from '$lib/agent-display';
 import { isDidWeb } from '$lib/did-doc-utils';
 import type {
   IdentityInfo,
@@ -40,6 +41,8 @@ import type {
   AccountStatus,
   DidWebMigrationDocument,
   AgentSummary,
+  AgentList,
+  WidenedScopes,
   AgentAuditPage,
   AgentClaimPreview,
   AgentClaimConfirmation,
@@ -227,6 +230,7 @@ export type CommandName =
   | 'self_held_kit_in_progress_cmd'
   // agents.ts
   | 'list_agents'
+  | 'widen_agent_scopes'
   | 'revoke_agent'
   | 'get_agent_audit'
   | 'preview_agent_claim'
@@ -271,6 +275,11 @@ export type Registry = Record<CommandName, Handler>;
 /** Read `did` from an args object (the common single-arg case). */
 function didArg(args: Record<string, unknown>): string {
   return String(args.did ?? '');
+}
+
+/** The server's clamp: the grant's tokens the profile still allows, in canonical (sorted) order. */
+function clampScopes(scopes: string[], profile: string[]): string[] {
+  return scopes.filter((t) => profile.includes(t)).sort();
 }
 
 /** When a harness-minted child was created — the same pinned instant `seedAgent` uses. */
@@ -1189,7 +1198,51 @@ export function buildRegistry(state: WalletState): Registry {
     // ── agents ───────────────────────────────────────────────────────────────
     agent_accounts_provisioned: (args): boolean =>
       findIdentity(state, didArg(args))?.agentAccountsProvisioned ?? false,
-    list_agents: (): AgentSummary[] => state.identities.flatMap((i) => i.agents.map((a) => a.summary)),
+    list_agents: (): AgentList => ({
+      agents: state.identities.flatMap((i) =>
+        i.agents.map((a) => ({
+          ...a.summary,
+          // The profile does not govern an OAuth grant, so the server reports it unclamped.
+          effectiveScopes: isOAuthGrant(a.summary)
+            ? [...a.summary.scopes]
+            : clampScopes(a.summary.scopes, state.agentScopeProfile),
+        }))
+      ),
+      scopeProfile: [...state.agentScopeProfile],
+    }),
+    // The server's arithmetic (ADR-0041): the grant only grows, to `before ∪ (shown ∩ profile)`,
+    // so a suspended scope stays stored and a shown scope the profile no longer allows is dropped.
+    widen_agent_scopes: (args): WidenedScopes => {
+      const identity = findIdentity(state, didArg(args));
+      const registrationId = String(args.registrationId ?? '');
+      const agent = identity?.agents.find((a) => a.summary.registrationId === registrationId);
+      const child = identity?.children.find((c) => c.registrationId === registrationId);
+      let record;
+      if (agent) record = { grant: agent.summary, audit: agent.audit };
+      else if (child) record = { grant: child, audit: child.audit };
+      else throw { code: 'AGENT_NOT_FOUND' };
+      if (agent && isOAuthGrant(agent.summary)) {
+        throw { code: 'UNKNOWN', message: 'widen scopes returned 400' };
+      }
+      if (record.grant.status !== 'claimed') throw { code: 'ACCESS_DENIED' };
+
+      const profile = state.agentScopeProfile;
+      // Copied: real IPC serializes its arguments, and a caller's array may be a $state proxy.
+      const shown = [...((args.scopes as string[] | undefined) ?? [])];
+      const before = record.grant.scopes;
+      const after = [...new Set([...before, ...clampScopes(shown, profile)])].sort();
+      if (after.length !== before.length) {
+        record.grant.scopes = after;
+        record.audit.unshift({
+          id: `ev-${registrationId}-widen-${after.length}`,
+          eventType: 'scopes_widened',
+          did: identity?.did,
+          detail: { before, shown, after },
+          createdAt: '2026-07-15T12:00:00.000Z',
+        });
+      }
+      return { scopes: [...after], effectiveScopes: clampScopes(after, profile) };
+    },
     revoke_agent: (args) => {
       const registrationId = String(args.registrationId ?? '');
       for (const identity of state.identities) {
@@ -1290,6 +1343,7 @@ export function buildRegistry(state: WalletState): Registry {
         status: c.status,
         createdAt: c.createdAt,
         scopes: [...c.scopes],
+        effectiveScopes: clampScopes(c.scopes, state.agentScopeProfile),
         ...(c.deleteAfter ? { deleteAfter: c.deleteAfter } : {}),
       })),
     revoke_child: (args) => {
@@ -1351,7 +1405,8 @@ export function buildRegistry(state: WalletState): Registry {
         registrationId: child.registrationId,
         identityAssertion: `harness.${child.registrationId}.assertion`,
         assertionExpires: isoInHours(24),
-        scopes: child.scopes,
+        // A renewal carries the grant clamped to the profile, as the real re-mint does.
+        scopes: clampScopes(child.scopes, state.agentScopeProfile),
       };
     },
     confirm_agent_claim: (args): AgentClaimConfirmation => {

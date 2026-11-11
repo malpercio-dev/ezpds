@@ -172,6 +172,34 @@ const WALLET_SHOTS = [
     caption: 'Agents you have authorised to act on your behalf.',
   },
   {
+    out: 'agent-more-permissions',
+    scenario: 'agent-scopes-available',
+    steps: [
+      { click: 'button.card' },
+      { clickText: 'My agents' },
+      { clickText: 'Server-requested' },
+      { clickText: 'More permissions available' },
+    ],
+    waitForText: 'everything your server allows',
+    caption:
+      'Approving more permissions for an agent: the whole set your server allows, with each new one marked.',
+  },
+  {
+    out: 'agent-suspended',
+    scenario: 'agent-scopes-suspended',
+    fullPage: false,
+    steps: [
+      { click: 'button.card' },
+      { clickText: 'My agents' },
+      { clickText: 'Server-requested' },
+      { click: 'details.disclosure summary' },
+      { scrollTo: 'details.disclosure' },
+    ],
+    waitForText: 'comes back without asking you',
+    caption: 'A permission your server no longer allows, suspended until it does again.',
+    rareState: true,
+  },
+  {
     // An unreversed change now takes the app over on launch rather than waiting on home, so
     // these two are reached in the opposite order from before: the alert is the landing
     // screen, and home-with-the-strip is what dismissing it ("Not now") reveals.
