@@ -30,6 +30,16 @@ _Avoid_: device share, local share
 The pass at launch that moves Share 1 and the created-identity record into their current slots.
 _Avoid_: migration (reserved for moving an account between PDSes)
 
+**Space transfer**:
+The step of an account migration that moves the account's permissioned space repos, and the space meta of every space it is the authority of, to the destination PDS.
+_Avoid_: space import (import names the wire methods, and on its own means adopting a did:web identity)
+
+### Spaces
+
+**Space meta**:
+A space's authority-side state (its policy, member list and writer set), which moves with the authority's account and is never part of any repo.
+_Avoid_: space config, space settings
+
 ### Agents
 
 **Agent claim**:
