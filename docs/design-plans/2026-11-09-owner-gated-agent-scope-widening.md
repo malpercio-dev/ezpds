@@ -67,13 +67,17 @@ owner act; no server-side proof is bound to the tap, the same as claim confirm.
 
 **Request.** `{ "scopes": [...] }`: the exact set the consent screen showed.
 
-**Write.** In one transaction:
+**Write.**
 
 1. Read the stored grant (`before`).
 2. `after = before ∪ (shown ∩ current profile)`, using the existing
    `intersect_scope_tokens` for the clamp and canonical token order for the union.
 3. If `after == before`, commit nothing and return 200 with the current values.
-4. Otherwise UPDATE `scopes` and insert the audit row, then commit.
+4. Otherwise, in one transaction, UPDATE `scopes` and insert the audit row, then
+   commit. The read happens before the transaction (the pool has one connection, so
+   a pool read can't run while a transaction holds it); the UPDATE is guarded on the
+   row still being `claimed` with grant `before`, and a lost race answers 409
+   `Conflict` with nothing written.
 
 A profile change that races the screen is handled by the arithmetic: scopes added
 to the profile after the screen rendered aren't in `shown`; scopes removed from it
@@ -85,7 +89,8 @@ fall out of the clamp.
 `after − before`.
 
 **Response.** `{ "scopes": [...], "effectiveScopes": [...] }`: the stored grant
-and `grant ∩ current profile`. No assertion. Detail screens use `effectiveScopes`
+and `grant ∩ current profile`. (In the agent lists, a `connector` / `oauth_app`
+record's `effectiveScopes` is its grant: the profile doesn't govern OAuth grants.) No assertion. Detail screens use `effectiveScopes`
 to tell held from suspended without a second fetch.
 
 **The child re-mint route** (`POST /agent/child/assertion`) is unchanged and stays
@@ -195,7 +200,10 @@ phase that causes it.
 - **AC1.9** An agent-derived token and an app-password session are both refused
   by the owner guard.
 - **AC1.10** After a widening, the next jwt-bearer exchange for that agent returns
-  an access token and renewed assertion carrying the widened `effectiveScopes`.
+  a renewed assertion carrying the widened `effectiveScopes`, and exchanging that
+  assertion returns an access token carrying them. (An access token carries the
+  presented assertion's scope, never more, so the widening takes one extra
+  exchange to reach it.)
 - **AC1.11** After a widening, `POST /agent/child/assertion` for that child mints
   an assertion carrying the widened `effectiveScopes`.
 - **AC1.12** Lowering the profile below a widened grant narrows the next renewal
@@ -236,12 +244,11 @@ phase that causes it.
 
 ## 8. Open points
 
-- **How the wallet learns the profile for a live agent.** The banner and the "New"
-  tags need the current profile, but today it's only exposed by
-  `POST /v1/agents/claim-preview`, which needs a `user_code`. The map didn't
-  decide this. The smallest option is for `GET /v1/agents` to return
-  `effectiveScopes` per agent plus the current profile once at the top level.
-  Settle it in phase 1 before the wallet work starts.
+- **How the wallet learns the profile for a live agent.** Settled in phase 1:
+  `GET /v1/agents` returns `effectiveScopes` per agent and the current profile once
+  as `scopeProfile`. Children aren't in that list, so `GET /agent/child` returns
+  `effectiveScopes` per child too; the child screen reads the profile from
+  `GET /v1/agents`.
 - **`describeScopes` copy for a child's `account:` scope.** It says "your
   account", which overstates what a child's scope reaches. Noted in the
   prototype review, not decided; fix it in phase 2 if the copy is touched anyway.

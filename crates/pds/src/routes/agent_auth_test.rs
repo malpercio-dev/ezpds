@@ -1181,6 +1181,62 @@ async fn audit_cursor_pages_without_gaps_or_duplicates() {
     );
 }
 
+/// An owner-approved widening reaches an active agent through the ordinary jwt-bearer renewal:
+/// the next exchange's renewed assertion carries the wider grant, and exchanging that assertion
+/// issues an access token with it. No re-claim, no new delivery path.
+#[tokio::test]
+async fn widened_scopes_reach_the_agent_at_its_next_renewal() {
+    let narrow = vec!["atproto".to_string(), "blob:*/*".to_string()];
+    let state = state_with(AgentAuthConfig {
+        service_auth_enabled: true,
+        granted_scopes: narrow.clone(),
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner = "did:plc:widenjourney11111";
+    insert_account(&state.db, owner, "widen-journey@example.com").await;
+    let (registration_id, claim_token) =
+        register_and_confirm_service_auth(&state, owner, "widen-journey@example.com").await;
+    let assertion = collect_assertion(&state, &claim_token).await;
+
+    // The operator raises the profile; the live agent stays where it was until the owner approves.
+    let mut wider = state.clone();
+    let mut config = (*wider.core.config).clone();
+    config
+        .agent_auth
+        .granted_scopes
+        .push("repo:*?action=delete".to_string());
+    wider.core.config = Arc::new(config);
+    let (x0, b0) = exchange_assertion(wider.clone(), &assertion).await;
+    assert_eq!(x0, StatusCode::OK, "{b0}");
+    assert_eq!(
+        jwt_claims(b0["identity_assertion"].as_str().unwrap())["scope"],
+        "atproto blob:*/*",
+        "raising the profile alone must not widen a claimed agent"
+    );
+
+    let (wstatus, wbody) = post_json(
+        wider.clone(),
+        &format!("/v1/agents/{registration_id}/scopes"),
+        json!({ "scopes": ["atproto", "blob:*/*", "repo:*?action=delete"] }),
+        Some(&owner_token(&wider, owner)),
+    )
+    .await;
+    assert_eq!(wstatus, StatusCode::OK, "{wbody}");
+
+    let (x1, b1) = exchange_assertion(wider.clone(), &assertion).await;
+    assert_eq!(x1, StatusCode::OK, "{b1}");
+    let renewed = b1["identity_assertion"].as_str().unwrap();
+    assert_eq!(
+        jwt_claims(renewed)["scope"],
+        "atproto blob:*/* repo:*?action=delete"
+    );
+
+    let (x2, b2) = exchange_assertion(wider.clone(), renewed).await;
+    assert_eq!(x2, StatusCode::OK, "{b2}");
+    assert_eq!(b2["scope"], "atproto blob:*/* repo:*?action=delete");
+}
+
 // ── cooperative child mint (auth.md claim ceremony, child arm) ────────────────
 
 /// `state_with()` plus everything a child mint needs: a stubbed plc.directory, the signing-key
@@ -1230,14 +1286,21 @@ async fn child_block(state: &AppState, handle: &str) -> Value {
 }
 
 /// The `sub` claim of a JWT, without verifying it — enough to assert whose credential this is.
-fn jwt_sub(token: &str) -> String {
+/// A JWT's payload claims, unverified.
+fn jwt_claims(token: &str) -> Value {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     let payload = token.split('.').nth(1).expect("jwt has a payload segment");
     let decoded = URL_SAFE_NO_PAD
         .decode(payload)
         .expect("payload is base64url");
-    let claims: Value = serde_json::from_slice(&decoded).expect("payload is JSON");
-    claims["sub"].as_str().expect("sub claim").to_string()
+    serde_json::from_slice(&decoded).expect("payload is JSON")
+}
+
+fn jwt_sub(token: &str) -> String {
+    jwt_claims(token)["sub"]
+        .as_str()
+        .expect("sub claim")
+        .to_string()
 }
 
 fn anonymous_cfg() -> AgentAuthConfig {

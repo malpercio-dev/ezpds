@@ -36,6 +36,7 @@ docs {
         "issuer": "https://idp.example",
         "subject": "agent-123",
         "scopes": ["repo:app.bsky.feed.post?action=create", "blob:image/*"],
+        "effectiveScopes": ["repo:app.bsky.feed.post?action=create", "blob:image/*"],
         "status": "claimed",
         "createdAt": "2026-01-01T00:00:00.000Z",
         "updatedAt": "2026-01-01T00:05:00.000Z",
@@ -46,14 +47,21 @@ docs {
         "registrationType": "connector",
         "clientId": "https://mcp-client.example/oauth-client-metadata.json",
         "scopes": ["atproto", "transition:generic"],
+        "effectiveScopes": ["atproto", "transition:generic"],
         "status": "claimed",
         "createdAt": "2026-01-03T00:00:00.000Z",
         "updatedAt": "2026-01-03T00:00:00.000Z",
         "lastUsedAt": "2026-01-03T00:15:00.000Z"
       }
-    ]
+    ],
+    "scopeProfile": ["atproto", "blob:*/*", "repo:*?action=create&action=update"]
   }
   ```
+
+  `scopeProfile` is the operator's current scope profile: the ceiling an owner can widen an agent
+  to (`POST /v1/agents/{registration_id}/scopes`). `effectiveScopes` is the agent's grant clamped
+  to it, what the agent holds now; a scope in `scopes` but not `effectiveScopes` is suspended. An
+  OAuth grant isn't governed by the profile, so its `effectiveScopes` equals its `scopes`.
 
   `status` is `active` (registered, awaiting the claim ceremony), `claimed`, or `revoked`.
   `issuer`/`subject` appear only for `identity_assertion` registrations; `lastUsedAt` is the most

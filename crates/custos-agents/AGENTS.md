@@ -1,6 +1,6 @@
 # custos-agents
 
-Last verified: 2026-10-22
+Last verified: 2026-11-09
 
 The auth.md agent feature crate: the `/auth.md` document, agent registration, the owner-confirmed
 claim ceremony, sovereign child agents, the provider event endpoint, the owner's `/v1/agents`
@@ -59,7 +59,7 @@ src/
 | `agent_claim.rs` | `POST /agent/identity/claim` + `/claim/confirm` — the auth.md claim ceremony (Step 4): public agent initiate, owner-authed confirm flips `active → claimed`; polling collection lives at the token endpoint. Confirm has two arms — bind the agent to the confirming account, or (with a `child` block, ownerless anonymous registrations only) mint it an account of its own via `agent_child_core.rs` and convert the registration in place — see module doc |
 | `agent_child.rs` | `POST /agent/child` (mint), `GET /agent/child` (list), `POST /agent/child/{assertion,revoke,delete}` — parent-owned sovereign child agents; the mint body lives in `agent_child_core.rs` so the claim ceremony can share it. Owner-guarded throughout: agent-derived callers are refused, a foreign child DID is a uniform 404, and its lifecycle verbs are the custody ladder (renew the capability / revoke it / schedule the hosting for deletion) — see module doc |
 | `agent_event.rs` | `POST /agent/event/notify` — auth.md `events_endpoint`: a trusted-issuer SET (RFC 8417/8935) revokes the matching registration; idempotent 202 — see module doc |
-| `agents.rs` | `GET /v1/agents`, `POST /v1/agents/claim-preview`, `POST /v1/agents/{registration_id}/revoke`, `GET /v1/agents/{registration_id}/audit` — owner-guarded "My agents" management; agent-derived callers refused, a parent operates its sovereign children — see module doc |
+| `agents.rs` | `GET /v1/agents`, `POST /v1/agents/claim-preview`, `POST /v1/agents/{registration_id}/revoke`, `GET /v1/agents/{registration_id}/audit`, `POST /v1/agents/{registration_id}/scopes` — owner-guarded "My agents" management; agent-derived callers refused, a parent operates its sovereign children; the scopes route is the owner-gated widening (ADR-0041), refused for OAuth grant records — see module doc |
 
 ## Rules
 
