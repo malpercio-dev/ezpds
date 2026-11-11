@@ -1,1 +1,0 @@
-Five more shared query modules (admin devices, device transfers, repo signing keys, and the persisted JWT secret and Iroh identity) moved into the `custos-db` crate; queries and server behavior are unchanged.
