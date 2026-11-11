@@ -305,6 +305,36 @@ struct PreparedChild {
     sync_car: Vec<u8>,
 }
 
+/// Free a child's handle the moment its deletion is scheduled, rather than at purge, so its owner
+/// can reuse the name for a replacement. Run inside the scheduling transaction.
+///
+/// Releasing early gives up no undo window: no path reactivates a child scheduled for deletion.
+/// Its capability is revoked, its password is random, and the sovereign session refuses a
+/// deactivated account. Dropping the provisioning row (which also holds the name) ends the mint's
+/// journal, so even a resumed mint of the same DID collides on its account row.
+pub async fn release_child_handle(
+    tx: &mut sqlx::SqliteConnection,
+    child_did: &str,
+) -> Result<(), ApiError> {
+    for statement in [
+        "DELETE FROM handles WHERE did = ?",
+        "DELETE FROM agent_child_provisionings WHERE child_did = ?",
+    ] {
+        sqlx::query(statement)
+            .bind(child_did)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                ApiError::internal_as(
+                    e,
+                    "failed to release child handle",
+                    "failed to schedule child deletion",
+                )
+            })?;
+    }
+    Ok(())
+}
+
 /// Reload an interrupted mint's provisioning row. The same handle and parent resume it; anything
 /// else is a conflict over a child DID already in flight.
 async fn load_prepared_child(

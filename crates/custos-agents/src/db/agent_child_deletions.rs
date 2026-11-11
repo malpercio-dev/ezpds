@@ -28,7 +28,8 @@ pub(crate) struct ChildDeletionRow {
 /// Record (or refresh) a child-deletion tombstone. Generic over the executor so callers write it
 /// inside the same transaction as the deactivation + revocation it records. `scheduled_at` is
 /// stamped server-side; `delete_after` is the caller-computed grace deadline (RFC 3339). A repeat
-/// delete of the same child is an idempotent upsert on the `child_did` primary key.
+/// delete of the same child is an idempotent upsert on the `child_did` primary key; an empty
+/// `handle` (a re-delete, after the first released it) keeps the recorded one.
 pub(crate) async fn upsert_child_deletion<'e, E>(
     executor: E,
     child_did: &str,
@@ -46,7 +47,7 @@ where
          VALUES (?, ?, ?, ?, datetime('now'), ?) \
          ON CONFLICT(child_did) DO UPDATE SET \
              parent_did = excluded.parent_did, \
-             handle = excluded.handle, \
+             handle = COALESCE(NULLIF(excluded.handle, ''), agent_child_deletions.handle), \
              registration_id = excluded.registration_id, \
              scheduled_at = excluded.scheduled_at, \
              delete_after = excluded.delete_after",
