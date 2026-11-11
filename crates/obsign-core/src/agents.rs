@@ -1,7 +1,7 @@
 // pattern: Mixed (Functional Core error mapping; Imperative Shell commands)
 
 //! Agent consent + audit — the wallet side of the auth.md claim ceremony and the
-//! "My agents" surface. Seven per-identity Tauri IPC commands, each taking a `did`:
+//! "My agents" surface. Eight per-identity Tauri IPC commands, each taking a `did`:
 //!
 //! - `preview_agent_claim(did, user_code) -> AgentClaimPreview` — `POST /v1/agents/claim-preview`:
 //!   what approving this code would grant, shown before the biometric gate.
@@ -9,7 +9,12 @@
 //!   `POST /agent/identity/claim/confirm`, the human gate flipping the agent identity
 //!   `active → claimed`; the frontend wraps it in `authenticateBiometric()`, so the
 //!   prompt precedes the network call and a rejected gate grants nothing.
-//! - `list_agents(did) -> Vec<AgentSummary>` — the identities bound to this account.
+//! - `list_agents(did) -> AgentList` — the identities bound to this account, plus the
+//!   operator's current scope profile.
+//! - `widen_agent_scopes(did, registration_id, scopes) -> WidenedScopes` —
+//!   `POST /v1/agents/{id}/scopes`: approve the shown profile for a live agent or child
+//!   (ADR-0041). The frontend gates it behind the biometric prompt and, for a child, follows it
+//!   with `remint_child_assertion` under the same tap.
 //! - `revoke_agent(did, registration_id)` — turn an agent off (idempotent on the server).
 //! - `get_agent_audit(did, registration_id, cursor?) -> AgentAuditPage` — page the
 //!   agent's append-only audit trail.
@@ -76,8 +81,8 @@ use crate::pds_client::PdsClient;
 use crate::session_provider::SessionProvider;
 
 pub use custos_client::agents::{
-    AgentAuditEvent, AgentAuditPage, AgentClaimConfirmation, AgentClaimPreview, AgentSummary,
-    ChildAssertion, ChildDeletion, ChildSummary,
+    AgentAuditEvent, AgentAuditPage, AgentClaimConfirmation, AgentClaimPreview, AgentList,
+    AgentSummary, ChildAssertion, ChildDeletion, ChildSummary, WidenedScopes,
 };
 
 // ── Frontend-facing types staying here (wallet key-material results) ───────────
@@ -500,9 +505,23 @@ pub fn agent_accounts_provisioned(core: &crate::oauth::Core, did: String) -> boo
 pub async fn list_agents(
     state: &crate::oauth::Core,
     did: String,
-) -> Result<Vec<AgentSummary>, AgentsError> {
+) -> Result<AgentList, AgentsError> {
     let session = SessionProvider.full_access_client(state, &did).await?;
     Ok(custos_client::agents::list_agents(&session.client).await?)
+}
+
+/// Approve the shown scope profile for a live agent or child (ADR-0041).
+pub async fn widen_agent_scopes(
+    state: &crate::oauth::Core,
+    did: String,
+    registration_id: String,
+    scopes: Vec<String>,
+) -> Result<WidenedScopes, AgentsError> {
+    let session = SessionProvider.full_access_client(state, &did).await?;
+    Ok(
+        custos_client::agents::widen_agent_scopes(&session.client, &registration_id, &scopes)
+            .await?,
+    )
 }
 
 /// Revoke an agent identity. Idempotent on the server; the next token exchange is refused.

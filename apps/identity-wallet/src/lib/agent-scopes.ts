@@ -123,8 +123,14 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/**
+ * Whose account the scope reaches: the user's own, or a child account's. A child's grant
+ * reaches only the child, so "your account" would overstate it.
+ */
+export type ScopeHolder = 'self' | 'child';
+
 /** Describe one scope token in plain language. */
-export function describeScope(token: string): ScopeDescription {
+export function describeScope(token: string, holder: ScopeHolder = 'self'): ScopeDescription {
   if (token === 'atproto') {
     return { summary: 'Act as an ATProto client for your account', token, elevated: false };
   }
@@ -144,7 +150,8 @@ export function describeScope(token: string): ScopeDescription {
     return { summary: describeRpc(token.slice('rpc:'.length)), token, elevated: false };
   }
   if (token.startsWith('account:')) {
-    return { summary: 'Manage your account settings', token, elevated: true };
+    const whose = holder === 'child' ? 'its own' : 'your';
+    return { summary: `Manage ${whose} account settings`, token, elevated: true };
   }
   if (token.startsWith('identity:')) {
     return { summary: 'Change your handle or identity', token, elevated: true };
@@ -157,6 +164,32 @@ export function describeScope(token: string): ScopeDescription {
 }
 
 /** Describe a whole scope list, preserving order. */
-export function describeScopes(tokens: string[]): ScopeDescription[] {
-  return tokens.map(describeScope);
+export function describeScopes(tokens: string[], holder: ScopeHolder = 'self'): ScopeDescription[] {
+  return tokens.map((t) => describeScope(t, holder));
+}
+
+/** Where each scope stands for one agent, against the operator's current scope profile. */
+export type ScopeStanding = {
+  /** What the agent can use now: its grant clamped to the profile. */
+  held: string[];
+  /** In the grant but outside the profile. Comes back at renewal, unasked, if the profile does. */
+  suspended: string[];
+  /** In the profile but not the grant: what the owner could approve. */
+  available: string[];
+};
+
+/**
+ * Split an agent's stored grant (`scopes`) by the server's clamp (`effectiveScopes`) and the
+ * profile. Tokens compare as exact strings, the same as the server's clamp (ADR-0041).
+ */
+export function scopeStanding(
+  scopes: string[],
+  effectiveScopes: string[],
+  profile: string[]
+): ScopeStanding {
+  return {
+    held: effectiveScopes,
+    suspended: scopes.filter((t) => !effectiveScopes.includes(t)),
+    available: profile.filter((t) => !scopes.includes(t)),
+  };
 }

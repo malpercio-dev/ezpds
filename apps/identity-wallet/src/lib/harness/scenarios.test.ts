@@ -64,7 +64,7 @@ describe('wallet harness scenarios', () => {
   it('agent-connected binds a claimed agent', () => {
     const state = scenarios['agent-connected']();
     const registry = buildRegistry(state);
-    const agents = registry.list_agents({}) as unknown[];
+    const { agents } = registry.list_agents({}) as { agents: unknown[] };
     expect(agents).toHaveLength(1);
   });
 

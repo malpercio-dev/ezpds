@@ -4,6 +4,8 @@ import { buildScenario } from './scenarios';
 import { HARNESS_AGENT_SCOPES } from './state';
 import type {
   AgentClaimPreview,
+  AgentList,
+  WidenedScopes,
   ChildAssertion,
   ChildDeletion,
   ChildReconciliation,
@@ -288,5 +290,82 @@ describe('recovery epilogue for children', () => {
     const registry = buildRegistry(state);
     const did = state.identities[0].did;
     expect(() => registry.reconcile_children({ did })).toThrow();
+  });
+});
+
+/**
+ * Owner-gated scope widening as the detail screens drive it (ADR-0041): the operator's profile
+ * offers more than the grant, the owner approves the shown set, and the grant only grows.
+ */
+describe('agent scope widening', () => {
+  it('offers the scopes the raised profile adds, then grows the grant to hold them', () => {
+    const state = buildScenario('agent-scopes-available');
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+
+    const before = registry.list_agents({ did }) as AgentList;
+    const agent = before.agents[0];
+    expect(before.scopeProfile).toContain('account:email');
+    expect(agent.scopes).not.toContain('account:email');
+
+    const widened = registry.widen_agent_scopes({
+      did,
+      registrationId: agent.registrationId,
+      scopes: before.scopeProfile,
+    }) as WidenedScopes;
+    expect(widened.effectiveScopes).toEqual([...before.scopeProfile].sort());
+
+    const after = registry.list_agents({ did }) as AgentList;
+    expect(after.agents[0].scopes).toEqual(widened.scopes);
+    const audit = registry.get_agent_audit({ did, registrationId: agent.registrationId }) as {
+      events: { eventType: string }[];
+    };
+    expect(audit.events.some((e) => e.eventType === 'scopes_widened')).toBe(true);
+  });
+
+  it('keeps a suspended scope stored, and never stores a shown scope outside the profile', () => {
+    const state = buildScenario('agent-scopes-suspended');
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+    const { agents, scopeProfile } = registry.list_agents({ did }) as AgentList;
+    const agent = agents[0];
+    expect(agent.scopes).toContain('repo:*?action=delete');
+    expect(agent.effectiveScopes).not.toContain('repo:*?action=delete');
+
+    const widened = registry.widen_agent_scopes({
+      did,
+      registrationId: agent.registrationId,
+      scopes: [...scopeProfile, 'identity:*'],
+    }) as WidenedScopes;
+    expect(widened.scopes).toContain('repo:*?action=delete');
+    expect(widened.scopes).not.toContain('identity:*');
+    expect(widened.effectiveScopes).not.toContain('repo:*?action=delete');
+  });
+
+  it('widens a live child, which the follow-up renewal then carries', () => {
+    const state = buildScenario('agent-scopes-available');
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+    const { scopeProfile } = registry.list_agents({ did }) as AgentList;
+    const child = (registry.list_children({ did }) as ChildSummary[])[0];
+
+    registry.widen_agent_scopes({ did, registrationId: child.registrationId, scopes: scopeProfile });
+    const renewed = registry.remint_child_assertion({ did, childDid: child.did }) as ChildAssertion;
+    expect(renewed.scopes).toContain('account:email');
+  });
+
+  it('refuses an agent that is not live, and an unknown one', () => {
+    const state = buildScenario('agent-children');
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+    const revoked = (registry.list_children({ did }) as ChildSummary[]).find(
+      (c) => c.status === 'revoked'
+    )!;
+    expect(() =>
+      registry.widen_agent_scopes({ did, registrationId: revoked.registrationId, scopes: [] })
+    ).toThrow(expect.objectContaining({ code: 'ACCESS_DENIED' }));
+    expect(() =>
+      registry.widen_agent_scopes({ did, registrationId: 'reg-nobody', scopes: [] })
+    ).toThrow(expect.objectContaining({ code: 'AGENT_NOT_FOUND' }));
   });
 });

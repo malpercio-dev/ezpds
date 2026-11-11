@@ -122,6 +122,22 @@ account can be removed for good.
   <figcaption>The agents you've approved, with their permissions and activity record.</figcaption>
 </figure>
 
+When your server starts allowing agents more than one of yours holds, its page shows **More
+permissions available**. Tapping it lists everything the server allows, with the new
+permissions marked, and one approval grants the whole set. If your server stops allowing a
+permission, the agent's page shows it as suspended; it comes back on its own if the server
+allows it again.
+
+<figure>
+  <img src="/screenshots/wallet/agent-more-permissions.png" alt="Obsign 'More permissions' screen listing an agent's permissions, two of them tagged 'New'" width="280" />
+  <figcaption>Approving more permissions: everything the server allows, with the new ones marked.</figcaption>
+</figure>
+
+<figure>
+  <img src="/screenshots/wallet/agent-suspended.png" alt="An agent's permissions with one struck through and tagged 'Suspended'" width="280" />
+  <figcaption>A permission the server no longer allows, suspended until it does again.</figcaption>
+</figure>
+
 ## Settings
 
 <figure>
