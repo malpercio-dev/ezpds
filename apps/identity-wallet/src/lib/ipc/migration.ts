@@ -138,7 +138,7 @@ export type BlobLoss = {
 
 /**
  * Error returned by the migration orchestrator commands.
- * Matches MigrationError in migration_orchestrator.rs with
+ * Matches MigrationError in migration_orchestrator/mod.rs with
  * #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")] — codes must match exactly.
  */
 export type MigrationError =

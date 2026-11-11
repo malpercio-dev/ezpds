@@ -3,7 +3,7 @@
 //! Migration XRPC helpers: typed methods over an authenticated [`OAuthClient`] for the
 //! outbound-migration set (service auth, destination account creation, repo/blob import,
 //! preferences, account-status/lifecycle). No orchestration here — sequencing multi-step
-//! migration lives in the caller (e.g. identity-wallet's `migration_orchestrator.rs`).
+//! migration lives in the caller (e.g. obsign-core's `migration_orchestrator`).
 
 use serde::{Deserialize, Serialize};
 
