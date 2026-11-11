@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
-use crate::agent_child_core::{mint_child_account, ChildRegistration};
+use crate::agent_child_core::{mint_child_account, release_child_handle, ChildRegistration};
 use crate::db::agent_child_deletions::{list_child_deletions_of_parent, upsert_child_deletion};
 use custos_core::auth::agent_assertion::{mint_identity_assertion, parse_sqlite_datetime};
 use custos_core::auth::guards::{authenticate_account_owner, OwnerAuthError};
@@ -183,21 +183,28 @@ pub async fn list_children(
         .map_err(owner_error)?;
     let rows = list_children_of_parent(&state.db, &parent).await?;
     // One tombstone sweep for the whole list rather than a lookup per child.
-    let scheduled: std::collections::HashMap<String, String> =
+    let mut scheduled: std::collections::HashMap<String, (String, String)> =
         list_child_deletions_of_parent(&state.db, &parent)
             .await?
             .into_iter()
-            .map(|row| (row.child_did, row.delete_after))
+            .map(|row| (row.child_did, (row.delete_after, row.handle)))
             .collect();
     let mut children = Vec::with_capacity(rows.len());
     for row in rows {
         let did = row.did.unwrap_or_default();
-        let handle = custos_db::handles::get_handle_by_did(&state.db, &did)
-            .await?
-            .unwrap_or_default();
+        // A deleted child's handle is released at delete time; its tombstone keeps the name.
+        let (delete_after, handle) = match scheduled.remove(&did) {
+            Some((delete_after, handle)) => (Some(delete_after), handle),
+            None => (
+                None,
+                custos_db::handles::get_handle_by_did(&state.db, &did)
+                    .await?
+                    .unwrap_or_default(),
+            ),
+        };
         children.push(ChildView {
             registration_id: row.id,
-            delete_after: scheduled.get(&did).cloned(),
+            delete_after,
             did,
             handle,
             status: row.status.as_str(),
@@ -316,7 +323,8 @@ pub async fn remint_child_assertion(
 ///
 /// Permanently retires a sovereign child's *hosting*. Revocation (`/agent/child/revoke`) kills only
 /// the delegated capability and keeps the identity (ADR-0023 custody ladder); this goes further and
-/// schedules the account/repo/handle/blobs for permanent deletion. It reuses the deactivate +
+/// releases the handle at once (see `release_child_handle`) and schedules the account/repo/blobs
+/// for permanent deletion. It reuses the deactivate +
 /// `delete_after` + reaper pipeline: the child is revoked and deactivated *now* (so relays stop
 /// serving its repo at once via an `#account` deactivated frame), a durable deletion tombstone is
 /// recorded, and the scheduled-deletion reaper permanently purges the child once the grace window
@@ -344,7 +352,8 @@ pub async fn delete_child(
         .await?
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "child agent not found"))?;
 
-    // The tombstone carries the handle because the `handles` row is purged with the child.
+    // The tombstone carries the handle because the `handles` row is released below. A re-delete
+    // reads none and keeps the tombstone's (see `upsert_child_deletion`).
     let handle = custos_db::handles::get_handle_by_did(&state.db, &request.did)
         .await?
         .unwrap_or_default();
@@ -375,6 +384,7 @@ pub async fn delete_child(
         &delete_after,
     )
     .await?;
+    release_child_handle(&mut tx, &request.did).await?;
 
     let pending = match change {
         // A child freshly transitioned active → deactivated: announce it so relays stop serving.
@@ -394,7 +404,7 @@ pub async fn delete_child(
                     )
                 })?,
         ),
-        // Already deactivated (e.g. a re-delete, or a child mid-provisioning): the reschedule
+        // Already deactivated (a re-delete): the reschedule
         // refreshed `delete_after` without a status change, so no new frame is emitted.
         AccountStateChange::Unchanged => None,
         // The owner guard + `get_child_of_parent` already proved the child account exists.
@@ -1059,6 +1069,35 @@ mod tests {
         assert_eq!(event.did, child);
         assert!(!event.active);
         assert_eq!(event.status.as_deref(), Some("deactivated"));
+
+        // The handle is released at once rather than at purge, so the owner can replace the child
+        // under the same name; the list still names the retired child from its tombstone.
+        assert_eq!(
+            custos_db::handles::resolve_handle(&state.db, handle)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(listed["children"][0]["handle"], handle);
+
+        // A repeat delete finds no handle left to read, and must not blank the tombstone's.
+        let response = test_app(state.clone())
+            .oneshot(request(
+                "/agent/child/delete",
+                Some(&token),
+                serde_json::json!({"did": child}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let tombstones =
+            crate::db::agent_child_deletions::list_child_deletions_of_parent(&state.db, parent)
+                .await
+                .unwrap();
+        assert_eq!(tombstones[0].handle, handle);
+
+        let replacement = mint_child_for(&state, handle, &token).await;
+        assert_ne!(replacement, child);
     }
 
     #[tokio::test]
