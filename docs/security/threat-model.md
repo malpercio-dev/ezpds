@@ -68,11 +68,23 @@ makes `jti` tracking a SHOULD, replay is bounded by the 60s `iat` window plus th
 `ath` token binding, and every route behind `AuthenticatedUser` must stay
 idempotent for that to be safe).
 
+One class of token is deliberately not key-bound: an MCP connector's
+([ADR-0042](../architecture/decisions/0042-unbound-connector-tokens.md)), because
+MCP clients cannot produce a DPoP proof. A leaked connector access token is usable
+until it expires, so the terms bound it instead: a five-minute lifetime, a scope
+ceiling that excludes `identity:`, `account:` and `transition:`
+(`connector_scope_ceiling` in `crates/custos-core/src/auth/oauth_resource.rs`), an
+audience naming the connector resource, and refusal on owner-only routes. A leaked
+refresh token is bounded by rotation with reuse detection
+(`crates/custos-oauth/src/routes/oauth_token/refresh.rs`), and the owner revokes the
+grant in My agents.
+
 ### OAuth client impersonation
 
 PAR/authorize require `code_challenge_method=S256` (`crates/custos-oauth/src/routes/oauth_par.rs`),
 an exact `redirect_uri` match against the client's registered `redirect_uris`
-(same file), and — for a Private-Use URI Scheme redirect on discoverable
+(`redirect_uri_registered`; only a connector request waives a loopback redirect's
+port, per RFC 8252 §7.3), and — for a Private-Use URI Scheme redirect on discoverable
 client metadata — the reverse-FQDN rule (`validate_private_use_redirect` in
 `crates/custos-core/src/auth/oauth_client_resolution.rs`). Client identity for a
 URL-shaped `client_id` is resolved by fetching its metadata document; a failed

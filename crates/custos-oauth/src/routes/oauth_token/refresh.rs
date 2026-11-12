@@ -94,8 +94,7 @@ pub(super) async fn handle_refresh_token(
 
     // What the family was issued for decides the terms. A resource the operator has since
     // unconfigured ends the family.
-    let not_found =
-        || OAuthTokenError::new("invalid_grant", "refresh token not found or expired");
+    let not_found = || OAuthTokenError::new("invalid_grant", "refresh token not found or expired");
     let terms = match super::ConnectorTerms::for_grant(
         state,
         stored.resource.as_deref(),

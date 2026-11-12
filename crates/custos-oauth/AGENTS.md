@@ -37,7 +37,7 @@ src/
   lib.rs            — the exports above; `custos_core` modules are imported by full path, no root aliases
   router.rs         — the route table (`scripts/bruno-parity.sh` and `scripts/generate-docs-reference.mjs` read its `.route(` literals)
   capability.rs     — `CAPABILITY`, the `walletConsent` entry of the `describeServer` table
-  oauth_templates.rs, oauth_errors.rs, oauth_dpop.rs — handler-free support shared by the routes (table below)
+  oauth_templates.rs, oauth_errors.rs, oauth_dpop.rs, oauth_client.rs — handler-free support shared by the routes (table below)
   auth/             — `oauth_response_mode.rs`: `ResponseMode` (`query` | `fragment`), validated at PAR, threaded through both consent paths, read back off the pending row; the verification core is named at `custos_core::auth::…`
   db/               — `pending_oauth_authorizations.rs`: the wallet-confirmed consent primitive (V056 + V060) and the append-only consent audit trail; the shared tables are named at `custos_db::…`
   routes/           — one file per endpoint (table below); private, only handler functions leave it
@@ -50,16 +50,17 @@ src/
 |---|---|
 | `oauth_templates.rs` | pure HTML rendering helpers |
 | `oauth_errors.rs` | shared `OAuthTokenError` — the RFC 6749 §5.2 responder used by `oauth_token/` and `oauth_revoke.rs` |
+| `oauth_client.rs` | `resolve_client` — cached-or-fetched client metadata for the start of an authorization request, shared by `oauth_par.rs` and the plain connector request in `oauth_authorize.rs` |
 | `oauth_dpop.rs` | shared handler-free support for `oauth_token/`'s grant handlers and `oauth_revoke.rs` `token_endpoint_dpop` — the RFC 9449 multiple-header check, proof extraction, and `validate_dpop_for_token_endpoint` dispatch against the caller's own URL |
 
 ### `routes/`
 
 | File | Endpoint |
 |---|---|
-| `oauth_authorize.rs` | `GET/POST /oauth/authorize` — consent page + code issuance; PAR-only (a GET without a PAR `request_uri`, or carrying a JAR `request` object, is refused), and the GET's wallet path owns the Phase C login-approval push dispatch |
+| `oauth_authorize.rs` | `GET/POST /oauth/authorize` — consent page + code issuance; PAR-only (a GET without a PAR `request_uri`, or carrying a JAR `request` object, is refused) except for a plain request naming a connector resource (ADR-0042), and the GET's wallet path owns the Phase C login-approval push dispatch |
 | `oauth_consent.rs` | `GET /oauth/authorize/{consent-request,status}`, `POST /oauth/authorize/{approve,complete}` — the wallet-confirmed (passwordless) consent half; approval is a device-key envelope verified against `identity::authority`, never the cached DID doc |
 | `oauth_par.rs` | `POST /oauth/par` — RFC 9126; enforces the atproto reverse-FQDN private-use-redirect rule (`custos_core::auth::oauth_client_resolution`) and stores `response_mode` |
-| `oauth_token/` | `POST /oauth/token` — one route module, per-grant submodules (`authorization_code`, `refresh`, `jwt_bearer`, `claim_polling`); grants incl. the RFC 7523 jwt-bearer exchange and the `urn:workos:agent-auth:grant-type:claim` poll — each submodule's doc carries its grant's rules |
+| `oauth_token/` | `POST /oauth/token` — one route module, per-grant submodules (`authorization_code`, `refresh`, `jwt_bearer`, `claim_polling`); the authorization-code and refresh grants issue an unbound token on the connector terms for a connector grant (`ConnectorTerms`, ADR-0042); also the RFC 7523 jwt-bearer exchange and the `urn:workos:agent-auth:grant-type:claim` poll — each submodule's doc carries its grant's rules |
 | `oauth_revoke.rs` | `POST /oauth/revoke` — RFC 7009; refresh tokens only, DPoP proof-of-possession, uniform 200-empty non-disclosure |
 | `oauth_protected_resource.rs` | `GET /.well-known/oauth-protected-resource` |
 | `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |
