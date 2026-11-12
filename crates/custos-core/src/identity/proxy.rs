@@ -270,12 +270,10 @@ pub async fn resolve_atproto_proxy_target(
 /// `allow_loopback` is a test-only relaxation (see `CoreState::allow_loopback_proxy_targets`):
 /// production always passes `false`.
 ///
-/// `pub(crate)`: also reused by `auth::permission_sets` to guard the Lexicon-authority service
-/// endpoint fetch, which faces the identical "attacker names the resolution target" shape.
-pub(crate) async fn validate_proxy_endpoint(
-    endpoint: &str,
-    allow_loopback: bool,
-) -> Result<(), ApiError> {
+/// Public because every fetch to a caller-influenced endpoint needs it, not only the proxy: the
+/// Lexicon-authority fetch in `auth::permission_sets` and `custos-spaces`' notification delivery
+/// face the same "attacker names the resolution target" shape.
+pub async fn validate_proxy_endpoint(endpoint: &str, allow_loopback: bool) -> Result<(), ApiError> {
     let bad_target = || {
         ApiError::new(
             ErrorCode::ServiceUnavailable,

@@ -324,6 +324,14 @@ async fn attempt_delivery(
             .map_err(|e| Failure::Transient(e.to_string()))?;
         let endpoint = endpoint_in(&doc, fragment)
             .ok_or_else(|| Failure::Permanent(format!("no service endpoint for {did}")))?;
+        // The resolver behind the hardened client never sees an IP-literal host, so the
+        // endpoint's address is checked here before anything is sent to it.
+        custos_core::identity::proxy::validate_proxy_endpoint(
+            &endpoint,
+            state.allow_loopback_proxy_targets,
+        )
+        .await
+        .map_err(|e| Failure::Permanent(e.to_string()))?;
         *url = Some(custos_core::identity::proxy::CallerUrl::new(format!(
             "{}/xrpc/{lxm}",
             endpoint.trim_end_matches('/')
@@ -701,6 +709,38 @@ mod tests {
             1,
             "a rejection must not be retried"
         );
+    }
+
+    /// An endpoint whose host is a non-public IP literal is refused before anything is sent. The
+    /// hardened client's resolver never sees an IP literal, so this check is the only guard.
+    #[tokio::test]
+    async fn a_non_public_ip_literal_endpoint_is_refused_without_a_request() {
+        let mut state = authority_state().await;
+        state.allow_loopback_proxy_targets = false;
+        let body = serde_json::json!({ "space": SPACE });
+
+        // Loopback stands in for an internal address we can observe: with the test-only
+        // relaxation off, the mock must receive nothing.
+        let internal = MockServer::start().await;
+        notify_ok(NOTIFY_WRITE).mount(&internal).await;
+        seed_host(&state, SYNCER, "atproto_space_host", &internal.uri()).await;
+        let error = deliver(&state, SYNCER, None, AUTHORITY, NOTIFY_WRITE, &body)
+            .await
+            .expect_err("a loopback endpoint is refused");
+        assert!(error.contains("not a usable public"), "{error}");
+        assert!(received(&internal).await.is_empty(), "nothing was sent");
+
+        for (did, endpoint) in [
+            (WRITER, "http://10.0.0.5"),
+            (THROTTLER, "http://169.254.169.254"),
+            (TIMED_OUT, "http://[::ffff:10.0.0.5]"),
+        ] {
+            seed_host(&state, did, "atproto_space_host", endpoint).await;
+            let error = deliver(&state, did, None, AUTHORITY, NOTIFY_WRITE, &body)
+                .await
+                .expect_err("a private or link-local endpoint is refused");
+            assert!(error.contains("not a usable public"), "{endpoint}: {error}");
+        }
     }
 
     /// Space-host resolution against a *real* foreign document — fetched live from the DID's own
