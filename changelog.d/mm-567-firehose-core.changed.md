@@ -1,1 +1,0 @@
-The firehose sequencer and the relay `requestCrawl` notifier now live in the shared `custos-core` crate, so every feature crate can emit repo and account events; event sequencing, replay, and crawler behavior are unchanged.
