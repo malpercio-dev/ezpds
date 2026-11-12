@@ -51,13 +51,30 @@ The PDS container expects the following environment variables and mounts:
 
 ## Railway Deployment
 
-### Config as code vs Railway dashboard
+### Railway configuration (infrastructure as code)
 
-`railway.toml` (committed to the repo) captures everything that applies to any deploy of this codebase: Dockerfile builder, health check path, restart policy. Everything else is deliberately Railway-side:
+[`.railway/railway.ts`](../.railway/railway.ts) declares the whole Railway project: every service (PDS, notification relay, MCP sidecar, docs and marketing sites, the Umami analytics stack), its source branch and "Wait for CI" setting, builder and Dockerfile path, watch paths, health check, restart policy, replicas, custom domains, volumes, and buckets. One file serves both environments; it branches on `ctx.isEnvironment("production")` where they differ (branch, domains, volume names, resource limits, and the production-only Umami stack and blob-backup bucket).
+
+**Railway does not read this file when it deploys.** It replaced the per-service `railway.toml` files, which Railway read on every deploy and stops reading on 2026-12-01 ([Railway's deprecation notice](https://docs.railway.com/config-as-code)). The new file is desired state that an operator applies with the CLI:
+
+```sh
+cd .railway && npm ci && cd ..                 # once: the `railway` authoring SDK
+railway config plan --environment staging      # read-only diff against the live environment
+railway config apply --environment staging     # writes the diff; asks before it does
+```
+
+The consequences of that model:
+
+- A merged change to `.railway/railway.ts` changes nothing until someone runs `railway config apply` for each environment. Plan first and read the diff; a clean tree should plan to "no changes".
+- A setting changed in the Railway dashboard is drift: the next plan proposes reverting it. Change the file instead, or change both.
+- The file owns the whole project. A service, volume, or bucket created in the dashboard and not added to the file shows up in the next plan as a deletion. Volume deletion is flagged destructive and needs `--confirm-destructive`.
+- Deploys are unchanged: Railway's GitHub integration still builds on a push to the watched branch, after CI is green where `checkSuites: true`.
+
+Variables and secrets are not in the file (`variables: { managed: false }`); an apply never reads or writes them.
 
 | Config | Where | Why |
 |--------|-------|-----|
-| Dockerfile builder, health check, restart policy | `railway.toml` (repo) | Applies to all deploys; no secrets |
+| Builder, Dockerfile path, watch paths, health check, restart policy, branch, "Wait for CI", replicas, limits, custom domains, volumes, buckets | `.railway/railway.ts` (repo), applied with `railway config apply` | Reviewable in a PR; no secrets |
 | `EZPDS_PUBLIC_URL` | Railway dashboard | Environment-specific (staging ≠ production) |
 | `EZPDS_AVAILABLE_USER_DOMAINS` | Railway dashboard | Deployment-specific |
 | `EZPDS_SIGNING_KEY_MASTER_KEY` | Railway dashboard (sealed) | Secret — never in git |
@@ -66,14 +83,27 @@ The PDS container expects the following environment variables and mounts:
 | `EZPDS_WAITLIST_ENABLED` | Railway dashboard | Per-environment opt-in; enable on production to open the marketing-site TestFlight waitlist |
 | `EZPDS_DATA_DIR` | Not needed in Railway | Already set to `/data` by Dockerfile `ENV` |
 | `PORT` | Not needed in Railway | Railway injects it automatically; PDS falls through to this |
-| Volume mount | Railway dashboard | Railway infra — no `railway.toml` equivalent |
-| Domain | Railway dashboard | Environment-specific |
+| Generated `*.up.railway.app` domains | Railway dashboard | Railway assigns them; they are not written to source |
+
+#### One-time cutover from `railway.toml`
+
+The services were opted into config as code, and Railway refuses to plan a service that still is (`already managed by /railway.toml`). Each environment is cut over once, from a checkout of this file, staging first:
+
+```sh
+railway config migrate status                  # lists services still on config as code
+railway link --environment staging             # `migrate cutover` has no --environment flag
+railway config migrate cutover                 # clears each service's Railway Config File setting
+railway config plan --environment staging --verbose
+railway config apply --environment staging
+```
+
+Run `cutover` and `apply` back to back, with no merge to the watched branch in between. Until the apply lands, the environment holds the dashboard-side builder (`RAILPACK`), not the Dockerfile builder the toml files supplied, so a deploy triggered in that window builds wrongly and fails. The expected plan is, per service: builder `RAILPACK` → `DOCKERFILE`, the Dockerfile path, the health check path and timeout, and the restart policy — and nothing else. Stop if it proposes deleting or detaching anything. `railway config migrate undo` restores the config-file settings a cutover cleared.
 
 ### Setup Steps
 
 1. **Create Railway project** for the PDS.
 2. **Add a Dockerfile service:**
-   - Connect the Railway service to the GitHub repo and let Railway build and deploy on its own — see **CI/CD pipeline** below. Railway detects `railway.toml` and uses the Dockerfile builder automatically.
+   - Connect the Railway service to the GitHub repo and let Railway build and deploy on its own — see **CI/CD pipeline** below. The Dockerfile builder, health check, and restart policy come from `.railway/railway.ts` (see above).
    - Set the following environment variables in the Railway dashboard:
      - `EZPDS_PUBLIC_URL` - Use the Railway domain once assigned (see chicken-and-egg note below).
      - `EZPDS_AVAILABLE_USER_DOMAINS` - Your handle domain list (comma-separated).
@@ -84,9 +114,9 @@ The PDS container expects the following environment variables and mounts:
    - Do **not** set `PORT` or `EZPDS_DATA_DIR` — Railway injects `PORT` automatically, and `EZPDS_DATA_DIR=/data` is already set by the Dockerfile `ENV`.
 
 3. **Add a volume:**
-   - In the Railway dashboard, create a volume and mount it to `/data` inside the container.
+   - Declare a volume in `.railway/railway.ts` and mount it at `/data` (`volumeMounts`), then apply.
    - Railway persists the volume across restarts and redeploys.
-   - **Note:** The Dockerfile does not contain a `VOLUME` instruction — Railway does not support that directive and rejects builds that include it. The volume is configured entirely in the Railway dashboard.
+   - **Note:** The Dockerfile does not contain a `VOLUME` instruction — Railway does not support that directive and rejects builds that include it. The volume is declared in `.railway/railway.ts`.
 
 4. **Domain + HTTPS:**
    - Railway automatically provisions an HTTPS domain (e.g., `PDS-xyz.up.railway.app`).
@@ -221,25 +251,22 @@ The static marketing site (`sites/marketing/`, the Obsign + Custos pages) deploy
 routed independently. It is a zero-build HTML/CSS/font bundle served by Caddy; there is no
 Rust, no database, and no secrets.
 
-### Config as code
+### Build files
 
-Everything build-related is committed under `sites/marketing/`:
+The image is committed under `sites/marketing/`; the service's Railway settings are the `obsign-marketing` entry in `.railway/railway.ts`:
 
 | File | Role |
 |------|------|
 | `Dockerfile` | `FROM caddy:2-alpine`; copies the site into `/srv` and the `Caddyfile` into place. No build stage. |
 | `Caddyfile` | Serves `/srv` on `$PORT`, gzip/zstd, clean URLs (`/custos/` → `custos/index.html`), immutable caching for `/assets/fonts/*` and short revalidation for HTML/CSS, plus `nosniff`/`Referrer-Policy`. |
-| `railway.toml` | Dockerfile builder + `healthcheckPath = "/"` (Caddy returns 200 at the root). |
 
 ### The critical setting: Root Directory
 
-The repo-root `railway.toml` is **PDS-specific** — it builds the `pds` binary and health-checks
-`/xrpc/_health`. The marketing service must **not** inherit it. In the service's settings:
+The repo-root `Dockerfile` builds the `pds` binary; the marketing service must not use it. In
+`.railway/railway.ts` (`rootDirectory` on the service's `github()` source):
 
-- **Root Directory** = `sites/marketing`. This scopes Railway's build context *and* its config
-  lookup to that subtree, so it uses `sites/marketing/{Dockerfile,railway.toml}` and never the
-  root `railway.toml`. This is the whole isolation mechanism — get it right and the two services
-  never collide.
+- **Root Directory** = `sites/marketing`. This scopes Railway's build context to that subtree,
+  so `dockerfilePath: "Dockerfile"` resolves to `sites/marketing/Dockerfile`, never the root one.
 - **Watch Paths** = `sites/marketing/**`, so PDS-only changes don't rebuild the site. Watch Paths
   are matched against **repo-root-relative** paths, so keep the `sites/marketing/` prefix even
   though Root Directory is already set. (Optionally also add an *ignore* path of `sites/marketing/**`
@@ -282,26 +309,23 @@ secrets. Unlike the zero-build marketing site, Starlight compiles to static HTML
 so the build has a Node stage; the runtime image is still just Caddy serving the
 generated `dist/`.
 
-### Config as code
+### Build files
 
-Everything build-related is committed under `sites/docs/`:
+The image is committed under `sites/docs/`; the service's Railway settings are the `obsign-docs` entry in `.railway/railway.ts`:
 
 | File | Role |
 |------|------|
 | `Dockerfile` | Two stages: `node:22-alpine` runs `pnpm install --frozen-lockfile && pnpm build`; `caddy:2-alpine` copies the generated `dist/` into `/srv`. |
 | `Caddyfile` | Serves `/srv` on `$PORT`, gzip/zstd, clean URLs, immutable caching for fingerprinted `/_astro/*` and `/pagefind/*` assets and short revalidation for HTML, plus `nosniff`/`Referrer-Policy`. |
-| `railway.toml` | Dockerfile builder + `healthcheckPath = "/"` (Caddy returns 200 at the root). |
 
 ### The critical setting: Root Directory
 
-The repo-root `railway.toml` is **PDS-specific** — it builds the `pds` binary and
-health-checks `/xrpc/_health`. The docs service must **not** inherit it. In the
-service's settings:
+The repo-root `Dockerfile` builds the `pds` binary; the docs service must not use
+it. In `.railway/railway.ts` (`rootDirectory` on the service's `github()` source):
 
-- **Root Directory** = `sites/docs`. This scopes Railway's build context *and* its
-  config lookup to that subtree, so it uses `sites/docs/{Dockerfile,railway.toml}`
-  and never the root `railway.toml`. This is the whole isolation mechanism — the
-  same one the marketing service relies on.
+- **Root Directory** = `sites/docs`. This scopes Railway's build context to that
+  subtree, so `dockerfilePath: "Dockerfile"` resolves to `sites/docs/Dockerfile`,
+  never the root one — the same mechanism the marketing service relies on.
 - **Watch Paths** = `sites/docs/**`, so PDS-only changes don't rebuild the docs.
   Watch Paths are matched against **repo-root-relative** paths, so keep the
   `sites/docs/` prefix even though Root Directory is already set. (Optionally also
@@ -348,31 +372,31 @@ PDS over **private networking** (`*.railway.internal`), so forwarded traffic nev
 project's private network. There is no database, no volume, and **no secret** — the whole point
 of the forwarding posture.
 
-### Config as code
+### Build files
+
+The service's Railway settings are the `obsign-mcp` entry in `.railway/railway.ts` (Dockerfile
+builder, `healthcheck: "/"` — the sidecar answers 200 there, touching no credential).
 
 | File | Role |
 |------|------|
 | `tools/mcp-sidecar/Dockerfile` | Two stages on `node:22-alpine`: install prod deps for `tools/mcp` **and** `tools/mcp-sidecar`, then run `src/server.ts` (Node strips TypeScript natively — no compile step). Runs as the non-root `node` user. |
-| `tools/mcp-sidecar/railway.toml` | Dockerfile builder + `healthcheckPath = "/"` (the sidecar answers 200 at `/`, touching no credential). |
 
 ### The critical difference from the static sites: build context
 
 The marketing and docs services are **self-contained**, so they set **Root Directory** to their
-subtree and Railway auto-resolves a sibling `railway.toml` + `Dockerfile`. The sidecar is
+subtree and Railway resolves the `Dockerfile` there. The sidecar is
 **not** self-contained: it single-sources the tool surface from `tools/mcp` (a relative import —
 Node will not type-strip a `.ts` resolved under `node_modules`), so its build context must
 include **both** packages. It therefore builds from the **repo root**, which needs a different
 wiring than the Root-Directory trick:
 
-- **Railway Config File** = `tools/mcp-sidecar/railway.toml` (service → Settings → Config-as-code).
-  This is what stops the service from inheriting the repo-root `railway.toml` (which is
-  PDS-specific), replacing the Root-Directory isolation the static sites rely on.
-- **Root Directory** = repo root (leave it unset). The `dockerfilePath` in the sidecar's
-  `railway.toml` is repo-root-relative (`tools/mcp-sidecar/Dockerfile`) and the Dockerfile
+- **Root Directory** = repo root (no `rootDirectory` on the source). The service's
+  `dockerfilePath` is repo-root-relative (`tools/mcp-sidecar/Dockerfile`) and the Dockerfile
   `COPY`s `tools/mcp` alongside `tools/mcp-sidecar`. The repo-root `.dockerignore` already
   excludes `node_modules`/`target`/`.git`, so the context stays small.
-- **Watch Paths** = `tools/mcp-sidecar/**` **and** `tools/mcp/**` — the sidecar must rebuild when
-  either the sidecar or the shared tool surface changes. (Optionally add an *ignore* path of
+- **Watch Paths** should be `tools/mcp-sidecar/**` **and** `tools/mcp/**` — the sidecar must rebuild
+  when either the sidecar or the shared tool surface changes. Both environments currently watch
+  only `tools/mcp-sidecar/**`, and `.railway/railway.ts` records them as found. (Optionally add an *ignore* path of
   `tools/**` to the **PDS** service so a sidecar edit doesn't redeploy the PDS.)
 - **Wait for CI** — optional, same reasoning as the static sites: `just ci-pds` does not run the
   sidecar's Node suite, so waiting adds no real safety; harmless if you'd rather gate uniformly.
@@ -422,13 +446,15 @@ plaintext or any key material belonging to an instance or a device.
 Operator-facing runbook, including the enrollment ceremony and running a relay of your own:
 [`docs/operations/self-relay-runbook.md`](operations/self-relay-runbook.md).
 
-### Config as code
+### Build files
+
+The service's Railway settings are the `custos-notify-relay` entry in `.railway/railway.ts`
+(Dockerfile builder + restart policy, and **no health check** — see below).
 
 | File | Role |
 |------|------|
 | `crates/notify-relay/Dockerfile` | Same builder pattern as the repo-root image, pointed at `cargo build --release --locked -p notify-relay` (the root image is single-binary, `-p pds`). Non-root runtime user, state at `/data`. **No Litestream.** |
 | `crates/notify-relay/docker-entrypoint.sh` | Materializes the two secrets from env vars into the files the relay reads, then drops privileges via `gosu`. Passes subcommands through, so `mint-code` runs through the same image. |
-| `crates/notify-relay/railway.toml` | Dockerfile builder + restart policy. **No `healthcheckPath`** — see below. |
 
 ### What is different from every other service: there is no HTTP surface
 
@@ -440,12 +466,11 @@ for the Railway wiring:
   route to and nothing to probe. Liveness is the process plus `restartPolicyType`; the
   readiness signal is the startup log line `notification relay listening`, which also prints
   the node id instances dial.
-- **Railway Config File** = `crates/notify-relay/railway.toml`, with **Root Directory** left at
-  the repo root — the same wiring the MCP sidecar needs, and for the same reason: the build
-  context must be the repo root (cargo resolves every workspace member and the swift-rs
-  `[patch.crates-io]` path even for a single `-p`), so the Root-Directory trick the static
-  sites use is unavailable and the config-file setting is what stops the service inheriting
-  the PDS-specific repo-root `railway.toml`.
+- **Root Directory** left at the repo root, with a repo-root-relative `dockerfilePath`
+  (`crates/notify-relay/Dockerfile`) — the same wiring the MCP sidecar needs, and for the same
+  reason: the build context must be the repo root (cargo resolves every workspace member and
+  the swift-rs `[patch.crates-io]` path even for a single `-p`), so the Root-Directory trick
+  the static sites use is unavailable.
 - **Watch Paths** = `crates/notify-relay/**` plus the crates it builds against
   (`crates/common/**`, `Cargo.toml`, `Cargo.lock`) — the workspace context means an unrelated
   crate edit does not need to redeploy the relay.

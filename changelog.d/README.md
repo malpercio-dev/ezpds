@@ -27,11 +27,12 @@ The CI gate requires a fragment when a pull request changes a deployable surface
 - either mobile app's frontend, native runtime source, static assets, or Tauri config;
 - the public marketing site;
 - the deployed MCP surfaces — the stdio Custos MCP server (`tools/mcp/src/`) and the
-  credential-forwarding sidecar (`tools/mcp-sidecar/src/`, plus its image/config), which
+  credential-forwarding sidecar (`tools/mcp-sidecar/src/`, plus its image), which
   ships as a Railway service and re-exports the stdio server's tool surface;
-- the notification relay's own image, entrypoint, and Railway config
+- the notification relay's own image and entrypoint
   (`crates/notify-relay/`), which ships as a separate service;
-- workspace runtime dependency manifests, the production image/config, or the NixOS
+- workspace runtime dependency manifests, the production image, the Railway project config
+  (`.railway/railway.ts`), or the NixOS
   runtime module.
 
 Documentation, tests, design files, CI configuration, scripts, developer tooling, and

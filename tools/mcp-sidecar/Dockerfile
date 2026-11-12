@@ -10,10 +10,10 @@
 # the build context must include BOTH packages. It therefore builds from the
 # REPO ROOT context — not a Root-Directory-scoped subtree like the static sites.
 #
-# Railway wiring (see docs/deploy.md → "MCP sidecar"): set the service's
-# "Railway Config File" to tools/mcp-sidecar/railway.toml so it does NOT inherit
-# the repo-root railway.toml (which is PDS-specific), and leave Root Directory at
-# the repo root so this Dockerfile can COPY tools/mcp alongside tools/mcp-sidecar.
+# Railway wiring (see docs/deploy.md → "MCP sidecar"; declared in
+# .railway/railway.ts): the service's dockerfilePath points here and Root Directory
+# stays at the repo root so this Dockerfile can COPY tools/mcp alongside
+# tools/mcp-sidecar.
 # The repo-root .dockerignore already excludes node_modules/target/.git, so the
 # context stays small and host node_modules never leak in.
 
@@ -75,7 +75,7 @@ WORKDIR /app/tools/mcp-sidecar
 EXPOSE 8080
 
 # Liveness probe on the credential-free health route (Railway also health-checks
-# via railway.toml; this makes a plain `docker run` self-report too). Node 22 has
+# at the same route; this makes a plain `docker run` self-report too). Node 22 has
 # a global fetch, so no extra tooling is needed in the image.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
