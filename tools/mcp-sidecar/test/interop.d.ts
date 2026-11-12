@@ -70,6 +70,7 @@ declare module 'ezpds-interop/src/crypto.js' {
 
   export function buildGenesisOp(opts: {
     rotationKeyId: string;
+    recoveryKeyId: string;
     repoSigningKeyId: string;
     rotationKeypair: unknown;
     handle: string;

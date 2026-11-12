@@ -19,13 +19,7 @@ export const ALLOWED_TARGET = Object.freeze({
   did: 'did:web:malpercio.dev',
 });
 
-// Pacing: minimum gap between HTTP requests, so scripted runs stay far below the
-// PDS per-IP limits (global 3000/5min; createSession 30/5min) and are polite to
-// public infrastructure (plc.directory, the relay, the AppView).
-export const MIN_REQUEST_INTERVAL_MS = Number(process.env.EZPDS_INTEROP_PACE_MS ?? 350);
-
-// How many times to retry a 429 (honoring Retry-After) before giving up.
-export const MAX_RATE_LIMIT_RETRIES = 4;
+export { MIN_REQUEST_INTERVAL_MS, MAX_RATE_LIMIT_RETRIES } from './pacing.js';
 
 // Default email pattern for test accounts (outbound email is stubbed server-side).
 export function defaultEmail(name) {
