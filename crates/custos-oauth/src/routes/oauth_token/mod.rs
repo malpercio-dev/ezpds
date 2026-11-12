@@ -82,22 +82,19 @@ struct ConnectorTerms<'a> {
 
 impl<'a> ConnectorTerms<'a> {
     /// Resolve the terms for a grant issued for `granted`, refusing a token request whose own
-    /// `resource` names any other target. `Err(None)` means `granted` itself is no longer a
-    /// target this server issues for, which each grant reports in its own words.
+    /// `resource` names any other target.
     fn for_grant(
         state: &'a CoreState,
         granted: Option<&str>,
         requested: Option<&str>,
-    ) -> Result<Self, Option<OAuthTokenError>> {
+    ) -> Result<Self, GrantTargetError> {
         use custos_core::auth::oauth_resource::connector_resource;
-        let resource = connector_resource(&state.config, granted).map_err(|_| None)?;
+        let resource =
+            connector_resource(&state.config, granted).map_err(|_| GrantTargetError::Gone)?;
         if requested.is_some_and(|r| !r.is_empty())
             && connector_resource(&state.config, requested) != Ok(resource)
         {
-            return Err(Some(OAuthTokenError::new(
-                "invalid_target",
-                "resource does not name the target this grant was issued for",
-            )));
+            return Err(GrantTargetError::Mismatch);
         }
         Ok(Self { resource, state })
     }
@@ -123,6 +120,28 @@ impl<'a> ConnectorTerms<'a> {
             AGENT_ACCESS_TOKEN_TTL_SECS
         } else {
             self.state.config.oauth.access_token_ttl_secs
+        }
+    }
+}
+
+/// Why a grant's target does not yield [`ConnectorTerms`].
+enum GrantTargetError {
+    /// The resource the grant was issued for is no longer one this server issues for (the
+    /// operator unconfigured it). Each grant reports this in its own words.
+    Gone,
+    /// The token request's `resource` names a different target than the grant's.
+    Mismatch,
+}
+
+impl GrantTargetError {
+    /// The `invalid_target` response; `gone` is what a [`Self::Gone`] grant answers instead.
+    fn into_error(self, gone: OAuthTokenError) -> OAuthTokenError {
+        match self {
+            Self::Gone => gone,
+            Self::Mismatch => OAuthTokenError::new(
+                "invalid_target",
+                "resource does not name the target this grant was issued for",
+            ),
         }
     }
 }

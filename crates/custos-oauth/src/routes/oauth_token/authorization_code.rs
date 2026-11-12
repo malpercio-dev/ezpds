@@ -170,12 +170,10 @@ pub(super) async fn handle_authorization_code(
         Ok(terms) => terms,
         Err(e) => {
             return e
-                .unwrap_or_else(|| {
-                    OAuthTokenError::new(
-                        "invalid_target",
-                        "the authorization code names a resource this server does not issue for",
-                    )
-                })
+                .into_error(OAuthTokenError::new(
+                    "invalid_target",
+                    "the authorization code names a resource this server does not issue for",
+                ))
                 .into_response()
         }
     };
@@ -1002,13 +1000,7 @@ mod tests {
     /// A test state whose `[oauth] connector_resources` names [`MCP_RESOURCE`], with the client
     /// and account [`redeem`] issues codes for already seeded.
     async fn connector_state() -> CoreState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.oauth.connector_resources = vec![MCP_RESOURCE.to_string()];
-        let state = CoreState {
-            config: std::sync::Arc::new(config),
-            ..base
-        };
+        let state = test_support::with_connector_resources(test_state().await, &[MCP_RESOURCE]);
         register_oauth_client(
             &state.db,
             CLIENT,
@@ -1333,12 +1325,7 @@ mod tests {
         let resp = redeem_without_dpop(&state, Some(MCP_RESOURCE), "atproto", "").await;
         let tokens = json_body(resp).await;
 
-        let mut config = (*state.config).clone();
-        config.oauth.connector_resources.clear();
-        let state = CoreState {
-            config: std::sync::Arc::new(config),
-            ..state
-        };
+        let state = test_support::with_connector_resources(state, &[]);
         let resp =
             refresh_without_dpop(&state, tokens["refresh_token"].as_str().unwrap(), "").await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

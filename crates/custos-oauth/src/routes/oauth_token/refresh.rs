@@ -101,7 +101,7 @@ pub(super) async fn handle_refresh_token(
         form.resource.as_deref(),
     ) {
         Ok(terms) => terms,
-        Err(e) => return e.unwrap_or_else(not_found).into_response(),
+        Err(e) => return e.into_error(not_found()).into_response(),
     };
 
     // DPoP binding check. A bound family rotates only for its own key. An unbound one is honoured

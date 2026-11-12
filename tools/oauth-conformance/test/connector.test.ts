@@ -225,11 +225,27 @@ test('a grant for this server still needs DPoP at the token endpoint', async () 
   assert.equal(retargeted.json?.error, 'invalid_target');
 });
 
-test('a connector grant cannot be redeemed for another target', async () => {
+test('a connector grant cannot be redeemed or refreshed for another target', async () => {
   const { code, verifier } = await authorize('atproto');
-  for (const resource of [fixture.baseUrl, 'https://elsewhere.example.test/mcp']) {
+  const targets = [fixture.baseUrl, 'https://elsewhere.example.test/mcp'];
+  for (const resource of targets) {
     const exchange = await redeem(code, verifier, { resource });
     assert.equal(exchange.status, 400, resource);
     assert.equal(exchange.json?.error, 'invalid_target', resource);
+  }
+
+  // A refused exchange does not burn the code, so it still redeems for its own target —
+  // and the refresh family it starts is held to that target too.
+  const exchange = await redeem(code, verifier);
+  assert.equal(exchange.status, 200, exchange.text);
+  for (const resource of targets) {
+    const refreshed = await tokenRequestWithoutDpop({
+      grant_type: 'refresh_token',
+      refresh_token: exchange.json.refresh_token,
+      client_id: client.clientId,
+      resource,
+    });
+    assert.equal(refreshed.status, 400, resource);
+    assert.equal(refreshed.json?.error, 'invalid_target', resource);
   }
 });

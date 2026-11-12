@@ -61,7 +61,7 @@ src/
 | `oauth_consent.rs` | `GET /oauth/authorize/{consent-request,status}`, `POST /oauth/authorize/{approve,complete}` — the wallet-confirmed (passwordless) consent half; approval is a device-key envelope verified against `identity::authority`, never the cached DID doc |
 | `oauth_par.rs` | `POST /oauth/par` — RFC 9126; enforces the atproto reverse-FQDN private-use-redirect rule (`custos_core::auth::oauth_client_resolution`) and stores `response_mode` |
 | `oauth_token/` | `POST /oauth/token` — one route module, per-grant submodules (`authorization_code`, `refresh`, `jwt_bearer`, `claim_polling`); the authorization-code and refresh grants issue an unbound token on the connector terms for a connector grant (`ConnectorTerms`, ADR-0042); also the RFC 7523 jwt-bearer exchange and the `urn:workos:agent-auth:grant-type:claim` poll — each submodule's doc carries its grant's rules |
-| `oauth_revoke.rs` | `POST /oauth/revoke` — RFC 7009; refresh tokens only, DPoP proof-of-possession, uniform 200-empty non-disclosure |
+| `oauth_revoke.rs` | `POST /oauth/revoke` — RFC 7009; refresh tokens only, DPoP proof-of-possession, uniform 200-empty non-disclosure. An unbound connector family has no key to prove, so it cannot be revoked here; its owner revokes it in My agents |
 | `oauth_protected_resource.rs` | `GET /.well-known/oauth-protected-resource` |
 | `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |
 | `oauth_jwks.rs` | `GET /oauth/jwks` |

@@ -13,9 +13,6 @@ use custos_core::CoreState;
 
 use super::oauth_errors::OAuthTokenError;
 
-/// Validate the DPoP proof on a token-endpoint-shaped request. `url` is the caller's own
-/// endpoint (`/oauth/token` or `/oauth/revoke`), bound into the proof's `htu` check. Returns the
-/// proof key's JWK thumbprint (`jkt`) on success.
 /// [`token_endpoint_dpop`] for the two grants a connector may use without a proof (ADR-0042).
 /// `Ok(None)` means no proof was sent and one may turn out not to be needed: the caller decides
 /// once it has loaded the grant, and answers [`dpop_required`] if the grant is not a connector's.
@@ -36,6 +33,9 @@ pub(super) fn dpop_required() -> OAuthTokenError {
     OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
 }
 
+/// Validate the DPoP proof on a token-endpoint-shaped request. `url` is the caller's own
+/// endpoint (`/oauth/token` or `/oauth/revoke`), bound into the proof's `htu` check. Returns the
+/// proof key's JWK thumbprint (`jkt`) on success.
 pub(super) fn token_endpoint_dpop(
     state: &CoreState,
     headers: &HeaderMap,

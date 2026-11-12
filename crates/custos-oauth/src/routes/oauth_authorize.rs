@@ -2200,13 +2200,8 @@ mod tests {
     /// [`state_with_client`] with [`MCP_RESOURCE`] configured as a connector resource, and a
     /// connector client that registered a portless loopback redirect.
     async fn connector_state() -> custos_core::CoreState {
-        let base = state_with_client().await;
-        let mut config = (*base.config).clone();
-        config.oauth.connector_resources = vec![MCP_RESOURCE.to_string()];
-        let state = custos_core::CoreState {
-            config: std::sync::Arc::new(config),
-            ..base
-        };
+        let state =
+            test_support::with_connector_resources(state_with_client().await, &[MCP_RESOURCE]);
         register_oauth_client(
             &state.db,
             "https://connector.example.com/client.json",

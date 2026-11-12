@@ -42,8 +42,8 @@ entry in `[oauth] connector_resources` is a connector request. Matching compares
 scheme, host, port and path, ignoring a trailing slash. There is no connector
 client class: client metadata is self-asserted, so it cannot carry a privilege.
 Any client may ask for connector terms, which is acceptable because the terms are
-strictly weaker. An empty `connector_resources` (the default) leaves every
-endpoint behaving as before.
+strictly weaker. An empty `connector_resources` (the default) keeps PAR and DPoP
+mandatory for every request. The target check below applies either way.
 
 **PAR and DPoP become optional for a connector request, and only for one.**
 
@@ -68,9 +68,10 @@ endpoint behaving as before.
 - *Audience.* The token's `aud` is the configured connector resource. The PDS
   accepts a token whose `aud` is its own URL or a configured connector resource.
 - *Target check.* A `resource` that is neither this server nor a configured
-  connector resource is `invalid_target` at PAR, at `/oauth/authorize` and on the
-  authorization-code and refresh grants. A token request that names a resource
-  must name the one the grant was issued for.
+  connector resource is `invalid_target` at PAR and on the authorization-code and
+  refresh grants. A plain request to `/oauth/authorize` that names one is refused
+  as any non-PAR request is. A token request that names a resource must name the
+  one the grant was issued for.
 - *Reach.* A connector token is accepted wherever a user OAuth token is, except
   the owner-only routes that already refuse agent-derived tokens.
 

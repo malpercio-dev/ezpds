@@ -969,13 +969,10 @@ mod tests {
     /// malformed one, or one this server does not issue for, is `invalid_target`.
     #[tokio::test]
     async fn post_par_stores_a_connector_resource_and_rejects_any_other_target() {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.oauth.connector_resources = vec!["https://mcp.example.com".to_string()];
-        let state = custos_core::CoreState {
-            config: std::sync::Arc::new(config),
-            ..base
-        };
+        let state = crate::test_support::with_connector_resources(
+            test_state().await,
+            &["https://mcp.example.com"],
+        );
         register_client(&state).await;
         let par = |resource: &'static str| {
             Request::builder()
