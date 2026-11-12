@@ -53,7 +53,8 @@ Configuration is environment variables only:
 | Variable | Required | Meaning |
 |---|---|---|
 | `MCP_SIDECAR_PDS_ORIGIN` | yes | Where the sidecar forwards XRPC calls. In the co-located tier this is the PDS's **private** Railway address (`http://pds.railway.internal:PORT`), never the public domain. Parse **fails loudly** if unset. |
-| `MCP_SIDECAR_PUBLIC_ORIGIN` | prod | The sidecar's own public origin (`https://mcp.obsign.org`), advertised as the OAuth resource identifier. Defaults to the PDS origin for local single-host runs. |
+| `MCP_SIDECAR_PUBLIC_ORIGIN` | prod | The sidecar's own public origin (`https://mcp.obsign.org`). The OAuth resource identifier it advertises is this origin plus the MCP path (`https://mcp.obsign.org/mcp`), and the PDS must list that exact value in `[oauth] connector_resources` (`EZPDS_OAUTH_CONNECTOR_RESOURCES`) or it refuses a connector's sign-in. Defaults to the PDS origin for local single-host runs. |
+| `MCP_SIDECAR_SCOPES` | no | Space-separated scopes advertised as `scopes_supported`. An MCP client with no scope of its own requests exactly this list, so it is also what the user sees at consent. Must include `atproto`. Defaults to the reach of the PDS's default agent scope profile; override it when the PDS uses another AppView (the `rpc` audience) or to offer `space:` scopes. The PDS drops anything above its connector ceiling. |
 | `PORT` | no | Listen port (Railway injects it; default 8080). |
 | `MCP_SIDECAR_PATH` | no | MCP endpoint path (default `/mcp`). |
 | `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | Same gate as the stdio server: `1` lists `put_record`/`delete_record` and their space siblings `space_put_record`/`space_delete_record`. |
@@ -61,9 +62,14 @@ Configuration is environment variables only:
 
 Endpoints:
 
-- `POST /mcp` — the MCP Streamable-HTTP transport (an MCP client connects here).
-- `GET /.well-known/oauth-protected-resource` — MCP-spec protected-resource metadata pointing
-  a caller at Custos as the authorization server (ADR-0019). The advertised authorization
+- `POST /mcp` — the MCP Streamable-HTTP transport (an MCP client connects here). A request
+  with no bearer token gets `401` with `WWW-Authenticate: Bearer resource_metadata="…"`, which
+  is where an MCP client starts its OAuth sign-in. A request with a token is forwarded; the
+  sidecar still verifies nothing.
+- `GET /.well-known/oauth-protected-resource/mcp` (and the bare
+  `/.well-known/oauth-protected-resource` as an alias) — MCP-spec protected-resource metadata:
+  the `resource` (`<public origin>/mcp`), the scopes to request, and Custos as the
+  authorization server (ADR-0019, ADR-0042). The advertised authorization
   server is **not** configured: the sidecar reads the PDS's own RFC 8414 `issuer` (over the
   private forwarding origin) and caches it, so the two can never disagree. A hand-set copy of
   that origin is what silently dead-ended discovery when the PDS moved hosts (MM-536). If the
@@ -128,9 +134,10 @@ deps installed in `tools/mcp` too (`just mcp-setup`); the node-only CI lane
 mint child, genesis to the **real** plc.directory → forwarded token → `create_post`
 through the deployed sidecar → attribution + plc read-backs; usage in its header —
 credentials ride env only), and `hv2-cleanup.mjs` retires the artifacts afterwards.
-First staging pass: 2026-07-16 (PR #292). HV-3 (the MCP-spec OAuth handshake) remains
-open — the driver exchanges the child capability directly rather than walking the
-protected-resource metadata.
+First staging pass: 2026-07-16 (PR #292). The driver exchanges the child capability
+directly rather than walking the protected-resource metadata; HV-3 (the MCP-spec OAuth
+handshake) is covered hermetically by `test/connector.test.ts` in the end-to-end half, which
+drives the real MCP SDK client from the `401` challenge through consent to a tool call.
 
 ## Deploy
 

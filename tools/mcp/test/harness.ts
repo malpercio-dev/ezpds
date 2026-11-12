@@ -137,6 +137,8 @@ export interface TestAccount {
   handle: string;
   email: string;
   accessJwt: string;
+  /** The account password the interop ceremony set; the OAuth consent form needs it. */
+  password: string;
 }
 
 /**
@@ -159,6 +161,7 @@ export async function provisionAccount(baseUrl: string, stateDir: string): Promi
     handle: created.handle,
     email: created.email,
     accessJwt: created.accessJwt,
+    password: String(created.password ?? ''),
   };
 }
 

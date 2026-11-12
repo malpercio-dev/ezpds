@@ -98,13 +98,13 @@ export interface RunningSidecar {
 }
 
 /** Build + listen the sidecar against a given PDS origin on an ephemeral port. */
-export function startSidecar(env: Record<string, string>): Promise<RunningSidecar> {
+export function startSidecar(env: Record<string, string>, listenPort = 0): Promise<RunningSidecar> {
   // Config parses with its default port; the test listens on an OS-assigned
   // ephemeral port instead (server.listen(0) below), so config.port is unused.
   const config = loadConfig(env as NodeJS.ProcessEnv);
   const { server, registry } = createSidecar(config);
   return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(listenPort, '127.0.0.1', () => {
       const { port } = server.address() as AddressInfo;
       resolve({
         url: `http://127.0.0.1:${port}`,
