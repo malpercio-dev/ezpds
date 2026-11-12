@@ -33,7 +33,7 @@
 //! when a device was actually enqueued.
 
 use axum::{
-    extract::{Form, Query, State},
+    extract::{Query, State},
     http::HeaderMap,
     response::{Html, IntoResponse, Response},
 };
@@ -160,16 +160,31 @@ pub struct ConsentForm {
     /// The subset of non-`atproto` permissions the user left checked on the consent page.
     /// One `granted_scope` form field per checked box; absent entirely if every box was
     /// unchecked. `atproto` is never a checkbox — it's always granted, unconditionally.
-    ///
-    /// `deserialize_with` is required, not cosmetic: the urlencoded-form deserializer
-    /// represents a single repeated-key occurrence as a bare string rather than a
-    /// one-element sequence, so a plain `Vec<String>` fails to deserialize with exactly one
-    /// checkbox checked (the common case) while working fine with zero or two-plus.
-    #[serde(
-        default,
-        deserialize_with = "custos_core::auth::permission_sets::string_or_vec"
-    )]
+    #[serde(default)]
     pub granted_scope: Vec<String>,
+}
+
+impl ConsentForm {
+    /// Parse the urlencoded consent form body.
+    ///
+    /// By hand rather than through axum's `Form`: that extractor's deserializer refuses a
+    /// repeated key outright, and a browser submits one `granted_scope` pair per checked box,
+    /// so any approval with two or more permissions checked was rejected before it reached
+    /// this handler.
+    fn parse(body: &str) -> Result<Self, serde_json::Error> {
+        let mut fields = serde_json::Map::new();
+        let mut granted = Vec::new();
+        for (name, value) in url::form_urlencoded::parse(body.as_bytes()) {
+            let value = serde_json::Value::String(value.into_owned());
+            if name == "granted_scope" {
+                granted.push(value);
+            } else {
+                fields.insert(name.into_owned(), value);
+            }
+        }
+        fields.insert("granted_scope".to_string(), granted.into());
+        serde_json::from_value(fields.into())
+    }
 }
 
 /// Distinguishes client-caused failures from server-caused failures in PAR resolution.
@@ -913,10 +928,19 @@ async fn dispatch_login_approval_push(
 /// Re-validates client_id and redirect_uri against the database, and enforces
 /// code_challenge_method=S256, before issuing an authorization code or redirect.
 /// Hidden form fields could be tampered with by a malicious browser.
-pub async fn post_authorization(
-    State(state): State<CoreState>,
-    Form(form): Form<ConsentForm>,
-) -> Response {
+pub async fn post_authorization(State(state): State<CoreState>, body: String) -> Response {
+    let form = match ConsentForm::parse(&body) {
+        Ok(form) => form,
+        Err(e) => {
+            tracing::info!(error = %e, "consent form rejected: malformed body");
+            return error_page(
+                "This sign-in request didn't work",
+                "The approval this page sent was incomplete, so nothing was granted. Go back \
+                 to the app and start the sign-in again.",
+            )
+            .into_response();
+        }
+    };
     // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
     // Trailing slash trimmed to match the AS-metadata `issuer` value exactly.
     let issuer = state.config.issuer().to_string();
@@ -2418,6 +2442,31 @@ mod tests {
             urlencoding::encode(TEST_PASSWORD),
             granted_params,
         )
+    }
+
+    /// A browser submits one `granted_scope` pair per checked box. Two or more must reach the
+    /// stored grant; the form parser once refused a repeated key outright.
+    #[tokio::test]
+    async fn approving_several_permissions_grants_each_of_them() {
+        let (state, _server) = state_with_include_authority(serde_json::json!([])).await;
+        let db = state.db.clone();
+
+        let resp = post_authorize(
+            state,
+            &include_scope_form(
+                "atproto blob:*/* repo:app.bsky.feed.post repo:app.bsky.feed.like",
+                &["blob:*/*", "repo:app.bsky.feed.post"],
+            ),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(!location.contains("error="), "unexpected error: {location}");
+        assert_eq!(
+            stored_scope_for(&db, location).await,
+            "atproto blob:*/* repo:app.bsky.feed.post",
+            "both checked permissions are granted, and the unchecked one is not"
+        );
     }
 
     #[tokio::test]
