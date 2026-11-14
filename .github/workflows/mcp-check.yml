@@ -104,7 +104,9 @@ jobs:
 
       # A green build still ships a crash-loop if a runtime import cannot resolve, so
       # boot the image and require the MCP endpoint (which pulls in the whole shared
-      # tool surface) to answer.
+      # tool surface) to answer. An unauthenticated request must get the 401 challenge an
+      # MCP client starts its sign-in from; the sidecar verifies no token itself, so any
+      # bearer value reaches the transport.
       - name: Smoke-test the image
         run: |
           docker run -d --name mcp-sidecar-ci -p 18080:8080 \
@@ -117,7 +119,11 @@ jobs:
             sleep 1
           done
           curl -fsS -m 5 http://localhost:18080/ | grep -q '"status":"ok"'
+          curl -sS -m 10 -D - -o /dev/null -X POST http://localhost:18080/mcp \
+            -H 'Content-Type: application/json' -d '{}' \
+            | grep -qi '^www-authenticate: Bearer resource_metadata="http://localhost:18080/.well-known/oauth-protected-resource/mcp"'
           curl -fsS -m 10 -X POST http://localhost:18080/mcp \
+            -H 'Authorization: Bearer ci-smoke-test' \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
