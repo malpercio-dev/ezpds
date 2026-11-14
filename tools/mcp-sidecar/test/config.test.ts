@@ -23,6 +23,7 @@ test('AC2.7: a private PDS origin + public origin pair parses', () => {
   } as NodeJS.ProcessEnv);
   assert.equal(config.pdsOrigin, 'http://pds.railway.internal:8080');
   assert.equal(config.publicOrigin, 'https://mcp.obsign.org');
+  assert.equal(config.resource, 'https://mcp.obsign.org/mcp');
   assert.equal(config.port, 3000);
   assert.equal(config.mcpPath, '/mcp');
 });
@@ -91,5 +92,19 @@ test('AC2.7: a non-numeric port is rejected', () => {
         PORT: 'abc',
       } as NodeJS.ProcessEnv),
     /PORT must be a valid TCP port/,
+  );
+});
+
+test('the advertised scopes default to the agent profile and can be overridden', () => {
+  const env = { MCP_SIDECAR_PDS_ORIGIN: 'http://127.0.0.1:8080' };
+  assert.ok(loadConfig(env as NodeJS.ProcessEnv).scopes.includes('atproto'));
+  assert.deepEqual(
+    loadConfig({ ...env, MCP_SIDECAR_SCOPES: 'atproto  repo:app.bsky.feed.post' } as NodeJS.ProcessEnv).scopes,
+    ['atproto', 'repo:app.bsky.feed.post'],
+  );
+  // The PDS refuses a request without `atproto`, so a list missing it could never sign in.
+  assert.throws(
+    () => loadConfig({ ...env, MCP_SIDECAR_SCOPES: 'repo:app.bsky.feed.post' } as NodeJS.ProcessEnv),
+    /atproto/,
   );
 });

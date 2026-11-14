@@ -14,7 +14,9 @@
 //! Grants:
 //!
 //! - `authorization_code` + `refresh_token` — DPoP-bound, rotating refresh tokens
-//!   (`authorization_code.rs`, `refresh.rs`)
+//!   (`authorization_code.rs`, `refresh.rs`). A grant issued for one of the operator's
+//!   `[oauth] connector_resources` is the exception ADR-0042 defines: no proof required, and in
+//!   exchange an unbound Bearer token on [`ConnectorTerms`]
 //! - `urn:ietf:params:oauth:grant-type:jwt-bearer` (RFC 7523) — exchanges a service-signed
 //!   agent `identity_assertion` for a short-lived Bearer access token (`jwt_bearer.rs`)
 //! - `urn:workos:agent-auth:grant-type:claim` (auth.md Step 4c) — the machine-pollable half of
@@ -69,25 +71,100 @@ async fn persist_assertion_mint(
     Ok(())
 }
 
-/// Link the OAuth grant's agent record for `(did, client_id)` — a `connector` when the code was
+/// What a grant's target decides about the tokens issued under it (ADR-0042). A grant for this
+/// server gets the configured lifetime and its own URL as audience; a connector grant gets the
+/// agent lifetime, the connector resource as audience, and the connector scope ceiling.
+struct ConnectorTerms<'a> {
+    /// The connector resource the grant was issued for, as configured; `None` for this server.
+    resource: Option<&'a str>,
+    state: &'a CoreState,
+}
+
+impl<'a> ConnectorTerms<'a> {
+    /// Resolve the terms for a grant issued for `granted`, refusing a token request whose own
+    /// `resource` names any other target.
+    fn for_grant(
+        state: &'a CoreState,
+        granted: Option<&str>,
+        requested: Option<&str>,
+    ) -> Result<Self, GrantTargetError> {
+        use custos_core::auth::oauth_resource::connector_resource;
+        let resource =
+            connector_resource(&state.config, granted).map_err(|_| GrantTargetError::Gone)?;
+        if requested.is_some_and(|r| !r.is_empty())
+            && connector_resource(&state.config, requested) != Ok(resource)
+        {
+            return Err(GrantTargetError::Mismatch);
+        }
+        Ok(Self { resource, state })
+    }
+
+    fn is_connector(&self) -> bool {
+        self.resource.is_some()
+    }
+
+    fn scope(&self, granted: String) -> String {
+        if self.is_connector() {
+            custos_core::auth::oauth_resource::connector_scope_ceiling(&granted)
+        } else {
+            granted
+        }
+    }
+
+    fn audience(&self) -> &'a str {
+        self.resource.unwrap_or(&self.state.config.public_url)
+    }
+
+    fn ttl_secs(&self) -> u64 {
+        if self.is_connector() {
+            AGENT_ACCESS_TOKEN_TTL_SECS
+        } else {
+            self.state.config.oauth.access_token_ttl_secs
+        }
+    }
+}
+
+/// Why a grant's target does not yield [`ConnectorTerms`].
+enum GrantTargetError {
+    /// The resource the grant was issued for is no longer one this server issues for (the
+    /// operator unconfigured it). Each grant reports this in its own words.
+    Gone,
+    /// The token request's `resource` names a different target than the grant's.
+    Mismatch,
+}
+
+impl GrantTargetError {
+    /// The `invalid_target` response; `gone` is what a [`Self::Gone`] grant answers instead.
+    fn into_error(self, gone: OAuthTokenError) -> OAuthTokenError {
+        match self {
+            Self::Gone => gone,
+            Self::Mismatch => OAuthTokenError::new(
+                "invalid_target",
+                "resource does not name the target this grant was issued for",
+            ),
+        }
+    }
+}
+
+/// The `token_type` of a response: `DPoP` for a key-bound token, `Bearer` for an unbound one.
+fn token_type(jkt: Option<&str>) -> &'static str {
+    if jkt.is_some() {
+        "DPoP"
+    } else {
+        "Bearer"
+    }
+}
+
+/// Link the OAuth grant's agent record for `(did, client_id)` — a `connector` when the grant was
 /// issued for one of the operator's `[oauth] connector_resources`, else an `oauth_app` — so the
 /// owner can see and revoke it in My agents. Returns the record id.
 async fn link_grant_record(
     conn: &mut sqlx::SqliteConnection,
-    state: &CoreState,
     did: &common::Did,
     client_id: &str,
-    resource: Option<&str>,
+    connector: bool,
     scope: &str,
 ) -> Result<(String, RegistrationType), common::ApiError> {
-    let connector = resource.is_some_and(|r| {
-        state
-            .config
-            .oauth
-            .connector_resources
-            .iter()
-            .any(|c| c == r)
-    });
     let registration_type = if connector {
         RegistrationType::Connector
     } else {
@@ -163,6 +240,7 @@ pub struct TokenRequestForm {
 #[derive(Debug, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
+    /// `DPoP`, or `Bearer` for a connector's unbound token.
     pub token_type: &'static str,
     pub expires_in: u64,
     pub refresh_token: String,
@@ -208,17 +286,20 @@ struct CnfClaim {
     jkt: String,
 }
 
-/// Agent-flow (jwt-bearer / claim-polling) access-token lifetime. Deliberately shorter than
-/// the OAuth lifetime and deliberately not configurable: agent tokens are minted headlessly,
-/// with no consent leg and no human to notice a session behaving oddly.
+/// Access-token lifetime for the agent flows (jwt-bearer / claim-polling) and for connector
+/// grants. Deliberately shorter than the OAuth lifetime and deliberately not configurable: these
+/// tokens are not bound to a key, so their lifetime is what bounds a leaked one.
 pub(super) const AGENT_ACCESS_TOKEN_TTL_SECS: u64 = 300;
 
 /// Sign an ES256 `at+jwt` access token. `jkt` is the DPoP key thumbprint for a sender-constrained
-/// token, or `None` for a plain Bearer token (jwt-bearer grant) that carries no `cnf` binding.
-/// `registration_id` is set only for agent-derived tokens (jwt-bearer), marking them as such and
+/// token, or `None` for a plain Bearer token (an agent's or a connector's) that carries no `cnf`
+/// binding. `registration_id` is set only for agent-derived tokens, marking them as such and
 /// tying them to their `agent_identities` row; `None` for ordinary session/OAuth grants.
+/// `audience` is this server's URL, or the connector resource the grant was issued for.
 /// `ttl_secs` is the token's lifetime — [`custos_core::CoreState`]'s configured
-/// `oauth.access_token_ttl_secs` for OAuth grants, [`AGENT_ACCESS_TOKEN_TTL_SECS`] for agent ones.
+/// `oauth.access_token_ttl_secs` for OAuth grants, [`AGENT_ACCESS_TOKEN_TTL_SECS`] for agent and
+/// connector ones.
+#[allow(clippy::too_many_arguments)]
 fn issue_access_token(
     signing_key: &custos_core::auth::OAuthSigningKey,
     did: &str,
@@ -226,6 +307,7 @@ fn issue_access_token(
     jkt: Option<&str>,
     registration_id: Option<&str>,
     public_url: &str,
+    audience: &str,
     ttl_secs: u64,
 ) -> Result<String, OAuthTokenError> {
     use uuid::Uuid;
@@ -239,7 +321,7 @@ fn issue_access_token(
         iss: public_url.to_string(),
         jti: Uuid::new_v4().to_string(),
         sub: did.to_string(),
-        aud: public_url.to_string(),
+        aud: audience.to_string(),
         iat: now,
         exp: now + ttl_secs,
         scope: scope.to_string(),

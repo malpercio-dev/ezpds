@@ -27,7 +27,9 @@ vars:pre-request {
 }
 
 docs {
-  `resource` (RFC 8707, optional) is an absolute URI without a fragment; anything else is
-  `invalid_target`. Naming one of the operator's `[oauth] connector_resources` records the grant
-  as an MCP connector in the owner's My agents; every other grant is recorded as an `oauth_app`.
+  `resource` (RFC 8707, optional) must name this server or one of the operator's
+  `[oauth] connector_resources`; anything else is `invalid_target`. Naming a connector resource
+  makes this a connector request: the grant is recorded as an MCP connector in the owner's
+  My agents and its tokens are issued on the connector terms. Every other grant is recorded as
+  an `oauth_app`.
 }

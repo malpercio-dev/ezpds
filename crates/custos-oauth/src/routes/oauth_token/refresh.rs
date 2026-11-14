@@ -1,8 +1,9 @@
 // pattern: Imperative Shell
 //
 // The `refresh_token` grant (RFC 6749 §6 + DPoP RFC 9449): validate the DPoP proof, look up the
-// stored refresh token, enforce the client_id match and the DPoP `jkt` binding (a NULL jkt predates
-// binding enforcement and is rejected), then rotate — mark the old token superseded and mint a
+// stored refresh token, enforce the client_id match and the DPoP `jkt` binding (a NULL jkt is
+// honoured only for a connector family, ADR-0042; any other predates binding enforcement and is
+// rejected), then rotate — mark the old token superseded and mint a
 // fresh DPoP-bound access token + new refresh token in the same session family, carrying the
 // granted scope and the session's absolute expiry forward. A superseded token replayed within the
 // short grace window is a concurrent duplicate refresh and still rotates; replayed later, it is a
@@ -19,7 +20,7 @@ use super::{
     cleanup_expired_state, issue_access_token, token_response_headers, TokenRequestForm,
     TokenResponse,
 };
-use crate::oauth_dpop::token_endpoint_dpop;
+use crate::oauth_dpop::{dpop_required, optional_token_endpoint_dpop};
 use crate::oauth_errors::{require, OAuthTokenError};
 use custos_core::auth::token::generate_token;
 use custos_core::CoreState;
@@ -59,7 +60,7 @@ pub(super) async fn handle_refresh_token(
         return e.into_response();
     }
     let token_url = format!("{}/oauth/token", state.config.issuer());
-    let jkt = match token_endpoint_dpop(state, headers, &token_url) {
+    let jkt = match optional_token_endpoint_dpop(state, headers, &token_url) {
         Ok(jkt) => jkt,
         Err(e) => return e.into_response(),
     };
@@ -91,20 +92,33 @@ pub(super) async fn handle_refresh_token(
         return OAuthTokenError::new("invalid_grant", "client_id mismatch").into_response();
     }
 
-    // DPoP binding check: tokens issued since V012 always carry jkt. A NULL jkt means the
-    // token predates DPoP binding enforcement — reject it rather than silently accepting any key.
-    match stored.jkt.as_deref() {
-        None => {
-            return OAuthTokenError::new("invalid_grant", "refresh token not found or expired")
-                .into_response();
-        }
-        Some(stored_jkt) => {
+    // What the family was issued for decides the terms. A resource the operator has since
+    // unconfigured ends the family.
+    let not_found = || OAuthTokenError::new("invalid_grant", "refresh token not found or expired");
+    let terms = match super::ConnectorTerms::for_grant(
+        state,
+        stored.resource.as_deref(),
+        form.resource.as_deref(),
+    ) {
+        Ok(terms) => terms,
+        Err(e) => return e.into_error(not_found()).into_response(),
+    };
+
+    // DPoP binding check. A bound family rotates only for its own key. An unbound one is honoured
+    // only as a connector family, and stays unbound whatever the request carried; any other NULL
+    // jkt predates binding enforcement and is rejected rather than accepting any key.
+    let jkt = match (stored.jkt.as_deref(), jkt) {
+        (Some(stored_jkt), Some(jkt)) => {
             use subtle::ConstantTimeEq;
             if !bool::from(stored_jkt.as_bytes().ct_eq(jkt.as_bytes())) {
                 return OAuthTokenError::new("invalid_grant", "DPoP key mismatch").into_response();
             }
+            Some(jkt)
         }
-    }
+        (Some(_), None) => return dpop_required().into_response(),
+        (None, _) if terms.is_connector() => None,
+        (None, _) => return not_found().into_response(),
+    };
 
     // All validations passed. Rotation keeps superseded rows around instead of deleting
     // them, so a rotated-away token can be told apart from an unknown one:
@@ -151,7 +165,7 @@ pub(super) async fn handle_refresh_token(
     // that isn't a valid atproto grant to the base `atproto` scope (full access
     // under the current session model).
     let granted_scope = if custos_core::auth::oauth_scopes::is_atproto_oauth_scope(&stored.scope) {
-        stored.scope
+        terms.scope(stored.scope)
     } else {
         "atproto".to_string()
     };
@@ -170,10 +184,9 @@ pub(super) async fn handle_refresh_token(
             None => {
                 super::link_grant_record(
                     &mut tx,
-                    state,
                     &did,
                     &stored.client_id,
-                    None,
+                    terms.is_connector(),
                     &granted_scope,
                 )
                 .await?
@@ -185,10 +198,11 @@ pub(super) async fn handle_refresh_token(
             &stored.client_id,
             did.as_str(),
             &granted_scope,
-            &jkt,
+            jkt.as_deref(),
             &stored.session_id,
             &stored.expires_at,
             &registration_id,
+            terms.resource,
         )
         .await?;
         super::audit_token_exchanged(
@@ -215,12 +229,13 @@ pub(super) async fn handle_refresh_token(
         &state.oauth_signing_keypair,
         &stored.did,
         &granted_scope,
-        Some(&jkt),
+        jkt.as_deref(),
         registration_type
             .marks_oauth_tokens()
             .then_some(registration_id.as_str()),
         &state.config.public_url,
-        state.config.oauth.access_token_ttl_secs,
+        terms.audience(),
+        terms.ttl_secs(),
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -239,8 +254,8 @@ pub(super) async fn handle_refresh_token(
         response_headers,
         Json(TokenResponse {
             access_token,
-            token_type: "DPoP",
-            expires_in: state.config.oauth.access_token_ttl_secs,
+            token_type: super::token_type(jkt.as_deref()),
+            expires_in: terms.ttl_secs(),
             refresh_token: new_refresh.plaintext,
             scope: granted_scope,
             sub: stored.did,

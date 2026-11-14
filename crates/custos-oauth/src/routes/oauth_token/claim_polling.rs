@@ -242,6 +242,7 @@ async fn claim_success(state: &CoreState, identity: &AgentIdentityRow) -> Respon
         None,
         Some(&identity.id),
         &state.config.public_url,
+        &state.config.public_url,
         super::AGENT_ACCESS_TOKEN_TTL_SECS,
     ) {
         Ok(t) => t,

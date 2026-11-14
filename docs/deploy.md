@@ -378,7 +378,10 @@ wiring than the Root-Directory trick:
   sidecar's Node suite, so waiting adds no real safety; harmless if you'd rather gate uniformly.
 - **Environment:** `MCP_SIDECAR_PDS_ORIGIN` = the PDS's private address
   (`http://<pds-service>.railway.internal:<port>`) and `MCP_SIDECAR_PUBLIC_ORIGIN` =
-  `https://mcp.obsign.org` (the OAuth resource identifier).
+  `https://mcp.obsign.org`. The OAuth resource identifier the sidecar advertises is that
+  origin plus `/mcp`. For MCP connectors such as Claude to sign in, set
+  `EZPDS_OAUTH_CONNECTOR_RESOURCES=https://mcp.obsign.org/mcp` on the **PDS** service; the
+  two values must match, and leaving it unset keeps connector sign-in off (ADR-0042).
   `MCP_SIDECAR_PDS_ORIGIN` is **required** — the sidecar parse-fails loudly rather
   than defaulting to a public URL. Both origins must carry an explicit
   `http://`/`https://` scheme: a bare `pds.railway.internal:8080` technically

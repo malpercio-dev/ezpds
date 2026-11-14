@@ -1,7 +1,7 @@
 // Paced, rate-limit-aware HTTP layer. All network traffic from the CLI funnels
 // through here so pacing and 429 handling are enforced globally, not per-module.
 
-import { MIN_REQUEST_INTERVAL_MS, MAX_RATE_LIMIT_RETRIES } from './config.js';
+import { MIN_REQUEST_INTERVAL_MS, MAX_RATE_LIMIT_RETRIES } from './pacing.js';
 import { spaceSigHeaders } from './space-signature.js';
 
 export class HttpError extends Error {

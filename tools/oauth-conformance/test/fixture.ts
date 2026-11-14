@@ -147,6 +147,11 @@ export async function startFixture(
      * token. Tests that use it belong in their own file (see the one-fixture-per-file rule).
      */
     accessTokenTtlSecs?: number;
+    /**
+     * Set `oauth.connector_resources`: the MCP resources a request may name to sign in as a
+     * connector, without PAR or DPoP. Empty (the default) leaves both mandatory for everyone.
+     */
+    connectorResources?: string[];
   } = {},
 ): Promise<Fixture> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'custos-oauth-conformance-'));
@@ -156,11 +161,15 @@ export async function startFixture(
     // `spawnPds` runs the binary with a closed env allowlist and its cwd set to `dir`, so a
     // setting without an entry in that allowlist is reached by dropping a config file here —
     // the same escape hatch tools/mcp-sidecar uses for its agent_auth scopes.
+    const oauth: string[] = [];
     if (options.accessTokenTtlSecs !== undefined) {
-      fs.writeFileSync(
-        path.join(dir, 'pds.toml'),
-        `[oauth]\naccess_token_ttl_secs = ${options.accessTokenTtlSecs}\n`,
-      );
+      oauth.push(`access_token_ttl_secs = ${options.accessTokenTtlSecs}`);
+    }
+    if (options.connectorResources !== undefined) {
+      oauth.push(`connector_resources = ${JSON.stringify(options.connectorResources)}`);
+    }
+    if (oauth.length > 0) {
+      fs.writeFileSync(path.join(dir, 'pds.toml'), `[oauth]\n${oauth.join('\n')}\n`);
     }
     pds = await spawnPds({ dir, plcUrl: plc.url, agentAuthEnabled: false });
 

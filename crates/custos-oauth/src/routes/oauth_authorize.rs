@@ -11,12 +11,15 @@
 
 //! `GET`/`POST /oauth/authorize` — the authorization endpoint and its consent page.
 //!
-//! **PAR only.** The server metadata advertises `require_pushed_authorization_requests: true`
-//! (the atproto OAuth profile mandates PAR), and this endpoint enforces it: a GET without a
-//! PAR-issued `request_uri` gets the no-redirect error page, as does one carrying a JAR
-//! (RFC 9101) `request` object — advertised unsupported via
-//! `request_parameter_supported: false` and rejected rather than silently ignored. Client
-//! registration therefore happens at `/oauth/par`; this endpoint only reads the cached row.
+//! **PAR only, except for a connector.** The server metadata advertises
+//! `require_pushed_authorization_requests: true` (the atproto OAuth profile mandates PAR), and
+//! this endpoint enforces it: a GET without a PAR-issued `request_uri` gets the no-redirect
+//! error page, as does one carrying a JAR (RFC 9101) `request` object — advertised unsupported
+//! via `request_parameter_supported: false` and rejected rather than silently ignored. The one
+//! exception is ADR-0042's: a plain request whose `resource` is one of the operator's
+//! `[oauth] connector_resources` is admitted (`resolve_plain_connector_request`) and joins the
+//! same consent path, on the connector terms. For every other request client registration
+//! happens at `/oauth/par` and this endpoint only reads the cached row.
 //! The reverse-FQDN private-use-redirect rule is enforced here as well as at PAR.
 //!
 //! **`response_mode`.** Honored on every success and error redirect: `query` (the default) or
@@ -30,7 +33,7 @@
 //! when a device was actually enqueued.
 
 use axum::{
-    extract::{Form, Query, State},
+    extract::{Query, State},
     http::HeaderMap,
     response::{Html, IntoResponse, Response},
 };
@@ -79,7 +82,7 @@ fn sanitize_origin(raw: &str) -> Option<String> {
 /// Fully-resolved parameters for the authorization consent page.
 ///
 /// Constructed by looking up the stored PAR request named by `request_uri` and
-/// deserializing its JSON — the only way in, since this endpoint is PAR-only.
+/// deserializing its JSON, or — for a connector only — from a plain request's own parameters.
 pub struct AuthorizeQuery {
     pub client_id: String,
     pub redirect_uri: String,
@@ -108,7 +111,8 @@ pub struct AuthorizeQuery {
 /// A conformant request carries exactly `client_id` and `request_uri` (PAR-only).
 /// `request` exists only to be rejected: serde drops unknown query fields silently,
 /// and a JAR request object we advertise as unsupported must fail loudly rather
-/// than have its inner parameters ignored.
+/// than have its inner parameters ignored. The inline authorization parameters are read
+/// only for a plain connector request (no `request_uri`, `resource` a connector resource).
 #[derive(Deserialize)]
 pub struct GetAuthorizationQuery {
     pub client_id: String,
@@ -116,6 +120,15 @@ pub struct GetAuthorizationQuery {
     pub request_uri: Option<String>,
     /// JAR (RFC 9101) request object — not supported, present only for rejection.
     pub request: Option<String>,
+    pub resource: Option<String>,
+    pub redirect_uri: Option<String>,
+    pub response_type: Option<String>,
+    pub response_mode: Option<String>,
+    pub code_challenge: Option<String>,
+    pub code_challenge_method: Option<String>,
+    pub state: Option<String>,
+    pub scope: Option<String>,
+    pub login_hint: Option<String>,
 }
 
 /// Form body for `POST /oauth/authorize`.
@@ -147,16 +160,31 @@ pub struct ConsentForm {
     /// The subset of non-`atproto` permissions the user left checked on the consent page.
     /// One `granted_scope` form field per checked box; absent entirely if every box was
     /// unchecked. `atproto` is never a checkbox — it's always granted, unconditionally.
-    ///
-    /// `deserialize_with` is required, not cosmetic: the urlencoded-form deserializer
-    /// represents a single repeated-key occurrence as a bare string rather than a
-    /// one-element sequence, so a plain `Vec<String>` fails to deserialize with exactly one
-    /// checkbox checked (the common case) while working fine with zero or two-plus.
-    #[serde(
-        default,
-        deserialize_with = "custos_core::auth::permission_sets::string_or_vec"
-    )]
+    #[serde(default)]
     pub granted_scope: Vec<String>,
+}
+
+impl ConsentForm {
+    /// Parse the urlencoded consent form body.
+    ///
+    /// By hand rather than through axum's `Form`: that extractor's deserializer refuses a
+    /// repeated key outright, and a browser submits one `granted_scope` pair per checked box,
+    /// so any approval with two or more permissions checked was rejected before it reached
+    /// this handler.
+    fn parse(body: &str) -> Result<Self, serde_json::Error> {
+        let mut fields = serde_json::Map::new();
+        let mut granted = Vec::new();
+        for (name, value) in url::form_urlencoded::parse(body.as_bytes()) {
+            let value = serde_json::Value::String(value.into_owned());
+            if name == "granted_scope" {
+                granted.push(value);
+            } else {
+                fields.insert(name.into_owned(), value);
+            }
+        }
+        fields.insert("granted_scope".to_string(), granted.into());
+        serde_json::from_value(fields.into())
+    }
 }
 
 /// Distinguishes client-caused failures from server-caused failures in PAR resolution.
@@ -209,18 +237,7 @@ async fn resolve_authorize_params(
     }
 
     let Some(uri) = raw.request_uri else {
-        // The metadata advertises `require_pushed_authorization_requests: true`; a
-        // client sending inline authorization parameters skipped PAR and is refused
-        // at flow start rather than allowed down a path the metadata says is closed.
-        tracing::info!(
-            client_id = %raw.client_id,
-            "authorize request rejected: no PAR request_uri (this server is PAR-only)"
-        );
-        return Err(ResolveError::Client(
-            "The app started sign-in without the preliminary step this server \
-             requires, so the request stopped here. Nothing was granted. If this \
-             keeps happening, the problem is on the app's side.",
-        ));
+        return resolve_plain_connector_request(state, raw).await;
     };
 
     let row = match consume_par_request(&state.db, &uri).await {
@@ -282,6 +299,105 @@ async fn resolve_authorize_params(
         login_hint: stored.login_hint,
         dpop_jkt: stored.dpop_jkt,
         resource: stored.resource,
+    })
+}
+
+/// Resolve a plain (non-PAR) authorization request, which only a connector may send
+/// (ADR-0042): its `resource` must be one of the operator's `[oauth] connector_resources`.
+///
+/// Does what `/oauth/par` would have done for the same parameters — resolve and cache the
+/// client's metadata document, check the redirect, normalise the scope — so the request joins
+/// the one consent path. Nothing here has a validated redirect target yet, so every failure is
+/// the no-redirect error page.
+async fn resolve_plain_connector_request(
+    state: &CoreState,
+    raw: GetAuthorizationQuery,
+) -> Result<AuthorizeQuery, ResolveError> {
+    use custos_core::auth::oauth_client_resolution::{
+        redirect_uri_registered, validate_private_use_redirect,
+    };
+    const BAD_REQUEST_MSG: &str = "The app's sign-in request was incomplete or not valid, so \
+         it stopped here. Nothing was granted. If this keeps happening, the problem is on the \
+         app's side.";
+    const UNKNOWN_CLIENT_MSG: &str = "This server couldn't confirm the app asking to sign you \
+         in, so the request stopped here. Nothing was granted. If this keeps happening, the \
+         problem is on the app's side.";
+
+    let connector = custos_core::auth::oauth_resource::connector_resource(
+        &state.config,
+        raw.resource.as_deref(),
+    );
+    if !matches!(connector, Ok(Some(_))) {
+        // The metadata advertises `require_pushed_authorization_requests: true`; a
+        // client sending inline authorization parameters skipped PAR and is refused
+        // at flow start rather than allowed down a path the metadata says is closed.
+        tracing::info!(
+            client_id = %raw.client_id,
+            "authorize request rejected: no PAR request_uri and no connector resource"
+        );
+        return Err(ResolveError::Client(
+            "The app started sign-in without the preliminary step this server \
+             requires, so the request stopped here. Nothing was granted. If this \
+             keeps happening, the problem is on the app's side.",
+        ));
+    }
+
+    let reject = |reason: &str| {
+        tracing::info!(client_id = %raw.client_id, reason, "plain connector request rejected");
+        ResolveError::Client(BAD_REQUEST_MSG)
+    };
+    let present = |v: &Option<String>| v.clone().filter(|s| !s.is_empty());
+    let redirect_uri = present(&raw.redirect_uri).ok_or_else(|| reject("missing redirect_uri"))?;
+    let code_challenge =
+        present(&raw.code_challenge).ok_or_else(|| reject("missing code_challenge"))?;
+    let response_mode = ResponseMode::parse(raw.response_mode.as_deref()).map_err(|desc| {
+        tracing::info!(desc, "plain connector request rejected: bad response_mode");
+        ResolveError::Client(UNSUPPORTED_RESPONSE_MODE_MSG)
+    })?;
+    let scope = custos_core::auth::oauth_scopes::normalize_scope_request(
+        raw.scope
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("atproto"),
+    )
+    .map_err(|desc| reject(&desc))?;
+
+    use crate::oauth_client::ClientResolveError;
+    let client = crate::oauth_client::resolve_client(state, &raw.client_id)
+        .await
+        .map_err(|e| match e {
+            ClientResolveError::Db => ResolveError::Server(SERVER_ERROR_PAGE_MSG),
+            ClientResolveError::NotRegistered | ClientResolveError::Resolution(_) => {
+                ResolveError::Client(UNKNOWN_CLIENT_MSG)
+            }
+        })?;
+    let metadata: ClientMetadata = serde_json::from_str(&client.metadata_json).map_err(|e| {
+        tracing::error!(client_id = %raw.client_id, error = %e, "failed to parse OAuth client metadata");
+        ResolveError::Server(SERVER_ERROR_PAGE_MSG)
+    })?;
+    if !redirect_uri_registered(&metadata.redirect_uris, &redirect_uri, true)
+        || validate_private_use_redirect(&raw.client_id, &redirect_uri).is_err()
+    {
+        return Err(reject("redirect_uri is not registered for the client"));
+    }
+    client.cache(state, &raw.client_id).await.map_err(|e| {
+        tracing::error!(error = %e, "failed to cache resolved OAuth client metadata");
+        ResolveError::Server(SERVER_ERROR_PAGE_MSG)
+    })?;
+
+    Ok(AuthorizeQuery {
+        client_id: raw.client_id,
+        redirect_uri,
+        code_challenge,
+        // Checked (S256, `code`) by the caller, which by then can answer with a redirect.
+        code_challenge_method: raw.code_challenge_method.unwrap_or_default(),
+        state: raw.state.unwrap_or_default(),
+        response_type: raw.response_type.unwrap_or_default(),
+        response_mode,
+        scope,
+        login_hint: present(&raw.login_hint),
+        dpop_jkt: None,
+        resource: raw.resource,
     })
 }
 
@@ -355,10 +471,14 @@ impl ClientValidationError {
 /// that didn't come through PAR, so an unknown `client_id` here means the request
 /// never pushed (a forged POST, or a row lost between PAR and now) — not a real
 /// client this server should go fetch on demand.
+///
+/// `connector` is whether the request names a connector resource, which waives a loopback
+/// redirect's port (`redirect_uri_registered`).
 async fn lookup_and_validate_client(
     state: &CoreState,
     client_id: &str,
     redirect_uri: &str,
+    connector: bool,
 ) -> Result<ClientMetadata, ClientValidationError> {
     let client_metadata_json = match get_oauth_client(&state.db, client_id).await {
         Ok(Some(row)) => row.client_metadata,
@@ -381,7 +501,11 @@ async fn lookup_and_validate_client(
         }
     };
 
-    if !metadata.redirect_uris.contains(&redirect_uri.to_string()) {
+    if !custos_core::auth::oauth_client_resolution::redirect_uri_registered(
+        &metadata.redirect_uris,
+        redirect_uri,
+        connector,
+    ) {
         return Err(ClientValidationError::InvalidRedirectUri);
     }
 
@@ -423,12 +547,27 @@ pub async fn get_authorization(
         }
     };
 
+    // The connector resource this request names, if any (ADR-0042). A stored resource that no
+    // longer classifies is treated as none; the token endpoint refuses its code.
+    let connector = custos_core::auth::oauth_resource::connector_resource(
+        &state.config,
+        params.resource.as_deref(),
+    )
+    .ok()
+    .flatten();
+
     // Client and redirect_uri must be validated before any redirect is issued.
-    let metadata =
-        match lookup_and_validate_client(&state, &params.client_id, &params.redirect_uri).await {
-            Ok(m) => m,
-            Err(e) => return e.into_error_page(),
-        };
+    let metadata = match lookup_and_validate_client(
+        &state,
+        &params.client_id,
+        &params.redirect_uri,
+        connector.is_some(),
+    )
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => return e.into_error_page(),
+    };
 
     // From here on redirect_uri is validated — errors redirect there, not to an error page.
     // Captures the fields every error redirect on this request needs, so each call site
@@ -477,6 +616,11 @@ pub async fn get_authorization(
     )
     .await
     {
+        // A connector is never offered what its grant cannot carry. Applied after expansion, so
+        // a permission set cannot smuggle a scope past the ceiling.
+        Ok(s) if connector.is_some() => {
+            custos_core::auth::oauth_resource::connector_scope_ceiling(&s)
+        }
         Ok(s) => s,
         Err(desc) => return redirect_err("invalid_scope", &desc),
     };
@@ -526,6 +670,7 @@ pub async fn get_authorization(
         &params.response_type,
         params.response_mode,
         params.resource.as_deref(),
+        connector,
         &state.config.public_url,
         params.login_hint.as_deref(),
         None,
@@ -783,22 +928,39 @@ async fn dispatch_login_approval_push(
 /// Re-validates client_id and redirect_uri against the database, and enforces
 /// code_challenge_method=S256, before issuing an authorization code or redirect.
 /// Hidden form fields could be tampered with by a malicious browser.
-pub async fn post_authorization(
-    State(state): State<CoreState>,
-    Form(form): Form<ConsentForm>,
-) -> Response {
+pub async fn post_authorization(State(state): State<CoreState>, body: String) -> Response {
+    let form = match ConsentForm::parse(&body) {
+        Ok(form) => form,
+        Err(e) => {
+            tracing::info!(error = %e, "consent form rejected: malformed body");
+            return error_page(
+                "This sign-in request didn't work",
+                "The approval this page sent was incomplete, so nothing was granted. Go back \
+                 to the app and start the sign-in again.",
+            )
+            .into_response();
+        }
+    };
     // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
     // Trailing slash trimmed to match the AS-metadata `issuer` value exactly.
     let issuer = state.config.issuer().to_string();
     // Validate client and redirect_uri first — deny/approve both redirect there,
     // so we must confirm it is safe before using it as a redirect target.
-    let metadata =
-        match lookup_and_validate_client(&state, &form.client_id, &form.redirect_uri).await {
-            Ok(m) => m,
-            Err(e) => return e.into_error_page(),
-        };
-
     let resource = Some(form.resource.as_str()).filter(|r| !r.is_empty());
+    let connector = custos_core::auth::oauth_resource::connector_resource(&state.config, resource)
+        .ok()
+        .flatten();
+    let metadata = match lookup_and_validate_client(
+        &state,
+        &form.client_id,
+        &form.redirect_uri,
+        connector.is_some(),
+    )
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => return e.into_error_page(),
+    };
 
     // The hidden response_mode field is attacker-controllable like every other hidden
     // field. An unknown value gets the no-redirect error page: guessing a delivery mode
@@ -878,6 +1040,7 @@ pub async fn post_authorization(
             &form.response_type,
             mode,
             resource,
+            connector,
             &state.config.public_url,
             hint,
             Some(error),
@@ -2030,6 +2193,119 @@ mod tests {
         );
     }
 
+    // ── Plain connector requests (ADR-0042) ───────────────────────────────────
+
+    const MCP_RESOURCE: &str = "https://mcp.example.com/mcp";
+
+    /// [`state_with_client`] with [`MCP_RESOURCE`] configured as a connector resource, and a
+    /// connector client that registered a portless loopback redirect.
+    async fn connector_state() -> custos_core::CoreState {
+        let state =
+            test_support::with_connector_resources(state_with_client().await, &[MCP_RESOURCE]);
+        register_oauth_client(
+            &state.db,
+            "https://connector.example.com/client.json",
+            r#"{"redirect_uris":["http://localhost/callback"],"client_name":"Connector"}"#,
+        )
+        .await
+        .unwrap();
+        state
+    }
+
+    /// A plain authorize URL for the connector client, naming `resource` and asking `scope`.
+    fn plain_authorize_url(resource: Option<&str>, scope: &str) -> String {
+        format!(
+            "/oauth/authorize?client_id={}&redirect_uri={}&code_challenge=abc\
+             &code_challenge_method=S256&state=s&response_type=code&scope={}{}",
+            urlencoding::encode("https://connector.example.com/client.json"),
+            urlencoding::encode("http://localhost:49152/callback"),
+            urlencoding::encode(scope),
+            resource
+                .map(|r| format!("&resource={}", urlencoding::encode(r)))
+                .unwrap_or_default(),
+        )
+    }
+
+    /// A plain request naming a connector resource reaches the consent page: with the
+    /// unbound-access notice, without the scopes above the connector ceiling, on a loopback
+    /// redirect whose port the client could not register, and with a pending wallet request.
+    #[tokio::test]
+    async fn a_plain_request_for_a_connector_resource_reaches_consent() {
+        let state = connector_state().await;
+        let response = get_authorize(
+            state.clone(),
+            &plain_authorize_url(
+                Some(MCP_RESOURCE),
+                "atproto identity:* transition:generic repo:app.bsky.feed.post",
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_string(response).await;
+        assert!(html.contains("This app connects through mcp.example.com."));
+        assert!(html.contains("repo:app.bsky.feed.post"));
+        assert!(!html.contains("identity:*"), "above the connector ceiling");
+        assert!(
+            !html.contains("transition:generic"),
+            "above the connector ceiling"
+        );
+        assert!(html.contains(r#"name="resource" value="https://mcp.example.com/mcp""#));
+
+        let (scope, resource): (String, Option<String>) =
+            sqlx::query_as("SELECT requested_scope, resource FROM pending_oauth_authorizations")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(scope, "atproto repo:app.bsky.feed.post");
+        assert_eq!(resource.as_deref(), Some(MCP_RESOURCE));
+    }
+
+    /// The exemption is the connector resource and nothing else: the same plain request naming
+    /// no resource, this server, or an unconfigured one is refused as any non-PAR request is.
+    #[tokio::test]
+    async fn a_plain_request_for_any_other_target_is_rejected() {
+        let state = connector_state().await;
+        let public_url = state.config.public_url.clone();
+        for resource in [
+            None,
+            Some(public_url.as_str()),
+            Some("https://elsewhere.example.com/mcp"),
+        ] {
+            let response =
+                get_authorize(state.clone(), &plain_authorize_url(resource, "atproto")).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{resource:?}");
+        }
+    }
+
+    /// The waived port is a connector term: a pushed request for this server from the same
+    /// client still needs its redirect registered exactly.
+    #[tokio::test]
+    async fn a_loopback_port_is_not_waived_outside_a_connector_request() {
+        let state = connector_state().await;
+        let mut params = par_params();
+        params["redirect_uri"] = "http://localhost:49152/callback".into();
+        let request_uri = "urn:ietf:params:oauth:request_uri:test-loopback";
+        custos_db::oauth::store_par_request(
+            &state.db,
+            request_uri,
+            "https://connector.example.com/client.json",
+            &params.to_string(),
+        )
+        .await
+        .unwrap();
+        let response = get_authorize(
+            state,
+            &format!(
+                "/oauth/authorize?client_id={}&request_uri={}",
+                urlencoding::encode("https://connector.example.com/client.json"),
+                urlencoding::encode(request_uri),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn get_authorization_with_jar_request_parameter_is_rejected() {
         // request_parameter_supported: false is advertised — a JAR `request` object must be
@@ -2161,6 +2437,31 @@ mod tests {
             urlencoding::encode(TEST_PASSWORD),
             granted_params,
         )
+    }
+
+    /// A browser submits one `granted_scope` pair per checked box. Two or more must reach the
+    /// stored grant; the form parser once refused a repeated key outright.
+    #[tokio::test]
+    async fn approving_several_permissions_grants_each_of_them() {
+        let (state, _server) = state_with_include_authority(serde_json::json!([])).await;
+        let db = state.db.clone();
+
+        let resp = post_authorize(
+            state,
+            &include_scope_form(
+                "atproto blob:*/* repo:app.bsky.feed.post repo:app.bsky.feed.like",
+                &["blob:*/*", "repo:app.bsky.feed.post"],
+            ),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(!location.contains("error="), "unexpected error: {location}");
+        assert_eq!(
+            stored_scope_for(&db, location).await,
+            "atproto blob:*/* repo:app.bsky.feed.post",
+            "both checked permissions are granted, and the unchecked one is not"
+        );
     }
 
     #[tokio::test]

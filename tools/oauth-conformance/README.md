@@ -91,6 +91,13 @@ the PDS's database.
 nonce dance, token-response shape (`sub`, `token_type`, `expires_in`, `cnf.jkt` binding), code
 replay, and scope rejection.
 
+`connector.test.ts` covers the one exception to mandatory PAR and DPoP (ADR-0042): an MCP
+connector's plain authorization request and proof-less token exchange for a resource in
+`oauth.connector_resources`, the unbound Bearer token it yields (`aud`, five-minute lifetime,
+scope ceiling, refused on account-owner routes), and that the exception stops at that
+resource — any other plain request, target, or proof-less exchange is still refused. It runs
+its own PDS with the setting on.
+
 `resource-errors.test.ts` covers what a client sees *after* login: the flat `ExpiredToken` /
 `InvalidToken` / `AuthMissing` strings clients dispatch on, on both a local and a proxied
 endpoint, plus the refusal of a DPoP-bound token presented as `Bearer`. It runs its own PDS
