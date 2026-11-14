@@ -263,6 +263,41 @@ pub(crate) fn is_loopback_client_id(client_id: &str) -> bool {
     !rest.contains('#') && matches!(rest.chars().next(), None | Some('/') | Some('?'))
 }
 
+/// Whether `redirect_uri` is one of the client's `registered` redirect URIs.
+///
+/// Exact string match, as the atproto profile requires. A connector request (ADR-0042) also
+/// matches a plain-http loopback redirect on any port, as RFC 8252 §7.3 has a native app's
+/// authorization server do: such a client listens on an ephemeral port it cannot register ahead
+/// of time. `localhost` counts here, unlike in [`is_loopback_redirect_uri`], because the client
+/// registered that name itself and only the port is being waived.
+pub fn redirect_uri_registered(registered: &[String], redirect_uri: &str, connector: bool) -> bool {
+    if registered.iter().any(|r| r == redirect_uri) {
+        return true;
+    }
+    if !connector {
+        return false;
+    }
+    let portless_loopback = |uri: &str| {
+        let mut url = Url::parse(uri).ok()?;
+        let loopback = match url.host()? {
+            Host::Ipv4(ip) => ip.is_loopback(),
+            Host::Ipv6(ip) => ip.is_loopback(),
+            Host::Domain(name) => name == "localhost",
+        };
+        if url.scheme() != "http" || !loopback {
+            return None;
+        }
+        url.set_port(None).ok()?;
+        Some(url)
+    };
+    let Some(wanted) = portless_loopback(redirect_uri) else {
+        return false;
+    };
+    registered
+        .iter()
+        .any(|r| portless_loopback(r).as_ref() == Some(&wanted))
+}
+
 /// Whether a loopback client's `redirect_uri` is one it may actually receive a code on.
 ///
 /// Plain http on the loopback **IP literal** only. `localhost` is deliberately refused even
@@ -678,5 +713,24 @@ mod tests {
     fn loopback_client_scope_must_include_atproto() {
         assert!(loopback_client_metadata("http://localhost?scope=email").is_err());
         assert!(loopback_client_metadata("http://localhost?scope=atproto").is_ok());
+    }
+
+    #[test]
+    fn redirect_matching_waives_only_a_loopback_port_and_only_for_connectors() {
+        let registered = vec![
+            "http://localhost/callback".to_string(),
+            "http://127.0.0.1:7000/cb".to_string(),
+            "https://app.example.com/callback".to_string(),
+        ];
+        let matches = |uri, connector| redirect_uri_registered(&registered, uri, connector);
+
+        assert!(matches("https://app.example.com/callback", false));
+        assert!(matches("http://localhost:49152/callback", true));
+        assert!(matches("http://127.0.0.1:49152/cb", true));
+
+        assert!(!matches("http://localhost:49152/callback", false));
+        assert!(!matches("http://localhost:49152/other", true));
+        assert!(!matches("https://app.example.com:8443/callback", true));
+        assert!(!matches("http://evil.example.com:49152/callback", true));
     }
 }
