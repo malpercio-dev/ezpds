@@ -80,3 +80,6 @@ tools/*/node_modules/
 
 # Local credential drop for account-recovery tooling; never commit.
 /app_password
+
+# Railway IaC authoring SDK (see .railway/railway.ts); only package-lock.json is tracked.
+.railway/node_modules/

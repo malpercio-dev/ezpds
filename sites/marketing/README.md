@@ -109,8 +109,8 @@ python3 -m http.server -d sites/marketing 8000
 
 Production is a Caddy container (`Dockerfile` + `Caddyfile`) deployed as its own
 Railway service — a second service in the PDS's Railway project, scoped to this
-directory (`Root Directory = sites/marketing`) so it stays independent of the
-repo-root `railway.toml`. The `Caddyfile` handles gzip/zstd, clean URLs, and
+directory (`Root Directory = sites/marketing`) so it never builds the
+repo-root `Dockerfile`. The `Caddyfile` handles gzip/zstd, clean URLs, and
 cache/security headers. Full setup — including pointing the `obsign.org` apex at
 it — is in [docs/deploy.md](../../docs/deploy.md) → "Marketing Site". To run the
 container exactly as deployed:
