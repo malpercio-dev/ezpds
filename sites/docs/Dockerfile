@@ -4,10 +4,8 @@
 # Astro Starlight and served by Caddy.
 #
 # This is its OWN Railway service, scoped to this directory via the service's
-# Root Directory = sites/docs setting — so it uses THIS Dockerfile and the
-# sibling railway.toml, never the repo-root railway.toml (which is PDS-specific:
-# it builds the pds binary and health-checks /xrpc/_health, neither of which
-# applies here). It mirrors the marketing-site service. See docs/deploy.md →
+# Root Directory = sites/docs setting — so it uses THIS Dockerfile, never the
+# repo-root one (which builds the pds binary). It mirrors the marketing-site service. See docs/deploy.md →
 # "Documentation site".
 #
 # Unlike the zero-build marketing site, Starlight compiles to static HTML, so
@@ -33,7 +31,7 @@ RUN pnpm build
 FROM caddy:2-alpine
 COPY Caddyfile /etc/caddy/Caddyfile
 # Only the generated site goes into the web root — not the Dockerfile, the
-# Caddyfile, railway.toml, or any source.
+# Caddyfile, or any source.
 COPY --from=build /app/dist /srv
 
 # Run as a non-root user, matching the repo's container security posture (the PDS
