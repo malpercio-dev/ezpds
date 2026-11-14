@@ -158,8 +158,8 @@ pub(super) async fn handle_jwt_bearer(state: &CoreState, form: TokenRequestForm)
     // Re-mint the assertion for the response (the sliding renewal — see the module doc), matching
     // the re-mint paths in `agent_identity.rs` and `agent_child.rs`. The access token below still
     // carries the *presented* assertion's scope verbatim.
-    let renewed_scopes = custos_core::auth::oauth_scopes::intersect_scope_tokens(
-        &serde_json::from_str::<Vec<String>>(&identity.scopes).unwrap_or_default(),
+    let renewed_scopes = custos_core::auth::agent_assertion::effective_agent_scopes(
+        &identity.scopes,
         &state.config.agent_auth.granted_scopes,
     );
     let renewed = match custos_core::auth::agent_assertion::mint_identity_assertion(

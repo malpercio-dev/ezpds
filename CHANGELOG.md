@@ -7,6 +7,239 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.17.0] - 2026-11-11
+
+### Added
+
+- The wallet now checks your did:plc identities for directory changes it did not sign while the app is closed, not only while it is open.
+
+- Tapping an operator alert on a paired admin device (a hosted account newly flagged by a watched labeler, or an account approaching its storage cap) now opens the Brass Console straight on that server's Accounts screen — or the account's detail when the alert names one — instead of landing on Home.
+
+- The admin companion now receives E2E-encrypted operator push alerts from every paired server: the console registers a per-device notification key over the signed admin channel, pins each relay's sender keys in the pairing document (re-pinned on every contact), and decrypts alerts on arrival in its own Notification Service Extension. Two server-side triggers ship with it — one batched push when a watched labeler newly flags hosted accounts (the initial backfill after adding a labeler never pages), and a storage-cap warning when an account's upload crosses 90% of its quota.
+
+- Obsign now sends a notification when a background identity check finds a change this device didn't approve, so you hear about it without opening the app.
+
+- Space repo hosts accept `com.atproto.space.notifyCredentialRevoked`: a space authority can revoke credentials it issued, and reads presenting a revoked credential are refused until it would have expired anyway.
+
+- Apps you sign in to with OAuth now appear in My agents, where you can see when each was last used and revoke it; revoking ends the app's session at its next refresh. Grants for an MCP resource the operator names in the new `[oauth] connector_resources` setting are recorded as connectors, whose writes are audited like any other agent's.
+
+- Account owners can approve more permissions for a live agent or sovereign child with `POST /v1/agents/{registration_id}/scopes`, up to the operator's current scope profile, without revoking and re-claiming it. `GET /v1/agents` now returns each agent's `effectiveScopes` and the current `scopeProfile`, and `GET /agent/child` returns each child's `effectiveScopes`.
+
+- Obsign shows **More permissions available** on an agent's page when your server allows more than the agent holds, approves the whole set with one biometric tap (renewing an agent account's credential in the same tap), and lists permissions the server no longer allows as suspended.
+
+
+### Changed
+
+- Consolidated the background sweep tasks' scheduling loop into one shared runner; no behavior change.
+
+- Internal: the Custos MCP server reuses the interop HTTP client; no user-visible change.
+
+- Consolidated several internally-duplicated PDS code paths (DID document caching, account-owner authentication, OAuth DPoP validation, and simplespace membership writes) behind shared helpers; no user-visible change.
+
+- Internal: unified internal-error handling across routes; no user-visible change.
+
+- Internal: consolidated public-URL trimming and epoch-seconds clock reads onto shared helpers; no user-visible change.
+
+- Internal: wallet screens share a CSS utility layer; no visual change.
+
+- Internal: the wallet's PDS client routes every XRPC call through one shared caller; no user-visible change.
+
+- Internal: consolidated the space test modules' shared request-building helpers into one support module; no behaviour change.
+
+- Internal: account promotion, claim-ceremony start, and collision-retry inserts share one implementation each; no user-visible change.
+
+- Internal: the wallet and operator console share one Keychain/device-key implementation; no user-visible change.
+
+- Internal: the OAuth route test suite shares one fixture set; no user-visible change.
+
+- Internal: PDS route and database tests share one fixture set; no user-visible change.
+
+- Internal: OAuth authorize/consent/token handlers share their validation and error-page helpers; no user-visible change.
+
+- Internal: generic HTTP contract tests run once over a route table; no user-visible change.
+
+- Internal: wallet screens share more utility styles and one success screen; no visual change.
+
+- Internal: follow-up consolidation of account-creation collision handling and token-store tests; no user-visible change.
+
+- Internal: served client-metadata test documents get unique paths so parallel OAuth tests never share a client_id; no user-visible change.
+
+- Corrected a stale ADR reference in the PLC identity module docs.
+
+- Consolidated the PDS route tests' duplicated account-seeding and POST-builder fixtures into the shared test-utils module.
+
+- The server build no longer compiles the unused MySQL and Postgres database drivers, and tokio is trimmed to the runtime features Custos uses.
+
+- Both mobile apps now draw every spacing, radius, and icon size from the design-token layer instead of hand-typed pixel values, so screens stay on one consistent scale.
+
+- Documented the notification relay's `push` wire-protocol fields for integrators building their own sender: `priority` is accepted but not honored (the push type sets the APNs priority), `ttlSecs` falls back to the relay's default expiry, and `ping` selects the content-free background wake.
+
+- Internal: the wallet's DPoP proof signing, XRPC error classification, and authenticated HTTP client (`OAuthClient`) moved into a new Tauri-free `custos-client` crate. Two internal-only behavior changes landed with the move: a Bearer OAuth client no longer creates a DPoP key, and a locked Keychain no longer causes the DPoP key to be replaced. No user-facing change.
+
+- Internal: the wallet's PDS HTTP client (`CustosClient`: PAR/token-exchange plus plain JSON/Bearer requests) moved into the `custos-client` crate; no user-visible or behavioral change.
+
+- Internal: the wallet's claim/app-password/migration typed XRPC methods moved into the `custos-client` crate, split into per-concern modules; no user-visible or behavioral change.
+
+- Internal: the wallet's `PdsClient` (discovery, plc.directory, and unauthenticated PDS XRPC) moved into the `custos-client` crate; no user-visible or behavioral change.
+
+- Internal: the wallet's sovereign-login network ceremony (device-key proof, `POST /v1/sessions/sovereign`, sub/aud validation) moved into the `custos-client` crate behind a signing closure; the wallet keeps identity resolution and Keychain persistence. No user-visible or behavioral change.
+
+- Internal: the wallet's plain agent-consent/child-lifecycle network calls (list/revoke/audit/claim, the four child routes) moved into the `custos-client` crate; minting a child account and post-recovery reconciliation stay in the wallet. No user-visible or behavioral change.
+
+- Internal: the wallet's Bearer session refresh (`com.atproto.server.refreshSession`) network call and sub/aud re-validation moved into the `custos-client` crate; the wallet keeps the refresh decision ladder, coalescing lock, and Keychain persistence. No user-visible change. `refresh_session` now documents a pre-existing classification edge case (a 401 whose body fails to read yields `NetworkError`, not a classified 401) that the move did not introduce or alter.
+
+- ADR-0031 audit of the custos-client extraction. Every message-bearing error variant touched by this stack (in the crate and the wallet's own superset enums) now declares in its doc comment whether `message` is diagnostic-only or server-quoted. One rendering gap the audit found: an agent child-account handle rejection was shown verbatim with no length bound or attribution; it now renders through a bound, attributed helper (`formatHandleRejection`), so a long or unattributed server string can no longer appear unbounded on that screen.
+
+- Corrected the Custos MCP server's in-source documentation of its `CUSTOS_MCP_ALLOW_DESTRUCTIVE` and `CUSTOS_MCP_IMAGE_DIR` gates to match the current tool surface: the destructive-tools gate also covers the Spaces write tools (`space_put_record`/`space_delete_record`), and the image-directory gate also confines `upload_blob` and `update_bluesky_profile` path reads. Documentation only — no behavior change.
+
+- Internal: corrected the `custos-client` crate's module doc, which still described it as shared with the admin-companion app; the crate is the identity wallet's own DPoP/OAuth/XRPC client and admin-companion uses a different scheme. Documentation only — no user-visible or behavioral change.
+
+- Access tokens, service-auth tokens, and Atproto Spaces delegation tokens and credentials whose subject or issuer is not a syntactically valid DID are now rejected at authentication instead of being passed through.
+
+- Custos: sovereign child minting now resumes through a shared step journal; a mint interrupted after its plc.directory publish finishes without publishing again.
+
+- Obsign: each outbound migration step now records its progress through the shared step journal; nothing changes on screen.
+
+- Internal: the wallet's outbound-migration orchestrator and its PDS client are each split into per-concern modules; no user-visible change.
+
+- The identity wallet's create flow now names its `session-token`, `device-token`, and `did` Keychain accounts as constants, and both apps pin every Keychain account name with a test, so a rename that would strand stored keys fails CI. No stored item moves.
+
+- Custos MCP now types its XRPC calls from the vendored lexicons, so a lexicon change that renames a field the tools use fails the type-check instead of reaching a user as a runtime error. Tool behaviour is unchanged.
+
+- Denied `clippy::unwrap_used` and `clippy::expect_used` outside tests workspace-wide; poisoned-mutex recovery replaces panics, and the remaining infallible `expect`s carry a stated invariant. No behavior change.
+
+- Blob garbage collection and firehose log retention now run on the shared sweep scheduler; behavior and `GET /v1/admin/health` output are unchanged.
+
+- Blob integrity scrub and blob mirror now run on the shared sweep scheduler; behavior and `GET /v1/admin/health` output are unchanged.
+
+- The labeler watcher now runs on the shared sweep scheduler, completing the move of every periodic background sweep onto it; behavior and `GET /v1/admin/health` output are unchanged.
+
+- Sweeps now start with a small random delay and are stopped gracefully at shutdown (waiting up to 10 seconds for a pass in flight); the nonce-retention safety rule is shared across the admin and sovereign-session stores.
+
+- Periodic background sweeps now run on one shared scheduler; `GET /v1/admin/health` reports the same sweep fields as before.
+
+- The auth.md agent surface (registration, the claim ceremony, sovereign child agents, provider events, and the owner's agent management API) now builds as its own `custos-agents` crate inside the Custos server; routes, responses, and the advertised capabilities are unchanged.
+
+- Blob upload and serving (`uploadBlob`, `listMissingBlobs`, `sync.getBlob`, `sync.listBlobs`) and the blob GC, scrub, and mirror sweeps now build as their own `custos-blobs` crate inside the Custos server; routes, responses, sweep behavior, and the restore-on-boot mirror reconcile are unchanged.
+
+- The firehose sequencer and the relay `requestCrawl` notifier now live in the shared `custos-core` crate, so every feature crate can emit repo and account events; event sequencing, replay, and crawler behavior are unchanged.
+
+- The firehose serving side (`com.atproto.sync.subscribeRepos`, the event-log retention sweep, and the operator's relay-status and request-crawl actions) now builds as its own `custos-firehose` crate inside the Custos server; the wire format, replay, cursors, and sweep behavior are unchanged.
+
+- The OAuth authorization server (PAR, authorize and wallet consent, token, revocation, discovery, and JWKS) now builds as its own `custos-oauth` crate inside the Custos server; routes, responses, and the advertised capabilities are unchanged.
+
+- The auth.md agent records, account push notifications, and the consent page's `space:` scope labels now live in the shared `custos-core` and `custos-db` crates, ahead of the OAuth server moving to its own crate; routes, responses, and server behavior are unchanged.
+
+- Internal: the wallet's identity ceremonies, backups, and session logic moved into the platform-free core crate, behind event and backup-location seams; behaviour is unchanged.
+
+- Internal: the wallet's IPC commands are now generated from a single command table over plain functions; command names, arguments, and errors are unchanged.
+
+- Internal: the wallet's network client wiring, diagnostics log, and share generation moved into the platform-free core crate; no behaviour change.
+
+- Internal: the wallet's Keychain, Secure Enclave, iCloud, and background-scheduling code moved into a dedicated iOS platform crate behind the core's traits; behaviour is unchanged.
+
+- Internal: each identity's device key now sits behind a platform signer in the core crate (Secure Enclave on iPhone, software elsewhere); key storage and signatures are unchanged.
+
+- Internal: the wallet now reaches the Keychain through a new platform-free core crate, the first step of extracting that core; stored data and behaviour are unchanged.
+
+- The wallet core (`obsign-core`) now compiles for `wasm32-unknown-unknown` and CI checks that it keeps doing so; the shared `tokio` default is trimmed to the portable feature set, with each server binary declaring its own OS features.
+
+- Atproto Spaces now follows the `permissioned-data` lexicons at `619c6e8`: `simplespace.createSpace`/`updateSpace`/`getSpace` split `policy` into `readPolicy` and `writePolicy` (and `createSpace` takes `spaceType`), `addMember` became `putMember` with per-member read/write access, `space.listRepos` reports `repoRev`/`spaceRev` and pages on a `spaceRev` cursor, and `space.notifyWrite` takes `repoRev`, forwards `spaceRev`/`prevSpaceRev`, and refuses a future revision with `FutureRev`.
+
+- Atproto Spaces credentials now follow the current spec: `getSpaceCredential` binds the credential to the P-256 key named by an RFC 9421 `atproto-space` HTTP message signature (`cnf.kid`) instead of a DPoP proof, and every credential-authed read takes `Authorization: Atproto-Space <credential>` plus an `Atproto-Space-Audience` header, signed together. Credentials last 10 minutes (verifiers accept up to 60). DPoP-style space requests are refused, so syncers on the old DPoP flow must upgrade.
+
+- A repo host now reports a write into another server's space with one direct `notifyWrite` to that space's host instead of auto-registering for notifications. The space host ignores a `repoRev` that does not advance, records nothing for a taken-down space, and keeps its `spaceRev` sequence moving forward after an account is deleted. Deliveries now retry an unreachable DID document and throttled (429) or timed-out (408) responses.
+
+- Internal: route-level tests now pin the Spaces write policy on `notifyWrite` and independent `read`/`write` member bits on `putMember`; no behaviour change.
+
+- Repo backups check the repo's latest commit first and skip the full download when nothing changed, and a migration whose old server answers "rate limited" now says how long to wait instead of importing an older iCloud copy of the repo.
+
+- Repeat full `getRepo` exports of an unchanged repo to the same client now answer `429` with `Retry-After` for an hour (`EZPDS_RATE_LIMIT_GET_REPO_FULL_COOLDOWN_SECS`, `0` disables); new commits and `since=` deltas are always served.
+
+- The PDS database layer (connection pool, schema migrations, and shared queries) now builds as its own `custos-db` crate; the database schema, migration history, and server behavior are unchanged.
+
+- Five more shared query modules (admin devices, device transfers, repo signing keys, and the persisted JWT secret and Iroh identity) moved into the `custos-db` crate; queries and server behavior are unchanged.
+
+- The shared server runtime (authentication core, identity resolution, lexicon validation, rate limiting, metrics, and the sweep scheduler) now builds as its own `custos-core` crate; routes, responses, and server behavior are unchanged.
+
+- The Atproto Spaces surface now builds as its own `custos-spaces` crate inside the Custos server; routes, responses, the advertised capabilities, and the `[spaces] enabled` switch are unchanged.
+
+- Obsign: the launch-time Share 1 and created-identity reconcile now runs from the wallet's platform-free core as one entry point; nothing changes on screen.
+
+- Obsign: the create flow, did:web import, PDS configuration, and appearance preference now live in the wallet's platform-free core alongside every other ceremony; nothing changes on screen.
+
+- The wallet's global device key, which signs a new identity's genesis operation, now goes through the same Secure Enclave signer as every per-identity key, so a device restored from an encrypted backup reports that key unusable instead of trusting stale Keychain metadata, and the create flow names that state (`DEVICE_KEY_UNUSABLE`) instead of a generic Keychain error.
+
+- Internal: the wallet's XRPC client records diagnostics through the session it is called on instead of per-call wrappers, and its tests now live beside the client code; no user-visible change.
+
+- Every repository write (`createRecord`, `putRecord`, `deleteRecord`, `applyWrites`) now runs one shared authorization-and-lock sequence; `createRecord` and `putRecord` check the access token before the record path, so an unauthenticated request with a malformed path now gets 401 rather than 400.
+
+- Internal: the agents and Spaces feature crates now own their steps of account deletion, each with its own schema-coverage test; no behaviour change.
+
+- Internal: the PDS app and every Custos feature crate's tests now build their routes through one shared middleware stack, so feature tests run the same CORS, error-shape, and rate-limit layers the PDS does. No behaviour change.
+
+- Internal: the PDS and feature crates import `custos_core`/`custos_db` paths directly instead of through re-export shims, and `AuthenticatedUser` documents that it is never refresh-scoped; no user-visible change.
+
+- Internal: the wallet core now owns its platform adapters and reads the time through an injectable clock, so every ceremony is testable against fakes; no user-visible change.
+
+- Deleting a child agent now frees its handle at once, so a replacement child can take the same handle without waiting for the account to be purged.
+
+
+### Fixed
+
+- Fixed: the hosted MCP sidecar image again contains the interop package it depends on at runtime, so its deploy builds instead of failing.
+
+- Obsign now says when this device no longer holds an identity's signing key (after a backup is restored onto it) instead of reporting a generic Keychain or signing error, and the posts backup and hosting-endpoint repair report rate limits, outages, and lost connections the same way every other screen does.
+
+- The wallet now shows the recovery release time and the last repo backup date in your device's language and time zone, instead of a raw server timestamp.
+
+- A change to your identity that this device didn't approve now stays on screen until it's undone, instead of disappearing after the next check.
+
+- Spaces: writing into a space anchored on your own DID now requires that the space was created with `createSpace` first (`SpaceNotFound` otherwise), and deleting the last record in a space repo now deletes the repo — `getRepo`, `getLatestCommit`, `listRecords` and `listRepoOps` answer `RepoNotFound`, `listSpaces` drops the space, and the authority drops the repo from its writer set until the next write recreates it.
+
+- Obsign no longer reports a failure on your device as your server failing: a Keychain error, a malformed response, or an unreachable directory now reads as what it is, and every screen describes a locked identity, a rate limit, or a lost connection the same way.
+
+- Fixed an intermittent failure in the OAuth login-approval test, which matched the two-digit match code against digits that appear by chance in the push payload's request id.
+
+
+### Removed
+
+- Removed the wallet's unused DPoP/OAuth-session machinery; on launch it now deletes the three orphaned OAuth Keychain items an older install left behind.
+
+- Removed dead code, thin wrappers, and duplicate helpers from the PDS OAuth and email surfaces; no user-visible behaviour change.
+
+- Removed the retired OAuth-PKCE sign-in flow and four unused wallet commands; no user-visible change.
+
+
+### Security
+
+- Refresh tokens are no longer accepted as access tokens. Three authenticated endpoints — `getRecommendedDidCredentials`, `checkAccountStatus`, and `listMissingBlobs` — carried no scope check of their own and answered a refresh-scoped token as though it were a session; the check now sits in the shared access-token seam, so every access-guarded route refuses one.
+
+- OAuth pushed-authorization requests now resolve an unregistered client's metadata document through the SSRF-hardened HTTP client, and refuse a client_id at a private, loopback, or link-local IP address outright, closing a path where a malicious client_id could reach an internal service.
+
+- The hosted MCP sidecar now trusts the Alpine CA bundle instead of Node's compiled-in root list, and no longer trusts the roots behind the compromised eMudhra intermediate certificates (October 2026). The image build fails if either root ever returns.
+
+- The PDS and notification relay images now require Debian's patched `ca-certificates` (`20250419~deb12u2`), which no longer trusts the roots behind the compromised eMudhra intermediate certificates (October 2026). The image build fails on an older package.
+
+- Elliptic-curve signing and verification now run on crypto-bigint 0.7.7 (p256 and k256 0.14, hpke 0.14), whose arithmetic is constant-time again (RUSTSEC-2026-0387). Existing keys, did:keys, signatures, and sealed notifications are byte-compatible.
+
+- Updated the `hickory-proto` DNS library to 0.26.2, fixing five RustSec advisories (RUSTSEC-2026-0487 to 0491) in its DNS message and record parsing: crafted input could make it panic, hit an integer underflow, or allocate memory far beyond the message size.
+
+- The iOS apps' native push-notification, background-task, and sign-in code now documents the safety reasoning behind every low-level system call, and an unchecked cast in the sign-in sheet was replaced with a checked one.
+
+- Access-token verification is now reachable only through the DPoP-binding seam, held by the compiler instead of a CI grep script.
+
+- Every outbound fetch whose URL a caller can influence is now held on the SSRF-hardened client by the compiler instead of a CI grep script.
+
+- Space-credential and space-signature verification are now reachable only through the Spaces auth seam, held by the compiler instead of a CI grep script.
+
+- Updated `ctutils` to 0.4.5 to fix RUSTSEC-2026-0385, where mask generation and `u128` comparisons were not constant-time.
+
+- Agent credentials no longer rest in plain text on the PDS: an agent's `claim_token` is stored only as its SHA-256 hash, and the post-claim `identity_assertion` is never stored at all — the claim-grant poll and every renewal path mint it fresh. The collecting poll now spends the claim token (one use, within the token's own window). A claim ceremony left open across the upgrade must re-register; agents already holding an assertion are unaffected.
+
+- TLS certificate verification no longer trusts the distrusted emSign intermediates (rustls-webpki 0.103.16, webpki-roots and webpki-root-certs 1.0.10; RUSTSEC-2026-0381, -0382, -0383).
+
+
 ## [0.16.2] - 2026-09-04
 
 ### Fixed

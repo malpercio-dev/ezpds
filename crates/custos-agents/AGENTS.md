@@ -1,6 +1,6 @@
 # custos-agents
 
-Last verified: 2026-10-22
+Last verified: 2026-11-09
 
 The auth.md agent feature crate: the `/auth.md` document, agent registration, the owner-confirmed
 claim ceremony, sovereign child agents, the provider event endpoint, the owner's `/v1/agents`
@@ -24,7 +24,7 @@ This file is a map; mechanism and invariants live in each module's `//!` doc.
 | `router()` / `internal_router()` | merged into `app.rs`'s public (CORS'd) and `/v1/*` (no-CORS) groups before the layer stack. No router gate: each registration flow checks its own `[agent_auth]` switch |
 | `spawn_sweeps(&mut Scheduler, &AgentAuthConfig)` | `main.rs`; registers the claim-attempt expiry sweep on `pds`'s scheduler |
 | `CAPABILITY` | `agents`, listed in `pds`'s `CAPABILITIES` in its original slot |
-| `purge_account_rows` / `PURGE_ACCOUNT_SQL` / `child_dids` | `account_delete::purge_account` reads `child_dids` to cascade-schedule a parent's children, then runs `purge_account_rows` inside its transaction; its schema-walking FK test reads `PURGE_ACCOUNT_SQL` |
+| `purge_account_rows` / `PURGE_ACCOUNT_SQL` / `child_dids` / `release_child_handle` | `account_delete::purge_account` reads `child_dids` to cascade-schedule a parent's children (releasing each one's handle, as `POST /agent/child/delete` does), then runs `purge_account_rows` inside its transaction; its schema-walking FK test reads `PURGE_ACCOUNT_SQL` |
 | `test_support` (`test-support` feature) | `test_app(state)`, `post_json_with_bearer`, the sovereign-child fixtures (`state_with_plc`, `state_with_grace`, `mint_child_for`, `child_request`) `pds`'s account-reaper test uses, plus `custos_core::test_support` re-exported |
 
 `purge.rs` owns which `agent_*` rows an account purge removes; `pds` owns the ordering and the
@@ -48,7 +48,7 @@ src/
 
 ### `db/`
 
-- `agent_child_deletions.rs` - Query functions for V049 (see "Latest Updates"): `upsert_child_deletion` (record a parent's child-deletion tombstone, generic over the executor so it writes inside the schedule transaction; `INSERT … ON CONFLICT(child_did)` makes a re-delete idempotent) and `list_child_deletions_of_parent` (newest-first, for the parent's durable audit view). The tombstone deliberately survives the child's purge; the purge step reclaims it only when the parent is deleted.
+- `agent_child_deletions.rs` - Query functions for V049 (see "Latest Updates"): `upsert_child_deletion` (record a parent's child-deletion tombstone, generic over the executor so it writes inside the schedule transaction; `INSERT … ON CONFLICT(child_did)` makes a re-delete idempotent; an empty handle keeps the recorded one, since the first delete released it) and `list_child_deletions_of_parent` (newest-first, for the parent's durable audit view). The tombstone deliberately survives the child's purge; the purge step reclaims it only when the parent is deleted.
 
 ### `routes/`
 
@@ -59,7 +59,7 @@ src/
 | `agent_claim.rs` | `POST /agent/identity/claim` + `/claim/confirm` — the auth.md claim ceremony (Step 4): public agent initiate, owner-authed confirm flips `active → claimed`; polling collection lives at the token endpoint. Confirm has two arms — bind the agent to the confirming account, or (with a `child` block, ownerless anonymous registrations only) mint it an account of its own via `agent_child_core.rs` and convert the registration in place — see module doc |
 | `agent_child.rs` | `POST /agent/child` (mint), `GET /agent/child` (list), `POST /agent/child/{assertion,revoke,delete}` — parent-owned sovereign child agents; the mint body lives in `agent_child_core.rs` so the claim ceremony can share it. Owner-guarded throughout: agent-derived callers are refused, a foreign child DID is a uniform 404, and its lifecycle verbs are the custody ladder (renew the capability / revoke it / schedule the hosting for deletion) — see module doc |
 | `agent_event.rs` | `POST /agent/event/notify` — auth.md `events_endpoint`: a trusted-issuer SET (RFC 8417/8935) revokes the matching registration; idempotent 202 — see module doc |
-| `agents.rs` | `GET /v1/agents`, `POST /v1/agents/claim-preview`, `POST /v1/agents/{registration_id}/revoke`, `GET /v1/agents/{registration_id}/audit` — owner-guarded "My agents" management; agent-derived callers refused, a parent operates its sovereign children — see module doc |
+| `agents.rs` | `GET /v1/agents`, `POST /v1/agents/claim-preview`, `POST /v1/agents/{registration_id}/revoke`, `GET /v1/agents/{registration_id}/audit`, `POST /v1/agents/{registration_id}/scopes` — owner-guarded "My agents" management; agent-derived callers refused, a parent operates its sovereign children; the scopes route is the owner-gated widening (ADR-0041), refused for OAuth grant records — see module doc |
 
 ## Rules
 

@@ -38,6 +38,8 @@ export type ScenarioName =
   | 'agent-child-mint'
   | 'agent-children'
   | 'agent-children-recovered'
+  | 'agent-scopes-available'
+  | 'agent-scopes-suspended'
   | 'app-password-minted'
   | 'device-key-unusable'
   | 'notifications-unverified'
@@ -239,6 +241,29 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
     identity.agents = [seedAgent(identity.did, identity.did)];
     upsertIdentity(state, identity);
+    return state;
+  },
+
+  // The operator raised the scope profile: one claimed agent and one live child both see
+  // "More permissions available", offering one plain scope and one elevated one, so the consent
+  // screen shows the "New" tag with and without the elevated warning. Approve to watch the
+  // banner go; the child's approval also hands over a renewed credential.
+  'agent-scopes-available': () => {
+    const state = scopesState();
+    state.agentScopeProfile = [
+      ...HARNESS_AGENT_SCOPES,
+      'rpc:app.bsky.feed.getTimeline?aud=did:web:api.bsky.app',
+      'account:email',
+    ];
+    return state;
+  },
+
+  // The operator lowered the scope profile below the grant: `repo:*?action=delete` is
+  // suspended on both detail screens, behind the "1 suspended" disclosure, and nothing is
+  // offered. Raising the profile back (`agentScopeProfile` in the console) restores it unasked.
+  'agent-scopes-suspended': () => {
+    const state = scopesState();
+    state.agentScopeProfile = HARNESS_AGENT_SCOPES.filter((t) => t !== 'repo:*?action=delete');
     return state;
   },
 
@@ -599,4 +624,26 @@ function isoHoursAgo(hours: number): string {
  */
 function isoInDays(days: number): string {
   return new Date(Date.now() + days * 86_400_000).toISOString();
+}
+
+/** One identity with a claimed agent and a live child, for the scope-widening scenarios. */
+function scopesState(): WalletState {
+  const state = emptyWalletState();
+  state.pdsUrl = DEFAULT_PDS_URL;
+  const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+  identity.agents = [seedAgent(identity.did, identity.did)];
+  identity.children = [
+    {
+      registrationId: 'reg-CHILD0',
+      did: fakePlcDid(`${identity.did}:child:0`),
+      handle: 'scribe.harness.pds.local',
+      status: 'claimed',
+      createdAt: '2026-07-15T12:00:00.000Z',
+      scopes: [...HARNESS_AGENT_SCOPES],
+      audit: [],
+    },
+  ];
+  identity.childIndex = identity.children.length;
+  upsertIdentity(state, identity);
+  return state;
 }

@@ -66,7 +66,8 @@ commands! {
     [async state] request_claim_verification = crate::claim::request_claim_verification(did: String) -> Result<(), crate::claim::ClaimError>;
     [async state] sign_and_verify_claim = crate::claim::sign_and_verify_claim(did: String, token: String) -> Result<crate::claim::VerifiedClaimOp, crate::claim::ClaimError>;
     [async state] submit_claim = crate::claim::submit_claim(did: String) -> Result<crate::claim::ClaimResult, crate::claim::ClaimError>;
-    [async state] list_agents = crate::agents::list_agents(did: String) -> Result<Vec<crate::agents::AgentSummary>, crate::agents::AgentsError>;
+    [async state] list_agents = crate::agents::list_agents(did: String) -> Result<crate::agents::AgentList, crate::agents::AgentsError>;
+    [async state] widen_agent_scopes = crate::agents::widen_agent_scopes(did: String, registration_id: String, scopes: Vec<String>) -> Result<crate::agents::WidenedScopes, crate::agents::AgentsError>;
     [async state] revoke_agent = crate::agents::revoke_agent(did: String, registration_id: String) -> Result<(), crate::agents::AgentsError>;
     [async state] get_agent_audit = crate::agents::get_agent_audit(did: String, registration_id: String, cursor: Option<String>) -> Result<crate::agents::AgentAuditPage, crate::agents::AgentsError>;
     [async state] preview_agent_claim = crate::agents::preview_agent_claim(did: String, user_code: String) -> Result<crate::agents::AgentClaimPreview, crate::agents::AgentsError>;
