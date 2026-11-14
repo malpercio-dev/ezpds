@@ -40,6 +40,18 @@ _Avoid_: space import (import names the wire methods, and on its own means adopt
 A space's authority-side state (its policy, member list and writer set), which moves with the authority's account and is never part of any repo.
 _Avoid_: space config, space settings
 
+**Deleted space**:
+A space its authority has deleted. It answers as deleted from then on, its syncers are told to drop their copies, and it can be created again under the same name as a new, empty space.
+_Avoid_: removed space, purged space
+
+**Suspended space**:
+A space whose authority's account is deactivated or taken down. It refuses new credentials with the authority's status but loses nothing, and resumes when the account does.
+_Avoid_: frozen space, disabled space
+
+**Space takedown**:
+The operator's reversible refusal to serve one space, independent of its authority's account.
+_Avoid_: space suspension (that names the authority's account state)
+
 ### Agents
 
 **Agent claim**:
