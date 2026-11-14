@@ -3,11 +3,7 @@
 //! Per-account agent management for the wallet's "My agents" surface:
 //!
 //! - `GET /v1/agents` — list the agent identities bound to the caller's DID: each one's
-//!   type/issuer/subject/scopes/status plus `lastUsedAt` (the newest activity audit event). The
-//!   list spans both origins of an `agent_identities` row — this crate's auth.md registrations
-//!   (`identity_assertion`/`service_auth`/`anonymous`/`child`) and the `connector`/`oauth_app`
-//!   grant records `custos-oauth`'s code exchange writes (V077), which carry a `clientId` instead
-//!   of an issuer/subject
+//!   type/issuer/subject/scopes/status plus `lastUsedAt` (the newest activity audit event)
 //! - `POST /v1/agents/claim-preview` — "what would confirming this `user_code` grant?":
 //!   registration type + the operator's current canonicalized `granted_scopes`, so the wallet
 //!   shows the grant *before* the biometric approval gate. Authorization mirrors claim confirm,
