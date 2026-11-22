@@ -300,11 +300,8 @@ enum PermissionEntry {
 }
 
 /// Accept either a bare value or an array of values during deserialization — permission-set
-/// records aren't fully consistent on cardinality for fields like `action`, and the
-/// urlencoded-form deserializer used by `custos-oauth`'s `oauth_authorize::ConsentForm` represents a
-/// single repeated-key occurrence as a bare string rather than a one-element sequence. Shared
-/// by both, since the generic `Deserializer` bound makes it format-agnostic.
-pub fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+/// records aren't fully consistent on cardinality for fields like `action`.
+fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

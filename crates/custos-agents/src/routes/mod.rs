@@ -8,9 +8,7 @@ mod agent_identity;
 mod agents;
 mod auth_md;
 
-pub(crate) use agent_child::{
-    delete_child, list_children, mint_child, remint_child_assertion, revoke_child,
-};
+pub(crate) use agent_child::{delete_child, list_children, mint_child, remint_child_assertion};
 pub(crate) use agent_claim::{post_agent_claim, post_agent_claim_confirm};
 pub(crate) use agent_event::post_agent_event;
 pub(crate) use agent_identity::post_agent_identity;

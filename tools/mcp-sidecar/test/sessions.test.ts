@@ -57,24 +57,10 @@ test('AC2.3: two callers see only their own identity', async () => {
   }
 });
 
-test('AC2.3: an unauthenticated tool call is refused (no ambient session)', async () => {
-  const client = await connectClient(sidecar.url); // no token
+test('AC2.3: an unauthenticated request is refused (no ambient session)', async () => {
   const before = sidecar.registry.size();
-  try {
-    const result = (await client.callTool({ name: 'whoami', arguments: {} })) as {
-      isError?: boolean;
-      content: { text: string }[];
-    };
-    assert.equal(result.isError, true, 'the call is refused, not served with an ambient session');
-    assert.match(
-      result.content[0]!.text,
-      /not authenticated/,
-      'without a forwarded credential there is no session to act as',
-    );
-    assert.equal(sidecar.registry.size(), before, 'no session was minted for the unauthenticated caller');
-  } finally {
-    await client.close();
-  }
+  await assert.rejects(connectClient(sidecar.url), 'no token, no MCP session');
+  assert.equal(sidecar.registry.size(), before, 'no session was minted for the unauthenticated caller');
 });
 
 test('AC2.3: restart leaves no recoverable session state', () => {

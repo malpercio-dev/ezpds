@@ -75,9 +75,8 @@ commands! {
     [sync state] agent_accounts_provisioned = crate::agents::agent_accounts_provisioned(did: String) -> bool;
     [async state] mint_child_from_claim = crate::agents::mint_child_from_claim(did: String, user_code: String, handle: String) -> Result<crate::agents::MintedChild, crate::agents::AgentsError>;
     [async state] list_children = crate::agents::list_children(did: String) -> Result<Vec<crate::agents::ChildSummary>, crate::agents::AgentsError>;
-    [async state] revoke_child = crate::agents::revoke_child(did: String, child_did: String) -> Result<(), crate::agents::AgentsError>;
-    [async state] delete_child = crate::agents::delete_child(did: String, child_did: String) -> Result<crate::agents::ChildDeletion, crate::agents::AgentsError>;
-    [async state] remint_child_assertion = crate::agents::remint_child_assertion(did: String, child_did: String) -> Result<crate::agents::ChildAssertion, crate::agents::AgentsError>;
+    [async state] delete_child = crate::agents::delete_child(did: String, registration_id: String) -> Result<crate::agents::ChildDeletion, crate::agents::AgentsError>;
+    [async state] remint_child_assertion = crate::agents::remint_child_assertion(did: String, registration_id: String) -> Result<crate::agents::ChildAssertion, crate::agents::AgentsError>;
     [async state] reconcile_children = crate::agents::reconcile_children(did: String) -> Result<crate::agents::ChildReconciliation, crate::agents::AgentsError>;
     [async state] preview_oauth_consent = crate::oauth_consent::preview_oauth_consent(did: String, user_code: String) -> Result<crate::oauth_consent::ConsentPreview, crate::oauth_consent::ConsentError>;
     [async state] preview_oauth_consent_by_request_id = crate::oauth_consent::preview_oauth_consent_by_request_id(did: String, request_id: String) -> Result<crate::oauth_consent::ConsentPreview, crate::oauth_consent::ConsentError>;

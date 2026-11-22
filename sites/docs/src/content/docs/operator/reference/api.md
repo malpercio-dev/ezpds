@@ -15,9 +15,6 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/.well-known/oauth-authorization-server` | Custos HTTP |
 | `/.well-known/oauth-protected-resource` | Custos HTTP |
 | `/agent/child` | Custos HTTP |
-| `/agent/child/assertion` | Custos HTTP |
-| `/agent/child/delete` | Custos HTTP |
-| `/agent/child/revoke` | Custos HTTP |
 | `/agent/event/notify` | Custos HTTP |
 | `/agent/identity` | Custos HTTP |
 | `/agent/identity/claim` | Custos HTTP |
@@ -62,8 +59,11 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/admin/transfers/{id}/cancel` | Custos HTTP |
 | `/v1/admin/waitlist` | Custos HTTP |
 | `/v1/agents` | Custos HTTP |
+| `/v1/agents/children` | Custos HTTP |
 | `/v1/agents/claim-preview` | Custos HTTP |
+| `/v1/agents/{registration_id}/assertion` | Custos HTTP |
 | `/v1/agents/{registration_id}/audit` | Custos HTTP |
+| `/v1/agents/{registration_id}/delete` | Custos HTTP |
 | `/v1/agents/{registration_id}/revoke` | Custos HTTP |
 | `/v1/agents/{registration_id}/scopes` | Custos HTTP |
 | `/v1/devices` | Custos HTTP |

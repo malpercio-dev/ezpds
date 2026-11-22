@@ -29,8 +29,7 @@ use crate::oauth_errors::{require, OAuthTokenError};
 use custos_core::auth::token::generate_token;
 use custos_core::CoreState;
 use custos_db::oauth::{
-    cleanup_expired_par_requests, get_oauth_client, store_par_request, upsert_oauth_client,
-    ClientMetadata, StoredPARParams,
+    cleanup_expired_par_requests, store_par_request, ClientMetadata, StoredPARParams,
 };
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -54,7 +53,8 @@ pub struct PARForm {
     /// as well as) sending a proof header. When both arrive they must agree.
     pub dpop_jkt: Option<String>,
     /// RFC 8707 resource indicator. Optional; a value naming one of the operator's
-    /// `[oauth] connector_resources` records the grant as an MCP connector.
+    /// `[oauth] connector_resources` makes this a connector request (ADR-0042), and one naming
+    /// anything but that or this server is `invalid_target`.
     pub resource: Option<String>,
 }
 
@@ -192,43 +192,40 @@ pub async fn post_par(
         Err(desc) => return OAuthTokenError::new("invalid_scope", desc).into_response(),
     };
 
-    // Look up the client: registered/cached rows first; on a miss, a URL-shaped
-    // client_id is resolved by fetching its metadata document (ATProto OAuth —
-    // client_id IS the metadata URL). The fetched document is only cached below,
-    // after the whole request validates.
-    let known_client = match get_oauth_client(&state.db, &client_id).await {
-        Ok(row) => row,
-        Err(e) => {
-            tracing::error!(error = %e, "db error looking up OAuth client in PAR");
-            return OAuthTokenError::new("server_error", "database error").into_response();
+    use crate::oauth_client::ClientResolveError;
+    let client = match crate::oauth_client::resolve_client(&state, &client_id).await {
+        Ok(client) => client,
+        Err(ClientResolveError::Db) => {
+            return OAuthTokenError::new("server_error", "database error").into_response()
         }
-    };
-    let (client_metadata_json, freshly_fetched) = match known_client {
-        Some(row) => (row.client_metadata, false),
-        None if client_id.starts_with("https://") || client_id.starts_with("http://") => {
-            // The fetched URL is caller-supplied (the client_id itself), so it must go through
-            // the SSRF-hardened client, not the plain one used for trusted admin-configured
-            // upstreams; `resolve_client_metadata` takes a `HardenedClient`, so no other compiles.
-            match custos_core::auth::oauth_client_resolution::resolve_client_metadata(
-                &state.hardened_http_client,
-                &client_id,
-            )
-            .await
-            {
-                Ok(json) => (json, true),
-                Err(e) => {
-                    tracing::info!(client_id = %client_id, error = %e, "URL client_id resolution failed in PAR");
-                    return OAuthTokenError::new("invalid_client", e.to_string()).into_response();
-                }
-            }
-        }
-        None => {
+        Err(ClientResolveError::NotRegistered) => {
             return OAuthTokenError::new("invalid_client", "client_id is not registered")
                 .into_response()
         }
+        Err(ClientResolveError::Resolution(desc)) => {
+            return OAuthTokenError::new("invalid_client", desc).into_response()
+        }
+    };
+    let client_metadata_json = client.metadata_json.as_str();
+
+    // RFC 8707: the target must be this server or a connector resource the operator configured
+    // (ADR-0042). Resolved before the redirect check, which a connector request relaxes.
+    let resource = form.resource.filter(|r| !r.is_empty());
+    let connector = match custos_core::auth::oauth_resource::connector_resource(
+        &state.config,
+        resource.as_deref(),
+    ) {
+        Ok(connector) => connector.is_some(),
+        Err(_) => {
+            return OAuthTokenError::new(
+                "invalid_target",
+                "resource is not a target this server issues tokens for",
+            )
+            .into_response()
+        }
     };
 
-    let metadata: ClientMetadata = match serde_json::from_str(&client_metadata_json) {
+    let metadata: ClientMetadata = match serde_json::from_str(client_metadata_json) {
         Ok(m) => m,
         Err(e) => {
             tracing::error!(
@@ -241,7 +238,11 @@ pub async fn post_par(
         }
     };
 
-    if !metadata.redirect_uris.contains(&redirect_uri) {
+    if !custos_core::auth::oauth_client_resolution::redirect_uri_registered(
+        &metadata.redirect_uris,
+        &redirect_uri,
+        connector,
+    ) {
         return OAuthTokenError::new(
             "invalid_request",
             "redirect_uri does not match registered URIs",
@@ -278,18 +279,6 @@ pub async fn post_par(
         Err(response) => return response,
     };
 
-    // RFC 8707 §2: an absolute URI with no fragment. Anything else is `invalid_target`.
-    let resource = form.resource.filter(|r| !r.is_empty());
-    if let Some(r) = resource.as_deref() {
-        if !url::Url::parse(r).is_ok_and(|u| u.fragment().is_none()) {
-            return OAuthTokenError::new(
-                "invalid_target",
-                "resource must be an absolute URI without a fragment",
-            )
-            .into_response();
-        }
-    }
-
     let params = StoredPARParams {
         redirect_uri,
         code_challenge,
@@ -315,11 +304,9 @@ pub async fn post_par(
     // The request has fully validated — now cache a freshly resolved metadata document
     // so the authorize/token endpoints' client lookups find it. Caching only after full
     // validation keeps rejected requests from planting rows.
-    if freshly_fetched {
-        if let Err(e) = upsert_oauth_client(&state.db, &client_id, &client_metadata_json).await {
-            tracing::error!(error = %e, client_id = %client_id, "failed to cache resolved OAuth client metadata");
-            return OAuthTokenError::new("server_error", "database error").into_response();
-        }
+    if let Err(e) = client.cache(&state, &client_id).await {
+        tracing::error!(error = %e, client_id = %client_id, "failed to cache resolved OAuth client metadata");
+        return OAuthTokenError::new("server_error", "database error").into_response();
     }
 
     // Generate the opaque request_uri token. The plaintext is used as the URN reference.
@@ -978,11 +965,14 @@ mod tests {
         assert_eq!(stored.response_mode, "fragment");
     }
 
-    /// RFC 8707: a resource indicator is stored for the code it will yield; one that is not an
-    /// absolute URI without a fragment is `invalid_target`.
+    /// RFC 8707: a configured connector resource is stored for the code it will yield; a
+    /// malformed one, or one this server does not issue for, is `invalid_target`.
     #[tokio::test]
-    async fn post_par_stores_a_resource_indicator_and_rejects_a_malformed_one() {
-        let state = test_state().await;
+    async fn post_par_stores_a_connector_resource_and_rejects_any_other_target() {
+        let state = crate::test_support::with_connector_resources(
+            test_state().await,
+            &["https://mcp.example.com"],
+        );
         register_client(&state).await;
         let par = |resource: &'static str| {
             Request::builder()
@@ -1011,7 +1001,11 @@ mod tests {
             serde_json::from_str(&row.request_parameters).unwrap();
         assert_eq!(stored.resource.as_deref(), Some("https://mcp.example.com"));
 
-        for bad in ["not a uri", "https://mcp.example.com/#frag"] {
+        for bad in [
+            "not a uri",
+            "https://mcp.example.com/#frag",
+            "https://elsewhere.example.com",
+        ] {
             let response = test_app(state.clone()).oneshot(par(bad)).await.unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad}");
             assert_eq!(

@@ -103,7 +103,8 @@ node secret key file is not, since losing it re-addresses the relay.
 
 ## Deploying
 
-`Dockerfile` + `docker-entrypoint.sh` + `railway.toml` in this directory: the repo-root
+`Dockerfile` + `docker-entrypoint.sh` in this directory, plus the `custos-notify-relay`
+service in `.railway/railway.ts`: the repo-root
 image builds a single binary (`-p pds`) and cannot cover a second one, so this is the same
 builder pattern pointed at `-p notify-relay`, built from the **repo-root context** (cargo
 resolves every workspace member even for a single `-p`). No Litestream — the database is

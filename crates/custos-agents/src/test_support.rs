@@ -95,10 +95,17 @@ pub async fn state_with_grace(grace_secs: u64) -> (CoreState, MockServer) {
     )
 }
 
-/// Mint a sovereign child of `parent` and return its DID. Reserves a fresh repo key and drives
-/// the real `POST /agent/child` path so the child has an account, repo, handle, provisioning
-/// row, and a claimed capability — exactly what a delete must later unwind.
-pub async fn mint_child_for(state: &CoreState, handle: &str, token: &str) -> String {
+/// A child minted by [`mint_child_for`]: its DID, and the registration id its parent manages it by
+/// under `/v1/agents/{registration_id}/…`.
+pub struct MintedChild {
+    pub did: String,
+    pub registration_id: String,
+}
+
+/// Mint a sovereign child of `parent`. Reserves a fresh repo key and drives the real
+/// `POST /agent/child` path so the child has an account, repo, handle, provisioning row, and a
+/// claimed capability — exactly what a delete must later unwind.
+pub async fn mint_child_for(state: &CoreState, handle: &str, token: &str) -> MintedChild {
     let repo_key = reserve_repo_key(&state.db).await;
     let op = child_genesis_op(handle, &state.config.public_url, &repo_key.key_id.0);
     let response = test_app(state.clone())
@@ -118,5 +125,8 @@ pub async fn mint_child_for(state: &CoreState, handle: &str, token: &str) -> Str
         .await
         .unwrap();
     let minted: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    minted["did"].as_str().unwrap().to_string()
+    MintedChild {
+        did: minted["did"].as_str().unwrap().to_string(),
+        registration_id: minted["registrationId"].as_str().unwrap().to_string(),
+    }
 }

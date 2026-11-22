@@ -6,8 +6,10 @@
 //     (`http://pds.railway.internal:PORT`), never the public domain; the
 //     private network keeps forwarded traffic off the public internet.
 //   MCP_SIDECAR_PUBLIC_ORIGIN — the sidecar's own public URL
-//     (`https://mcp.obsign.org`), advertised as the OAuth *resource* identifier
-//     in the MCP-spec protected-resource metadata.
+//     (`https://mcp.obsign.org`). The OAuth *resource* identifier advertised in
+//     the MCP-spec protected-resource metadata is this origin plus the MCP path
+//     (`https://mcp.obsign.org/mcp`), and the PDS must list that exact value in
+//     its `[oauth] connector_resources` or it refuses the connector's sign-in.
 //
 // The PDS origin is required and parse-fails loudly: silently defaulting to a
 // public URL would send forwarded credentials over the wrong path.
@@ -19,13 +21,31 @@
 export interface SidecarConfig {
   /** Where the sidecar forwards XRPC calls to (private network in prod). */
   pdsOrigin: string;
-  /** The sidecar's own public origin — the OAuth resource identifier. */
+  /** The sidecar's own public origin. */
   publicOrigin: string;
+  /** The OAuth resource identifier: the public origin plus the MCP path. */
+  resource: string;
+  /** The scopes a connector should request, advertised as `scopes_supported`. */
+  scopes: string[];
   /** TCP port to listen on. Railway injects PORT; default 8080 for local runs. */
   port: number;
   /** MCP endpoint path. */
   mcpPath: string;
 }
+
+// What a connector asks for when the operator sets nothing: the same reach as the
+// PDS's default agent scope profile. An MCP client with no scope of its own
+// requests exactly this list, so it is also what the user sees at consent. The
+// `rpc` audience names the default AppView; an operator on another AppView, or
+// one who wants Spaces tools to work, overrides the list with MCP_SIDECAR_SCOPES.
+// The PDS drops anything above its connector ceiling whatever is listed here.
+const DEFAULT_SCOPES = [
+  'atproto',
+  'repo:*?action=create&action=update',
+  'repo:*?action=delete',
+  'blob:*/*',
+  'rpc:*?aud=did:web:api.bsky.app',
+];
 
 function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, '');
@@ -86,10 +106,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
     throw new Error(`PORT must be a valid TCP port, got ${JSON.stringify(rawPort)}`);
   }
 
+  const mcpPath = env.MCP_SIDECAR_PATH ?? '/mcp';
+  const scopes = env.MCP_SIDECAR_SCOPES?.trim().split(/\s+/).filter(Boolean) ?? [];
+  if (scopes.length > 0 && !scopes.includes('atproto')) {
+    throw new Error('MCP_SIDECAR_SCOPES must include "atproto" — the PDS refuses a request without it.');
+  }
+
   return {
     pdsOrigin,
     publicOrigin,
+    resource: `${publicOrigin}${mcpPath}`,
+    scopes: scopes.length > 0 ? scopes : DEFAULT_SCOPES,
     port,
-    mcpPath: env.MCP_SIDECAR_PATH ?? '/mcp',
+    mcpPath,
   };
 }

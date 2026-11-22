@@ -13,8 +13,8 @@ use custos_core::CoreState;
 
 use crate::routes::*;
 
-/// The agent-facing surface: the auth.md document, registration, the claim ceremony, sovereign
-/// child agents, and the provider event endpoint.
+/// The agent-facing surface: the auth.md document, registration, the claim ceremony, minting a
+/// sovereign child, and the provider event endpoint.
 pub fn router<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -23,10 +23,7 @@ where
     Router::new()
         .route("/auth.md", get(serve_auth_md))
         .route("/agent/identity", post(post_agent_identity))
-        .route("/agent/child", get(list_children).post(mint_child))
-        .route("/agent/child/assertion", post(remint_child_assertion))
-        .route("/agent/child/revoke", post(revoke_child))
-        .route("/agent/child/delete", post(delete_child))
+        .route("/agent/child", post(mint_child))
         .route("/agent/identity/claim", post(post_agent_claim))
         .route(
             "/agent/identity/claim/confirm",
@@ -35,7 +32,8 @@ where
         .route("/agent/event/notify", post(post_agent_event))
 }
 
-/// The owner's "My agents" management API, called same-origin by the wallet.
+/// The owner's "My agents" management API, called same-origin by the wallet: every lifecycle verb
+/// over an agent or a sovereign child, keyed by registration id.
 pub fn internal_router<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -43,8 +41,14 @@ where
 {
     Router::new()
         .route("/v1/agents", get(list_agents))
+        .route("/v1/agents/children", get(list_children))
         .route("/v1/agents/claim-preview", post(claim_preview))
         .route("/v1/agents/{registration_id}/revoke", post(revoke_agent))
+        .route(
+            "/v1/agents/{registration_id}/assertion",
+            post(remint_child_assertion),
+        )
+        .route("/v1/agents/{registration_id}/delete", post(delete_child))
         .route("/v1/agents/{registration_id}/audit", get(agent_audit_log))
         .route(
             "/v1/agents/{registration_id}/scopes",

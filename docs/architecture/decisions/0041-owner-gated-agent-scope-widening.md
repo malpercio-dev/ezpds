@@ -101,8 +101,10 @@ sliding renewal and never took a narrow-only stance.
   who wants a scope gone for good revokes the agent. Per-agent owner narrowing is
   not provided, because the grow-only grant doesn't give it for free.
 - The new route sits under `/v1/agents/*` with the other claimed-agent owner
-  routes. Child management still has its own owner routes under `/agent/child/*`;
-  converging the two styles is separate work.
+  routes. Child management then still had its own owner routes under
+  `/agent/child/*`; MM-654 (2026-11-21) moved them here too, so a child is now
+  listed at `GET /v1/agents/children` and re-minted at
+  `POST /v1/agents/{registration_id}/assertion`.
 - This goes past atproto in one respect: atproto never widens a live grant in
   place. Custos can, because the grant bounds a renewable assertion rather than a
   fixed token family, and the renewal path already exists.

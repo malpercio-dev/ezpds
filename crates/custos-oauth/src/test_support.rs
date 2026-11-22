@@ -10,3 +10,14 @@ use custos_core::CoreState;
 pub fn test_app(state: CoreState) -> Router {
     custos_core::test_support::test_app(crate::router(), Router::new(), state)
 }
+
+/// `state` with `[oauth] connector_resources` set to `resources`, turning connector sign-in
+/// (ADR-0042) on for them.
+pub fn with_connector_resources(state: CoreState, resources: &[&str]) -> CoreState {
+    let mut config = (*state.config).clone();
+    config.oauth.connector_resources = resources.iter().map(|r| r.to_string()).collect();
+    CoreState {
+        config: std::sync::Arc::new(config),
+        ..state
+    }
+}

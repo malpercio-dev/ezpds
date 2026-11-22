@@ -18,6 +18,7 @@
 // custody split (ADR-0023). Every AC3 test drives this one spine.
 
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -39,6 +40,18 @@ export interface MintedChild {
   /** The service-signed identity assertion — the caller's durable credential. */
   identityAssertion: string;
   scopes: string[];
+}
+
+/** An OS-assigned free loopback port. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as net.AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 /** A legible token-endpoint failure (`{error, error_description}`). */
@@ -117,8 +130,12 @@ async function mintChild(baseUrl: string, parent: TestAccount): Promise<MintedCh
   // wallet), signs the genesis op, never sent to the server.
   const walletKey = await newKeypair();
   const handle = `agent-${randomSuffix(6)}.localhost`;
+  // `buildGenesisOp` also fills a middle recovery slot; the server does not inspect it for a
+  // child, so a throwaway key stands in.
+  const spare = await newKeypair();
   const { did, signedOp } = await buildGenesisOp({
     rotationKeyId: walletKey.keyId,
+    recoveryKeyId: spare.keyId,
     repoSigningKeyId,
     rotationKeypair: walletKey.keypair,
     handle,
@@ -211,13 +228,28 @@ async function teardown(
  * only one fixture.
  */
 export async function startE2eFixture(
-  options: { grantedScopes?: string[] } = {},
+  options: {
+    grantedScopes?: string[];
+    /**
+     * Run the sidecar as a connector resource: it listens on a port chosen up front so the
+     * PDS can be told, in `[oauth] connector_resources`, the exact resource the sidecar will
+     * advertise — the same pairing a deployment configures by hand.
+     */
+    connector?: boolean;
+  } = {},
 ): Promise<E2eFixture> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'custos-sidecar-e2e-'));
+  const sidecarPort = options.connector ? await freePort() : 0;
+  const sidecarOrigin = `http://127.0.0.1:${sidecarPort}`;
+  const toml: string[] = [];
   if (options.grantedScopes) {
     const scopes = options.grantedScopes.map((scope) => JSON.stringify(scope)).join(', ');
-    fs.writeFileSync(path.join(dir, 'pds.toml'), `[agent_auth]\ngranted_scopes = [${scopes}]\n`);
+    toml.push(`[agent_auth]\ngranted_scopes = [${scopes}]`);
   }
+  if (options.connector) {
+    toml.push(`[oauth]\nconnector_resources = ["${sidecarOrigin}/mcp"]`);
+  }
+  if (toml.length > 0) fs.writeFileSync(path.join(dir, 'pds.toml'), `${toml.join('\n')}\n`);
 
   const plc = await startMockPlc();
   let pds: SpawnedPds | undefined;
@@ -226,7 +258,13 @@ export async function startE2eFixture(
     pds = await spawnPds({ dir, plcUrl: plc.url, agentAuthEnabled: true });
     const parent = await provisionAccount(pds.baseUrl, path.join(dir, 'interop-state'));
     const child = await mintChild(pds.baseUrl, parent);
-    sidecar = await startSidecar({ MCP_SIDECAR_PDS_ORIGIN: pds.baseUrl });
+    sidecar = await startSidecar(
+      {
+        MCP_SIDECAR_PDS_ORIGIN: pds.baseUrl,
+        ...(options.connector ? { MCP_SIDECAR_PUBLIC_ORIGIN: sidecarOrigin } : {}),
+      },
+      sidecarPort,
+    );
 
     const running = { pds, sidecar };
     return {

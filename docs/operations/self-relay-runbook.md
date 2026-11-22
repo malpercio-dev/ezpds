@@ -231,9 +231,8 @@ The official relay runs as a separate Railway service beside the PDS, the sites,
 MCP sidecar. See [`docs/deploy.md`](../deploy.md) → "Notification relay" for the service
 settings; the two that are easy to get wrong:
 
-- **Railway Config File** → `crates/notify-relay/railway.toml`, with **Root Directory** left
-  at the repo root. Otherwise the service inherits the repo-root `railway.toml`, which is
-  PDS-specific.
+- **Dockerfile path** → `crates/notify-relay/Dockerfile`, with **Root Directory** left at the
+  repo root. The official relay declares both in `.railway/railway.ts`.
 - **No public networking, no health check path.** The relay serves no TCP port at all, so
   there is nothing to route to and nothing to probe. Liveness is the process plus the
   restart policy; the startup log line is the readiness signal.

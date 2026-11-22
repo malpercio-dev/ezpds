@@ -151,7 +151,19 @@ fn verify_es256_access_token(
     let mut validation = Validation::new(Algorithm::ES256);
     validation.set_required_spec_claims(&["exp", "sub"]);
     validation.leeway = 0;
-    validation.set_audience(&[state.config.public_url.as_str()]);
+    // A token is for this server, or for a connector resource the operator configured — the
+    // sidecar in front of one forwards the caller's token here unchanged (ADR-0042).
+    let audiences: Vec<&str> = std::iter::once(state.config.public_url.as_str())
+        .chain(
+            state
+                .config
+                .oauth
+                .connector_resources
+                .iter()
+                .map(String::as_str),
+        )
+        .collect();
+    validation.set_audience(&audiences);
     decode::<AccessTokenClaims>(token, &decoding_key, &validation)
         .map(|data| data.claims)
         .map_err(|e| {

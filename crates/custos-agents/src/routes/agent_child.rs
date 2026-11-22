@@ -5,7 +5,7 @@
 // repo-signing key, then issues a revocable, scope-clamped agent assertion.
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, Method, Uri},
     Json,
 };
@@ -17,13 +17,13 @@ use common::{ApiError, ErrorCode};
 use crate::agent_child_core::{mint_child_account, release_child_handle, ChildRegistration};
 use crate::db::agent_child_deletions::{list_child_deletions_of_parent, upsert_child_deletion};
 use custos_core::auth::agent_assertion::{mint_identity_assertion, parse_sqlite_datetime};
-use custos_core::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use custos_core::auth::guards::{authenticate_account_owner, authenticate_owner, OwnerAuthError};
 use custos_core::CoreState;
 use custos_db::accounts::{deactivate_account, AccountStateChange};
 use custos_db::agent_audit::{insert_agent_audit_event, AgentAuditEventType};
 use custos_db::agent_auth::{
-    get_child_of_parent, list_children_of_parent, revoke_agent_identity,
-    set_agent_identity_assertion_expiry, AgentIdentityStatus, RegistrationType,
+    get_agent_identity, list_children_of_parent, revoke_agent_identity,
+    set_agent_identity_assertion_expiry, AgentIdentityRow, AgentIdentityStatus, RegistrationType,
 };
 
 #[derive(Debug, Deserialize)]
@@ -70,24 +70,6 @@ pub struct ChildListResponse {
     children: Vec<ChildView>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RevokeChildRequest {
-    did: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RevokeChildResponse {
-    did: String,
-    status: &'static str,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildAssertionRequest {
-    did: String,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildAssertionResponse {
@@ -96,12 +78,6 @@ pub struct ChildAssertionResponse {
     identity_assertion: String,
     assertion_expires: String,
     scopes: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteChildRequest {
-    did: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +92,26 @@ pub struct DeleteChildResponse {
 /// The non-active status reported on the firehose `#account` event when a child's deletion is
 /// scheduled: the child is deactivated (so relays stop serving its repo) ahead of the purge.
 const STATUS_DEACTIVATED: &str = "deactivated";
+
+/// Load the sovereign child `registration_id` names, requiring `parent` to be its parent. An
+/// unknown id, a foreign child, and a registration that is not a child at all are the same
+/// uniform 404, so the route is not an existence oracle. Returns the row and the child's DID.
+async fn owned_child(
+    state: &CoreState,
+    registration_id: &str,
+    parent: &str,
+) -> Result<(AgentIdentityRow, String), ApiError> {
+    let not_found = || ApiError::new(ErrorCode::NotFound, "child agent not found");
+    let row = get_agent_identity(&state.db, registration_id)
+        .await?
+        .filter(|row| {
+            row.registration_type == RegistrationType::Child
+                && row.parent_did.as_deref() == Some(parent)
+        })
+        .ok_or_else(not_found)?;
+    let did = row.did.clone().ok_or_else(not_found)?;
+    Ok((row, did))
+}
 
 fn owner_error(error: OwnerAuthError) -> ApiError {
     match error {
@@ -172,15 +168,17 @@ fn rfc3339_expiry(sqlite_datetime: &str) -> String {
     parse_sqlite_datetime(sqlite_datetime).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// GET /v1/agents/children
+///
+/// The caller's sovereign children. They are separate from `GET /v1/agents` because a child's
+/// registration is bound to the child's own DID, so it never lists there.
 pub async fn list_children(
     State(state): State<CoreState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<Json<ChildListResponse>, ApiError> {
-    let parent = authenticate_account_owner(&headers, &method, &uri, &state)
-        .await
-        .map_err(owner_error)?;
+    let parent = authenticate_owner(&headers, &method, &uri, &state).await?;
     let rows = list_children_of_parent(&state.db, &parent).await?;
     // One tombstone sweep for the whole list rather than a lookup per child.
     let mut scheduled: std::collections::HashMap<String, (String, String)> =
@@ -219,27 +217,7 @@ pub async fn list_children(
     Ok(Json(ChildListResponse { children }))
 }
 
-pub async fn revoke_child(
-    State(state): State<CoreState>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    Json(request): Json<RevokeChildRequest>,
-) -> Result<Json<RevokeChildResponse>, ApiError> {
-    let parent = authenticate_account_owner(&headers, &method, &uri, &state)
-        .await
-        .map_err(owner_error)?;
-    let child = get_child_of_parent(&state.db, &request.did, &parent)
-        .await?
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "child agent not found"))?;
-    revoke_agent_identity(&state.db, &child.id).await?;
-    Ok(Json(RevokeChildResponse {
-        did: request.did,
-        status: "revoked",
-    }))
-}
-
-/// POST /agent/child/assertion
+/// POST /v1/agents/{registration_id}/assertion
 ///
 /// Renew a live child's `identity_assertion` — the short-lived credential it exchanges at the token
 /// endpoint. Assertions expire (`[agent_auth] claimed_assertion_ttl_secs`) while the child
@@ -248,9 +226,9 @@ pub async fn revoke_child(
 /// the child's DID, repo, or rotation key changes here.
 ///
 /// Only the parent can renew: the owner guard refuses agent-derived credentials, so a child can
-/// never extend its own capability or a sibling's, and an unknown or foreign child DID is the same
-/// uniform 404 as `revoke_child`. A revoked child is refused — renewal must never be a way back up
-/// the custody ladder that `revoke_child` walked down.
+/// never extend its own capability or a sibling's, and an unknown, foreign, or non-child registration is the same
+/// uniform 404 as an unknown one. A revoked child is refused — renewal must never be a way back up
+/// the custody ladder that `POST /v1/agents/{registration_id}/revoke` walked down.
 ///
 /// The renewed grant is re-clamped to the operator's *current* `granted_scopes`, matching the
 /// `identity_assertion` re-mint path, so narrowing the config narrows every subsequent renewal
@@ -260,14 +238,10 @@ pub async fn remint_child_assertion(
     method: Method,
     uri: Uri,
     headers: HeaderMap,
-    Json(request): Json<ChildAssertionRequest>,
+    Path(registration_id): Path<String>,
 ) -> Result<Json<ChildAssertionResponse>, ApiError> {
-    let parent = authenticate_account_owner(&headers, &method, &uri, &state)
-        .await
-        .map_err(owner_error)?;
-    let child = get_child_of_parent(&state.db, &request.did, &parent)
-        .await?
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "child agent not found"))?;
+    let parent = authenticate_owner(&headers, &method, &uri, &state).await?;
+    let (child, child_did) = owned_child(&state, &registration_id, &parent).await?;
     if child.status != AgentIdentityStatus::Claimed {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
@@ -283,7 +257,7 @@ pub async fn remint_child_assertion(
         &state.oauth_signing_keypair,
         state.config.issuer(),
         state.config.agent_auth.claimed_assertion_ttl_secs,
-        &request.did,
+        &child_did,
         &child.id,
         RegistrationType::Child.as_str(),
         &scopes,
@@ -311,7 +285,7 @@ pub async fn remint_child_assertion(
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to renew child capability"))?;
 
     Ok(Json(ChildAssertionResponse {
-        did: request.did,
+        did: child_did,
         registration_id: child.id,
         identity_assertion: minted.jwt,
         assertion_expires: minted.expires_rfc3339,
@@ -319,9 +293,9 @@ pub async fn remint_child_assertion(
     }))
 }
 
-/// POST /agent/child/delete
+/// POST /v1/agents/{registration_id}/delete
 ///
-/// Permanently retires a sovereign child's *hosting*. Revocation (`/agent/child/revoke`) kills only
+/// Permanently retires a sovereign child's *hosting*. Revocation (`/v1/agents/{id}/revoke`) kills only
 /// the delegated capability and keeps the identity (ADR-0023 custody ladder); this goes further and
 /// releases the handle at once (see `release_child_handle`) and schedules the account/repo/blobs
 /// for permanent deletion. It reuses the deactivate +
@@ -333,8 +307,8 @@ pub async fn remint_child_assertion(
 ///
 /// Delete *implies* revoke, so a parent can retire a child in one call whether or not it was
 /// already revoked, and a repeat call is idempotent (the tombstone upserts and the deactivation
-/// refreshes `delete_after`). Ownership is enforced exactly like `revoke_child`: an unknown or
-/// foreign child DID is a uniform 404, and agent-derived credentials never pass the owner guard.
+/// refreshes `delete_after`). Ownership is [`owned_child`]'s: an unknown, foreign, or non-child
+/// registration is a uniform 404, and agent-derived credentials never pass the owner guard.
 ///
 /// The did:plc identity is untouched — ezpds holds no rotation key, so a full identity retirement is
 /// delete-on-PDS (here) plus a wallet-driven PLC tombstone (see `account_delete.rs`'s doctrine).
@@ -343,18 +317,14 @@ pub async fn delete_child(
     method: Method,
     uri: Uri,
     headers: HeaderMap,
-    Json(request): Json<DeleteChildRequest>,
+    Path(registration_id): Path<String>,
 ) -> Result<Json<DeleteChildResponse>, ApiError> {
-    let parent = authenticate_account_owner(&headers, &method, &uri, &state)
-        .await
-        .map_err(owner_error)?;
-    let child = get_child_of_parent(&state.db, &request.did, &parent)
-        .await?
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "child agent not found"))?;
+    let parent = authenticate_owner(&headers, &method, &uri, &state).await?;
+    let (child, child_did) = owned_child(&state, &registration_id, &parent).await?;
 
     // The tombstone carries the handle because the `handles` row is released below. A re-delete
     // reads none and keeps the tombstone's (see `upsert_child_deletion`).
-    let handle = custos_db::handles::get_handle_by_did(&state.db, &request.did)
+    let handle = custos_db::handles::get_handle_by_did(&state.db, &child_did)
         .await?
         .unwrap_or_default();
     let grace = i64::try_from(state.config.accounts.child_deletion_grace_secs).unwrap_or(i64::MAX);
@@ -374,17 +344,17 @@ pub async fn delete_child(
     })?;
 
     revoke_agent_identity(&mut *tx, &child.id).await?;
-    let change = deactivate_account(&mut tx, &request.did, Some(&delete_after)).await?;
+    let change = deactivate_account(&mut tx, &child_did, Some(&delete_after)).await?;
     upsert_child_deletion(
         &mut *tx,
-        &request.did,
+        &child_did,
         &parent,
         &handle,
         &child.id,
         &delete_after,
     )
     .await?;
-    release_child_handle(&mut tx, &request.did).await?;
+    release_child_handle(&mut tx, &child_did).await?;
 
     let pending = match change {
         // A child freshly transitioned active → deactivated: announce it so relays stop serving.
@@ -392,7 +362,7 @@ pub async fn delete_child(
             emit_guard
                 .stage_account(
                     &mut tx,
-                    request.did.clone(),
+                    child_did.clone(),
                     false,
                     Some(STATUS_DEACTIVATED.to_string()),
                 )
@@ -407,7 +377,7 @@ pub async fn delete_child(
         // Already deactivated (a re-delete): the reschedule
         // refreshed `delete_after` without a status change, so no new frame is emitted.
         AccountStateChange::Unchanged => None,
-        // The owner guard + `get_child_of_parent` already proved the child account exists.
+        // The owner guard + `owned_child` already proved the child account exists.
         AccountStateChange::NotFound => {
             tx.rollback().await.ok();
             return Err(ApiError::new(ErrorCode::NotFound, "child agent not found"));
@@ -424,9 +394,9 @@ pub async fn delete_child(
         pending.finish();
     }
 
-    tracing::info!(child = %request.did, parent = %parent, %delete_after, "child deletion scheduled");
+    tracing::info!(child = %child_did, parent = %parent, %delete_after, "child deletion scheduled");
     Ok(Json(DeleteChildResponse {
-        did: request.did,
+        did: child_did,
         status: "deletion_scheduled",
         delete_after,
     }))
@@ -446,8 +416,10 @@ mod tests {
         access_jwt, agent_jwt, child_genesis_op as genesis, child_request as request,
         cnf_bound_access_jwt, get_request, mint_child_for, reserve_repo_key as reserve,
         seed_account_with_repo, state_with_grace, state_with_plc, test_app, DpopProofKey,
+        MintedChild,
     };
     use custos_core::firehose::FirehoseEvent;
+    use custos_db::agent_auth::get_child_of_parent;
 
     /// Minting a child emits an `#identity` firehose frame carrying the child's handle, so relays
     /// and AppViews learn the new DID's handle binding immediately — without it, every app shows
@@ -553,7 +525,7 @@ mod tests {
         assert_eq!(row.status, AgentIdentityStatus::Claimed);
 
         let response = test_app(state.clone())
-            .oneshot(get_request("/agent/child", &token))
+            .oneshot(get_request("/v1/agents/children", &token))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -575,11 +547,13 @@ mod tests {
             "a live child carries no purge date"
         );
 
+        // A child is revoked through the one revoke route every registration uses.
+        let reg = minted["registrationId"].as_str().unwrap();
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/revoke",
+                &format!("/v1/agents/{reg}/revoke"),
                 Some(&token),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -589,6 +563,19 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.status, AgentIdentityStatus::Revoked);
+        let revoked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_audit_events \
+             WHERE registration_id = ? AND event_type = 'revoked' AND did = ?",
+        )
+        .bind(reg)
+        .bind(parent)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            revoked, 1,
+            "the revocation lands on the trail the parent reads"
+        );
         assert!(
             custos_db::accounts::account_exists(&state.db, child)
                 .await
@@ -842,13 +829,16 @@ mod tests {
         let parent = "did:plc:parentchildremint11";
         seed_account_with_repo(&state.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
-        let child = mint_child_for(&state, "renewable-writer.example.com", &token).await;
+        let MintedChild {
+            did: child,
+            registration_id: reg,
+        } = mint_child_for(&state, "renewable-writer.example.com", &token).await;
 
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/assertion",
+                &format!("/v1/agents/{reg}/assertion"),
                 Some(&token),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -912,7 +902,10 @@ mod tests {
         let parent = "did:plc:parentremintrefuse1";
         seed_account_with_repo(&state.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
-        let child = mint_child_for(&state, "refused-writer.example.com", &token).await;
+        let MintedChild {
+            did: child,
+            registration_id: reg,
+        } = mint_child_for(&state, "refused-writer.example.com", &token).await;
         let stored = |db: sqlx::SqlitePool, did: String| async move {
             sqlx::query_scalar::<_, String>(
                 "SELECT assertion_expires_at FROM agent_identities WHERE did = ?",
@@ -928,9 +921,9 @@ mod tests {
         let foreign = access_jwt(&[0x42; 32], "did:plc:someoneelse3333333");
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/assertion",
+                &format!("/v1/agents/{reg}/assertion"),
                 Some(&foreign),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -941,9 +934,9 @@ mod tests {
         let agent = agent_jwt(&[0x42; 32], &child, "com.atproto.access", "reg_impostor");
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/assertion",
+                &format!("/v1/agents/{reg}/assertion"),
                 Some(&agent),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -958,18 +951,18 @@ mod tests {
         // Revocation walked the custody ladder down; renewal must not walk it back up.
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/revoke",
+                &format!("/v1/agents/{reg}/revoke"),
                 Some(&token),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/assertion",
+                &format!("/v1/agents/{reg}/assertion"),
                 Some(&token),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -999,15 +992,18 @@ mod tests {
         seed_account_with_repo(&state.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
         let handle = "deletable-writer.example.com";
-        let child = mint_child_for(&state, handle, &token).await;
+        let MintedChild {
+            did: child,
+            registration_id: reg,
+        } = mint_child_for(&state, handle, &token).await;
 
         // Subscribe *after* the mint so only the delete/purge frames are observed.
         let mut rx = state.firehose.subscribe();
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/delete",
+                &format!("/v1/agents/{reg}/delete"),
                 Some(&token),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -1048,7 +1044,7 @@ mod tests {
         // Deletion revokes as a side effect, so `status` alone cannot tell a retired child from a
         // merely revoked one — the list has to carry the purge date for the wallet to say which.
         let response = test_app(state.clone())
-            .oneshot(get_request("/agent/child", &token))
+            .oneshot(get_request("/v1/agents/children", &token))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1083,9 +1079,9 @@ mod tests {
         // A repeat delete finds no handle left to read, and must not blank the tombstone's.
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/delete",
+                &format!("/v1/agents/{reg}/delete"),
                 Some(&token),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -1097,7 +1093,7 @@ mod tests {
         assert_eq!(tombstones[0].handle, handle);
 
         let replacement = mint_child_for(&state, handle, &token).await;
-        assert_ne!(replacement, child);
+        assert_ne!(replacement.did, child);
     }
 
     #[tokio::test]
@@ -1106,14 +1102,17 @@ mod tests {
         let parent = "did:plc:parentchilddelforeign";
         seed_account_with_repo(&state.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
-        let child = mint_child_for(&state, "foreign-target.example.com", &token).await;
+        let MintedChild {
+            did: child,
+            registration_id: reg,
+        } = mint_child_for(&state, "foreign-target.example.com", &token).await;
 
         let foreign = access_jwt(&[0x42; 32], "did:plc:someoneelse2222222");
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/delete",
+                &format!("/v1/agents/{reg}/delete"),
                 Some(&foreign),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -1139,7 +1138,10 @@ mod tests {
         let parent = "did:plc:parentagentrefuse111";
         seed_account_with_repo(&state.db, parent).await;
         let owner = access_jwt(&[0x42; 32], parent);
-        let child = mint_child_for(&state, "agent-refuse.example.com", &owner).await;
+        let MintedChild {
+            did: child,
+            registration_id: reg,
+        } = mint_child_for(&state, "agent-refuse.example.com", &owner).await;
 
         // A child's own agent-derived token (a `registration_id` claim) is exactly the credential a
         // revoked child would try to act with; the owner guard must refuse it so a child can never
@@ -1147,9 +1149,9 @@ mod tests {
         let agent = agent_jwt(&[0x42; 32], &child, "com.atproto.access", "reg_impostor");
         let response = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/delete",
+                &format!("/v1/agents/{reg}/delete"),
                 Some(&agent),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -1174,13 +1176,15 @@ mod tests {
         let parent = "did:plc:parentdelidempotent1";
         seed_account_with_repo(&state.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
-        let child = mint_child_for(&state, "idem-target.example.com", &token).await;
+        let reg = mint_child_for(&state, "idem-target.example.com", &token)
+            .await
+            .registration_id;
 
         let first = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/delete",
+                &format!("/v1/agents/{reg}/delete"),
                 Some(&token),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();
@@ -1191,9 +1195,9 @@ mod tests {
         let mut rx = state.firehose.subscribe();
         let second = test_app(state.clone())
             .oneshot(request(
-                "/agent/child/delete",
+                &format!("/v1/agents/{reg}/delete"),
                 Some(&token),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();

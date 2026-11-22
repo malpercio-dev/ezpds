@@ -65,17 +65,17 @@ shipped_files="$(printf '%s\n' "$changed_files" | awk '
   # apps/*/src/ rule below claims it, and every fixture fix has to invent a user-facing
   # sentence about a screenshot scenario.
   /^apps\/[^\/]+\/src\/lib\/harness\// { next }
-  /^Cargo\.toml$/ || /^Cargo\.lock$/ || /^Dockerfile$/ || /^railway\.toml$/ { print; next }
+  /^Cargo\.toml$/ || /^Cargo\.lock$/ || /^Dockerfile$/ || /^\.railway\/railway\.ts$/ { print; next }
   /^nix\/module\.nix$/ { print; next }
   /^sites\/marketing\// { print; next }
   /^crates\/[^\/]+\/src\// || /^crates\/pds\/assets\// { print; next }
-  # The notification relay ships its own image and Railway config, the same shipped-surface
+  # The notification relay ships its own image, the same shipped-surface
   # status the repo-root and sidecar deploy files already carry.
-  /^crates\/notify-relay\/(Dockerfile|docker-entrypoint\.sh|railway\.toml)$/ { print; next }
+  /^crates\/notify-relay\/(Dockerfile|docker-entrypoint\.sh)$/ { print; next }
   /^apps\/[^\/]+\/src\// || /^apps\/[^\/]+\/src-tauri\/src\// { print; next }
   /^apps\/[^\/]+\/static\// || /^apps\/[^\/]+\/tauri\.conf\.json$/ { print; next }
   /^tools\/mcp\/src\// { print; next }
-  /^tools\/mcp-sidecar\/src\// || /^tools\/mcp-sidecar\/Dockerfile$/ || /^tools\/mcp-sidecar\/railway\.toml$/ { print; next }
+  /^tools\/mcp-sidecar\/src\// || /^tools\/mcp-sidecar\/Dockerfile$/ { print; next }
 ')"
 
 # A release roll-up (`just set-version`) legitimately consumes every fragment while it bumps

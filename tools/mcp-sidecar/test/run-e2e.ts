@@ -13,9 +13,12 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
-const files = ['create_post.test.ts', 'scope.test.ts', 'revocation.test.ts'].map((f) =>
-  path.join(testDir, f),
-);
+const files = [
+  'create_post.test.ts',
+  'scope.test.ts',
+  'revocation.test.ts',
+  'connector.test.ts',
+].map((f) => path.join(testDir, f));
 
 const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'custos-sidecar-tls-'));
 const keyFile = path.join(tlsDir, 'key.pem');

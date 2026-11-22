@@ -1,4 +1,4 @@
-crates/custos-agents/src/routes/agent_child.rs 8
+crates/custos-agents/src/routes/agent_child.rs 4
 crates/custos-agents/src/routes/agent_claim.rs 3
 crates/custos-agents/src/routes/agent_identity.rs 1
 crates/custos-agents/src/routes/agents.rs 1

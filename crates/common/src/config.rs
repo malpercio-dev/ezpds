@@ -357,7 +357,7 @@ pub struct AccountsConfig {
     pub deletion_reaper_interval_secs: u64,
 
     /// Grace window, in seconds, between a parent scheduling a sovereign child agent's deletion
-    /// (`POST /agent/child/delete`) and the reaper permanently purging it. The child is
+    /// (`POST /v1/agents/{registration_id}/delete`) and the reaper permanently purging it. The child is
     /// deactivated immediately (so relays stop serving its repo) but the irreversible byte-purge
     /// waits this long, giving an undo window. Default: 86400 (24 hours). `0` means the next
     /// reaper tick purges. Unlike `deletion_reaper_interval_secs` this is not a `tokio::time`
@@ -779,12 +779,15 @@ pub struct OAuthConfig {
     /// request. `0` disables the cooldown. Default 30.
     #[serde(default = "default_oauth_client_jwks_refetch_cooldown_secs")]
     pub client_jwks_refetch_cooldown_secs: u64,
-    /// RFC 8707 resource indicators that mark a grant as an MCP connector, e.g.
-    /// `["https://mcp.obsign.org"]`. A client that names one of these as `resource` at PAR is
-    /// recorded as a `connector` agent: its tokens carry the record's `registration_id`, so its
-    /// writes are audited and owner-only routes refuse it. Every other grant is recorded as a
-    /// plain `oauth_app`. The resource is client-declared, so this classifies grants rather than
-    /// guarding anything. Empty (the default) makes every grant an `oauth_app`.
+    /// RFC 8707 resource indicators that mark a request as an MCP connector's, e.g.
+    /// `["https://mcp.obsign.org/mcp"]`. A client that names one of these as `resource` may
+    /// skip PAR and DPoP and gets an unbound Bearer token on narrower terms: no `identity:`,
+    /// `account:` or `transition:` scopes, a five-minute access token, and the resource as the
+    /// token's audience. Its grant is recorded as a `connector` agent: its tokens carry the
+    /// record's `registration_id`, so its writes are audited and owner-only routes refuse it.
+    /// Every other grant is recorded as a plain `oauth_app`, and a `resource` naming anything
+    /// but this server or one of these is refused. Matching ignores a trailing slash. Empty
+    /// (the default) keeps PAR and DPoP mandatory for every request.
     #[serde(default)]
     pub connector_resources: Vec<String>,
 }
