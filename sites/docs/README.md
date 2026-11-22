@@ -59,8 +59,8 @@ pnpm check      # astro check (type + content diagnostics)
 
 Production is a Caddy container (`Dockerfile` + `Caddyfile`) deployed as its own
 Railway service — a second service in the PDS's Railway project, scoped to this
-directory (`Root Directory = sites/docs`) so it stays independent of the
-repo-root `railway.toml`. Unlike the zero-build marketing site, Starlight
+directory (`Root Directory = sites/docs`) so it never builds the
+repo-root `Dockerfile`. Unlike the zero-build marketing site, Starlight
 compiles to static HTML, so the `Dockerfile` has a Node build stage; the runtime
 image is still just Caddy serving `dist/`. The `Caddyfile` handles gzip/zstd,
 clean URLs, immutable caching for fingerprinted `/_astro/*` and `/pagefind/*`
