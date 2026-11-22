@@ -3,6 +3,7 @@ import { buildRegistry } from './registry';
 import { buildScenario } from './scenarios';
 import { HARNESS_AGENT_SCOPES } from './state';
 import type {
+  AgentAuditPage,
   AgentClaimPreview,
   AgentList,
   WidenedScopes,
@@ -166,21 +167,24 @@ describe('child lifecycle', () => {
 
   it('revoke flips the child to revoked without scheduling a purge', () => {
     const { state, registry, did } = setup();
-    const childDid = state.identities[0].children[0].did;
+    const { registrationId } = state.identities[0].children[0];
 
-    registry.revoke_child({ did, childDid });
+    registry.revoke_agent({ did, registrationId });
 
     const child = (registry.list_children({ did }) as ChildSummary[])[0];
     expect(child.status).toBe('revoked');
     // AC4.2 vs AC4.3: revoking keeps the account. Nothing is scheduled for removal.
     expect(child.deleteAfter).toBeUndefined();
+    // The server writes a `revoked` row on the trail the parent reads.
+    const trail = registry.get_agent_audit({ did, registrationId }) as AgentAuditPage;
+    expect(trail.events[0].eventType).toBe('revoked');
   });
 
   it('delete revokes and schedules the purge in one call', () => {
     const { state, registry, did } = setup();
-    const childDid = state.identities[0].children[0].did;
+    const { registrationId } = state.identities[0].children[0];
 
-    const scheduled = registry.delete_child({ did, childDid }) as ChildDeletion;
+    const scheduled = registry.delete_child({ did, registrationId }) as ChildDeletion;
     expect(scheduled.status).toBe('deletion_scheduled');
     expect(Date.parse(scheduled.deleteAfter)).toBeGreaterThan(Date.now());
 
@@ -193,9 +197,9 @@ describe('child lifecycle', () => {
 
   it('renews a live child’s credential', () => {
     const { state, registry, did } = setup();
-    const childDid = state.identities[0].children[0].did;
+    const { did: childDid, registrationId } = state.identities[0].children[0];
 
-    const renewed = registry.remint_child_assertion({ did, childDid }) as ChildAssertion;
+    const renewed = registry.remint_child_assertion({ did, registrationId }) as ChildAssertion;
     expect(renewed.did).toBe(childDid);
     expect(renewed.identityAssertion).toBeTruthy();
     expect(Date.parse(renewed.assertionExpires)).toBeGreaterThan(Date.now());
@@ -204,21 +208,21 @@ describe('child lifecycle', () => {
   it('refuses to renew a revoked child', () => {
     const { state, registry, did } = setup();
     // Revocation is one-way: renewal must never be a way back up the custody ladder.
-    const childDid = state.identities[0].children[1].did;
+    const { registrationId } = state.identities[0].children[1];
 
-    expect(() => registry.remint_child_assertion({ did, childDid })).toThrow(
+    expect(() => registry.remint_child_assertion({ did, registrationId })).toThrow(
       expect.objectContaining({ code: 'ACCESS_DENIED' })
     );
   });
 
   it('answers a uniform not-found for a child belonging to someone else', () => {
     const { state, registry } = setup();
-    const childDid = state.identities[0].children[0].did;
+    const { registrationId } = state.identities[0].children[0];
 
     // Right child, wrong parent — the real routes reach children only via the parent, and never
     // confirm that a foreign child exists.
-    for (const call of ['revoke_child', 'delete_child', 'remint_child_assertion'] as const) {
-      expect(() => registry[call]({ did: 'did:plc:nobody', childDid })).toThrow(
+    for (const call of ['delete_child', 'remint_child_assertion'] as const) {
+      expect(() => registry[call]({ did: 'did:plc:nobody', registrationId })).toThrow(
         expect.objectContaining({ code: 'AGENT_NOT_FOUND' })
       );
     }
@@ -350,7 +354,10 @@ describe('agent scope widening', () => {
     const child = (registry.list_children({ did }) as ChildSummary[])[0];
 
     registry.widen_agent_scopes({ did, registrationId: child.registrationId, scopes: scopeProfile });
-    const renewed = registry.remint_child_assertion({ did, childDid: child.did }) as ChildAssertion;
+    const renewed = registry.remint_child_assertion({
+      did,
+      registrationId: child.registrationId,
+    }) as ChildAssertion;
     expect(renewed.scopes).toContain('account:email');
   });
 

@@ -15,7 +15,9 @@
 //!   `POST /v1/agents/{id}/scopes`: approve the shown profile for a live agent or child
 //!   (ADR-0041). The frontend gates it behind the biometric prompt and, for a child, follows it
 //!   with `remint_child_assertion` under the same tap.
-//! - `revoke_agent(did, registration_id)` — turn an agent off (idempotent on the server).
+//! - `revoke_agent(did, registration_id)` — turn an agent or a sovereign child off (idempotent on
+//!   the server). For a child this is the lower rung of the ADR-0023 custody ladder: the
+//!   capability dies, the account stays.
 //! - `get_agent_audit(did, registration_id, cursor?) -> AgentAuditPage` — page the
 //!   agent's append-only audit trail.
 //! - `agent_accounts_provisioned(did) -> bool` — whether the identity holds a delegation
@@ -26,16 +28,14 @@
 //!   seed, sign its genesis op, and confirm the claim with it, so the agent ends up with an
 //!   account of its own instead of a credential for this one.
 //!
-//! Five more manage the children that arm creates — the parent console. They address a child by
-//! *its own DID*, not a registration id, since a child is an account first and a capability
-//! second; `did` stays the authenticating parent:
+//! Four more manage the children that arm creates — the parent console. Like every agent, a child
+//! is addressed by its registration id; `did` stays the authenticating parent:
 //!
-//! - `list_children(did) -> Vec<ChildSummary>` — `GET /agent/child`.
-//! - `revoke_child(did, child_did)` — `POST /agent/child/revoke`: kill the capability, keep the
-//!   account (the ADR-0023 custody ladder's lower rung).
-//! - `delete_child(did, child_did) -> ChildDeletion` — `POST /agent/child/delete`: the higher
-//!   rung, retiring the hosting itself; returns the purge deadline to show the user.
-//! - `remint_child_assertion(did, child_did) -> ChildAssertion` — `POST /agent/child/assertion`:
+//! - `list_children(did) -> Vec<ChildSummary>` — `GET /v1/agents/children`.
+//! - `delete_child(did, registration_id) -> ChildDeletion` — `POST /v1/agents/{id}/delete`: the
+//!   higher rung, retiring the hosting itself; returns the purge deadline to show the user.
+//! - `remint_child_assertion(did, registration_id) -> ChildAssertion` —
+//!   `POST /v1/agents/{id}/assertion`:
 //!   a fresh credential for a child that lay dormant past its assertion lifetime. Refused for a
 //!   revoked child, so renewal is never a way back up the ladder revocation walked down.
 //! - `reconcile_children(did) -> ChildReconciliation` — the recovery epilogue for children: after
@@ -643,19 +643,6 @@ pub async fn list_children(
     Ok(custos_client::agents::list_children(&session.client).await?)
 }
 
-/// Revoke a child's delegated capability, keeping its account, repo, and DID intact.
-///
-/// The lower rung of the custody ladder: the agent stops getting credentials, but the identity
-/// the user gave it still exists and its history is still readable. Idempotent on the server.
-pub async fn revoke_child(
-    state: &crate::oauth::Core,
-    did: String,
-    child_did: String,
-) -> Result<(), AgentsError> {
-    let session = SessionProvider.full_access_client(state, &did).await?;
-    Ok(custos_client::agents::revoke_child(&session.client, &child_did).await?)
-}
-
 /// Retire a child's hosting: revoke it, deactivate it now, and schedule the permanent purge.
 ///
 /// The returned `delete_after` is the whole point of surfacing this to the user — until it
@@ -664,10 +651,10 @@ pub async fn revoke_child(
 pub async fn delete_child(
     state: &crate::oauth::Core,
     did: String,
-    child_did: String,
+    registration_id: String,
 ) -> Result<ChildDeletion, AgentsError> {
     let session = SessionProvider.full_access_client(state, &did).await?;
-    Ok(custos_client::agents::delete_child(&session.client, &child_did).await?)
+    Ok(custos_client::agents::delete_child(&session.client, &registration_id).await?)
 }
 
 /// Renew a live child's identity assertion — its credential for the token endpoint.
@@ -679,10 +666,10 @@ pub async fn delete_child(
 pub async fn remint_child_assertion(
     state: &crate::oauth::Core,
     did: String,
-    child_did: String,
+    registration_id: String,
 ) -> Result<ChildAssertion, AgentsError> {
     let session = SessionProvider.full_access_client(state, &did).await?;
-    Ok(custos_client::agents::remint_child_assertion(&session.client, &child_did).await?)
+    Ok(custos_client::agents::remint_child_assertion(&session.client, &registration_id).await?)
 }
 
 /// Re-derive this identity's children after a recovery and rebuild the local child index.
@@ -854,7 +841,7 @@ mod tests {
         }])
     }
 
-    /// A server answering `GET /agent/child` with `children`, and each child's audit log at the
+    /// A server answering `GET /v1/agents/children` with `children`, and each child's audit log at the
     /// plc.directory path `PdsClient::new_for_test` will read.
     fn reconcile_server(children: &[(&str, serde_json::Value)]) -> httpmock::MockServer {
         let server = httpmock::MockServer::start();
@@ -873,7 +860,8 @@ mod tests {
             })
             .collect();
         server.mock(|when, then| {
-            when.method(httpmock::Method::GET).path("/agent/child");
+            when.method(httpmock::Method::GET)
+                .path("/v1/agents/children");
             then.status(200)
                 .json_body(serde_json::json!({ "children": list }));
         });
@@ -991,7 +979,8 @@ mod tests {
     async fn reconcile_reports_an_unreachable_child_as_unchecked_not_unmatched() {
         let server = httpmock::MockServer::start();
         server.mock(|when, then| {
-            when.method(httpmock::Method::GET).path("/agent/child");
+            when.method(httpmock::Method::GET)
+                .path("/v1/agents/children");
             then.status(200).json_body(serde_json::json!({
                 "children": [{
                     "registrationId": "reg-0",

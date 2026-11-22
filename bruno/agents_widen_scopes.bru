@@ -40,7 +40,7 @@ docs {
   that adds nothing writes neither.
 
   The agent picks the wider grant up at its next jwt-bearer renewal. For a dormant child, follow
-  with `POST /agent/child/assertion` and hand the assertion over.
+  with `POST /v1/agents/{registration_id}/assertion` and hand the assertion over.
 
   ## Response (200)
 

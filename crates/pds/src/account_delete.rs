@@ -131,7 +131,7 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
 
     // Cascade: a purged parent's sovereign children lose the account their recovery authority
     // chains to (ADR-0023), so each child is scheduled for the same deactivate → `delete_after`
-    // → reaper pipeline a parent-driven `POST /agent/child/delete` uses, handle release included. The children's
+    // → reaper pipeline a parent-driven `POST /v1/agents/{id}/delete` uses, handle release included. The children's
     // registration/provisioning rows go with the agents purge step below; the child *accounts*
     // stay behind, deactivated, until the reaper purges them.
     let child_dids = custos_agents::child_dids(&mut tx, did)
@@ -146,7 +146,7 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
         for child in &child_dids {
             // A real active → deactivated transition gets an `#account` frame after commit; a
             // child already deactivated (e.g. deletion already scheduled) only has its
-            // `delete_after` refreshed, exactly like a repeated `POST /agent/child/delete`.
+            // `delete_after` refreshed, exactly like a repeated `POST /v1/agents/{id}/delete`.
             if matches!(
                 deactivate_account(&mut tx, child, Some(&delete_after)).await?,
                 AccountStateChange::Changed

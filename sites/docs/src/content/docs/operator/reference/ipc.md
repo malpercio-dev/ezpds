@@ -98,7 +98,6 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `restore_blob_backup` | App command |
 | `revoke_agent` | App command |
 | `revoke_app_password` | App command |
-| `revoke_child` | App command |
 | `run_blob_backup` | App command |
 | `run_recovery_epilogue` | App command |
 | `run_repo_backup` | App command |
