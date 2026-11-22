@@ -97,7 +97,15 @@ railway config plan --environment staging --verbose
 railway config apply --environment staging
 ```
 
-Run `cutover` and `apply` back to back, with no merge to the watched branch in between. Until the apply lands, the environment holds the dashboard-side builder (`RAILPACK`), not the Dockerfile builder the toml files supplied, so a deploy triggered in that window builds wrongly and fails. The expected plan is, per service: builder `RAILPACK` → `DOCKERFILE`, the Dockerfile path, the health check path and timeout, and the restart retry limit — and nothing else. Stop if it proposes deleting or detaching anything. The apply itself starts a deployment of every service (those with no watched-path change are skipped), and a second plan afterwards reports no changes. `railway config migrate undo` restores the config-file settings a cutover cleared.
+Three things about the order, each learned on the staging cutover:
+
+- **Run `cutover` and `apply` back to back.** Until the apply lands, the environment holds no builder setting, so a deploy in that window does not use the Dockerfile.
+- **`apply` starts a deployment of every service** (Railway skips those it judges unchanged). A second plan afterwards reports no changes.
+- **A cut-over service still auto-discovers a `railway.toml` at its root directory on the watched branch.** Cutover clears only the explicit Railway Config File setting. For the three services whose root directory is the repo root, that file is the PDS's `/railway.toml`: on staging the notification relay built the PDS image, failed the PDS health check, and stayed down, because Railway stops a volume-backed service's old instance before starting the new one. The toml files must therefore leave the watched branch immediately after the apply — on staging by merging the change that deletes them, on production by promoting a release that contains it.
+
+The expected plan is, per service: the `DOCKERFILE` builder, the Dockerfile path where it is not `Dockerfile`, the health check path and timeout, and the restart retry limit — and nothing else. Stop if it proposes deleting or detaching anything. `railway config migrate undo` restores the config-file settings a cutover cleared.
+
+Production has not been cut over. Expect its notification relay, and possibly the MCP sidecar, to be down from the apply until the release deploy finishes; the PDS is unaffected, since the file it would auto-discover is its own. Have the release tag cut and ready before running `cutover`.
 
 ### Setup Steps
 
