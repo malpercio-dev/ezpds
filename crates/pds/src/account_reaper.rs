@@ -203,12 +203,13 @@ mod tests {
         let parent = "did:plc:parentchilddelete1111";
         seed_account_with_repo(&core.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
-        let child = mint_child_for(&core, "deletable-writer.example.com", &token).await;
+        let minted = mint_child_for(&core, "deletable-writer.example.com", &token).await;
+        let child = minted.did;
         let response = test_app(core.clone())
             .oneshot(child_request(
-                "/agent/child/delete",
+                &format!("/v1/agents/{}/delete", minted.registration_id),
                 Some(&token),
-                serde_json::json!({"did": child}),
+                serde_json::json!({}),
             ))
             .await
             .unwrap();

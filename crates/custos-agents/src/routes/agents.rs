@@ -848,15 +848,15 @@ mod tests {
     #[tokio::test]
     async fn child_renewals_follow_the_widened_grant_through_profile_changes() {
         let state = owner_state(&["atproto", "blob:*/*"]).await;
-        let (id, child) = seed_agent(&state, OWNER, "child", "claimed", &["atproto"]).await;
+        let (id, _child) = seed_agent(&state, OWNER, "child", "claimed", &["atproto"]).await;
         let token = access_jwt(&SECRET, OWNER);
         let remint = |state: CoreState| {
-            let (child, token) = (child.clone(), token.clone());
+            let (id, token) = (id.clone(), token.clone());
             async move {
                 let (status, body) = post_json_with_bearer(
                     state,
-                    "/agent/child/assertion",
-                    json!({ "did": child }),
+                    &format!("/v1/agents/{id}/assertion"),
+                    json!({}),
                     Some(&token),
                 )
                 .await;
@@ -926,8 +926,31 @@ mod tests {
             &["atproto", "identity:*"],
         )
         .await;
-        let (status, body) = get_json(&state, "/agent/child", &access_jwt(&SECRET, OWNER)).await;
+        let (status, body) =
+            get_json(&state, "/v1/agents/children", &access_jwt(&SECRET, OWNER)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["children"][0]["effectiveScopes"], json!(["atproto"]));
+    }
+
+    /// Renewing and deleting are a parent's verbs over its sovereign children. The caller's own
+    /// non-child registration passes the revoke/audit ownership check, but these two refuse it with
+    /// the same 404 an unknown id gets.
+    #[tokio::test]
+    async fn child_only_verbs_refuse_a_non_child_registration() {
+        let state = owner_state(&["atproto"]).await;
+        let (id, _) = seed_agent(&state, OWNER, "service_auth", "claimed", &["atproto"]).await;
+        let token = access_jwt(&SECRET, OWNER);
+
+        for verb in ["assertion", "delete"] {
+            let (status, body) = post_json_with_bearer(
+                state.clone(),
+                &format!("/v1/agents/{id}/{verb}"),
+                json!({}),
+                Some(&token),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{verb}: {body}");
+        }
+        assert_eq!(stored_scopes(&state, &id).await, vec!["atproto"]);
     }
 }

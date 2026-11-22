@@ -12,18 +12,18 @@ const { loadState } = await import('ezpds-interop/src/state.js');
 const state = loadState();
 for (const name of Object.keys(state.accounts ?? {})) {
   const live = await account.ensureSession(name);
-  const children = await fetch(`${BASE}/agent/child`, {
+  const children = await fetch(`${BASE}/v1/agents/children`, {
     headers: { authorization: `Bearer ${live.accessJwt}` },
   }).then((r) => r.json());
   for (const child of children.children ?? []) {
     if (child.status !== 'revoked') {
-      const res = await fetch(`${BASE}/agent/child/revoke`, {
+      const res = await fetch(`${BASE}/v1/agents/${child.registrationId}/revoke`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           authorization: `Bearer ${live.accessJwt}`,
         },
-        body: JSON.stringify({ did: child.did }),
+        body: '{}',
       });
       console.log(`revoked child ${child.did}: ${res.status}`);
     }

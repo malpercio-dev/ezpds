@@ -46,7 +46,7 @@ custody claim structural rather than procedural.
 - A child's `rotationKeys` are `[derived child key, PDS key]`. The parent's
   Secure-Enclave device key is **deliberately omitted**.
 - `{did}:child-index` is a local optimization, not a record of truth. The PDS
-  child list (`GET /agent/child`) is authoritative, and the recovery epilogue
+  child list (`GET /v1/agents/children`) is authoritative, and the recovery epilogue
   rebuilds the counter from it.
 - Depth stays at one. Grandchildren remain refused.
 - On recovery-seed rotation, children are **not** swept automatically. See the

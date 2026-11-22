@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    revokeChild,
+    revokeAgent,
     deleteChild,
     remintChildAssertion,
     widenAgentScopes,
@@ -153,7 +153,7 @@
     gated(
       'Revoke this agent account’s credential',
       async () => {
-        await revokeChild(did, child.did);
+        await revokeAgent(did, child.registrationId);
         statusOverride = 'revoked';
         publish();
         await reloadAudit();
@@ -165,7 +165,7 @@
     gated(
       'Delete this agent account',
       async () => {
-        const scheduled = await deleteChild(did, child.did);
+        const scheduled = await deleteChild(did, child.registrationId);
         statusOverride = 'revoked';
         deleteAfterOverride = scheduled.deleteAfter;
         publish();
@@ -178,7 +178,7 @@
     gated(
       'Renew this agent account’s credential',
       async () => {
-        renewed = await remintChildAssertion(did, child.did);
+        renewed = await remintChildAssertion(did, child.registrationId);
         await reloadAudit();
       },
       'Renewal did not go through. Check your connection and try again.'
@@ -196,7 +196,7 @@
     publish();
     actionError = null;
     try {
-      renewed = await remintChildAssertion(did, child.did);
+      renewed = await remintChildAssertion(did, child.registrationId);
     } catch (e) {
       console.error('[ChildAgentDetailScreen] renewal after widening failed:', e);
       actionError =

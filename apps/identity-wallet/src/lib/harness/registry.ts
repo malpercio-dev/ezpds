@@ -238,7 +238,6 @@ export type CommandName =
   | 'agent_accounts_provisioned'
   | 'mint_child_from_claim'
   | 'list_children'
-  | 'revoke_child'
   | 'delete_child'
   | 'remint_child_assertion'
   | 'reconcile_children'
@@ -288,11 +287,10 @@ const HARNESS_CHILD_CREATED_AT = '2026-07-15T12:00:00.000Z';
 const HARNESS_CHILD_GRACE_HOURS = 24 * 7;
 
 /**
- * Find the child named by `childDid` under the parent `did` and apply `mutate` to it.
+ * Find the child named by `registrationId` under the parent `did` and apply `mutate` to it.
  *
- * Scoped to the parent on purpose: the real routes reach children only through
- * `get_child_of_parent`, and answer a uniform `AGENT_NOT_FOUND` for a child that is unknown *or*
- * belongs to someone else. A fake that searched every identity would let a screen pass here and
+ * Scoped to the parent on purpose: the real routes reach a child only through its parent, and
+ * answer a uniform `AGENT_NOT_FOUND` for a child that is unknown *or* belongs to someone else. A fake that searched every identity would let a screen pass here and
  * 404 in production.
  */
 function mutateChild(
@@ -301,7 +299,9 @@ function mutateChild(
   mutate: (child: FakeChild) => void
 ): FakeChild {
   const identity = findIdentity(state, didArg(args));
-  const child = identity?.children.find((c) => c.did === String(args.childDid ?? ''));
+  const child = identity?.children.find(
+    (c) => c.registrationId === String(args.registrationId ?? '')
+  );
   if (!child) throw { code: 'AGENT_NOT_FOUND' };
   mutate(child);
   return child;
@@ -1243,11 +1243,24 @@ export function buildRegistry(state: WalletState): Registry {
       }
       return { scopes: [...after], effectiveScopes: clampScopes(after, profile) };
     },
+    // Children too: a child is revoked through the same route as any agent, parent-scoped like
+    // `mutateChild`, and the server records the revocation on the child's trail.
     revoke_agent: (args) => {
       const registrationId = String(args.registrationId ?? '');
       for (const identity of state.identities) {
         const agent = identity.agents.find((a) => a.summary.registrationId === registrationId);
         if (agent) agent.summary.status = 'revoked';
+      }
+      const parent = findIdentity(state, didArg(args));
+      const child = parent?.children.find((c) => c.registrationId === registrationId);
+      if (child && child.status !== 'revoked') {
+        child.status = 'revoked';
+        child.audit.unshift({
+          id: `ev-${registrationId}-revoked`,
+          eventType: 'revoked',
+          did: parent?.did,
+          createdAt: '2026-07-15T12:00:00.000Z',
+        });
       }
       return null;
     },
@@ -1346,12 +1359,6 @@ export function buildRegistry(state: WalletState): Registry {
         effectiveScopes: clampScopes(c.scopes, state.agentScopeProfile),
         ...(c.deleteAfter ? { deleteAfter: c.deleteAfter } : {}),
       })),
-    revoke_child: (args) => {
-      mutateChild(state, args, (child) => {
-        child.status = 'revoked';
-      });
-      return null;
-    },
     delete_child: (args): ChildDeletion => {
       const child = mutateChild(state, args, (c) => {
         // Delete implies revoke on the server, so the fake must not model them as independent —

@@ -120,7 +120,7 @@ token is forwarded through the sidecar by a real MCP HTTP client:
   parent's repo is untouched; the audit trail attributes the write to the child registration.
 - **scope** — a capability minted under narrowed `[agent_auth] granted_scopes` gets a
   legible, scope-naming `403 InsufficientScope` relay (never a stack trace).
-- **revocation** — after `POST /agent/child/revoke`, the caller's next token exchange fails
+- **revocation** — after `POST /v1/agents/{registration_id}/revoke`, the caller's next token exchange fails
   `access_denied` legibly and no partial write lands (an already-issued access token rides
   out its 5-minute TTL by design — revocation is enforced at the exchange boundary).
 

@@ -357,7 +357,7 @@ pub struct AccountsConfig {
     pub deletion_reaper_interval_secs: u64,
 
     /// Grace window, in seconds, between a parent scheduling a sovereign child agent's deletion
-    /// (`POST /agent/child/delete`) and the reaper permanently purging it. The child is
+    /// (`POST /v1/agents/{registration_id}/delete`) and the reaper permanently purging it. The child is
     /// deactivated immediately (so relays stop serving its repo) but the irreversible byte-purge
     /// waits this long, giving an undo window. Default: 86400 (24 hours). `0` means the next
     /// reaper tick purges. Unlike `deletion_reaper_interval_secs` this is not a `tokio::time`

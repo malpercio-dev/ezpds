@@ -44,14 +44,14 @@ test('AC3.4: revocation mid-session fails the next call legibly, with no partial
   assert.notEqual(first.isError, true, `pre-revocation post failed: ${JSON.stringify(first.content)}`);
   const created = toolJson(first);
 
-  // The parent revokes the child through the real Phase-1 surface.
-  const revoked = await fetch(`${fx.pds.baseUrl}/agent/child/revoke`, {
+  // The parent revokes the child through the one revoke route every agent uses.
+  const revoked = await fetch(`${fx.pds.baseUrl}/v1/agents/${fx.child.registrationId}/revoke`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${fx.parent.accessJwt}`,
     },
-    body: JSON.stringify({ did: fx.child.did }),
+    body: '{}',
   });
   assert.equal(revoked.status, 200);
   assert.equal(((await revoked.json()) as { status: string }).status, 'revoked');

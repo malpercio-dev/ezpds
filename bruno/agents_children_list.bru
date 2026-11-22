@@ -1,11 +1,11 @@
 meta {
-  name: List Sovereign Child Agents
+  name: List Sovereign Child Agents (GET /v1/agents/children)
   type: http
   seq: 108
 }
 
 get {
-  url: {{baseUrl}}/agent/child
+  url: {{baseUrl}}/v1/agents/children
   body: none
   auth: bearer
 }
@@ -22,4 +22,8 @@ docs {
   in `scopes` but not `effectiveScopes` is suspended). A child whose deletion has been scheduled also carries `deleteAfter`, the
   instant the reaper purges it — deleting a child revokes it as a side effect, so `status` alone
   cannot distinguish a retired child from a merely revoked one.
+
+  A child is managed by its `registrationId`: revoke it with
+  `POST /v1/agents/{registration_id}/revoke`, read its trail with `GET .../audit`, renew it with
+  `POST .../assertion`, retire it with `POST .../delete`.
 }

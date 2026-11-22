@@ -1,7 +1,7 @@
 // pattern: Functional Core
 
 //! Typed methods for the auth.md agent-consent ceremony and the sovereign-child parent
-//! console, over an authenticated [`OAuthClient`]: `/v1/agents/*`, `/agent/child/*`, and
+//! console, over an authenticated [`OAuthClient`]: `/v1/agents/*` and
 //! `/agent/identity/claim/confirm`. These are auth.md's own bespoke endpoints, not
 //! `com.atproto.*` XRPC — their `{error, error_description}` failure shape and per-route
 //! status-code vocabulary differ from the `xrpc_ok`/`xrpc_json` envelope tail in
@@ -123,12 +123,13 @@ pub struct AgentClaimConfirmation {
     pub did: String,
 }
 
-/// One sovereign child under this account (`GET /agent/child` entry).
+/// One sovereign child under this account (`GET /v1/agents/children` entry).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildSummary {
+    /// How every lifecycle method addresses the child: `/v1/agents/{registration_id}/…`.
     pub registration_id: String,
-    /// The child's own `did:plc` — how every lifecycle method addresses it.
+    /// The child's own `did:plc`.
     pub did: String,
     pub handle: String,
     /// `claimed` (live), `active` (mid-provisioning), or `revoked`.
@@ -150,7 +151,7 @@ struct ListChildrenResponse {
     children: Vec<ChildSummary>,
 }
 
-/// Result of scheduling a child's deletion (`POST /agent/child/delete`).
+/// Result of scheduling a child's deletion (`POST /v1/agents/{id}/delete`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildDeletion {
@@ -161,7 +162,7 @@ pub struct ChildDeletion {
     pub delete_after: String,
 }
 
-/// A freshly renewed child credential (`POST /agent/child/assertion`).
+/// A freshly renewed child credential (`POST /v1/agents/{id}/assertion`).
 ///
 /// `identity_assertion` is a live credential for the child account, so a caller showing it
 /// should treat it like an app-password reveal: shown once, offered for copy, never persisted.
@@ -226,9 +227,9 @@ fn oauth_err(e: OAuthError) -> AgentError {
     }
 }
 
-/// Shared status mapping for the four child routes. They are deliberately uniform: an
-/// unknown or foreign child DID is the same 404 as one belonging to another parent, so none
-/// of them is an existence oracle. 403 is the assertion route's "child is not active"
+/// Shared status mapping for the child list and the two child-only verbs. They are
+/// deliberately uniform: an unknown, foreign, or non-child registration is the same 404, so
+/// none of them is an existence oracle. 403 is the assertion route's "child is not active"
 /// refusal — revocation is a one-way rung on the custody ladder.
 fn child_route_error(status: u16, path: &str) -> AgentError {
     match status {
@@ -333,45 +334,31 @@ pub async fn widen_agent_scopes(
     }
 }
 
-/// List the sovereign child accounts this identity has minted for agents (`GET /agent/child`).
+/// List the sovereign child accounts this identity has minted for agents
+/// (`GET /v1/agents/children`). A child is revoked through [`revoke_agent`], like any agent.
 pub async fn list_children(client: &OAuthClient) -> Result<Vec<ChildSummary>, AgentError> {
-    let resp = client.get("/agent/child").await.map_err(oauth_err)?;
+    let resp = client.get("/v1/agents/children").await.map_err(oauth_err)?;
     if resp.status().as_u16() != 200 {
         return Err(child_route_error(
             resp.status().as_u16(),
-            "GET /agent/child",
+            "GET /v1/agents/children",
         ));
     }
     let body: ListChildrenResponse = resp.json().await.map_err(|e| AgentError::Unknown {
-        message: format!("failed to parse /agent/child response: {e}"),
+        message: format!("failed to parse /v1/agents/children response: {e}"),
     })?;
     Ok(body.children)
-}
-
-/// Revoke a child's delegated capability, keeping its account, repo, and DID intact.
-pub async fn revoke_child(client: &OAuthClient, child_did: &str) -> Result<(), AgentError> {
-    let resp = client
-        .post(
-            "/agent/child/revoke",
-            &serde_json::json!({ "did": child_did }),
-        )
-        .await
-        .map_err(oauth_err)?;
-    match resp.status().as_u16() {
-        200 => Ok(()),
-        other => Err(child_route_error(other, "child revoke")),
-    }
 }
 
 /// Retire a child's hosting: revoke it, deactivate it now, and schedule the permanent purge.
 pub async fn delete_child(
     client: &OAuthClient,
-    child_did: &str,
+    registration_id: &str,
 ) -> Result<ChildDeletion, AgentError> {
     let resp = client
         .post(
-            "/agent/child/delete",
-            &serde_json::json!({ "did": child_did }),
+            &format!("/v1/agents/{registration_id}/delete"),
+            &serde_json::json!({}),
         )
         .await
         .map_err(oauth_err)?;
@@ -386,12 +373,12 @@ pub async fn delete_child(
 /// Renew a live child's identity assertion — its credential for the token endpoint.
 pub async fn remint_child_assertion(
     client: &OAuthClient,
-    child_did: &str,
+    registration_id: &str,
 ) -> Result<ChildAssertion, AgentError> {
     let resp = client
         .post(
-            "/agent/child/assertion",
-            &serde_json::json!({ "did": child_did }),
+            &format!("/v1/agents/{registration_id}/assertion"),
+            &serde_json::json!({}),
         )
         .await
         .map_err(oauth_err)?;
@@ -589,7 +576,7 @@ mod tests {
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET)
-                .path("/agent/child")
+                .path("/v1/agents/children")
                 .header_exists("authorization");
             then.status(200).json_body(serde_json::json!({
                 "children": [
@@ -638,9 +625,7 @@ mod tests {
     async fn delete_child_returns_the_purge_deadline() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(POST)
-                .path("/agent/child/delete")
-                .json_body(serde_json::json!({ "did": "did:plc:childgone" }));
+            when.method(POST).path("/v1/agents/reg_gone/delete");
             then.status(200).json_body(serde_json::json!({
                 "did": "did:plc:childgone",
                 "status": "deletion_scheduled",
@@ -648,7 +633,7 @@ mod tests {
             }));
         });
 
-        let scheduled = delete_child(&bearer_client(&server), "did:plc:childgone")
+        let scheduled = delete_child(&bearer_client(&server), "reg_gone")
             .await
             .unwrap();
         assert_eq!(scheduled.status, "deletion_scheduled");
@@ -662,12 +647,12 @@ mod tests {
         // retry that can never succeed.
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(POST).path("/agent/child/assertion");
+            when.method(POST).path("/v1/agents/reg_gone/assertion");
             then.status(403)
                 .json_body(serde_json::json!({ "error": "Forbidden" }));
         });
 
-        let err = remint_child_assertion(&bearer_client(&server), "did:plc:childgone")
+        let err = remint_child_assertion(&bearer_client(&server), "reg_gone")
             .await
             .unwrap_err();
         assert!(matches!(err, AgentError::AccessDenied), "got {err:?}");
@@ -677,9 +662,7 @@ mod tests {
     async fn remint_child_assertion_parses_the_renewed_credential() {
         let server = MockServer::start();
         server.mock(|when, then| {
-            when.method(POST)
-                .path("/agent/child/assertion")
-                .json_body(serde_json::json!({ "did": "did:plc:childlive" }));
+            when.method(POST).path("/v1/agents/reg_live/assertion");
             then.status(200).json_body(serde_json::json!({
                 "did": "did:plc:childlive",
                 "registrationId": "reg_live",
@@ -689,7 +672,7 @@ mod tests {
             }));
         });
 
-        let renewed = remint_child_assertion(&bearer_client(&server), "did:plc:childlive")
+        let renewed = remint_child_assertion(&bearer_client(&server), "reg_live")
             .await
             .unwrap();
         assert_eq!(renewed.identity_assertion, "header.payload.sig");
@@ -698,13 +681,13 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_child_is_not_found_on_every_lifecycle_route() {
-        // Uniform 404 across the three mutating routes — a foreign child DID answers the same as
-        // a nonexistent one, so none of them is an existence oracle for another account.
+        // Uniform 404 across the mutating routes — a foreign child answers the same as a
+        // nonexistent one, so none of them is an existence oracle for another account.
         let server = MockServer::start();
         for path in [
-            "/agent/child/revoke",
-            "/agent/child/delete",
-            "/agent/child/assertion",
+            "/v1/agents/reg_nope/revoke",
+            "/v1/agents/reg_nope/delete",
+            "/v1/agents/reg_nope/assertion",
         ] {
             server.mock(|when, then| {
                 when.method(POST).path(path);
@@ -715,15 +698,15 @@ mod tests {
         let client = bearer_client(&server);
 
         assert!(matches!(
-            revoke_child(&client, "did:plc:nope").await.unwrap_err(),
+            revoke_agent(&client, "reg_nope").await.unwrap_err(),
             AgentError::AgentNotFound
         ));
         assert!(matches!(
-            delete_child(&client, "did:plc:nope").await.unwrap_err(),
+            delete_child(&client, "reg_nope").await.unwrap_err(),
             AgentError::AgentNotFound
         ));
         assert!(matches!(
-            remint_child_assertion(&client, "did:plc:nope")
+            remint_child_assertion(&client, "reg_nope")
                 .await
                 .unwrap_err(),
             AgentError::AgentNotFound
