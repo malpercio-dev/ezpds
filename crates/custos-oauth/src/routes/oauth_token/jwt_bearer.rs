@@ -187,6 +187,7 @@ pub(super) async fn handle_jwt_bearer(state: &CoreState, form: TokenRequestForm)
         None,
         Some(&claims.registration_id),
         &state.config.public_url,
+        &state.config.public_url,
         super::AGENT_ACCESS_TOKEN_TTL_SECS,
     ) {
         Ok(t) => t,

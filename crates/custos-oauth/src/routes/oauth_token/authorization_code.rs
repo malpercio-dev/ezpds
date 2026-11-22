@@ -3,7 +3,8 @@
 // The `authorization_code` grant (RFC 6749 §4.1 + PKCE RFC 7636 + DPoP RFC 9449): validate the
 // DPoP proof at the token endpoint, verify the PKCE S256 challenge and client_id/redirect_uri
 // against the stored authorization code, consume the code, then mint a DPoP-bound access token +
-// rotating refresh token.
+// rotating refresh token. A code issued for a connector resource may be redeemed without a proof,
+// into an unbound token on the connector terms (ADR-0042; `super::ConnectorTerms`).
 
 use axum::{
     http::{HeaderMap, StatusCode},
@@ -17,7 +18,7 @@ use super::{
     cleanup_expired_state, issue_access_token, token_response_headers, TokenRequestForm,
     TokenResponse,
 };
-use crate::oauth_dpop::token_endpoint_dpop;
+use crate::oauth_dpop::{dpop_required, optional_token_endpoint_dpop};
 use crate::oauth_errors::{require, OAuthTokenError};
 use custos_core::auth::token::generate_token;
 use custos_core::CoreState;
@@ -89,7 +90,7 @@ pub(super) async fn handle_authorization_code(
     }
 
     let token_url = format!("{}/oauth/token", state.config.issuer());
-    let jkt = match token_endpoint_dpop(state, headers, &token_url) {
+    let jkt = match optional_token_endpoint_dpop(state, headers, &token_url) {
         Ok(jkt) => jkt,
         Err(e) => return e.into_response(),
     };
@@ -148,13 +149,36 @@ pub(super) async fn handle_authorization_code(
     // issued tokens still bind to whatever key presents the proof here.
     if let Some(bound_jkt) = auth_code.dpop_jkt.as_deref() {
         use subtle::ConstantTimeEq;
-        if !bool::from(bound_jkt.as_bytes().ct_eq(jkt.as_bytes())) {
+        if !jkt
+            .as_deref()
+            .is_some_and(|jkt| bound_jkt.as_bytes().ct_eq(jkt.as_bytes()).into())
+        {
             return OAuthTokenError::new(
                 "invalid_grant",
                 "authorization code is bound to a different DPoP key",
             )
             .into_response();
         }
+    }
+
+    // What the code was issued for decides the terms, and whether the missing proof is allowed.
+    let terms = match super::ConnectorTerms::for_grant(
+        state,
+        auth_code.resource.as_deref(),
+        form.resource.as_deref(),
+    ) {
+        Ok(terms) => terms,
+        Err(e) => {
+            return e
+                .into_error(OAuthTokenError::new(
+                    "invalid_target",
+                    "the authorization code names a resource this server does not issue for",
+                ))
+                .into_response()
+        }
+    };
+    if jkt.is_none() && !terms.is_connector() {
+        return dpop_required().into_response();
     }
 
     // All validations passed; now consume the code.
@@ -166,7 +190,7 @@ pub(super) async fn handle_authorization_code(
     // The access token carries the granular scope set granted at consent time verbatim —
     // `auth/oauth_scopes.rs` enforces it per route and `extractors.rs` reads the token's
     // scope claim on every authenticated request.
-    let granted_scope = auth_code.scope;
+    let granted_scope = terms.scope(auth_code.scope);
 
     // The grant's agent record, the refresh token that belongs to it, and the audit event that
     // marks it used commit together: no refresh family exists that My agents cannot revoke.
@@ -177,10 +201,9 @@ pub(super) async fn handle_authorization_code(
         let mut tx = state.db.begin().await?;
         let (registration_id, registration_type) = super::link_grant_record(
             &mut tx,
-            state,
             &did,
             &auth_code.client_id,
-            auth_code.resource.as_deref(),
+            terms.is_connector(),
             &granted_scope,
         )
         .await?;
@@ -190,8 +213,9 @@ pub(super) async fn handle_authorization_code(
             &auth_code.client_id,
             did.as_str(),
             &granted_scope,
-            &jkt,
+            jkt.as_deref(),
             &registration_id,
+            terms.resource,
         )
         .await?;
         super::audit_token_exchanged(
@@ -217,12 +241,13 @@ pub(super) async fn handle_authorization_code(
         &state.oauth_signing_keypair,
         &auth_code.did,
         &granted_scope,
-        Some(&jkt),
+        jkt.as_deref(),
         registration_type
             .marks_oauth_tokens()
             .then_some(registration_id.as_str()),
         &state.config.public_url,
-        state.config.oauth.access_token_ttl_secs,
+        terms.audience(),
+        terms.ttl_secs(),
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -250,8 +275,8 @@ pub(super) async fn handle_authorization_code(
         response_headers,
         Json(TokenResponse {
             access_token,
-            token_type: "DPoP",
-            expires_in: state.config.oauth.access_token_ttl_secs,
+            token_type: super::token_type(jkt.as_deref()),
+            expires_in: terms.ttl_secs(),
             refresh_token: refresh.plaintext,
             scope: granted_scope,
             sub: auth_code.did,
@@ -975,13 +1000,7 @@ mod tests {
     /// A test state whose `[oauth] connector_resources` names [`MCP_RESOURCE`], with the client
     /// and account [`redeem`] issues codes for already seeded.
     async fn connector_state() -> CoreState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.oauth.connector_resources = vec![MCP_RESOURCE.to_string()];
-        let state = CoreState {
-            config: std::sync::Arc::new(config),
-            ..base
-        };
+        let state = test_support::with_connector_resources(test_state().await, &[MCP_RESOURCE]);
         register_oauth_client(
             &state.db,
             CLIENT,
@@ -1109,8 +1128,7 @@ mod tests {
         let key = test_support::DpopProofKey::generate();
 
         let first = redeem(&state, &key, None).await;
-        // A resource the operator never named is just an app.
-        let second = redeem(&state, &key, Some("https://elsewhere.example.com")).await;
+        let second = redeem(&state, &key, None).await;
 
         let records = list_agent_identities_for_did(&state.db, ACCOUNT)
             .await
@@ -1144,5 +1162,172 @@ mod tests {
             records.is_empty(),
             "a grant with no live session is not listed"
         );
+    }
+
+    // ── Connector terms (ADR-0042) ────────────────────────────────────────────
+
+    /// Seed a code for `resource` granting `scope` and redeem it with no DPoP proof, appending
+    /// `extra` to the form.
+    async fn redeem_without_dpop(
+        state: &CoreState,
+        resource: Option<&str>,
+        scope: &str,
+        extra: &str,
+    ) -> axum::response::Response {
+        let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
+        let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+        let code = generate_token();
+        store_authorization_code(
+            &state.db,
+            &code.hash,
+            CLIENT,
+            ACCOUNT,
+            &code_challenge,
+            "S256",
+            "https://app.example.com/callback",
+            scope,
+            None,
+            resource,
+        )
+        .await
+        .unwrap();
+        let body = format!(
+            "grant_type=authorization_code\
+             &code={}\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &code_verifier={code_verifier}{extra}",
+            code.plaintext
+        );
+        test_app(state.clone())
+            .oneshot(post_token(&body))
+            .await
+            .unwrap()
+    }
+
+    async fn refresh_without_dpop(
+        state: &CoreState,
+        refresh_token: &str,
+        extra: &str,
+    ) -> axum::response::Response {
+        let body = format!(
+            "grant_type=refresh_token&refresh_token={refresh_token}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json{extra}"
+        );
+        test_app(state.clone())
+            .oneshot(post_token(&body))
+            .await
+            .unwrap()
+    }
+
+    /// The unbound-token shape every connector access token must have.
+    fn assert_connector_access_token(state: &CoreState, tokens: &serde_json::Value) {
+        assert_eq!(tokens["token_type"], "Bearer");
+        assert_eq!(tokens["expires_in"], 300);
+        assert_eq!(tokens["scope"], "atproto repo:app.bsky.feed.post");
+        let token = tokens["access_token"].as_str().unwrap();
+        let access = jwt_payload(token);
+        assert!(access.get("cnf").is_none(), "no DPoP binding");
+        assert_eq!(access["aud"], MCP_RESOURCE);
+        assert_eq!(
+            access["exp"].as_u64().unwrap() - access["iat"].as_u64().unwrap(),
+            300
+        );
+        assert_eq!(access["scope"], "atproto repo:app.bsky.feed.post");
+        let user = custos_core::auth::extractors::authenticate_bearer(token, state)
+            .expect("the PDS must accept a connector token as Bearer");
+        assert!(user.is_agent(), "owner-only routes must refuse it");
+    }
+
+    /// A code issued for a connector resource redeems with no DPoP proof into an unbound Bearer
+    /// token on connector terms, and the refresh family it starts rotates the same way.
+    #[tokio::test]
+    async fn connector_code_redeems_and_refreshes_without_dpop() {
+        let state = connector_state().await;
+        let scope = "atproto identity:* account:email transition:generic repo:app.bsky.feed.post";
+
+        let resp = redeem_without_dpop(&state, Some(MCP_RESOURCE), scope, "").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let tokens = json_body(resp).await;
+        assert_connector_access_token(&state, &tokens);
+
+        // The MCP client repeats `resource` on the refresh; a trailing slash is the same target.
+        let resp = refresh_without_dpop(
+            &state,
+            tokens["refresh_token"].as_str().unwrap(),
+            "&resource=https%3A%2F%2Fmcp.example.com%2F",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rotated = json_body(resp).await;
+        assert_connector_access_token(&state, &rotated);
+        assert_ne!(rotated["refresh_token"], tokens["refresh_token"]);
+    }
+
+    /// Outside a connector grant DPoP stays mandatory, on both grants.
+    #[tokio::test]
+    async fn a_plain_grant_without_dpop_is_still_refused() {
+        let state = connector_state().await;
+
+        let resp = redeem_without_dpop(&state, None, "atproto", "").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(resp).await["error"], "invalid_dpop_proof");
+
+        let key = test_support::DpopProofKey::generate();
+        let tokens = redeem(&state, &key, None).await;
+        let resp =
+            refresh_without_dpop(&state, tokens["refresh_token"].as_str().unwrap(), "").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(resp).await["error"], "invalid_dpop_proof");
+    }
+
+    /// A token request may only name the resource its grant was issued for.
+    #[tokio::test]
+    async fn a_token_request_for_another_resource_is_an_invalid_target() {
+        let state = connector_state().await;
+        let other = "&resource=https%3A%2F%2Felsewhere.example.com";
+        let pds = format!(
+            "&resource={}",
+            urlencoding::encode(&state.config.public_url)
+        );
+
+        // A connector grant asked to become a token for somewhere else, or for the PDS.
+        for extra in [other, pds.as_str()] {
+            let resp = redeem_without_dpop(&state, Some(MCP_RESOURCE), "atproto", extra).await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{extra}");
+            assert_eq!(json_body(resp).await["error"], "invalid_target", "{extra}");
+        }
+
+        // A plain grant asked to become a connector token.
+        let resp = redeem_without_dpop(
+            &state,
+            None,
+            "atproto",
+            "&resource=https%3A%2F%2Fmcp.example.com",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(resp).await["error"], "invalid_target");
+
+        let resp = redeem_without_dpop(&state, Some(MCP_RESOURCE), "atproto", "").await;
+        let tokens = json_body(resp).await;
+        let resp =
+            refresh_without_dpop(&state, tokens["refresh_token"].as_str().unwrap(), other).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(resp).await["error"], "invalid_target");
+    }
+
+    /// Taking a resource out of the configuration ends its unbound families: with no DPoP key
+    /// and no configured resource the row is indistinguishable from a pre-binding legacy one.
+    #[tokio::test]
+    async fn an_unbound_family_ends_when_its_resource_is_unconfigured() {
+        let state = connector_state().await;
+        let resp = redeem_without_dpop(&state, Some(MCP_RESOURCE), "atproto", "").await;
+        let tokens = json_body(resp).await;
+
+        let state = test_support::with_connector_resources(state, &[]);
+        let resp =
+            refresh_without_dpop(&state, tokens["refresh_token"].as_str().unwrap(), "").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

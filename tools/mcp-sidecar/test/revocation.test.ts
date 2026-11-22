@@ -69,19 +69,16 @@ test('AC3.4: revocation mid-session fails the next call legibly, with no partial
     },
   );
 
-  // With no forwardable credential, the sidecar refuses the second create_post
-  // legibly (it holds nothing on the caller's behalf to fall back to, ADR-0024).
-  const bare = await fx.connect();
-  t.after(() => bare.close());
-  const second = await bare.callTool({
-    name: 'create_post',
-    arguments: { text: 'should never land' },
+  // With no forwardable credential there is nothing to call with: the sidecar
+  // holds nothing on the caller's behalf to fall back to (ADR-0024), so it
+  // challenges the connection itself, legibly and pointing at the recovery path.
+  await assert.rejects(fx.connect(), (err: unknown) => {
+    const message = (err as Error).message;
+    assert.match(message, /not authenticated/, 'the refusal is legible');
+    assert.match(message, /OAuth/, 'and points at the recovery path');
+    assert.doesNotMatch(message, /\n\s+at /, 'no stack trace reaches the caller');
+    return true;
   });
-  assert.equal(second.isError, true);
-  const message = (second.content as { text: string }[])[0]!.text;
-  assert.match(message, /not authenticated/, 'the refusal is legible');
-  assert.match(message, /OAuth/, 'and points at the recovery path');
-  assert.doesNotMatch(message, /\n\s+at /, 'no stack trace reaches the caller');
 
   // No partial write: the child repo holds exactly the pre-revocation post.
   const posts = await xrpcGet(fx.pds.baseUrl, 'com.atproto.repo.listRecords', {

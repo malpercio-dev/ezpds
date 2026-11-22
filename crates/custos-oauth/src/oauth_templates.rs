@@ -142,6 +142,8 @@ const WALLET_HANDOFF_SCHEME: &str = "obsign";
 /// `error` renders an error banner above the form when credential validation fails.
 /// `wallet` renders the wallet-approval path (typed code + handoff link + status polling) above
 /// the password form; `None` on a password-error re-render, where no pending request exists.
+/// `connector` is the connector resource the request named, if any; it renders the notice that
+/// the access is not tied to a device key (ADR-0042).
 /// `spaces` supplies the user-legible text for the request's `space:` tokens (see
 /// `custos_core::scope_display`); tokens missing from it render as the raw token.
 #[allow(clippy::too_many_arguments)]
@@ -156,6 +158,7 @@ pub(super) fn render_consent_page(
     response_type: &str,
     response_mode: ResponseMode,
     resource: Option<&str>,
+    connector: Option<&str>,
     public_url: &str,
     login_hint: Option<&str>,
     error: Option<&str>,
@@ -193,6 +196,10 @@ pub(super) fn render_consent_page(
     html.push_str("</div>\n        <div class=\"client-id\">");
     html.push_str(&html_escape(client_id));
     html.push_str("</div>\n      </span>\n    </div>\n");
+
+    if let Some(connector) = connector {
+        html.push_str(&render_connector_notice(connector));
+    }
 
     // Wallet path: shown first because it is the primary path for sovereign / passwordless
     // accounts (which cannot use the password form at all). Scope reduction moves into the wallet
@@ -321,6 +328,23 @@ fn render_permission_groups(scope: &str, spaces: &SpaceDisplayMap) -> String {
         html.push_str("    </div>\n");
     }
     html
+}
+
+/// What a user must know before approving a connector (ADR-0042): the access is a bearer token,
+/// so it is not held to one device, and it is capped below identity and account changes. Carried
+/// by words and an icon like the broad-space warning, and shown before either approval path.
+fn render_connector_notice(connector: &str) -> String {
+    let host = url::Url::parse(connector)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_else(|| connector.to_string());
+    format!(
+        "    <div class=\"warn-banner\"><span class=\"warn-icon\" aria-hidden=\"true\">{ICON_ALERT}</span>\
+<span><strong>This app connects through {host}.</strong> Its access is not tied to a device key, \
+so anyone who obtains its token can use it until it expires. It cannot change your handle, \
+your keys or your account settings.</span></div>\n",
+        host = html_escape(&host)
+    )
 }
 
 /// The prominent warning a grant wildcarding both `spaceType` and `authority` demands: it covers
@@ -911,12 +935,43 @@ mod tests {
             "code",
             ResponseMode::Query,
             None,
+            None,
             "https://pds.example.com",
             None,
             None,
             None,
             spaces,
         )
+    }
+
+    /// A connector request carries the unbound-access notice naming the connector's host; no
+    /// other request does.
+    #[test]
+    fn a_connector_request_renders_the_unbound_access_notice() {
+        let render = |connector| {
+            render_consent_page(
+                "Test App",
+                "https://app.example.com/client-metadata.json",
+                "https://app.example.com/callback",
+                "challenge",
+                "S256",
+                "state",
+                "atproto",
+                "code",
+                ResponseMode::Query,
+                connector,
+                connector,
+                "https://pds.example.com",
+                None,
+                None,
+                None,
+                &SpaceDisplayMap::default(),
+            )
+        };
+        let html = render(Some("https://mcp.example.com/mcp"));
+        assert!(html.contains("This app connects through mcp.example.com."));
+        assert!(html.contains("not tied to a device key"));
+        assert!(!render(None).contains("not tied to a device key"));
     }
 
     /// The declaration's name replaces the raw NSID as the row's title, and the resolved
@@ -1045,6 +1100,7 @@ mod tests {
             "code",
             ResponseMode::Fragment,
             None,
+            None,
             "https://pds.example.com",
             None,
             None,
@@ -1073,6 +1129,7 @@ mod tests {
             "atproto transition:generic repo:app.bsky.feed.post",
             "code",
             ResponseMode::Query,
+            None,
             None,
             "https://pds.example.com",
             None,
@@ -1113,6 +1170,7 @@ mod tests {
             "atproto",
             "code",
             ResponseMode::Query,
+            None,
             None,
             "https://pds.example.com",
             None,
@@ -1163,6 +1221,7 @@ mod tests {
             "code",
             ResponseMode::Query,
             None,
+            None,
             "https://pds.example.com",
             None,
             None,
@@ -1208,6 +1267,7 @@ mod tests {
             "atproto",
             "code",
             ResponseMode::Query,
+            None,
             None,
             "https://pds.example.com",
             None,
