@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.18.0] - 2026-11-21
+
+### Added
+
+- MCP connectors such as Claude can now sign in through the hosted MCP endpoint. When an operator lists an MCP resource in `[oauth] connector_resources`, an app that asks for it signs in without a pushed request or a DPoP key and gets narrower access: no identity or account permissions, a five-minute access token, and a consent notice that the access isn't tied to a device key.
+
+
+### Changed
+
+- Railway service settings moved from the per-service `railway.toml` files (which Railway stops reading on 2026-12-01) to one infrastructure-as-code file, `.railway/railway.ts`, applied with `railway config apply`; operators running their own Railway deployment from this repo must cut each environment over (see `docs/deploy.md` → "Railway configuration").
+
+- An OAuth request whose `resource` names anything other than this server or a configured connector resource is now refused with `invalid_target`, at the pushed request and at the token endpoint.
+
+- Sovereign child agents are now managed under `/v1/agents`, by registration id, like every other agent: list them at `GET /v1/agents/children`, revoke at `POST /v1/agents/{registration_id}/revoke`, renew at `POST /v1/agents/{registration_id}/assertion`, and delete at `POST /v1/agents/{registration_id}/delete`. Minting a child stays at `POST /agent/child`. Revoking a child now records a `revoked` event in its activity history.
+
+
+### Fixed
+
+- Approving a sign-in on the consent page with two or more permissions ticked no longer fails; the form was rejecting any approval that granted more than one.
+
+
+### Removed
+
+- Removed `GET /agent/child` and `POST /agent/child/{revoke,delete,assertion}`. Wallet builds older than this release can no longer list, revoke, renew, or delete agent accounts against an updated server.
+
+
+### Security
+
+- Updated the `hickory-net` and `hickory-resolver` DNS libraries to 0.26.2 and the `quinn-udp` QUIC socket library to 0.5.16, fixing sixteen RustSec advisories (RUSTSEC-2026-0506 to 0509, 0513 to 0520, 0538 to 0541).
+
+- Updated the `lettre` email library to 0.11.24, fixing six RustSec advisories (RUSTSEC-2026-0560 to 0565) in the SMTP client the PDS uses to send mail.
+
+- Space write notifications are no longer delivered to an endpoint whose host is a loopback, private, or link-local IP address (such as the `169.254.169.254` cloud-metadata address). A space member could previously point notifications, each carrying a service-auth token, at an internal address.
+
+
 ## [0.17.0] - 2026-11-11
 
 ### Added
