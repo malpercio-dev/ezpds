@@ -273,6 +273,14 @@ pub async fn start_claim_attempt(
     })
 }
 
+/// What a stored grant holds now: the `agent_identities.scopes` JSON clamped to the operator's
+/// current scope profile. A stored scope the profile excludes is suspended, not dropped
+/// (ADR-0041), so every renewal and every view derives this rather than storing it.
+pub fn effective_agent_scopes(stored_json: &str, profile: &[String]) -> Vec<String> {
+    let stored: Vec<String> = serde_json::from_str(stored_json).unwrap_or_default();
+    crate::auth::oauth_scopes::intersect_scope_tokens(&stored, profile)
+}
+
 /// Serialize a scope list to the JSON array string stored in `agent_identities.scopes`.
 pub fn scopes_to_json(scopes: &[String]) -> String {
     serde_json::to_string(scopes).unwrap_or_else(|_| "[]".to_string())

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeScope, describeScopes } from './agent-scopes';
+import { describeScope, describeScopes, scopeStanding } from './agent-scopes';
 
 describe('describeScope', () => {
   it('describes the default agent grant profile in plain language', () => {
@@ -97,5 +97,41 @@ describe('describeScope', () => {
     for (const desc of describeScopes(['atproto', 'repo:*', 'blob:*/*', 'weird'])) {
       expect(desc.token.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('scopeStanding', () => {
+  const profile = ['atproto', 'blob:*/*', 'account:email'];
+
+  it('splits a grant into held, suspended, and what the profile offers beyond it', () => {
+    // `repo:*?action=delete` is in the grant but the profile dropped it: suspended, not held.
+    const standing = scopeStanding(
+      ['atproto', 'blob:*/*', 'repo:*?action=delete'],
+      ['atproto', 'blob:*/*'],
+      profile
+    );
+    expect(standing).toEqual({
+      held: ['atproto', 'blob:*/*'],
+      suspended: ['repo:*?action=delete'],
+      available: ['account:email'],
+    });
+  });
+
+  it('never counts a suspended scope as available, even when the profile allows it again', () => {
+    // A scope the grant already holds returns at renewal without asking, so it is not "more".
+    const standing = scopeStanding(['atproto'], ['atproto'], ['atproto']);
+    expect(standing.available).toEqual([]);
+    expect(standing.suspended).toEqual([]);
+  });
+
+  it('offers nothing when the profile is unknown', () => {
+    expect(scopeStanding(['atproto'], ['atproto'], []).available).toEqual([]);
+  });
+});
+
+describe('describeScope for a child account', () => {
+  it('says an account: scope reaches the child’s own account, not yours', () => {
+    expect(describeScope('account:email', 'child').summary).toBe('Manage its own account settings');
+    expect(describeScope('account:email').summary).toBe('Manage your account settings');
   });
 });

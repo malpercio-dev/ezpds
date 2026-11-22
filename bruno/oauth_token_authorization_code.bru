@@ -27,3 +27,11 @@ vars:pre-request {
   authCode: <replace-with-authorization-code>
   codeVerifier: <replace-with-pkce-code-verifier>
 }
+
+docs {
+  The DPoP header is required unless the grant was issued for one of the operator's
+  `[oauth] connector_resources`. A connector grant may omit it and then gets an unbound token:
+  `token_type` is `Bearer`, `expires_in` is 300, and the access token's `aud` is the connector
+  resource. An optional `resource` form field must name the target the grant was issued for,
+  or the request is `invalid_target`.
+}

@@ -1,0 +1,62 @@
+meta {
+  name: Widen Agent Scopes (POST /v1/agents/:registration_id/scopes)
+  type: http
+  seq: 168
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/{{registrationId}}/scopes
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "scopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update"]
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/agents/{registration_id}/scopes
+
+  The owner approves more of the operator's scope profile for a live agent (ADR-0041). `scopes`
+  is the exact set the wallet's consent screen showed. The stored grant becomes
+  `grant ∪ (scopes ∩ current profile)`: a shown scope outside the profile is never stored, and a
+  stored scope the profile no longer allows is kept (suspended) and returns at the next renewal
+  once the profile allows it again.
+
+  Owner-authenticated (wallet session token or full-access access token); agent-derived and
+  app-password credentials are refused. Accepts a `claimed` `identity_assertion`, `service_auth`,
+  `anonymous` or `child` registration; a parent widens its children. The UPDATE and a
+  `scopes_widened` audit event (`detail`: `before`, `shown`, `after`) commit together; a request
+  that adds nothing writes neither.
+
+  The agent picks the wider grant up at its next jwt-bearer renewal. For a dormant child, follow
+  with `POST /agent/child/assertion` and hand the assertion over.
+
+  ## Response (200)
+
+  ```json
+  {
+    "scopes": ["atproto", "blob:*/*", "identity:*", "repo:*?action=create&action=update"],
+    "effectiveScopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update"]
+  }
+  ```
+
+  `scopes` is the stored grant; `effectiveScopes` is it clamped to the current profile.
+
+  ## Errors
+
+  - 400 `InvalidRequest` — a `connector` / `oauth_app` grant (widen it through OAuth re-consent), or `scopes` missing
+  - 403 `Forbidden` — the registration is not `claimed`
+  - 404 `NotFound` — unknown, or another account's registration
+  - 409 `Conflict` — the agent changed while the request was in flight; reload and retry
+}

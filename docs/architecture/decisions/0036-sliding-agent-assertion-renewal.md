@@ -39,7 +39,8 @@ OAuth treats a refresh token, with two changes:
 
 2. **Sliding renewal.** Every successful jwt-bearer exchange re-mints the
    assertion — the row's stored grant clamped to the operator's *current*
-   `granted_scopes` — persists it, and returns it in the response
+   `granted_scopes` — records its expiry (the assertion itself is not stored), and
+   returns it in the response
    (`identity_assertion` + `assertion_expires`, the claim-polling field names).
    An agent that persists the renewal only ever expires after a full claimed-TTL
    of total inactivity. The first-party MCP client persists it automatically.

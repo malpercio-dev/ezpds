@@ -88,7 +88,8 @@ export const HARNESS_AGENT_SCOPES = [
 
 /** One agent bound to an identity, plus its append-only audit trail. */
 export interface FakeAgent {
-  summary: AgentSummary;
+  /** The stored record. `effectiveScopes` is derived at list time, from the scope profile. */
+  summary: Omit<AgentSummary, 'effectiveScopes'>;
   audit: AgentAuditEvent[];
 }
 
@@ -347,6 +348,12 @@ export function defaultRecoveryFlow(): RecoveryFlow {
 export interface WalletState {
   /** Configured PDS base URL, or null on first launch (drives the config screen). */
   pdsUrl: string | null;
+  /**
+   * The server's agent scope profile (`[agent_auth] granted_scopes`): the ceiling an owner can
+   * widen an agent to, and the clamp every listed grant is shown through. Defaults to the grant
+   * the fake agents carry, so nothing is offered or suspended until a scenario moves it.
+   */
+  agentScopeProfile: string[];
   /** Available handle domains the configured PDS offers. */
   availableUserDomains: string[];
   /**
@@ -436,6 +443,7 @@ export const DEFAULT_PDS_URL = 'https://harness.pds.local';
 export function emptyWalletState(): WalletState {
   return {
     pdsUrl: null,
+    agentScopeProfile: [...HARNESS_AGENT_SCOPES],
     availableUserDomains: ['.harness.pds.local'],
     pdsCapabilities: {
       version: '0.0.0-harness',

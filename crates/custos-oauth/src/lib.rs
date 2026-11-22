@@ -14,6 +14,7 @@ use common::code_gen;
 mod auth;
 mod capability;
 mod db;
+mod oauth_client;
 mod oauth_dpop;
 mod oauth_errors;
 mod oauth_templates;

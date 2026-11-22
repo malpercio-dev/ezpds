@@ -26,6 +26,7 @@ mod routes;
 #[allow(clippy::unwrap_used, clippy::expect_used)] // fixtures: a failed request panics the test
 pub mod test_support;
 
+pub use agent_child_core::release_child_handle;
 pub use capability::CAPABILITY;
 pub use purge::{child_dids, purge_account_rows, PURGE_ACCOUNT_SQL};
 pub use router::{internal_router, router};

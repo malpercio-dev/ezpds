@@ -15,7 +15,7 @@ const UPLOAD_BLOB_PATTERN = /^failed to upload blob (\S+): ([\s\S]+)$/;
 /**
  * Turn a BLOB_TRANSFER_FAILED message into detail that names which side of the transfer
  * failed. Matches the two per-blob failure shapes
- * `migration_orchestrator.rs::drain_missing_blobs` formats — "failed to fetch blob {cid}: {err}"
+ * `migration_orchestrator/transfer.rs::drain_missing_blobs` formats — "failed to fetch blob {cid}: {err}"
  * (source-side) and "failed to upload blob {cid}: {err}" (destination-side). Anything else
  * (e.g. the list-missing-blobs failure, which carries no CID) falls back to the raw message.
  */

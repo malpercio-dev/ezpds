@@ -3,12 +3,13 @@
   import {
     revokeAgent,
     getAgentAudit,
+    widenAgentScopes,
     type AgentSummary,
     type AgentAuditEvent,
   } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
-  import { describeScopes } from '$lib/agent-scopes';
   import {
+    canWidenAgent,
     AGENT_STATUS,
     AGENT_EVENT_LABELS,
     AGENT_TYPE_LABELS,
@@ -19,26 +20,36 @@
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
+  import AgentPermissions from './AgentPermissions.svelte';
 
   let {
     did,
     agent,
+    profile,
     onback,
-    onrevoked,
+    onchanged,
   }: {
     did: string;
     agent: AgentSummary;
+    /** The operator's current scope profile, from the agent list. */
+    profile: string[];
     onback: () => void;
-    /** Tell the parent list this agent is now revoked, so its card reflects the new status. */
-    onrevoked: (registrationId: string) => void;
+    /** Hand the parent list the agent's new shape (revoked, or widened). */
+    onchanged: (agent: AgentSummary) => void;
   } = $props();
 
   // This component's lifetime is the selection, so no cross-agent stale-guards are needed: an
   // audit/revoke request in flight when the user navigates back simply resolves into an unmounted
-  // component. Status is the only field that changes here — a successful revoke sets the local
-  // override, and the displayed status derives from it over the incoming prop.
+  // component. Status and the grant are the fields that change here — a revoke or a widening
+  // sets a local override, and the displayed agent derives from it over the incoming prop.
   let revokedLocally = $state(false);
-  let status = $derived(revokedLocally ? 'revoked' : agent.status);
+  let grantOverride = $state<Pick<AgentSummary, 'scopes' | 'effectiveScopes'> | null>(null);
+  let current = $derived<AgentSummary>({
+    ...agent,
+    ...grantOverride,
+    status: revokedLocally ? 'revoked' : agent.status,
+  });
+  let status = $derived(current.status);
 
   let auditEvents = $state<AgentAuditEvent[]>([]);
   let auditCursor = $state<string | undefined>(undefined);
@@ -84,18 +95,29 @@
       await revokeAgent(did, agent.registrationId);
       confirmingRevoke = false;
       revokedLocally = true;
-      onrevoked(agent.registrationId);
+      onchanged({ ...current });
       // Re-pull the trail so the freshly-recorded revocation entry shows.
-      auditEvents = [];
-      auditCursor = undefined;
       revoking = false;
-      await loadMoreAudit();
+      await reloadAudit();
     } catch (e) {
       console.error('Revocation failed:', e);
       revokeError = 'Revocation did not go through. Check your connection and try again.';
     } finally {
       revoking = false;
     }
+  }
+
+  // Failures propagate: AgentPermissions owns the sentence they read as.
+  async function widen(shown: string[]) {
+    grantOverride = await widenAgentScopes(did, agent.registrationId, shown);
+    onchanged({ ...current });
+    await reloadAudit();
+  }
+
+  async function reloadAudit() {
+    auditEvents = [];
+    auditCursor = undefined;
+    await loadMoreAudit();
   }
 
   onMount(loadMoreAudit);
@@ -129,24 +151,15 @@
     {#if agent.lastUsedAt}<dt>Last used</dt><dd>{formatTimestamp(agent.lastUsedAt)}</dd>{/if}
   </dl>
 
-  <p class="section-label">Permissions</p>
-  <ul class="grants u-list-reset">
-    {#each describeScopes(agent.scopes) as scope (scope.token)}
-      <li class="grant" class:grant--elevated={scope.elevated}>
-        {#if scope.elevated}
-          <span class="grant-warn-row">
-            <span class="grant-warn-ic" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.2 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-            </span>
-            <span class="grant-t">{scope.summary} <em class="grant-warn">(elevated access)</em></span>
-          </span>
-        {:else}
-          <span class="grant-t">{scope.summary}</span>
-        {/if}
-        <code class="grant-token">{scope.token}</code>
-      </li>
-    {/each}
-  </ul>
+  <AgentPermissions
+    {did}
+    scopes={current.scopes}
+    effectiveScopes={current.effectiveScopes}
+    {profile}
+    noun="agent"
+    canWiden={canWidenAgent(current)}
+    onapprove={widen}
+  />
 
   <p class="section-label">Activity record</p>
   <p class="section-sub">Everything this agent has done, newest first. Entries cannot be edited or deleted.</p>
@@ -282,45 +295,6 @@
     color: var(--color-muted);
     margin: calc(-1 * var(--space-xs)) 0 0;
     line-height: 1.45;
-  }
-
-  .grant {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-    background: var(--color-bg);
-    border: 1px solid var(--color-line);
-    border-radius: var(--radius-lg);
-    padding: var(--space-sm) var(--space-md);
-  }
-  .grant-t {
-    font-size: var(--text-body);
-    color: var(--color-ink);
-  }
-  .grant-token {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    color: var(--color-muted);
-    overflow-wrap: anywhere;
-  }
-  .grant--elevated {
-    border-color: var(--color-warning);
-    background: var(--color-warning-surface);
-  }
-  .grant-warn-row {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-sm);
-  }
-  .grant-warn-ic {
-    color: var(--color-warning);
-    flex-shrink: 0;
-    margin-top: var(--space-3xs);
-  }
-  .grant-warn {
-    font-style: normal;
-    font-weight: var(--weight-semibold);
-    color: var(--color-warning);
   }
 
   .trail {

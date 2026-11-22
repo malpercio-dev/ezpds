@@ -82,6 +82,14 @@ impl RegistrationType {
         self == RegistrationType::Connector
     }
 
+    /// An OAuth grant record: its grant is written by OAuth consent, not the agent scope profile.
+    pub fn is_oauth_grant(self) -> bool {
+        matches!(
+            self,
+            RegistrationType::Connector | RegistrationType::OauthApp
+        )
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             RegistrationType::IdentityAssertion => "identity_assertion",
@@ -521,10 +529,7 @@ pub async fn link_oauth_grant<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    debug_assert!(matches!(
-        registration_type,
-        RegistrationType::Connector | RegistrationType::OauthApp
-    ));
+    debug_assert!(registration_type.is_oauth_grant());
     sqlx::query_scalar(
         "INSERT INTO agent_identities \
          (id, did, registration_type, client_id, scopes, assertion_expires_at, status, \
@@ -566,6 +571,34 @@ where
         tracing::error!(identity_id = %id, error = %e, "DB error revoking agent identity");
         ApiError::new(ErrorCode::InternalError, "failed to revoke agent identity")
     })?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Replace a claimed identity's stored grant with a wider one, guarded on the grant still being
+/// `before_scopes` and the identity still `claimed`. A `false` return means the row moved
+/// underneath the caller (revoked, or widened by a concurrent request), so nothing was written.
+pub async fn widen_agent_identity_scopes<'e, E>(
+    executor: E,
+    id: &str,
+    before_scopes: &str,
+    after_scopes: &str,
+) -> Result<bool, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query(
+        "UPDATE agent_identities SET scopes = ?, updated_at = datetime('now') \
+         WHERE id = ? AND status = 'claimed' AND scopes = ?",
+    )
+    .bind(after_scopes)
+    .bind(id)
+    .bind(before_scopes)
+    .execute(executor)
+    .await
+    .or_internal_as(
+        "DB error widening agent identity scopes",
+        "failed to update agent identity",
+    )?;
     Ok(result.rows_affected() == 1)
 }
 

@@ -100,7 +100,7 @@ pub use custos_client::PdsClientError;
 
 // `PdsClient` itself (discovery/plc.directory/describeServer/createSession/OAuth-against-an-
 // arbitrary-AS) moved to `custos-client`, alongside its request/response types. Re-exported
-// here so this app's ~20 external references (`claim.rs`, `migration_orchestrator.rs`,
+// here so this app's ~20 external references (`claim.rs`, `migration_orchestrator/`,
 // `handle_change.rs`, etc.) are unaffected by the extraction.
 pub use custos_client::pds_client::{
     rotation_keys_from_audit_log, AuthServerMetadata, CreateSessionResponse, CustosExtension,
@@ -112,7 +112,7 @@ pub use custos_client::pds_client::{
 // The claim-trio and migration-set request/response types moved to
 // `custos_client::identity`/`custos_client::migration` alongside the XRPC methods that use
 // them; re-exported here so the wallet's existing `pds_client::{Type}` references (`claim.rs`,
-// `migration_orchestrator.rs`) are unaffected.
+// `migration_orchestrator/`) are unaffected.
 pub use custos_client::identity::{
     RecommendedCredentials, SignPlcOperationRequest, SignPlcOperationResponse,
 };

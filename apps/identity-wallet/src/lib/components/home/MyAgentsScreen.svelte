@@ -44,6 +44,8 @@
   } = $props();
 
   let agents = $state<AgentSummary[]>([]);
+  // The operator's scope profile: the ceiling either detail screen can offer to widen to.
+  let scopeProfile = $state<string[]>([]);
   // Sovereign children come from a different route than delegated agents and always will: a
   // child's registration is bound to the *child's* DID, so it never appears on `GET /v1/agents`,
   // which lists what is bound to this account. Two lists, one screen.
@@ -93,7 +95,9 @@
     try {
       // Both lists or neither: a half-loaded screen would understate what this account has
       // granted, which is the one thing this surface exists to report accurately.
-      [agents, children] = await Promise.all([listAgents(did), listChildren(did)]);
+      const [list, kids] = await Promise.all([listAgents(did), listChildren(did)]);
+      ({ agents, scopeProfile } = list);
+      children = kids;
     } catch (e) {
       if (isCodedError(e) && e.code === 'SESSION_LOCKED') {
         locked = true;
@@ -132,10 +136,9 @@
     await reconcile();
   }
 
-  function markRevoked(registrationId: string) {
-    agents = agents.map((a) =>
-      a.registrationId === registrationId ? { ...a, status: 'revoked' } : a
-    );
+  function markChanged(updated: AgentSummary) {
+    agents = agents.map((a) => (a.registrationId === updated.registrationId ? updated : a));
+    selected = updated;
   }
 
   function markChildChanged(updated: ChildSummary) {
@@ -157,13 +160,15 @@
   <AgentDetailScreen
     {did}
     agent={selected}
+    profile={scopeProfile}
     onback={() => (selected = null)}
-    onrevoked={markRevoked}
+    onchanged={markChanged}
   />
 {:else if selectedChild}
   <ChildAgentDetailScreen
     {did}
     child={selectedChild}
+    profile={scopeProfile}
     onback={() => (selectedChild = null)}
     onchanged={markChildChanged}
   />

@@ -35,7 +35,15 @@ pub struct AgentSummary {
     /// The OAuth client a `connector` / `oauth_app` grant record was approved for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
+    /// The stored grant. A scope here but not in `effective_scopes` is suspended: the scope
+    /// profile no longer allows it, and it returns at the next renewal if the profile does again.
     pub scopes: Vec<String>,
+    /// The grant clamped to the current scope profile: what the agent holds now. Equal to
+    /// `scopes` for a `connector` / `oauth_app` grant, which the profile does not govern.
+    /// Absent from a server without scope widening (ADR-0041); read that as `scopes`, never as
+    /// "everything suspended".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_scopes: Option<Vec<String>>,
     /// `active` (awaiting the claim ceremony), `claimed`, or `revoked`.
     pub status: String,
     pub created_at: String,
@@ -44,9 +52,22 @@ pub struct AgentSummary {
     pub last_used_at: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ListAgentsResponse {
-    agents: Vec<AgentSummary>,
+/// `GET /v1/agents`: the agents bound to this account, plus the operator's current scope
+/// profile — the ceiling an owner can widen any of them to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentList {
+    pub agents: Vec<AgentSummary>,
+    #[serde(default)]
+    pub scope_profile: Vec<String>,
+}
+
+/// An agent's grant after a widening (`POST /v1/agents/{id}/scopes`, ADR-0041).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WidenedScopes {
+    pub scopes: Vec<String>,
+    pub effective_scopes: Vec<String>,
 }
 
 /// One audit event (`GET /v1/agents/{id}/audit` entry).
@@ -114,6 +135,9 @@ pub struct ChildSummary {
     pub status: String,
     pub created_at: String,
     pub scopes: Vec<String>,
+    /// The grant clamped to the current scope profile; see [`AgentSummary::effective_scopes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_scopes: Option<Vec<String>>,
     /// Set only once deletion is scheduled: the instant after which the server purges the
     /// child permanently. Deletion revokes as a side effect, so `status` alone cannot
     /// distinguish a retired child from a merely revoked one — this is what tells them apart.
@@ -246,15 +270,12 @@ pub fn map_ceremony_error(error_code: &str) -> AgentError {
 // ── Network methods ──────────────────────────────────────────────────────────────
 
 /// List the agent identities bound to this account (`GET /v1/agents`).
-pub async fn list_agents(client: &OAuthClient) -> Result<Vec<AgentSummary>, AgentError> {
+pub async fn list_agents(client: &OAuthClient) -> Result<AgentList, AgentError> {
     let resp = client.get("/v1/agents").await.map_err(oauth_err)?;
     match resp.status().as_u16() {
-        200 => {
-            let body: ListAgentsResponse = resp.json().await.map_err(|e| AgentError::Unknown {
-                message: format!("failed to parse /v1/agents response: {e}"),
-            })?;
-            Ok(body.agents)
-        }
+        200 => resp.json().await.map_err(|e| AgentError::Unknown {
+            message: format!("failed to parse /v1/agents response: {e}"),
+        }),
         401 | 403 => Err(AgentError::NotAuthenticated),
         429 => Err(AgentError::RateLimited),
         other => Err(AgentError::Unknown {
@@ -279,6 +300,35 @@ pub async fn revoke_agent(client: &OAuthClient, registration_id: &str) -> Result
         429 => Err(AgentError::RateLimited),
         other => Err(AgentError::Unknown {
             message: format!("revoke returned {other}"),
+        }),
+    }
+}
+
+/// Approve `shown`, the exact set the consent screen listed, for a live agent or child
+/// (`POST /v1/agents/{id}/scopes`; the arithmetic is ADR-0041's). 403 is a registration that
+/// is not `claimed`; a 409 lost race and the 400 an OAuth grant gets are both `Unknown`.
+pub async fn widen_agent_scopes(
+    client: &OAuthClient,
+    registration_id: &str,
+    shown: &[String],
+) -> Result<WidenedScopes, AgentError> {
+    let resp = client
+        .post(
+            &format!("/v1/agents/{registration_id}/scopes"),
+            &serde_json::json!({ "scopes": shown }),
+        )
+        .await
+        .map_err(oauth_err)?;
+    match resp.status().as_u16() {
+        200 => resp.json().await.map_err(|e| AgentError::Unknown {
+            message: format!("failed to parse widen response: {e}"),
+        }),
+        401 => Err(AgentError::NotAuthenticated),
+        403 => Err(AgentError::AccessDenied),
+        404 => Err(AgentError::AgentNotFound),
+        429 => Err(AgentError::RateLimited),
+        other => Err(AgentError::Unknown {
+            message: format!("widen scopes returned {other}"),
         }),
     }
 }
@@ -457,24 +507,81 @@ mod tests {
                 "agents": [{
                     "registrationId": "reg_1",
                     "registrationType": "service_auth",
-                    "scopes": ["blob:image/*"],
+                    "scopes": ["blob:image/*", "identity:*"],
+                    "effectiveScopes": ["blob:image/*"],
                     "status": "claimed",
                     "createdAt": "2026-01-01T00:00:00.000Z",
                     "updatedAt": "2026-01-01T00:05:00.000Z",
                     "lastUsedAt": "2026-01-02T00:00:00.000Z"
-                }]
+                }],
+                "scopeProfile": ["atproto", "blob:image/*"]
             }));
         });
 
-        let agents = list_agents(&bearer_client(&server)).await.unwrap();
+        let list = list_agents(&bearer_client(&server)).await.unwrap();
+        let agents = list.agents;
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].registration_id, "reg_1");
         assert_eq!(agents[0].status, "claimed");
-        assert_eq!(agents[0].scopes, vec!["blob:image/*"]);
+        assert_eq!(agents[0].scopes, vec!["blob:image/*", "identity:*"]);
+        assert_eq!(
+            agents[0].effective_scopes.as_deref(),
+            Some(&["blob:image/*".to_string()][..])
+        );
+        assert_eq!(list.scope_profile, vec!["atproto", "blob:image/*"]);
         assert_eq!(
             agents[0].last_used_at.as_deref(),
             Some("2026-01-02T00:00:00.000Z")
         );
+    }
+
+    #[tokio::test]
+    async fn widen_agent_scopes_sends_the_shown_set_and_parses_both_lists() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/reg_1/scopes")
+                .json_body(serde_json::json!({ "scopes": ["atproto", "blob:*/*"] }));
+            then.status(200).json_body(serde_json::json!({
+                "scopes": ["atproto", "blob:*/*", "identity:*"],
+                "effectiveScopes": ["atproto", "blob:*/*"]
+            }));
+        });
+
+        let widened = widen_agent_scopes(
+            &bearer_client(&server),
+            "reg_1",
+            &["atproto".to_string(), "blob:*/*".to_string()],
+        )
+        .await
+        .unwrap();
+        mock.assert();
+        assert_eq!(widened.scopes, vec!["atproto", "blob:*/*", "identity:*"]);
+        assert_eq!(widened.effective_scopes, vec!["atproto", "blob:*/*"]);
+    }
+
+    #[tokio::test]
+    async fn widen_agent_scopes_classifies_refusals() {
+        let server = MockServer::start();
+        for (id, status) in [("gone", 404), ("revoked", 403), ("raced", 409)] {
+            server.mock(|when, then| {
+                when.method(POST).path(format!("/v1/agents/{id}/scopes"));
+                then.status(status);
+            });
+        }
+        let client = bearer_client(&server);
+        assert!(matches!(
+            widen_agent_scopes(&client, "gone", &[]).await,
+            Err(AgentError::AgentNotFound)
+        ));
+        assert!(matches!(
+            widen_agent_scopes(&client, "revoked", &[]).await,
+            Err(AgentError::AccessDenied)
+        ));
+        assert!(matches!(
+            widen_agent_scopes(&client, "raced", &[]).await,
+            Err(AgentError::Unknown { .. })
+        ));
     }
 
     #[tokio::test]
@@ -492,7 +599,8 @@ mod tests {
                         "handle": "scribe.example.com",
                         "status": "claimed",
                         "createdAt": "2026-01-01T00:00:00.000Z",
-                        "scopes": ["repo:write"]
+                        "scopes": ["repo:write"],
+                        "effectiveScopes": ["repo:write"]
                     },
                     {
                         "registrationId": "reg_gone",
@@ -510,6 +618,13 @@ mod tests {
         let children = list_children(&bearer_client(&server)).await.unwrap();
         assert_eq!(children.len(), 2);
         assert_eq!(children[0].scopes, vec!["repo:write"]);
+        assert_eq!(
+            children[0].effective_scopes.as_deref(),
+            Some(&["repo:write".to_string()][..])
+        );
+        // A server without scope widening sends none; that must stay distinguishable from an
+        // empty clamp, which means every scope is suspended.
+        assert!(children[1].effective_scopes.is_none());
         // A live child carries no purge date; only a scheduled deletion does. Without this the
         // caller could not tell a revoked child from one counting down to permanent removal.
         assert!(children[0].delete_after.is_none());

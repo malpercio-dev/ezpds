@@ -65,6 +65,8 @@ export function authFromRequest(authorization: string | undefined): AuthInfo | u
   return { token, clientId: callerSubject(token), scopes };
 }
 
+const METADATA_PATH = '/.well-known/oauth-protected-resource';
+
 // Bound on the AS-metadata lookup: a hung PDS must not pin the discovery request.
 const ISSUER_FETCH_TIMEOUT_MS = 5_000;
 
@@ -156,6 +158,7 @@ export function createSidecar(config: SidecarConfig): {
   registry: SessionRegistry;
 } {
   const registry = new SessionRegistry({ pdsOrigin: config.pdsOrigin });
+  const metadataPath = `${METADATA_PATH}${config.mcpPath}`;
 
   // One transport (and MCP server) per live MCP session, keyed by the session
   // id the transport assigns on initialize. Bounded and idle-expired so an
@@ -213,7 +216,10 @@ export function createSidecar(config: SidecarConfig): {
   async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', config.publicOrigin);
 
-    if (req.method === 'GET' && url.pathname === '/.well-known/oauth-protected-resource') {
+    // RFC 9728 §3.1 puts the metadata for a resource with a path at the
+    // well-known prefix plus that path. The bare path is kept as an alias for
+    // clients that only probe the root.
+    if (req.method === 'GET' && (url.pathname === METADATA_PATH || url.pathname === metadataPath)) {
       let issuer: string;
       try {
         issuer = cachedIssuer ?? (cachedIssuer = await fetchIssuer(config.pdsOrigin));
@@ -226,10 +232,12 @@ export function createSidecar(config: SidecarConfig): {
         return;
       }
       sendJson(res, 200, {
-        resource: config.publicOrigin,
+        resource: config.resource,
         // Always the PDS's public issuer, never the private forwarding origin
         // (which is unroutable from outside the Railway network).
         authorization_servers: [issuer],
+        scopes_supported: config.scopes,
+        bearer_methods_supported: ['header'],
       });
       return;
     }
@@ -246,6 +254,18 @@ export function createSidecar(config: SidecarConfig): {
     // each tool call's `extra.authInfo`. It is bound per request only — the
     // registry mints a fresh, request-scoped session and stores no credential.
     const auth = authFromRequest(req.headers['authorization']);
+    if (!auth) {
+      // The MCP authorization spec's entry point: a client starts its OAuth
+      // sign-in from this challenge, which names where the metadata lives. The
+      // sidecar still verifies nothing — a present token is forwarded and the
+      // PDS judges it.
+      res.writeHead(401, {
+        'content-type': 'application/json',
+        'www-authenticate': `Bearer resource_metadata="${config.publicOrigin}${metadataPath}"`,
+      });
+      res.end(JSON.stringify({ error: new UnauthenticatedError().message }));
+      return;
+    }
     (req as http.IncomingMessage & { auth?: AuthInfo }).auth = auth;
 
     const now = Date.now();
@@ -320,6 +340,6 @@ if (isMain()) {
   const { server } = createSidecar(config);
   server.listen(config.port, () => {
     log(`listening on :${config.port}${config.mcpPath} — forwarding to ${config.pdsOrigin}`);
-    log(`resource identifier: ${config.publicOrigin}`);
+    log(`resource identifier: ${config.resource}`);
   });
 }

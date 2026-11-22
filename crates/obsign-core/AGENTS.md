@@ -1,6 +1,6 @@
 # obsign-core
 
-Last verified: 2026-11-07
+Last verified: 2026-11-09
 
 ## Purpose
 
@@ -33,7 +33,7 @@ The Obsign wallet's platform-free core ([ADR-0039](../../docs/architecture/decis
 | `src/handle_change.rs` | sovereign change-handle: `updateHandle` first, device-key-signed alsoKnownAs op second, retry self-heals; also `check_custom_handle_dns`, the read-only DNS pre-flight for a handle on a user-owned domain (folds the hosting PDS's `resolveHandle` and the wallet's own TXT lookup, returning the exact `_atproto` record required); guard and error classifiers in the module doc |
 | `src/identity_removal.rs` | permanent removal: `deleteAccount` → (did:plc) tombstone → wipe-last, resumable via the pending-removals marker; password-vs-signed-proof resolution and the local-only forget hatch in the module doc |
 | `src/migrate.rs` | self-signed migration identity leg (ADR-0002 path 1): build + device-key-sign + direct plc.directory submit; also the did:web document leg; `guard_migration_op`'s allowlist and the claim-guard inversion in the module doc |
-| `src/migration_orchestrator.rs` | the outbound-migration state machine (prepare → … → finalize; also disaster recovery's transfer tail), resumable under `ceremony_journal::Journal` with the in-memory `OutboundMigrationState.phase` as the cursor (`MigrationJournal`); cutover ordering, the capability-gated credential branch, blob-loss handling, and state-vs-session persistence in the module doc |
+| `src/migration_orchestrator/` | the outbound-migration state machine (prepare → … → finalize; also disaster recovery's transfer tail): one submodule per stage (`prepare`, `transfer`, `cutover`) with the types, errors and journal in `mod.rs`, resumable under `ceremony_journal::Journal` with the in-memory `OutboundMigrationState.phase` as the cursor (`MigrationJournal`); cutover ordering, the capability-gated credential branch, blob-loss handling, and state-vs-session persistence in the module doc |
 | `src/notification_routes.rs` | the host-tested half of notification-tap routing: one newest-wins pending-route slot drained by `take_pending_notification_route`; pointer-not-claim discipline in the module doc |
 | `src/notifications.rs` | device half of the E2E-encrypted notification relay: device-global keypair/uuid, per-host pinned sender keys, register + re-pin, and the extension's `notification-failures` breadcrumb slot — design invariants in the module doc |
 | `src/oauth.rs` | `Core` (the platform adapters, all flow-state slots, and both clients; Tauri-managed, reached by commands through `commands.rs`): `keys()`, `signer()`, `identities()`, `emit`/`notify`, `backup_store()`, `schedule`/`cancel_job`, and the clock reads (`now`, `unix_timestamp`, `utc_now`); re-exports `custos_client::OAuthError`. There is no global OAuth session or DPoP key: the create flow ends at `home` with no OAuth round trip — slot inventory in the module doc |

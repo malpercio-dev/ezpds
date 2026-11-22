@@ -322,25 +322,29 @@ const REFRESH_REUSE_GRACE: &str = "-60 seconds";
 /// `token_hash` is used as the row's `id` (PRIMARY KEY) and, being the first of its
 /// family, as the family's `session_id`. `scope` is the granular atproto OAuth scope set
 /// granted to this session, persisted so rotation carries the granted permissions forward.
-/// `jkt` is the DPoP key thumbprint binding this token to the client's keypair.
+/// `jkt` is the DPoP key thumbprint binding this token to the client's keypair; `None` only for
+/// an unbound connector family, which then must carry `resource` (V078).
 /// `registration_id` is the grant's agent record (V077), carried to every rotation.
 /// The session expires [`REFRESH_SESSION_TTL`] after insertion.
+#[allow(clippy::too_many_arguments)]
 pub async fn store_initial_oauth_refresh_token<'e, E>(
     executor: E,
     token_hash: &str,
     client_id: &str,
     did: &str,
     scope: &str,
-    jkt: &str,
+    jkt: Option<&str>,
     registration_id: &str,
+    resource: Option<&str>,
 ) -> Result<(), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
     sqlx::query(
         "INSERT INTO oauth_tokens \
-         (id, session_id, client_id, did, scope, jkt, registration_id, expires_at, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?), datetime('now'))",
+         (id, session_id, client_id, did, scope, jkt, registration_id, resource, expires_at, \
+          created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), datetime('now'))",
     )
     .bind(token_hash)
     .bind(token_hash)
@@ -349,6 +353,7 @@ where
     .bind(scope)
     .bind(jkt)
     .bind(registration_id)
+    .bind(resource)
     .bind(REFRESH_SESSION_TTL)
     .execute(executor)
     .await?;
@@ -366,18 +371,20 @@ pub async fn store_rotated_oauth_refresh_token<'e, E>(
     client_id: &str,
     did: &str,
     scope: &str,
-    jkt: &str,
+    jkt: Option<&str>,
     session_id: &str,
     expires_at: &str,
     registration_id: &str,
+    resource: Option<&str>,
 ) -> Result<(), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
     sqlx::query(
         "INSERT INTO oauth_tokens \
-         (id, session_id, client_id, did, scope, jkt, registration_id, expires_at, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+         (id, session_id, client_id, did, scope, jkt, registration_id, resource, expires_at, \
+          created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
     )
     .bind(token_hash)
     .bind(session_id)
@@ -386,6 +393,7 @@ where
     .bind(scope)
     .bind(jkt)
     .bind(registration_id)
+    .bind(resource)
     .bind(expires_at)
     .execute(executor)
     .await?;
@@ -398,9 +406,11 @@ pub struct RefreshTokenRow {
     pub did: String,
     /// The granular atproto OAuth scope set carried forward across rotations.
     pub scope: String,
-    /// DPoP key thumbprint bound to this refresh token. `None` for tokens
-    /// issued before DPoP binding was enforced (not expected after V012).
+    /// DPoP key thumbprint bound to this refresh token. `None` for an unbound connector family
+    /// (which carries `resource`) and for tokens issued before DPoP binding was enforced.
     pub jkt: Option<String>,
+    /// The connector resource the family was issued for (V078); `None` for this server.
+    pub resource: Option<String>,
     /// The session family this token belongs to. Rows written before V061 (or inserted
     /// without one) are their own single-member family (`COALESCE(session_id, id)`).
     pub session_id: String,
@@ -423,7 +433,7 @@ pub struct RefreshTokenRow {
 /// Callers must hash the presented token before calling this function
 /// The raw column tuple `get_oauth_refresh_token` selects, in SELECT order:
 /// client_id, did, scope, jkt, session_id (coalesced), expires_at, superseded-within-grace,
-/// registration_id, registration_type.
+/// registration_id, registration_type, resource.
 type RefreshTokenColumns = (
     String,
     String,
@@ -432,6 +442,7 @@ type RefreshTokenColumns = (
     String,
     String,
     Option<bool>,
+    Option<String>,
     Option<String>,
     Option<String>,
 );
@@ -456,7 +467,7 @@ pub async fn get_oauth_refresh_token(
         "SELECT t.client_id, t.did, t.scope, t.jkt, COALESCE(t.session_id, t.id), t.expires_at, \
              CASE WHEN t.superseded_at IS NULL THEN NULL \
                   ELSE t.superseded_at > datetime('now', ?) END, \
-             t.registration_id, a.registration_type \
+             t.registration_id, a.registration_type, t.resource \
              FROM oauth_tokens t \
              LEFT JOIN agent_identities a ON a.id = t.registration_id \
              WHERE t.id = ? AND t.expires_at > datetime('now') \
@@ -478,11 +489,13 @@ pub async fn get_oauth_refresh_token(
             superseded_within_grace,
             registration_id,
             registration_type,
+            resource,
         )| RefreshTokenRow {
             client_id,
             did,
             scope,
             jkt,
+            resource,
             session_id,
             expires_at,
             superseded_within_grace,
@@ -933,8 +946,9 @@ mod tests {
             "https://app.example.com/client-metadata.json",
             "did:plc:testaccount000000000000",
             "atproto transition:generic",
-            "jkt-thumbprint",
+            Some("jkt-thumbprint"),
             "reg_test",
+            None,
         )
         .await
         .unwrap();

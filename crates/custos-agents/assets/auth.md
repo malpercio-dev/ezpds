@@ -367,6 +367,12 @@ because registrations are clamped by exact token string. Operators can widen or 
 the profile via configuration; the token grants exactly what the registration was
 clamped to, never more.
 
+Narrowing the profile applies to every agent at its next renewal. Raising it does not
+widen an agent that is already claimed: the account owner approves the new scopes from
+the agent's page in their wallet, and the agent picks them up at its next renewal, with
+no re-registration or second claim. A scope the profile drops is suspended, not
+revoked: it returns at the next renewal if the operator allows it again.
+
 The agent identity must be **claimed** and the assertion `sub` (a DID) must match
 it; an unclaimed or unknown identity returns `invalid_grant`, a revoked identity
 returns `access_denied`, and a `resource` other than this origin returns

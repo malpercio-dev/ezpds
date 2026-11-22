@@ -125,7 +125,8 @@ flows you want (`EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED`,
 `EZPDS_AGENT_AUTH_ANONYMOUS_ENABLED`, or a configured `[[agent_auth.trusted_issuers]]`
 entry) and the capability appears. What a claimed agent may then do is bounded
 separately by `agent_auth.granted_scopes`; narrowing it narrows every assertion
-minted afterwards.
+minted afterwards. Raising it does not widen agents already claimed: each one
+gains the new scopes once its owner approves them in the wallet.
 
 ### `walletConsent`
 

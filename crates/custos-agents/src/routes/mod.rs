@@ -14,5 +14,7 @@ pub(crate) use agent_child::{
 pub(crate) use agent_claim::{post_agent_claim, post_agent_claim_confirm};
 pub(crate) use agent_event::post_agent_event;
 pub(crate) use agent_identity::post_agent_identity;
-pub(crate) use agents::{agent_audit_log, claim_preview, list_agents, revoke_agent};
+pub(crate) use agents::{
+    agent_audit_log, claim_preview, list_agents, revoke_agent, widen_agent_scopes,
+};
 pub(crate) use auth_md::serve_auth_md;

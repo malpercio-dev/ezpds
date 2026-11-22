@@ -494,8 +494,8 @@ async fn existing_identity_assertion(
             // Clamp the scopes stored at registration to the operator's *current* config, so
             // narrowing `[agent_auth] granted_scopes` narrows the minted assertion without
             // re-registration and the mint can never exceed the stored grant.
-            let scopes = custos_core::auth::oauth_scopes::intersect_scope_tokens(
-                &parse_scopes(&existing.scopes),
+            let scopes = custos_core::auth::agent_assertion::effective_agent_scopes(
+                &existing.scopes,
                 &state.config.agent_auth.granted_scopes,
             );
             // A claimed `identity_assertion` registration always has a bound DID; a missing one is
@@ -667,10 +667,6 @@ fn claim_token_expiry(state: &CoreState) -> DateTime<Utc> {
 /// `agent_identities.claim_token_hash`; the query layer hashes on insert and lookup.
 fn new_claim_token() -> String {
     format!("clm_{}", generate_token().plaintext)
-}
-
-fn parse_scopes(json_array: &str) -> Vec<String> {
-    serde_json::from_str(json_array).unwrap_or_default()
 }
 
 #[cfg(test)]

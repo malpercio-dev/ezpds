@@ -1,1 +1,0 @@
-The OAuth authorization server (PAR, authorize and wallet consent, token, revocation, discovery, and JWKS) now builds as its own `custos-oauth` crate inside the Custos server; routes, responses, and the advertised capabilities are unchanged.

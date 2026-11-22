@@ -17,12 +17,31 @@ export type AgentSummary = {
   subject?: string;
   /** The OAuth client a `connector` / `oauth_app` grant was approved for. */
   clientId?: string;
+  /** The stored grant. A scope here but not in `effectiveScopes` is suspended. */
   scopes: string[];
+  /**
+   * The grant clamped to the operator's scope profile: what the agent holds now. Equal to
+   * `scopes` for a `connector` / `oauth_app` grant, which the profile does not govern. Absent
+   * from a server without scope widening: read that as `scopes`, never as all suspended.
+   */
+  effectiveScopes?: string[];
   /** `active` = registered, awaiting the claim ceremony; then `claimed` or `revoked`. */
   status: 'active' | 'claimed' | 'revoked';
   createdAt: string;
   updatedAt: string;
   lastUsedAt?: string;
+};
+
+/** `GET /v1/agents`: the agents, plus the operator's scope profile (the ceiling to widen to). */
+export type AgentList = {
+  agents: AgentSummary[];
+  scopeProfile: string[];
+};
+
+/** An agent's grant after {@link widenAgentScopes}. */
+export type WidenedScopes = {
+  scopes: string[];
+  effectiveScopes: string[];
 };
 
 /** One entry of an agent's append-only audit trail. */
@@ -37,7 +56,8 @@ export type AgentAuditEvent = {
     | 'repo_write'
     | 'blob_upload'
     | 'revoked'
-    | 'assertion_reminted';
+    | 'assertion_reminted'
+    | 'scopes_widened';
   did?: string;
   detail?: Record<string, unknown>;
   createdAt: string;
@@ -88,6 +108,8 @@ export type ChildSummary = {
   status: 'active' | 'claimed' | 'revoked';
   createdAt: string;
   scopes: string[];
+  /** The grant clamped to the scope profile; see {@link AgentSummary.effectiveScopes}. */
+  effectiveScopes?: string[];
   /**
    * Set only once deletion is scheduled: when the server purges the child permanently. Deleting
    * revokes as a side effect, so `status` alone cannot tell a retired child from a merely revoked
@@ -145,9 +167,18 @@ export type AgentsError =
   | { code: 'UNKNOWN'; message: string }
   | SharedFailure;
 
-/** List the agent identities bound to this identity's account. */
-export const listAgents = (did: string): Promise<AgentSummary[]> =>
-  invoke('list_agents', { did });
+/** List the agent identities bound to this identity's account, with the scope profile. */
+export const listAgents = (did: string): Promise<AgentList> => invoke('list_agents', { did });
+
+/**
+ * Approve the whole scope profile for a live agent or child (ADR-0041): pass exactly the set the
+ * consent screen showed. `AgentPermissions` owns the biometric gate around it.
+ */
+export const widenAgentScopes = (
+  did: string,
+  registrationId: string,
+  scopes: string[]
+): Promise<WidenedScopes> => invoke('widen_agent_scopes', { did, registrationId, scopes });
 
 /** Revoke an agent identity (idempotent; the next token exchange is refused immediately). */
 export const revokeAgent = (did: string, registrationId: string): Promise<void> =>

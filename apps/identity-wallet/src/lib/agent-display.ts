@@ -17,6 +17,7 @@ export const AGENT_EVENT_LABELS: Record<AgentAuditEvent['eventType'], string> = 
   blob_upload: 'Uploaded a file',
   revoked: 'Access revoked',
   assertion_reminted: 'You renewed its credential',
+  scopes_widened: 'You approved more permissions',
 };
 
 export const AGENT_TYPE_LABELS: Record<AgentSummary['registrationType'], string> = {
@@ -97,6 +98,16 @@ export const CHILD_STATUS: Record<ChildState, { label: string; hint: string }> =
     hint: 'Deactivated now; permanently removed after the date below',
   },
 };
+
+/** `connector` / `oauth_app`: OAuth grant records. The scope profile doesn't govern them. */
+export function isOAuthGrant(agent: Pick<AgentSummary, 'registrationType'>): boolean {
+  return agent.registrationType === 'connector' || agent.registrationType === 'oauth_app';
+}
+
+/** Whether an owner can widen this agent's grant (ADR-0041): live, and not an OAuth grant. */
+export function canWidenAgent(agent: Pick<AgentSummary, 'registrationType' | 'status'>): boolean {
+  return agent.status === 'claimed' && !isOAuthGrant(agent);
+}
 
 export function childState(child: ChildSummary): ChildState {
   if (child.deleteAfter) return 'deleting';

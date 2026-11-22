@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentName } from './agent-display';
+import { agentName, canWidenAgent, isOAuthGrant } from './agent-display';
 import type { AgentSummary } from '$lib/ipc';
 
 const base: AgentSummary = {
@@ -27,5 +27,21 @@ describe('agentName', () => {
     expect(agentName({ ...base, subject: 'helper-bot', clientId: 'https://x.example/m.json' })).toBe(
       'helper-bot',
     );
+  });
+});
+
+describe('canWidenAgent', () => {
+  const live: AgentSummary = { ...base, registrationType: 'service_auth' };
+
+  it('offers widening only for a live, profile-governed agent', () => {
+    expect(canWidenAgent(live)).toBe(true);
+    expect(canWidenAgent({ ...live, status: 'active' })).toBe(false);
+    expect(canWidenAgent({ ...live, status: 'revoked' })).toBe(false);
+  });
+
+  it('never offers it for an OAuth grant, which OAuth re-consent widens instead', () => {
+    expect(isOAuthGrant(base)).toBe(true);
+    expect(canWidenAgent(base)).toBe(false);
+    expect(canWidenAgent({ ...base, registrationType: 'connector' })).toBe(false);
   });
 });

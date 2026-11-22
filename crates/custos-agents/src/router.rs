@@ -46,4 +46,8 @@ where
         .route("/v1/agents/claim-preview", post(claim_preview))
         .route("/v1/agents/{registration_id}/revoke", post(revoke_agent))
         .route("/v1/agents/{registration_id}/audit", get(agent_audit_log))
+        .route(
+            "/v1/agents/{registration_id}/scopes",
+            post(widen_agent_scopes),
+        )
 }

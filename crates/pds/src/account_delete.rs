@@ -131,7 +131,7 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
 
     // Cascade: a purged parent's sovereign children lose the account their recovery authority
     // chains to (ADR-0023), so each child is scheduled for the same deactivate → `delete_after`
-    // → reaper pipeline a parent-driven `POST /agent/child/delete` uses. The children's
+    // → reaper pipeline a parent-driven `POST /agent/child/delete` uses, handle release included. The children's
     // registration/provisioning rows go with the agents purge step below; the child *accounts*
     // stay behind, deactivated, until the reaper purges them.
     let child_dids = custos_agents::child_dids(&mut tx, did)
@@ -153,6 +153,7 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
             ) {
                 deactivated_children.push(child.clone());
             }
+            custos_agents::release_child_handle(&mut tx, child).await?;
             // The operator-visible record of the cascade. No `agent_child_deletions` tombstone
             // is written: that table exists for the PARENT's audit view and is by doctrine
             // reclaimed when the parent is deleted (V049) — a tombstone written here would be
@@ -768,11 +769,20 @@ mod tests {
         .await
         .unwrap();
 
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES ('cascade-child.example.com', ?, datetime('now'))")
+            .bind(child)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
         let mut rx = state.firehose.subscribe();
         assert_eq!(
             purge_account(&state, parent).await.unwrap(),
             PurgeOutcome::Deleted
         );
+
+        // The cascade frees the child's handle at scheduling time, as a direct child delete does.
+        assert_eq!(row_count(&state.db, "handles", "did", child).await, 0);
 
         // The parent and its child-agent rows are gone; the child ACCOUNT survives, but is
         // deactivated with a scheduled deletion instant for the reaper.

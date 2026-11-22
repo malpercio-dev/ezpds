@@ -31,6 +31,9 @@ pub enum AgentAuditEventType {
     Revoked,
     /// A sovereign child's `identity_assertion` was renewed by its parent.
     AssertionReminted,
+    /// The owner approved more of the scope profile for a live agent; `detail` holds `before`,
+    /// `shown` and `after`.
+    ScopesWidened,
 }
 
 impl AgentAuditEventType {
@@ -45,6 +48,7 @@ impl AgentAuditEventType {
             AgentAuditEventType::BlobUpload => "blob_upload",
             AgentAuditEventType::Revoked => "revoked",
             AgentAuditEventType::AssertionReminted => "assertion_reminted",
+            AgentAuditEventType::ScopesWidened => "scopes_widened",
         }
     }
 }

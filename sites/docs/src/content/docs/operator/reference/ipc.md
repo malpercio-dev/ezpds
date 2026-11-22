@@ -3,7 +3,7 @@ title: Mobile IPC commands
 description: Generated Tauri command surface for Obsign and Brass Console.
 ---
 
-> Generated from source for ezpds **v0.16.2**. Do not edit this page by hand.
+> Generated from source for ezpds **v0.17.0**. Do not edit this page by hand.
 
 These are the literal commands invoked by each frontend registry.
 
@@ -126,6 +126,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `unlock_identity_with_password` | App command |
 | `verify_import` | App command |
 | `verify_recovery_shares` | App command |
+| `widen_agent_scopes` | App command |
 
 ## Brass Console
 

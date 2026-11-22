@@ -6,6 +6,7 @@
     type CollectedShare,
     type ShareRecoveryError,
   } from '$lib/ipc';
+  import { formatTimestamp } from '$lib/datetime';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -144,7 +145,9 @@
   >
     <div class="pending-box">
       <p class="pending-label u-block-label">Share available after</p>
-      <p class="pending-time">{availableAt ?? 'the configured waiting period'}</p>
+      <p class="pending-time">
+        {availableAt ? formatTimestamp(availableAt) : 'the configured waiting period'}
+      </p>
       <p class="pending-note u-fine">
         The server has notified your account email. Anyone still signed in to your account can
         cancel this release — if that happens, you'll see it here. You can close the app and come
