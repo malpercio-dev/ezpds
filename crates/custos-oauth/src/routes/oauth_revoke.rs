@@ -96,8 +96,9 @@ pub async fn post_revoke(
         match get_oauth_refresh_token(&state.db, &token_hash).await {
             Ok(Some(stored)) => {
                 // Only the DPoP key the token is bound to may revoke it. `jkt` is compared in
-                // constant time; a token with a NULL `jkt` (pre-DPoP-binding, not expected after
-                // V012) can never match and is left to expire.
+                // constant time; a token with a NULL `jkt` (an unbound connector family, or one
+                // that predates binding) can never match here. A connector's owner revokes it
+                // in My agents instead (ADR-0042).
                 let jkt_matches = match stored.jkt.as_deref() {
                     Some(stored_jkt) => bool::from(stored_jkt.as_bytes().ct_eq(jkt.as_bytes())),
                     None => false,

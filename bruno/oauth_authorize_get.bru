@@ -20,4 +20,9 @@ docs {
   PAR-only: push the authorization parameters to POST /oauth/par first and paste the
   returned request_uri here. A request with inline parameters (or a JAR `request`
   object) is refused with a 400 error page.
+
+  The exception is an MCP connector: a request whose `resource` is one of the operator's
+  `[oauth] connector_resources` may send its parameters inline instead
+  (client_id, redirect_uri, response_type=code, code_challenge, code_challenge_method=S256,
+  resource, and optionally state, scope, response_mode, login_hint).
 }
