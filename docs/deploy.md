@@ -97,7 +97,7 @@ railway config plan --environment staging --verbose
 railway config apply --environment staging
 ```
 
-Run `cutover` and `apply` back to back, with no merge to the watched branch in between. Until the apply lands, the environment holds the dashboard-side builder (`RAILPACK`), not the Dockerfile builder the toml files supplied, so a deploy triggered in that window builds wrongly and fails. The expected plan is, per service: builder `RAILPACK` → `DOCKERFILE`, the Dockerfile path, the health check path and timeout, and the restart policy — and nothing else. Stop if it proposes deleting or detaching anything. `railway config migrate undo` restores the config-file settings a cutover cleared.
+Run `cutover` and `apply` back to back, with no merge to the watched branch in between. Until the apply lands, the environment holds the dashboard-side builder (`RAILPACK`), not the Dockerfile builder the toml files supplied, so a deploy triggered in that window builds wrongly and fails. The expected plan is, per service: builder `RAILPACK` → `DOCKERFILE`, the Dockerfile path, the health check path and timeout, and the restart retry limit — and nothing else. Stop if it proposes deleting or detaching anything. The apply itself starts a deployment of every service (those with no watched-path change are skipped), and a second plan afterwards reports no changes. `railway config migrate undo` restores the config-file settings a cutover cleared.
 
 ### Setup Steps
 
@@ -463,7 +463,7 @@ staying reachable through iroh's relay servers without inbound ingress. Three co
 for the Railway wiring:
 
 - **No public networking, no custom domain, no health check path.** There is nothing to
-  route to and nothing to probe. Liveness is the process plus `restartPolicyType`; the
+  route to and nothing to probe. Liveness is the process plus the restart policy; the
   readiness signal is the startup log line `notification relay listening`, which also prints
   the node id instances dial.
 - **Root Directory** left at the repo root, with a repo-root-relative `dockerfilePath`

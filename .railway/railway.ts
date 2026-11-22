@@ -19,8 +19,10 @@ export default defineRailway((ctx) => {
   // commit's GitHub checks are green.
   const waitForCi = github(REPO, { branch, checkSuites: true });
 
-  // Every service built from this repo restarts on failure, at most three times.
-  const restart = { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 3 } as const;
+  // Every service built from this repo restarts on failure, at most three times. The type
+  // is left unset: `ON_FAILURE` is Railway's default and it stores the default as null, so
+  // declaring it makes every plan report a change that an apply never clears.
+  const restart = { restartPolicyMaxRetries: 3 };
   const dockerfile = (dockerfilePath: string, watchPatterns?: string[]) => ({
     buildEnvironment: "V3" as const,
     builder: "DOCKERFILE" as const,
