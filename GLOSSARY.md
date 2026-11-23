@@ -88,6 +88,10 @@ _Avoid_: repo list, participants
 An account in a space's writer set. Being allowed to write does not make an account a writer; writing does.
 _Avoid_: participant, repo
 
+**Removed writer**:
+An account a space's authority has taken out of the writer set, either directly or by withdrawing its write access. Syncers are told to drop its repo, but its records stay on its repo host, and it rejoins the writer set if it writes again while allowed to.
+_Avoid_: evicted writer, banned writer, ex-member
+
 **Member**:
 A DID on a memberspace's member list, allowed to read and/or write. A member is not a writer until it writes.
 _Avoid_: membership, subscriber
