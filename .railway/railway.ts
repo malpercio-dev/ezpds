@@ -126,6 +126,9 @@ export default defineRailway((ctx) => {
   const obsignBlobstoreBackup = bucket("obsign-blobstore-backup", { region: "sjc" });
   const Postgres = postgres("Postgres", { region: "us-west2" });
   Postgres.networking = { privateNetworkEndpoint: "postgres" };
+  // Pinned to the image the database runs. The helper's default is Postgres 18, which would
+  // repoint a running Postgres 16 data directory at a new major version.
+  Postgres.source = image("ghcr.io/railwayapp-templates/postgres-ssl:16");
   const postgresVolume = disk("postgres-volume", "us-west2", 5000);
   const valkeyVolume = disk("valkey-volume", "us-west2", 5000);
   const Valkey = service("Valkey", {
