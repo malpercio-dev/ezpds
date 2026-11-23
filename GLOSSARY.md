@@ -162,7 +162,15 @@ _Avoid_: frozen space, disabled space
 
 **Space takedown**:
 The operator's reversible refusal to serve one space, independent of its authority's account.
-_Avoid_: space suspension (that names the authority's account state)
+_Avoid_: space suspension (that names the authority's account state), takedown label (that is the authority's request to syncers and apps)
+
+**Label record**:
+A moderation label on space data, written as an unsigned record into the same space as the data it labels, by a labeler in that space's writer set. A label that points into any other space carries no meaning.
+_Avoid_: space label, signed label
+
+**Takedown label**:
+A label record with the value `!takedown`, which a space authority publishes by convention to ask syncers and apps to stop showing the labelled data. It is a request, not an operator takedown.
+_Avoid_: space takedown (that is the operator's refusal to serve a space)
 
 ### Agents
 
