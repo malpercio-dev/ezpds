@@ -1,9 +1,9 @@
 name: CI
 
 # The Linux half of CI — the PDS test gate (fmt, lock-check, clippy, test, audit, deny) via
-# `just ci-pds`, plus the stdio MCP conformance suite (tools/mcp), which reuses the `pds`
-# binary this gate already builds. Replaces the retired tangled spindle workflows
-# (pr/staging/release.yaml).
+# `just ci-pds`, plus the stdio MCP and OAuth conformance suites (tools/mcp,
+# tools/oauth-conformance), which reuse the `pds` binary this gate already builds. Replaces
+# the retired tangled spindle workflows (pr/staging/release.yaml).
 #
 # Deploys are now **native Railway GitHub integrations** — Railway connects to this repo
 # and builds the Dockerfile itself, so there is no `railway up` and no Railway token here:
