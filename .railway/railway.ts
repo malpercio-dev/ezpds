@@ -126,6 +126,9 @@ export default defineRailway((ctx) => {
   const obsignBlobstoreBackup = bucket("obsign-blobstore-backup", { region: "sjc" });
   const Postgres = postgres("Postgres", { region: "us-west2" });
   Postgres.networking = { privateNetworkEndpoint: "postgres" };
+  // The live database records no image. The helper's default (`postgres:18`) would repoint
+  // a running database at a different image, so the source is left to Railway.
+  delete Postgres.source;
   const postgresVolume = disk("postgres-volume", "us-west2", 5000);
   const valkeyVolume = disk("valkey-volume", "us-west2", 5000);
   const Valkey = service("Valkey", {
