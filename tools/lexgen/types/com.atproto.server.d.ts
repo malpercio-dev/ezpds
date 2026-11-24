@@ -106,6 +106,13 @@ export type RequestPasswordResetInput = {
   email: string;
 };
 export type RequestPasswordResetOutput = undefined;
+export type ReserveKemKeyParams = undefined;
+export type ReserveKemKeyInput = {
+  did?: string;
+};
+export type ReserveKemKeyOutput = {
+  kemKey: string;
+};
 export type ReserveSigningKeyParams = undefined;
 export type ReserveSigningKeyInput = {
   did?: string;

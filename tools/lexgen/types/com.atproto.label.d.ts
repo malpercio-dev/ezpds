@@ -37,3 +37,11 @@ export type DefsLabelValueDefinitionStrings = {
   description: string;
 };
 export type DefsLabelValue = "!hide" | "!warn" | "!no-unauthenticated" | "porn" | "sexual" | "nudity" | "graphic-media" | "bot" | (string & {});
+export type Record = {
+  $type: "com.atproto.label.record";
+  uri: string;
+  cid?: string;
+  val: string;
+  cts: string;
+  exp?: string;
+};

@@ -53,14 +53,31 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     `updateSpace`, `deleteSpace`, `getSpace`, `putMember`, `removeMember`, `listMembers` + the
     `defs` document their policy/appAccess unions reach; `checkUserAccess` is vendored for byte-parity but served by a
     managing app, not the PDS).
-    These are pinned to commit **`619c6e8556db7dd37bb7df1d92a5eae83da8d8b0`** of the
-    `permissioned-data` branch (2026-10-20), not the `@atproto/pds` tag the rest of this list
-    follows — the alpha ships no tag carrying them. A branch name is not a pin: it moves, and
-    the byte-identity claim below is only auditable against a fixed revision, so re-fetch these
-    at the SHA (substitute it for the tag in the `curl` below) and expect upstream to move —
-    breaking changes are still promised. The Friday
-    [spaces-alpha-watch routine](../../../docs/operations/spaces-alpha-watch-routine.md) diffs
-    the branch weekly; when it reports a lexicon delta, re-vendor and advance this SHA.
+    These are pinned to commits of the `permissioned-data` branch, not the `@atproto/pds` tag
+    the rest of this list follows — the alpha ships no tag carrying them. A branch name is not a
+    pin: it moves, and the byte-identity claim below is only auditable against a fixed revision,
+    so re-fetch each file at its SHA (substitute it for the tag in the `curl` below). The set
+    is split across two pins while the routes catch up:
+    - **`619c6e8556db7dd37bb7df1d92a5eae83da8d8b0`** (2026-10-20): every document above —
+      the ones live routes validate against, including the ones upstream has since deleted.
+      Fourteen of them changed shape by the frozen pin (`com.atproto.space.{applyWrites,
+      createRecord,defs,deleteRecord,getBlob,getDelegationToken,getLatestCommit,getRecord,
+      getRepo,listBlobs,listRecords,listRepoOps,listSpaces,putRecord}`); each is re-vendored
+      from `047d603` by the change that moves its route to the new shape, and a deleted one is
+      removed together with its route.
+    - **`047d6032a21be01df8447489f0d6b59d2cc60af8`** (the frozen pin, 2026-11-23): the
+      documents first vendored at it — `com.atproto.space.{authorizeSpaceSync,clearRecords,
+      confirmRegistration,createSpace,deleteSpace,exportSpaceMeta,getSpace,importRepo,
+      importSpaceMeta,listWriters,notifyCredentialsRevoked,notifyRepoUpdate,notifySpaceUpdate,
+      policy,removeWriter,updateSpace}`, `com.atproto.{memberspace,managedspace,personalspace}.*`,
+      `com.atproto.label.record`, and `com.atproto.server.reserveKemKey`. None is in
+      `LEXICON_SOURCES` yet: each is registered by the change that adds its route.
+      `notifyRepoUpdate` refs `com.atproto.space.defs#repoWrite`/`#repoRemoved`, which exist
+      only in the `047d603` `defs`; until `defs` moves, lexgen types them as `unknown`.
+
+    The frozen pin is final: an upstream change after it is new work, never a silent SHA bump.
+    The Friday [spaces-alpha-watch routine](../../../docs/operations/spaces-alpha-watch-routine.md)
+    reports what upstream changes past it.
   - Proxied namespaces (the rest of `app.bsky.*`, `chat.bsky.*`, `com.atproto.moderation.*`) are
     validated upstream and are deliberately not vendored.
 
@@ -78,7 +95,7 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
 
    ```sh
    curl -o com/atproto/space/example.json \
-     "https://raw.githubusercontent.com/bluesky-social/atproto/619c6e8556db7dd37bb7df1d92a5eae83da8d8b0/lexicons/com/atproto/space/example.json"
+     "https://raw.githubusercontent.com/bluesky-social/atproto/047d6032a21be01df8447489f0d6b59d2cc60af8/lexicons/com/atproto/space/example.json"
    ```
 
 2. Add it to `LEXICON_SOURCES` in `crates/custos-core/src/lexicon/mod.rs` (also vendor anything its
