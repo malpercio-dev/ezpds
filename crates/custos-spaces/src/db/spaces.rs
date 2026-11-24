@@ -307,10 +307,11 @@ where
 pub struct HostedSpaceRow {
     pub uri: String,
     pub authority_did: String,
-    /// Non-NULL policy: this host is the space's authority. NULL means the
-    /// authority is a foreign server and this host only stores members' repos — the case
-    /// with no authority-side lever, and the reason this listing exists.
-    pub policy: Option<String>,
+    /// The policy's `$type` (the generated `policy_type` column). Non-NULL: this host is the
+    /// space's authority. NULL means the authority is a foreign server and this host only
+    /// stores members' repos — the case with no authority-side lever, and the reason this
+    /// listing exists.
+    pub policy_type: Option<String>,
     pub created_at: String,
     pub deleted_at: Option<String>,
     pub takendown_at: Option<String>,
@@ -333,7 +334,7 @@ pub async fn list_hosted_spaces(
     limit: i64,
 ) -> Result<Vec<HostedSpaceRow>, sqlx::Error> {
     sqlx::query_as::<_, HostedSpaceRow>(
-        "SELECT s.uri, s.authority_did, s.policy, s.created_at, s.deleted_at, s.takendown_at, \
+        "SELECT s.uri, s.authority_did, s.policy_type, s.created_at, s.deleted_at, s.takendown_at, \
                 (SELECT COUNT(*) FROM space_repos r WHERE r.space_uri = s.uri) AS repo_count, \
                 (SELECT COUNT(*) FROM space_records c WHERE c.space_uri = s.uri) AS record_count \
          FROM spaces s \

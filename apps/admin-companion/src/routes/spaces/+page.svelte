@@ -124,6 +124,10 @@
           <dd>{entry.authorityDid}</dd>
           <dt>governed by</dt>
           <dd>{entry.localAuthority ? 'this server' : 'another server'}</dd>
+          {#if entry.policyType}
+            <dt>policy</dt>
+            <dd>{entry.policyType}</dd>
+          {/if}
           <dt>first seen</dt>
           <dd>{entry.createdAt}</dd>
           <dt>repos stored</dt>

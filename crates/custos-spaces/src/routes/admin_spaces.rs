@@ -58,6 +58,10 @@ pub struct HostedSpaceEntry {
     /// the liability case: repos stored here for a space someone else governs, where takedown is
     /// the only action available.
     local_authority: bool,
+    /// The policy's `$type` (`com.atproto.personalspace.policy`, `…memberspace.policy`, or
+    /// `…managedspace.policy`). Absent for a foreign space: its authority holds the policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_type: Option<String>,
     created_at: String,
     /// The *authority's* tombstone (`space.deleteSpace`), not the operator's.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,7 +128,8 @@ pub async fn list_hosted_spaces(
             .map(|row| HostedSpaceEntry {
                 uri: row.uri,
                 authority_did: row.authority_did,
-                local_authority: row.policy.is_some(),
+                local_authority: row.policy_type.is_some(),
+                policy_type: row.policy_type,
                 created_at: row.created_at,
                 deleted_at: row.deleted_at,
                 takendown_at: row.takendown_at,

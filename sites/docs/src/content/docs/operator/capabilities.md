@@ -236,6 +236,39 @@ memberspace member list, deletion). The protocol is **pre-launch alpha**: the up
 breaking-changes warning until launch, so treat the surface as
 interop-for-implementers rather than a stability promise.
 
+Every space this server governs carries one policy, picked at `createSpace` and
+changeable with `updateSpace`. The server supports the three baseline policies:
+
+- **`com.atproto.personalspace.policy`**: only the space's authority reads and
+  writes.
+- **`com.atproto.memberspace.policy`**: access by member list
+  (`com.atproto.memberspace.putMembers` / `removeMembers`), each member with a
+  read bit and a write bit. `publicRead` and `publicWrite` open the space to
+  anyone, though a member without write access stays unable to write.
+  `allowedApps` limits which apps may get a space credential, matched on the
+  app's attested client ID and applied to the authority too: absent admits any
+  app, and an empty list `[]` admits none.
+- **`com.atproto.managedspace.policy`**: an external app (`managingApp`, a
+  `did#serviceId` reference) decides each read and write through
+  `com.atproto.managedspace.checkAccess`. The server resolves the app's endpoint
+  on every call and refuses access if the call fails or times out.
+
+Switching a space to a different policy deletes its member list, and switching
+back doesn't restore it. Spaces this server stores only for a member, governed
+by another server, follow that server's policy.
+
+The policy itself stays private unless it asks to be published. With
+`publishPolicy` (memberspace and managedspace), the authority's repo in the space
+carries a `com.atproto.space.policy/self` record that mirrors it. With
+`publishMembers` (memberspace), each member appears as a
+`com.atproto.memberspace.member/<did>` record. The server writes and withdraws
+these records together with the config change, and no client can write those two
+collections directly. The stored policy is the one enforced; the records are a
+copy for syncers to read.
+
+`GET /v1/admin/spaces` reports each governed space's policy as `policyType`, and
+the operator console shows it on the space's detail.
+
 While the surface is switched off, the space routes are not registered at all:
 an XRPC space method answers the same `MethodNotImplemented` a PDS that never
 implemented spaces gives, and any space data already stored stays on disk,
