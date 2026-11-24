@@ -886,3 +886,28 @@ async fn list_spaces_includes_spaces_the_caller_is_authority_of() {
     let body = ok(&state, xrpc_get("com.atproto.space.listSpaces", &bob)).await;
     assert_eq!(body["spaces"], json!([]));
 }
+
+/// Publishing writes records into the authority's repo, so it waits for the authority's KEM key
+/// like any other space write; a space with nothing to publish is created regardless.
+#[tokio::test]
+async fn publishing_waits_for_a_published_kem_key() {
+    let state = state_with_master_key().await;
+    // No KEM key published (the core fixture, not this crate's publishing one).
+    custos_core::test_support::seed_account_with_repo(&state.db, ALICE).await;
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+
+    let publishing = json!({ "$type": MEMBERSPACE, "publishPolicy": true });
+    assert_eq!(
+        error(
+            &state,
+            post("space.createSpace", &alice, create_body(publishing))
+        )
+        .await,
+        "KemKeyNotPublished"
+    );
+    ok(
+        &state,
+        post("space.createSpace", &alice, create_body(memberspace(false))),
+    )
+    .await;
+}

@@ -299,6 +299,11 @@ pub async fn commit_with_published(
     space: &SpaceRef,
     ops: &[SpaceWriteOp],
 ) -> Result<(), ApiError> {
+    // Published records are space writes like any other, so they wait for the authority's KEM
+    // key to be published (ADR-0043). A change with nothing to publish is not held up.
+    if !ops.is_empty() {
+        crate::kem_gate::require_kem_key_published_in(&mut tx, &space.authority).await?;
+    }
     let pending = crate::space_record_write::apply_space_writes_in_tx(
         state,
         &mut tx,

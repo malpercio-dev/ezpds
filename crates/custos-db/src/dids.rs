@@ -23,11 +23,15 @@ use sqlx::{Sqlite, SqlitePool};
 
 /// Look up a locally cached DID document by DID string.
 ///
-/// Returns `None` when no row exists for the given DID; `Err` only on DB errors.
-pub async fn get_did_document(
-    db: &sqlx::SqlitePool,
+/// Returns `None` when no row exists for the given DID; `Err` only on DB errors. Generic over the
+/// executor so a caller holding a transaction can read through it.
+pub async fn get_did_document<'e, E>(
+    db: E,
     did: &str,
-) -> Result<Option<serde_json::Value>, ApiError> {
+) -> Result<Option<serde_json::Value>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let row: Option<(String,)> =
         sqlx::query_as("SELECT document FROM did_documents WHERE did = ? LIMIT 1")
             .bind(did)

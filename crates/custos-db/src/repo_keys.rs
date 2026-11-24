@@ -189,12 +189,15 @@ pub(crate) async fn get_reserved_key(
 }
 
 /// The promoted account's key with `status` (`'active'` or `'staged'`).
-pub(crate) async fn get_key_by_status(
-    pool: &SqlitePool,
+pub(crate) async fn get_key_by_status<'e, E>(
+    executor: E,
     family: KeyFamily,
     did: &str,
     status: &'static str,
-) -> Result<Option<RepoSigningKey>, sqlx::Error> {
+) -> Result<Option<RepoSigningKey>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let sql = format!(
         "SELECT id, public_key, private_key_encrypted FROM {} \
          WHERE did = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
@@ -203,7 +206,7 @@ pub(crate) async fn get_key_by_status(
     let row: Option<KeyRow> = sqlx::query_as(&sql)
         .bind(did)
         .bind(status)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await?;
     Ok(row.map(key_from_row))
 }

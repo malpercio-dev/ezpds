@@ -74,12 +74,16 @@ pub async fn get_reserved_kem_key_by_id(
     repo_keys::get_reserved_key(pool, KeyFamily::Kem, "id", key_id).await
 }
 
-/// The KEM key the account's DID document should publish, if it has one.
-pub async fn get_active_kem_key(
-    pool: &SqlitePool,
+/// The KEM key the account's DID document should publish, if it has one. Generic over the
+/// executor so a caller holding a transaction can read through it.
+pub async fn get_active_kem_key<'e, E>(
+    executor: E,
     did: &str,
-) -> Result<Option<KemKey>, sqlx::Error> {
-    repo_keys::get_key_by_status(pool, KeyFamily::Kem, did, "active").await
+) -> Result<Option<KemKey>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    repo_keys::get_key_by_status(executor, KeyFamily::Kem, did, "active").await
 }
 
 /// The replacement KEM key waiting to be published, if a ceremony is in progress.
