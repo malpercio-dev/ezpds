@@ -88,6 +88,7 @@
   import ChangeHandleScreen from '$lib/components/home/ChangeHandleScreen.svelte';
   import EndpointRepairScreen from '$lib/components/home/EndpointRepairScreen.svelte';
   import RotateRepoKeyScreen from '$lib/components/home/RotateRepoKeyScreen.svelte';
+  import UpdateForSpacesScreen from '$lib/components/home/UpdateForSpacesScreen.svelte';
   import RekeyReviewScreen from '$lib/components/home/RekeyReviewScreen.svelte';
   import SelfHeldKitReviewScreen from '$lib/components/home/SelfHeldKitReviewScreen.svelte';
   import AppPasswordsScreen from '$lib/components/home/AppPasswordsScreen.svelte';
@@ -162,6 +163,7 @@
     | 'change_handle'
     | 'endpoint_repair'
     | 'rotate_repo_key'
+    | 'update_for_spaces'
     | 'rekey_review'
     | 'rekey_backup'
     | 'rekey_success'
@@ -251,6 +253,8 @@
    * code entry as always.
    */
   let consentRequestId = $state<string | null>(null);
+  /** Where "Update identity for Spaces" returns: Advanced, or home when a link opened it. */
+  let spacesReturnStep = $state<OnboardingStep>('advanced_tools');
 
   let selectedAlertDid = $state<string | null>(null);
   let selectedAlertChanges = $state<UnauthorizedChange[]>([]);
@@ -402,6 +406,33 @@
   }
 
   /**
+   * Open "Update identity for Spaces" from an `obsign:/spaces?did=…` link — the one a space
+   * writer shows when Custos refuses a write with `KemKeyNotPublished`. Only for a DID this
+   * wallet manages (a link is a pointer anyone can craft); the screen itself still shows the
+   * change and asks for biometrics before anything is signed or sent.
+   */
+  async function openUpdateForSpaces(did: string | null): Promise<boolean> {
+    if (!did) return false;
+    try {
+      if (!(await listIdentities()).includes(did)) return false;
+      selectedDid = did;
+      try {
+        selectedDidDoc = await getStoredDidDoc(did);
+      } catch {
+        selectedDidDoc = null;
+      }
+      selectedDeviceKeyIsRoot = null;
+      selectedDeviceKeyUnusable = false;
+      spacesReturnStep = 'home';
+      goTo('update_for_spaces');
+      return true;
+    } catch (e) {
+      console.warn('opening Update identity for Spaces failed:', e);
+      return false;
+    }
+  }
+
+  /**
    * Route a tapped notification (Phase C: push-to-approve). A `login-approval` tap opens the
    * consent approval screen straight on its pending request — the route is only a pointer;
    * the screen re-fetches everything it displays from the server by `request_id`. Navigation
@@ -410,7 +441,7 @@
    * there must be exactly one identity to act as. Returns whether it navigated.
    */
   async function handleNotificationRoute(route: PendingNotificationRoute | null): Promise<boolean> {
-    if (!route || route.kind !== 'login-approval' || !route.requestId) return false;
+    if (!route) return false;
     const interruptible: OnboardingStep[] = [
       'home',
       'identity_detail',
@@ -419,6 +450,8 @@
       'oauth_consent_approval',
     ];
     if (!interruptible.includes(step)) return false;
+    if (route.kind === 'update-for-spaces') return openUpdateForSpaces(route.did);
+    if (route.kind !== 'login-approval' || !route.requestId) return false;
     try {
       const identities = await listIdentities();
       let did = route.did && identities.includes(route.did) ? route.did : null;
@@ -1235,6 +1268,13 @@
       onrepairendpoint={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
         ? () => goTo('endpoint_repair')
         : undefined}
+      onupdateforspaces={(selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')) ||
+      selectedDid?.startsWith('did:web:')
+        ? () => {
+            spacesReturnStep = 'advanced_tools';
+            goTo('update_for_spaces');
+          }
+        : undefined}
       onremove={() => goTo('remove_identity')}
     />
 
@@ -1277,6 +1317,13 @@
     <RotateRepoKeyScreen
       did={selectedDid ?? ''}
       onback={() => goTo('advanced_tools')}
+      ondone={() => goTo('home')}
+    />
+
+  {:else if step === 'update_for_spaces'}
+    <UpdateForSpacesScreen
+      did={selectedDid ?? ''}
+      onback={() => goTo(spacesReturnStep)}
       ondone={() => goTo('home')}
     />
 

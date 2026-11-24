@@ -273,9 +273,14 @@ pub struct RotationState {
 
 // ── PDS rotation endpoints ───────────────────────────────────────────────────
 
-/// Read an atproto-style error envelope `{ error, message }` from a non-success
-/// response and map it into a `RotationError`.
-async fn classify_rotation_response(response: reqwest::Response) -> RotationError {
+/// Read an atproto-style error envelope `{ error, message }` from a non-success response:
+/// a 429 becomes the shared `RATE_LIMITED`, anything else the caller's own rejection, built
+/// by `rejected(status, message)`. Shared by the ceremonies that hand a wallet-signed op to
+/// the hosting PDS (this one and [`crate::publish_kem_key`]).
+pub(crate) async fn classify_host_rejection<E: From<SharedFailure>>(
+    response: reqwest::Response,
+    rejected: impl FnOnce(u16, String) -> E,
+) -> E {
     let status = response.status().as_u16();
     let retry_after = response
         .headers()
@@ -284,7 +289,7 @@ async fn classify_rotation_response(response: reqwest::Response) -> RotationErro
         .map(str::to_string);
     let body = response.text().await.unwrap_or_default();
     if status == 429 {
-        return RotationError::Shared(SharedFailure::RateLimited { retry_after });
+        return SharedFailure::RateLimited { retry_after }.into();
     }
     let envelope: Option<serde_json::Value> = serde_json::from_str(&body).ok();
     let message = envelope
@@ -294,12 +299,20 @@ async fn classify_rotation_response(response: reqwest::Response) -> RotationErro
         .map(String::from)
         .unwrap_or_else(|| {
             if body.is_empty() {
-                format!("rotation request returned HTTP {status}")
+                format!("request returned HTTP {status}")
             } else {
                 body.clone()
             }
         });
-    RotationError::RotationFailed { status, message }
+    rejected(status, message)
+}
+
+async fn classify_rotation_response(response: reqwest::Response) -> RotationError {
+    classify_host_rejection(response, |status, message| RotationError::RotationFailed {
+        status,
+        message,
+    })
+    .await
 }
 
 /// `POST /v1/repo-keys/rotation` on the hosting PDS: stage a fresh replacement key and
@@ -471,13 +484,28 @@ pub async fn submit_repo_key_rotation(
     did: &str,
     signed_op: &serde_json::Value,
 ) -> Result<ClaimResult, RotationError> {
-    let store = core.identities();
-
     let session = SessionProvider.full_access_client(core, did).await?;
     complete_rotation_on_pds(&session.client, signed_op).await?;
 
-    // Refresh the cached PLC log + DID document (PLC *data* shape — the home card's
-    // custody badge reads `rotationKeys[0]`; the W3C form would degrade it).
+    let did_doc = refresh_cached_plc_state(core, did, |message| RotationError::SigningFailed {
+        message,
+    })
+    .await?;
+    Ok(ClaimResult {
+        updated_did_doc: did_doc,
+    })
+}
+
+/// Re-read a did:plc's audit log and DID document from plc.directory after an op landed and
+/// cache both, returning the document. The document is cached in PLC *data* shape: the home
+/// card's custody badge reads `rotationKeys[0]`, which the W3C form would lose. A local
+/// cache-write failure is built by `store_failed`.
+pub(crate) async fn refresh_cached_plc_state<E: From<SharedFailure>>(
+    core: &crate::oauth::Core,
+    did: &str,
+    store_failed: impl Fn(String) -> E,
+) -> Result<serde_json::Value, E> {
+    let store = core.identities();
     let updated_log = core
         .pds_client()
         .fetch_audit_log(did)
@@ -485,9 +513,7 @@ pub async fn submit_repo_key_rotation(
         .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch updated audit log", e))?;
     store
         .store_plc_log(did, &updated_log)
-        .map_err(|e| RotationError::SigningFailed {
-            message: format!("failed to cache updated PLC log: {e}"),
-        })?;
+        .map_err(|e| store_failed(format!("failed to cache updated PLC log: {e}")))?;
     let did_doc = core
         .pds_client()
         .fetch_plc_data_document(did)
@@ -495,13 +521,8 @@ pub async fn submit_repo_key_rotation(
         .map_err(|e| SharedFailure::from_plc_fetch("failed to fetch DID document", e))?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
-        .map_err(|e| RotationError::SigningFailed {
-            message: format!("failed to cache updated DID document: {e}"),
-        })?;
-
-    Ok(ClaimResult {
-        updated_did_doc: did_doc,
-    })
+        .map_err(|e| store_failed(format!("failed to cache updated DID document: {e}")))?;
+    Ok(did_doc)
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────

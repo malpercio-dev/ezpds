@@ -27,6 +27,7 @@ export type ScenarioName =
   | 'unreachable-pds'
   | 'one-identity'
   | 'multi-identity'
+  | 'spaces-kem-unpublished'
   | 'alert-active'
   | 'alert-warning'
   | 'alert-critical'
@@ -159,6 +160,23 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
         did: 'did:web:web.example.com',
         deviceKeyUnusable: true,
       })
+    );
+    return state;
+  },
+
+  /**
+   * Two accounts created before Spaces KEM keys existed, one per publish path: a did:plc
+   * (signed-op review) and a self-hosted did:web (export the updated did.json). Neither
+   * publishes `atproto_kem` yet, so "Update identity for Spaces" starts from its intro on
+   * both. `obsign:/spaces?did=…` opens the same screen.
+   */
+  'spaces-kem-unpublished': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    upsertIdentity(state, seedIdentity({ handle: 'alice.harness.pds.local' }));
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'alice.example', did: 'did:web:alice.example', recoveryKey: false })
     );
     return state;
   },

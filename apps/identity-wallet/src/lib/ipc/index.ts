@@ -25,6 +25,7 @@ export * from './disaster-recovery';
 export * from './endpoint-repair';
 export * from './handle-change';
 export * from './rotation';
+export * from './kem';
 export * from './rekey';
 export * from './self-held-kit';
 export * from './agents';

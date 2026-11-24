@@ -24,12 +24,14 @@
 //!   `latest_op_state` (current state from the newest non-nullified audit entry),
 //!   `build_migration_diff`.
 //!
-//! `guard_migration_op` is the SECOND of the wallet's seven strict pre-sign
+//! `guard_migration_op` is the SECOND of the wallet's eight strict pre-sign
 //! allowlists (`claim.rs`'s 4-point verification is the first), enforced before
 //! signing: (1) `rotationKeys[0]` == the device key, (2) the device key is in the
 //! DID's current rotationKeys (else `WalletNotAuthorized`), (3) every other proposed
 //! rotation key was recommended by the destination, (4) alsoKnownAs preserved,
-//! (5) only the `atproto_pds` service is touched. It is the polar opposite of the
+//! (5) only the `atproto_pds` service is touched, (6) `verificationMethods` is exactly
+//! the destination's `atproto` key plus its `atproto_kem` key when it recommends one, so
+//! the Spaces KEM key moves to the destination's or is dropped (ADR-0043). It is the polar opposite of the
 //! claim guard: a claim must change NOTHING but insert the device key at
 //! `rotationKeys[0]`, while a migration MUST rewrite `services.atproto_pds`,
 //! `rotationKeys[1]`, and `verificationMethods.atproto` to the destination's values.
@@ -56,6 +58,7 @@ use crate::claim::{ChangeType, ClaimResult, OpDiff, ServiceChange};
 use crate::identity_store::PerDidSignError;
 use crate::oauth_client::OAuthClient;
 use crate::pds_client::{get_recommended_did_credentials, RecommendedCredentials};
+use crate::publish_kem_key::{KEM_VERIFICATION_METHOD_ID, SPACE_VERIFICATION_METHOD_ID};
 use crypto::{AuditEntry, PlcService};
 
 /// The atproto PDS service id in a PLC operation's `services` map.
@@ -113,25 +116,30 @@ pub struct DidWebMigrationDocument {
     pub pds_endpoint: String,
 }
 
-fn multibase(key: &str) -> &str {
+/// A `did:key:z…` id as the bare multibase string a did:web `publicKeyMultibase` carries.
+pub(crate) fn multibase(key: &str) -> &str {
     key.strip_prefix("did:key:").unwrap_or(key)
 }
 
-fn did_web_url(did: &str) -> Result<String, MigrateError> {
+/// The `https://host/.well-known/did.json` URL a hostname-form did:web resolves to, or why
+/// the wallet cannot resolve this DID.
+pub(crate) fn did_web_document_url(did: &str) -> Result<String, &'static str> {
     let host = did
         .strip_prefix("did:web:")
-        .ok_or(MigrateError::GuardRejected {
-            reason: "identity is not did:web".into(),
-        })?;
+        .ok_or("identity is not did:web")?;
     if host.contains(':') || host.contains('/') || host.is_empty() {
-        return Err(MigrateError::GuardRejected {
-            reason: "only hostname-form did:web identities are supported".into(),
-        });
+        return Err("only hostname-form did:web identities are supported");
     }
     Ok(format!(
         "https://{}/.well-known/did.json",
         host.to_ascii_lowercase()
     ))
+}
+
+fn did_web_url(did: &str) -> Result<String, MigrateError> {
+    did_web_document_url(did).map_err(|reason| MigrateError::GuardRejected {
+        reason: reason.into(),
+    })
 }
 
 /// Compose the exact did:web document that the user must review and publish for migration.
@@ -191,10 +199,23 @@ pub async fn build_did_web_migration_document_cmd(
         }
     })?;
 
+    // The destination's Spaces KEM key, if it recommends one, replaces the old host's: the
+    // same rule `guard_migration_op` enforces for a did:plc.
+    let kem_key = recommended
+        .verification_methods
+        .as_ref()
+        .and_then(|value| value.get(KEM_VERIFICATION_METHOD_ID))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let host_held = [
+        ATPROTO_VERIFICATION_METHOD_ID,
+        KEM_VERIFICATION_METHOD_ID,
+        SPACE_VERIFICATION_METHOD_ID,
+    ];
     let mut methods = Vec::new();
     if let Some(existing) = current.verification_methods.as_object() {
         for (name, value) in existing {
-            if name != ATPROTO_VERIFICATION_METHOD_ID {
+            if !host_held.contains(&name.as_str()) {
                 if let Some(key) = value.as_str() {
                     methods.push(serde_json::json!({
                         "id": format!("#{name}"), "type": "Multikey", "controller": did,
@@ -208,6 +229,9 @@ pub async fn build_did_web_migration_document_cmd(
         .retain(|method| method.get("id").and_then(serde_json::Value::as_str) != Some("#device"));
     methods.push(serde_json::json!({"id": "#device", "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&device.key_id)}));
     methods.push(serde_json::json!({"id": "#atproto", "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&repo_key)}));
+    if let Some(kem_key) = &kem_key {
+        methods.push(serde_json::json!({"id": format!("#{KEM_VERIFICATION_METHOD_ID}"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(kem_key)}));
+    }
     let document = serde_json::json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
@@ -410,6 +434,10 @@ pub struct MigrationInputs {
     pub proposed_also_known_as: Vec<String>,
     /// The service ids we intend to put in the op's `services` map.
     pub proposed_service_ids: Vec<String>,
+    /// The verification methods the DESTINATION PDS recommended.
+    pub recommended_verification_methods: BTreeMap<String, String>,
+    /// The verification methods we intend to put in the op.
+    pub proposed_verification_methods: BTreeMap<String, String>,
 }
 
 // ── The strict pre-sign guard (STRICT ALLOWLIST) ─────────────────────────────
@@ -438,6 +466,9 @@ pub struct MigrationInputs {
 ///  4. Handle preservation: `proposed_also_known_as` equals `current_also_known_as`.
 ///  5. Service allowlist: the proposed op touches ONLY the atproto PDS service —
 ///     `proposed_service_ids` is exactly `[ATPROTO_PDS_SERVICE_ID]`.
+///  6. Verification methods: exactly the destination's `atproto` key, plus its Spaces
+///     `atproto_kem` key when it recommends one. The old host's KEM key never rides along:
+///     it is the old host's to hold, so the op sets the destination's or drops it.
 pub fn guard_migration_op(inputs: &MigrationInputs) -> Result<(), MigrateError> {
     // Rule 2 (authorization): the wallet must currently hold an authorized key for
     // this DID, or it cannot self-sign — the caller falls back to the interop path.
@@ -482,6 +513,25 @@ pub fn guard_migration_op(inputs: &MigrationInputs) -> Result<(), MigrateError> 
             reason: format!(
                 "migration may only set the '{ATPROTO_PDS_SERVICE_ID}' service; found {:?}",
                 inputs.proposed_service_ids
+            ),
+        });
+    }
+
+    // Rule 6 (verification methods): the destination's keys, and only those.
+    let allowed = [ATPROTO_VERIFICATION_METHOD_ID, KEM_VERIFICATION_METHOD_ID];
+    if inputs.proposed_verification_methods != inputs.recommended_verification_methods
+        || !inputs
+            .proposed_verification_methods
+            .contains_key(ATPROTO_VERIFICATION_METHOD_ID)
+        || inputs
+            .proposed_verification_methods
+            .keys()
+            .any(|id| !allowed.contains(&id.as_str()))
+    {
+        return Err(MigrateError::GuardRejected {
+            reason: format!(
+                "verificationMethods must be exactly the destination's atproto (and atproto_kem, if recommended); found {:?}",
+                inputs.proposed_verification_methods.keys().collect::<Vec<_>>()
             ),
         });
     }
@@ -726,7 +776,8 @@ pub async fn detect_migration_path(core: &crate::oauth::Core, did: &str) -> Migr
 
 /// Convert the destination PDS's recommended `verificationMethods` (untyped JSON of
 /// `{ id: "did:key:z..." }`) into the `BTreeMap<String, String>` that
-/// `build_did_plc_rotation_op` expects. Requires at least the `atproto` method.
+/// `build_did_plc_rotation_op` expects. Requires the `atproto` method; also takes the
+/// Spaces `atproto_kem` method when the destination recommends one (ADR-0043).
 pub fn recommended_verification_methods(
     recommended: &RecommendedCredentials,
 ) -> Result<BTreeMap<String, String>, MigrateError> {
@@ -744,13 +795,13 @@ pub fn recommended_verification_methods(
 
     let mut methods = BTreeMap::new();
     for (id, key) in obj {
-        // Every verification method here is signed into the op, but the guard only
-        // reasons about rotation keys — so an unexpected method would reach the
-        // signature unchecked. A migration only ever sets the atproto method.
-        if id != ATPROTO_VERIFICATION_METHOD_ID {
+        // Every verification method here is signed into the op, so an unexpected one is
+        // refused here rather than signed. A migration sets the destination's signing key
+        // and, when it has one, the destination's Spaces KEM key.
+        if id != ATPROTO_VERIFICATION_METHOD_ID && id != KEM_VERIFICATION_METHOD_ID {
             return Err(MigrateError::InvalidRecommendedCredentials {
                 message: format!(
-                    "unexpected verificationMethods.{id}; only '{ATPROTO_VERIFICATION_METHOD_ID}' is allowed"
+                    "unexpected verificationMethods.{id}; only '{ATPROTO_VERIFICATION_METHOD_ID}' and '{KEM_VERIFICATION_METHOD_ID}' are allowed"
                 ),
             });
         }
@@ -922,7 +973,10 @@ pub async fn build_migration_op(
             proposed_rotation_keys.push(key.clone());
         }
     }
-    let proposed_vms = recommended_verification_methods(&recommended)?;
+    // The destination's keys replace the whole map: its signing key, and its Spaces KEM key
+    // if it recommends one. Whatever KEM key the old host published is not carried over.
+    let recommended_vms = recommended_verification_methods(&recommended)?;
+    let proposed_vms = recommended_vms.clone();
     let proposed_services = recommended_services(&recommended)?;
     #[allow(
         clippy::expect_used,
@@ -944,6 +998,8 @@ pub async fn build_migration_op(
         proposed_rotation_keys: proposed_rotation_keys.clone(),
         proposed_also_known_as: also_known_as.clone(),
         proposed_service_ids: proposed_services.keys().cloned().collect(),
+        recommended_verification_methods: recommended_vms,
+        proposed_verification_methods: proposed_vms.clone(),
     };
     guard_migration_op(&inputs)?;
 
@@ -1302,12 +1358,68 @@ mod tests {
             proposed_rotation_keys: vec![DEVICE.to_string(), DEST.to_string()],
             proposed_also_known_as: vec![HANDLE.to_string()],
             proposed_service_ids: vec![ATPROTO_PDS_SERVICE_ID.to_string()],
+            recommended_verification_methods: dest_methods(Some(DEST_KEM)),
+            proposed_verification_methods: dest_methods(Some(DEST_KEM)),
         }
+    }
+
+    const DEST_KEM: &str = "did:key:zDESTKEM";
+
+    fn dest_methods(kem: Option<&str>) -> BTreeMap<String, String> {
+        let mut methods = BTreeMap::from([("atproto".to_string(), DEST.to_string())]);
+        if let Some(kem) = kem {
+            methods.insert("atproto_kem".to_string(), kem.to_string());
+        }
+        methods
     }
 
     #[test]
     fn guard_accepts_a_well_formed_migration() {
         assert!(guard_migration_op(&ok_inputs()).is_ok());
+    }
+
+    #[test]
+    fn guard_sets_the_destinations_kem_key_or_drops_it() {
+        // A destination with no KEM key: the op publishes none.
+        let mut inputs = ok_inputs();
+        inputs.recommended_verification_methods = dest_methods(None);
+        inputs.proposed_verification_methods = dest_methods(None);
+        assert!(guard_migration_op(&inputs).is_ok());
+
+        // Carrying the old host's KEM key, or any KEM key the destination did not name.
+        for wrong in [Some("did:key:zOLDHOSTKEM"), None] {
+            let mut inputs = ok_inputs();
+            inputs.proposed_verification_methods = dest_methods(wrong);
+            assert!(
+                matches!(
+                    guard_migration_op(&inputs),
+                    Err(MigrateError::GuardRejected { .. })
+                ),
+                "proposed {wrong:?} against a recommended {DEST_KEM}"
+            );
+        }
+        let mut inputs = ok_inputs();
+        inputs.recommended_verification_methods = dest_methods(None);
+        inputs.proposed_verification_methods = dest_methods(Some("did:key:zOLDHOSTKEM"));
+        assert!(matches!(
+            guard_migration_op(&inputs),
+            Err(MigrateError::GuardRejected { .. })
+        ));
+    }
+
+    #[test]
+    fn guard_rejects_a_verification_method_beyond_atproto_and_kem() {
+        let mut inputs = ok_inputs();
+        for methods in [
+            &mut inputs.recommended_verification_methods,
+            &mut inputs.proposed_verification_methods,
+        ] {
+            methods.insert("atproto_space".to_string(), "did:key:zSPACE".to_string());
+        }
+        assert!(matches!(
+            guard_migration_op(&inputs),
+            Err(MigrateError::GuardRejected { .. })
+        ));
     }
 
     #[test]
@@ -1509,6 +1621,19 @@ mod tests {
             recommended_verification_methods(&extra),
             Err(MigrateError::InvalidRecommendedCredentials { .. })
         ));
+    }
+
+    #[test]
+    fn verification_methods_take_the_destinations_kem_key() {
+        let with_kem = creds(
+            None,
+            Some(serde_json::json!({ "atproto": DEST, "atproto_kem": DEST_KEM })),
+            None,
+        );
+        assert_eq!(
+            recommended_verification_methods(&with_kem).unwrap(),
+            dest_methods(Some(DEST_KEM))
+        );
     }
 
     #[test]

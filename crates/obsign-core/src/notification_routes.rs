@@ -73,12 +73,21 @@ pub fn store_pending_route(route: PendingNotificationRoute) {
 /// reverse-FQDN spelling stays accepted for QR codes from not-yet-updated Custos instances.
 const HANDOFF_SCHEMES: [&str; 2] = ["obsign", "org.obsign.identitywallet"];
 
+/// The route kind for "Update identity for Spaces", opened by `obsign:/spaces?did=…`.
+pub const UPDATE_FOR_SPACES_KIND: &str = "update-for-spaces";
+
 /// Parse a wallet handoff URL into a route, or `None` for any URL this module does not own.
 ///
-/// This is the Camera-app half of the consent QR: the same QR the in-app scanner reads is a
-/// plain URL to iOS, and scanning it from outside Obsign launches the app through
-/// `application:openURL:` with nothing but this string. Only the `/consent` path routes —
-/// every other URL on the scheme (the ASWebAuthenticationSession OAuth callback, anything a
+/// Two paths route:
+///
+/// - `/consent?request_id=…`, the Camera-app half of the consent QR: the same QR the in-app
+///   scanner reads is a plain URL to iOS, and scanning it from outside Obsign launches the
+///   app through `application:openURL:` with nothing but this string.
+/// - `/spaces?did=…`, the link a space writer shows when Custos refuses a space write with
+///   `KemKeyNotPublished`. It opens "Update identity for Spaces" for that DID, which still
+///   shows the change and asks for biometrics before anything is signed or sent.
+///
+/// Every other URL on the scheme (the ASWebAuthenticationSession OAuth callback, anything a
 /// future feature claims) reads as `None` so the caller can decline it untouched.
 ///
 /// The URL is attacker-suppliable by construction (anyone can print a QR), which is why the
@@ -96,22 +105,36 @@ pub fn route_from_handoff_url(raw: &str) -> Option<PendingNotificationRoute> {
     {
         return None;
     }
-    let names_consent = |segment: Option<&str>| segment == Some("consent");
     let path = url.path().trim_matches('/');
-    let is_consent = if path.is_empty() {
-        names_consent(url.host_str())
+    let target = if path.is_empty() {
+        url.host_str()
+    } else if url.host_str().is_none() {
+        Some(path)
     } else {
-        names_consent(Some(path)) && url.host_str().is_none()
+        None
     };
-    if !is_consent {
+    let query = |key: &str| {
+        url.query_pairs()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.into_owned())
+            .filter(|value| !value.is_empty())
+    };
+
+    if target == Some("spaces") {
+        // The DID is a pointer, never an instruction: the frontend opens the screen only for an
+        // identity this wallet manages, and the screen fetches everything it shows.
+        let did = query("did").filter(|did| did.starts_with("did:"))?;
+        return Some(PendingNotificationRoute {
+            kind: UPDATE_FOR_SPACES_KIND.to_string(),
+            request_id: None,
+            did: Some(did),
+        });
+    }
+    if target != Some("consent") {
         return None;
     }
 
-    let request_id = url
-        .query_pairs()
-        .find(|(name, _)| name == "request_id")
-        .map(|(_, value)| value.into_owned())
-        .filter(|value| !value.is_empty())?;
+    let request_id = query("request_id")?;
 
     // No `did`: the QR names a pending request, not an identity. The frontend resolves which
     // managed identity can answer it (sole identity, or by probing the request's preview).
@@ -232,6 +255,28 @@ mod tests {
             // Someone else's scheme entirely.
             "https://pds.example.com/consent?request_id=poauth_x",
             "not a url at all",
+        ] {
+            assert_eq!(route_from_handoff_url(raw), None, "must decline: {raw}");
+        }
+    }
+
+    /// The `KemKeyNotPublished` link opens "Update identity for Spaces" for its DID.
+    #[test]
+    fn the_spaces_link_routes_to_the_update_for_that_did() {
+        for raw in [
+            "obsign:/spaces?did=did%3Aplc%3Aabc",
+            "obsign://spaces?did=did:plc:abc",
+        ] {
+            let route = route_from_handoff_url(raw).unwrap();
+            assert_eq!(route.kind, UPDATE_FOR_SPACES_KIND);
+            assert_eq!(route.did.as_deref(), Some("did:plc:abc"));
+            assert_eq!(route.request_id, None);
+        }
+        for raw in [
+            "obsign:/spaces",
+            "obsign:/spaces?did=",
+            "obsign:/spaces?did=alice.example",
+            "obsign://evil.example/spaces?did=did:plc:abc",
         ] {
             assert_eq!(route_from_handoff_url(raw), None, "must decline: {raw}");
         }

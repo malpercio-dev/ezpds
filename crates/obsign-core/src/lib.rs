@@ -45,6 +45,7 @@ pub mod pds_config;
 pub mod platform;
 pub mod plc_monitor;
 pub mod preferences;
+pub mod publish_kem_key;
 pub mod recovery;
 pub mod rekey;
 pub mod repo_backup;

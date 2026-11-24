@@ -14,6 +14,7 @@
     onrotatekey,
     onrecoverykit,
     onrepairendpoint,
+    onupdateforspaces,
     onremove,
   }: {
     onback: () => void;
@@ -24,6 +25,8 @@
     onrecoverykit?: () => void;
     /** Repoint the DID document at a host that changed hostname underneath the account. */
     onrepairendpoint?: () => void;
+    /** Publish (or rotate) the server's Spaces key in the identity document. */
+    onupdateforspaces?: () => void;
     /** Permanent removal: delete on the server, retire the DID, wipe this device. */
     onremove: () => void;
   } = $props();
@@ -79,6 +82,18 @@
       >
         {#snippet icon()}
           <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" /><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" /></svg>
+        {/snippet}
+      </NavRow>
+    {/if}
+
+    {#if onupdateforspaces}
+      <NavRow
+        title="Update identity for Spaces"
+        subtitle="List your server’s Spaces key so apps can check records in your spaces"
+        onclick={onupdateforspaces}
+      >
+        {#snippet icon()}
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 17.5h7M17.5 14v7" /></svg>
         {/snippet}
       </NavRow>
     {/if}

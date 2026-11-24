@@ -43,6 +43,7 @@ pub use obsign_core::password_unlock;
 pub use obsign_core::pds_capabilities;
 pub use obsign_core::pds_client;
 pub use obsign_core::plc_monitor;
+pub use obsign_core::publish_kem_key;
 pub use obsign_core::recovery;
 pub use obsign_core::rekey;
 pub use obsign_core::repo_backup;
@@ -242,7 +243,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {
-            // The Camera-app half of the consent QR. tao runs the UIScene lifecycle on iOS,
+            // The Camera-app half of the consent QR, and the `obsign:/spaces` link. tao runs the UIScene lifecycle on iOS,
             // so a URL opened from outside the app arrives as `scene:openURLContexts:` and
             // surfaces here as `RunEvent::Opened` — never through an application-delegate
             // `openURL` method (adding one is dead code under scenes). Routed through the
