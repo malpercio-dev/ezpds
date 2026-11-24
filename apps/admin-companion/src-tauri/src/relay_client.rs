@@ -1567,6 +1567,9 @@ pub struct HostedSpaceEntry {
     /// another server and the relay only stores members' repos in it — the case where
     /// takedown is the operator's only available action.
     pub local_authority: bool,
+    /// The policy's `$type` (personalspace, memberspace, or managedspace); `None` for a
+    /// space another server governs, since that server holds the policy.
+    pub policy_type: Option<String>,
     pub created_at: String,
     /// The space *owner's* tombstone (`deleteSpace`), not the operator's; `None` when absent.
     pub deleted_at: Option<String>,
@@ -3020,6 +3023,7 @@ mod tests {
                     "uri": "at://did:plc:abc123/space/org.example.bucket/main",
                     "authorityDid": "did:plc:abc123",
                     "localAuthority": true,
+                    "policyType": "com.atproto.memberspace.policy",
                     "createdAt": "2026-07-10 12:00:00",
                     "takendownAt": "2026-07-14 22:10:00",
                     "repoCount": 3,
@@ -3040,6 +3044,10 @@ mod tests {
         assert_eq!(page.spaces.len(), 2);
         assert!(page.spaces[0].local_authority);
         assert_eq!(
+            page.spaces[0].policy_type.as_deref(),
+            Some("com.atproto.memberspace.policy")
+        );
+        assert_eq!(
             page.spaces[0].takendown_at.as_deref(),
             Some("2026-07-14 22:10:00")
         );
@@ -3047,6 +3055,7 @@ mod tests {
         // The foreign-authority row: no owner tombstone, not taken down, and the flag that
         // tells the screen takedown is the operator's only lever here.
         assert!(!page.spaces[1].local_authority);
+        assert_eq!(page.spaces[1].policy_type, None);
         assert_eq!(page.spaces[1].deleted_at, None);
         assert_eq!(page.spaces[1].takendown_at, None);
 

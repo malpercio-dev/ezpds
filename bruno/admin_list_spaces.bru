@@ -54,8 +54,11 @@ docs {
     - `uri` — canonical space URI, `at://{authority}/space/{type}/{skey}`.
     - `authorityDid` — the DID that governs the space.
     - `localAuthority` — whether this server is that authority (see above).
+    - `policyType` — the policy's `$type`: `com.atproto.personalspace.policy`,
+      `com.atproto.memberspace.policy`, or `com.atproto.managedspace.policy`. Omitted
+      when `localAuthority` is false: the authority's server holds the policy.
     - `createdAt` — when this server first recorded the space.
-    - `deletedAt` — the *owner's* tombstone (`deleteSpace`); omitted when absent.
+    - `deletedAt` — the *authority's* tombstone (`deleteSpace`); omitted when absent.
     - `takendownAt` — when the operator took the space down; omitted when it is being
       served.
     - `repoCount` — repos this server stores in the space.

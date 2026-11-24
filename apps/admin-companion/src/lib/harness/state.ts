@@ -346,6 +346,7 @@ export function seedRelay(opts: {
         uri: `at://${accounts[0]?.did ?? fakeAccountDid(`${seed}:acct0`)}/space/org.example.bucket/main`,
         authorityDid: accounts[0]?.did ?? fakeAccountDid(`${seed}:acct0`),
         localAuthority: true,
+        policyType: 'com.atproto.memberspace.policy',
         createdAt: '2026-07-10 08:00:00',
         repoCount: 3,
         recordCount: 128,

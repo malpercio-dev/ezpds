@@ -690,6 +690,11 @@ export interface HostedSpaceEntry {
    * is the operator's only available action, since `deleteSpace` is not theirs to call.
    */
   localAuthority: boolean;
+  /**
+   * The policy's `$type`: `com.atproto.personalspace.policy`, `…memberspace.policy`, or
+   * `…managedspace.policy`. Absent when another server governs the space and holds its policy.
+   */
+  policyType?: string;
   createdAt: string;
   /** The space *owner's* tombstone, not the operator's; absent when the space is not deleted. */
   deletedAt?: string;

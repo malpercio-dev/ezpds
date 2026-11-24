@@ -195,6 +195,10 @@ async fn listing_reports_stored_spaces_and_filters_to_the_taken_down() {
         spaces[0]["localAuthority"], false,
         "a space recorded by a member's write is governed elsewhere: {body}"
     );
+    assert!(
+        spaces[0].get("policyType").is_none(),
+        "the foreign authority holds the policy: {body}"
+    );
     assert_eq!(spaces[0]["repoCount"], 1);
     assert_eq!(spaces[0]["recordCount"], 1);
     assert!(spaces[0].get("takendownAt").is_none(), "{body}");
@@ -212,6 +216,46 @@ async fn listing_reports_stored_spaces_and_filters_to_the_taken_down() {
     // An unknown filter is a 400, not a silently empty page.
     let (status, _) = send(&state, get("/v1/admin/spaces?status=nonsense", ADMIN)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// A space this host governs reports its policy's `$type`, whichever of the three it is.
+#[tokio::test]
+async fn listing_reports_the_policy_type_of_a_locally_governed_space() {
+    let state = setup().await;
+    for (skey, policy_type) in [
+        ("a", crate::policy::PERSONALSPACE),
+        ("b", crate::policy::MEMBERSPACE),
+        ("c", crate::policy::MANAGEDSPACE),
+    ] {
+        let uri = format!("at://{DID}/space/org.example.bucket/{skey}");
+        crate::db::spaces::create_space(
+            &state.db,
+            &crate::db::spaces::NewSpace {
+                uri: &uri,
+                authority_did: DID,
+                space_type: "org.example.bucket",
+                skey,
+            },
+            &serde_json::json!({ "$type": policy_type }).to_string(),
+        )
+        .await
+        .unwrap();
+    }
+
+    let (status, body) = send(&state, get("/v1/admin/spaces", ADMIN)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let spaces = body["spaces"].as_array().unwrap();
+    let types: Vec<_> = spaces.iter().map(|s| s["policyType"].clone()).collect();
+    assert_eq!(
+        types,
+        [
+            crate::policy::PERSONALSPACE,
+            crate::policy::MEMBERSPACE,
+            crate::policy::MANAGEDSPACE,
+        ],
+        "{body}"
+    );
+    assert!(spaces.iter().all(|s| s["localAuthority"] == true), "{body}");
 }
 
 /// Idempotent in both directions, and the original timestamp survives a re-apply so the audit
