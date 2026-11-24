@@ -10,6 +10,9 @@ import type * as app_bsky_richtext from './app.bsky.richtext.js';
 import type * as com_atproto_admin from './com.atproto.admin.js';
 import type * as com_atproto_identity from './com.atproto.identity.js';
 import type * as com_atproto_label from './com.atproto.label.js';
+import type * as com_atproto_managedspace from './com.atproto.managedspace.js';
+import type * as com_atproto_memberspace from './com.atproto.memberspace.js';
+import type * as com_atproto_personalspace from './com.atproto.personalspace.js';
 import type * as com_atproto_repo from './com.atproto.repo.js';
 import type * as com_atproto_server from './com.atproto.server.js';
 import type * as com_atproto_simplespace from './com.atproto.simplespace.js';
@@ -57,6 +60,26 @@ export type XrpcMethods = {
     params: com_atproto_identity.UpdateHandleParams;
     input: com_atproto_identity.UpdateHandleInput;
     output: com_atproto_identity.UpdateHandleOutput;
+  };
+  "com.atproto.managedspace.checkAccess": {
+    params: com_atproto_managedspace.CheckAccessParams;
+    input: com_atproto_managedspace.CheckAccessInput;
+    output: com_atproto_managedspace.CheckAccessOutput;
+  };
+  "com.atproto.memberspace.listMembers": {
+    params: com_atproto_memberspace.ListMembersParams;
+    input: com_atproto_memberspace.ListMembersInput;
+    output: com_atproto_memberspace.ListMembersOutput;
+  };
+  "com.atproto.memberspace.putMembers": {
+    params: com_atproto_memberspace.PutMembersParams;
+    input: com_atproto_memberspace.PutMembersInput;
+    output: com_atproto_memberspace.PutMembersOutput;
+  };
+  "com.atproto.memberspace.removeMembers": {
+    params: com_atproto_memberspace.RemoveMembersParams;
+    input: com_atproto_memberspace.RemoveMembersInput;
+    output: com_atproto_memberspace.RemoveMembersOutput;
   };
   "com.atproto.repo.applyWrites": {
     params: com_atproto_repo.ApplyWritesParams;
@@ -148,6 +171,11 @@ export type XrpcMethods = {
     input: com_atproto_server.RequestPasswordResetInput;
     output: com_atproto_server.RequestPasswordResetOutput;
   };
+  "com.atproto.server.reserveKemKey": {
+    params: com_atproto_server.ReserveKemKeyParams;
+    input: com_atproto_server.ReserveKemKeyInput;
+    output: com_atproto_server.ReserveKemKeyOutput;
+  };
   "com.atproto.server.reserveSigningKey": {
     params: com_atproto_server.ReserveSigningKeyParams;
     input: com_atproto_server.ReserveSigningKeyInput;
@@ -213,15 +241,45 @@ export type XrpcMethods = {
     input: com_atproto_space.ApplyWritesInput;
     output: com_atproto_space.ApplyWritesOutput;
   };
+  "com.atproto.space.authorizeSpaceSync": {
+    params: com_atproto_space.AuthorizeSpaceSyncParams;
+    input: com_atproto_space.AuthorizeSpaceSyncInput;
+    output: com_atproto_space.AuthorizeSpaceSyncOutput;
+  };
+  "com.atproto.space.clearRecords": {
+    params: com_atproto_space.ClearRecordsParams;
+    input: com_atproto_space.ClearRecordsInput;
+    output: com_atproto_space.ClearRecordsOutput;
+  };
+  "com.atproto.space.confirmRegistration": {
+    params: com_atproto_space.ConfirmRegistrationParams;
+    input: com_atproto_space.ConfirmRegistrationInput;
+    output: com_atproto_space.ConfirmRegistrationOutput;
+  };
   "com.atproto.space.createRecord": {
     params: com_atproto_space.CreateRecordParams;
     input: com_atproto_space.CreateRecordInput;
     output: com_atproto_space.CreateRecordOutput;
   };
+  "com.atproto.space.createSpace": {
+    params: com_atproto_space.CreateSpaceParams;
+    input: com_atproto_space.CreateSpaceInput;
+    output: com_atproto_space.CreateSpaceOutput;
+  };
   "com.atproto.space.deleteRecord": {
     params: com_atproto_space.DeleteRecordParams;
     input: com_atproto_space.DeleteRecordInput;
     output: com_atproto_space.DeleteRecordOutput;
+  };
+  "com.atproto.space.deleteSpace": {
+    params: com_atproto_space.DeleteSpaceParams;
+    input: com_atproto_space.DeleteSpaceInput;
+    output: com_atproto_space.DeleteSpaceOutput;
+  };
+  "com.atproto.space.exportSpaceMeta": {
+    params: com_atproto_space.ExportSpaceMetaParams;
+    input: com_atproto_space.ExportSpaceMetaInput;
+    output: com_atproto_space.ExportSpaceMetaOutput;
   };
   "com.atproto.space.getBlob": {
     params: com_atproto_space.GetBlobParams;
@@ -248,10 +306,25 @@ export type XrpcMethods = {
     input: com_atproto_space.GetRepoInput;
     output: com_atproto_space.GetRepoOutput;
   };
+  "com.atproto.space.getSpace": {
+    params: com_atproto_space.GetSpaceParams;
+    input: com_atproto_space.GetSpaceInput;
+    output: com_atproto_space.GetSpaceOutput;
+  };
   "com.atproto.space.getSpaceCredential": {
     params: com_atproto_space.GetSpaceCredentialParams;
     input: com_atproto_space.GetSpaceCredentialInput;
     output: com_atproto_space.GetSpaceCredentialOutput;
+  };
+  "com.atproto.space.importRepo": {
+    params: com_atproto_space.ImportRepoParams;
+    input: com_atproto_space.ImportRepoInput;
+    output: com_atproto_space.ImportRepoOutput;
+  };
+  "com.atproto.space.importSpaceMeta": {
+    params: com_atproto_space.ImportSpaceMetaParams;
+    input: com_atproto_space.ImportSpaceMetaInput;
+    output: com_atproto_space.ImportSpaceMetaOutput;
   };
   "com.atproto.space.listBlobs": {
     params: com_atproto_space.ListBlobsParams;
@@ -278,15 +351,35 @@ export type XrpcMethods = {
     input: com_atproto_space.ListSpacesInput;
     output: com_atproto_space.ListSpacesOutput;
   };
+  "com.atproto.space.listWriters": {
+    params: com_atproto_space.ListWritersParams;
+    input: com_atproto_space.ListWritersInput;
+    output: com_atproto_space.ListWritersOutput;
+  };
   "com.atproto.space.notifyCredentialRevoked": {
     params: com_atproto_space.NotifyCredentialRevokedParams;
     input: com_atproto_space.NotifyCredentialRevokedInput;
     output: com_atproto_space.NotifyCredentialRevokedOutput;
   };
+  "com.atproto.space.notifyCredentialsRevoked": {
+    params: com_atproto_space.NotifyCredentialsRevokedParams;
+    input: com_atproto_space.NotifyCredentialsRevokedInput;
+    output: com_atproto_space.NotifyCredentialsRevokedOutput;
+  };
+  "com.atproto.space.notifyRepoUpdate": {
+    params: com_atproto_space.NotifyRepoUpdateParams;
+    input: com_atproto_space.NotifyRepoUpdateInput;
+    output: com_atproto_space.NotifyRepoUpdateOutput;
+  };
   "com.atproto.space.notifySpaceDeleted": {
     params: com_atproto_space.NotifySpaceDeletedParams;
     input: com_atproto_space.NotifySpaceDeletedInput;
     output: com_atproto_space.NotifySpaceDeletedOutput;
+  };
+  "com.atproto.space.notifySpaceUpdate": {
+    params: com_atproto_space.NotifySpaceUpdateParams;
+    input: com_atproto_space.NotifySpaceUpdateInput;
+    output: com_atproto_space.NotifySpaceUpdateOutput;
   };
   "com.atproto.space.notifyWrite": {
     params: com_atproto_space.NotifyWriteParams;
@@ -303,10 +396,20 @@ export type XrpcMethods = {
     input: com_atproto_space.RegisterNotifyInput;
     output: com_atproto_space.RegisterNotifyOutput;
   };
+  "com.atproto.space.removeWriter": {
+    params: com_atproto_space.RemoveWriterParams;
+    input: com_atproto_space.RemoveWriterInput;
+    output: com_atproto_space.RemoveWriterOutput;
+  };
   "com.atproto.space.unregisterNotify": {
     params: com_atproto_space.UnregisterNotifyParams;
     input: com_atproto_space.UnregisterNotifyInput;
     output: com_atproto_space.UnregisterNotifyOutput;
+  };
+  "com.atproto.space.updateSpace": {
+    params: com_atproto_space.UpdateSpaceParams;
+    input: com_atproto_space.UpdateSpaceInput;
+    output: com_atproto_space.UpdateSpaceOutput;
   };
   "com.atproto.sync.getBlob": {
     params: com_atproto_sync.GetBlobParams;
@@ -361,4 +464,7 @@ export type Records = {
   "app.bsky.graph.list": app_bsky_graph.List;
   "app.bsky.graph.listblock": app_bsky_graph.Listblock;
   "app.bsky.graph.listitem": app_bsky_graph.Listitem;
+  "com.atproto.label.record": com_atproto_label.Record;
+  "com.atproto.memberspace.member": com_atproto_memberspace.Member;
+  "com.atproto.space.policy": com_atproto_space.Policy;
 };
