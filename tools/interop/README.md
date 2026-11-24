@@ -120,7 +120,8 @@ confirm the migrated account on the new PDS.
 
 The Spaces conformance target is the reference implementation at a frozen commit: atproto
 `permissioned-data` @ `047d6032a21be01df8447489f0d6b59d2cc60af8`. `just reference-pds` builds
-it **from source** at that commit and runs `packages/dev-env`'s multi-PDS setup. It never
+it **from source** at that commit and runs `packages/dev-env`'s multi-PDS setup through
+`reference/multi-pds.mjs` (see "Why not `bin-multi-pds`" below). It never
 uses `latest` or an image tag. Moving the pin is a decision with its own ticket, so the SHA
 is a constant in `bin/reference-pds`.
 
@@ -131,16 +132,16 @@ just reference-pds smoke      # start, run create-account + crud-test on every P
 just reference-pds build      # clone/fetch, check out + verify the pin, install, build
 ```
 
-`up` prints the hosts (introspection on `http://localhost:2581`, PLC on
-`http://localhost:2582`, `pds1` on `http://localhost:2583`, later PDSes on random ports)
-and seeds `alice`/`bob`/`carol` on each (`<name>-pass`). Point the CLI at them with the
-account's `--host` and the local PLC:
+`up` prints the hosts: PLC on `http://localhost:2680`, then PDS *i* on `2680 + i`.
+`EZPDS_REFERENCE_PORT` moves the base port. It also seeds `alice`/`bob`/`carol` on each
+PDS (`<name>-pass`; handles `.test` on PDS1, `.test2` on PDS2, and so on). Point the CLI
+at them with the account's `--host` and the local PLC:
 
 ```sh
-export EZPDS_PLC_URL=http://localhost:2582 EZPDS_INTEROP_PACE_MS=0
-just interop create-account --name ref1 --host http://localhost:2583   # standard createAccount
+export EZPDS_PLC_URL=http://localhost:2680 EZPDS_INTEROP_PACE_MS=0
+just interop create-account --name ref1 --host http://localhost:2681   # standard createAccount
 just interop crud-test --name ref1
-just interop import-session --name alice --host http://localhost:2583 \
+just interop import-session --name alice --host http://localhost:2681 \
   --identifier alice.test --password alice-pass                        # a seeded account
 ```
 
@@ -149,14 +150,26 @@ just interop import-session --name alice --host http://localhost:2583 \
 from `EZPDS_PLC_URL` and requires it to name that host. Defaults are unchanged: without
 `--host` and `EZPDS_PLC_URL`, everything still targets staging and plc.directory.
 
+### Why not `bin-multi-pds`
+
+dev-env ships the same network as `pnpm start:multi-pds` (`dist/bin-multi-pds.js`), but it
+hard-codes ports 2581 (introspection), 2582 (PLC) and 2583 (primary PDS). Any other
+atproto dev-env left running on the machine already holds them, and the startup dies with
+`EADDRINUSE`. `reference/multi-pds.mjs` builds the same setup from dev-env's exported API
+(`TestPlc`, `TestPds`, `LexiconAuthorityProfile`, `mockNetworkUtilities`, `mockMailer`) in
+the same order: a local PLC, a lex-authority account born on a scratch PDS, a primary PDS
+plus extras that resolve lexicons from it, and the seeded accounts. The only differences
+are ports chosen by the caller and no introspection server. The atproto checkout is never
+patched, so the pin stays the reference as published.
+
 Gotchas:
 
 - **Toolchain.** The pinned repo requires pnpm 12 (`packageManager`) and Node `^22.23.4`
   (`devEngines`, `onFail: error`). The script fetches pnpm 12 with corepack into the cache.
   It runs the devenv's Node 22.22 with `pnpm_config_runtime_on_fail=ignore`, because letting
   pnpm download a runtime picks Node 26, and better-sqlite3 has no build for it.
-- **Fixed ports.** `bin-multi-pds` hard-codes 2581–2583. Another dev-env still running there
-  makes it die with `EADDRINUSE`, so the script refuses to start until those ports are free.
+- **Ports.** The script checks that the PLC port and every PDS port are free before it
+  starts. If one is taken, set `EZPDS_REFERENCE_PORT` to another base port.
 - **Cache.** The clone and build live in `~/.cache/ezpds/reference-pds`
   (`EZPDS_REFERENCE_CACHE` overrides). A `built` stamp holding the pin skips the cold build
   (several minutes) on later runs. Delete the stamp to force a rebuild.

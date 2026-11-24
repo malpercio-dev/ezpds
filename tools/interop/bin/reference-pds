@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build and run the Atproto Spaces reference PDS from source at the frozen pin, via
-# atproto's packages/dev-env multi-PDS setup (http loopback PDSes + a local PLC).
+# atproto's packages/dev-env multi-PDS setup (http loopback PDSes + a local PLC), started
+# through ../reference/multi-pds.mjs on configurable ports.
 #
 #   reference-pds build          clone/fetch, check out the pin, verify the SHA, install, build
 #   reference-pds up [N]         build, then run N PDSes (default 2) in the foreground; Ctrl-C stops
@@ -42,47 +43,50 @@ build() {
   echo "$PIN" > "$CACHE/built"
 }
 
-# bin-multi-pds hard-codes the introspection (2581), PLC (2582) and primary PDS (2583)
-# ports; another dev-env left running there makes it die with EADDRINUSE mid-startup.
+# PLC on $PORT, PDS i on $PORT + i. The default sits clear of dev-env's own 2581–2583, so
+# a dev-env left running elsewhere is never in the way; EZPDS_REFERENCE_PORT moves it.
+PORT="${EZPDS_REFERENCE_PORT:-2680}"
+network=(node --enable-source-maps "$here/../reference/multi-pds.mjs" "$SRC")
+
 ports_free() {
   local p
-  for p in 2581 2582 2583; do
+  for p in $(seq "$PORT" $((PORT + $1))); do
     if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then
-      echo "port $p is already in use (another atproto dev-env?) — stop it first: lsof -nP -iTCP:$p -sTCP:LISTEN" >&2
+      echo "port $p is already in use — set EZPDS_REFERENCE_PORT to another base port" >&2
       exit 1
     fi
   done
 }
 
 up() {
-  ports_free
-  cd "$SRC/packages/dev-env"
-  exec node --enable-source-maps dist/bin-multi-pds.js "$1"
+  ports_free "$1"
+  exec "${network[@]}" "$1" "$PORT"
 }
 
 smoke() {
-  local count="$1" log="$CACHE/smoke.log" state pid
-  ports_free
+  # state/pid stay global: the EXIT trap fires after this function returns.
+  local count="$1" log="$CACHE/smoke.log"
+  ports_free "$count"
   state="$(mktemp -d "${TMPDIR:-/tmp}/reference-pds-smoke.XXXXXX")"
-  (cd "$SRC/packages/dev-env" && exec node dist/bin-multi-pds.js "$count") > "$log" 2>&1 &
+  "${network[@]}" "$count" "$PORT" > "$log" 2>&1 &
   pid=$!
-  trap 'kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf "$state"' EXIT
-  # The last thing bin-multi-pds prints is the seeded-account list, after every PDS is up.
+  # `set -e` holds inside the trap, and `wait` on the killed child returns 143.
+  trap 'rc=$?; kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true; rm -rf "$state"; exit $rc' EXIT
   for _ in $(seq 1 120); do
-    grep -q 'passwords:' "$log" && break
+    grep -qx 'ready' "$log" && break
     kill -0 $pid 2>/dev/null || { cat "$log" >&2; exit 1; }
     sleep 1
   done
-  grep -q 'passwords:' "$log" || { cat "$log" >&2; echo "reference PDSes did not come up in 120s" >&2; exit 1; }
+  grep -qx 'ready' "$log" || { cat "$log" >&2; echo "reference PDSes did not come up in 120s" >&2; exit 1; }
 
   local plc
-  plc="$(sed -n 's/.*DID Placeholder server \(http[^ ]*\).*/\1/p' "$log")"
+  plc="$(sed -n 's/^PLC \(http[^ ]*\)$/\1/p' "$log")"
   echo "PLC  $plc"
   export EZPDS_PLC_URL="$plc" EZPDS_INTEROP_STATE_DIR="$state" EZPDS_INTEROP_PACE_MS=0
   local i=0
-  for url in $(sed -n 's/^🌞 .* \(http:[^ ]*\)$/\1/p' "$log"); do
+  for url in $(sed -n 's/^PDS[0-9]* \(http[^ ]*\)$/\1/p' "$log"); do
     i=$((i + 1))
-    echo "PDS  $url"
+    echo "PDS$i $url"
     "$here/interop" create-account --name "ref$i" --host "$url"
     "$here/interop" crud-test --name "ref$i"
   done
