@@ -12,6 +12,8 @@ pub mod lexicon;
 pub mod mst;
 pub mod records;
 pub mod signer;
+pub mod star;
+pub mod star_profile;
 
 // Re-export the blockstore traits so PDS can implement them without depending on atrium-repo
 // directly.
@@ -47,6 +49,11 @@ pub use records::{
     validate_record_path, ListRecordsPage, ListedRecord, RecordError, WriteOp, WriteOutcome,
 };
 pub use signer::{CommitSigner, CommitSignerError};
+pub use star::{write_star, StarError, StarLimits, StarMeta, StarPair, StarReader, STAR_MAGIC};
+pub use star_profile::{
+    write_space_star, KeyOrder, SpaceStarReader, SpaceStarWriter, StarProfile, StarProfileError,
+    SPACE_META_STAR_TYPE, SPACE_REPO_STAR_TYPE, SPACE_STAR_LIMITS,
+};
 
 /// Shared test helpers for the repo-engine crate's unit tests.
 #[cfg(test)]
