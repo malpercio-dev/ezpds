@@ -41,8 +41,8 @@ re-wrap tool iterates. The families an incident has to account for:
 | JWT HS256 secret | `jwt_signing_secret` | V015 | Easy — drop row, re-mint |
 | Iroh Ed25519 node key | `iroh_identity` | V022 | Easy — drop row, re-mint |
 | PDS-held Shamir Share 2 | `accounts.recovery_share` | V010 | **Hard** — requires the original KEK |
-| **Per-account Spaces KEM keys** (`verificationMethods.atproto_kem`, active and staged) | `kem_keys` | V079 | **Medium** — re-stage through `POST /v1/kem-key` |
-| Pre-reserved KEM keys / not-yet-activated accounts' KEM keys | `reserved_kem_keys`, `pending_accounts.kem_private_key_encrypted` | V079 | Easy — delete; clients reserve again |
+| **Per-account Spaces KEM keys** (`verificationMethods.atproto_kem`, active and staged) | `kem_keys` | V080 | **Medium** — re-stage through `POST /v1/kem-key` |
+| Pre-reserved KEM keys / not-yet-activated accounts' KEM keys | `reserved_kem_keys`, `pending_accounts.kem_private_key_encrypted` | V080 | Easy — delete; clients reserve again |
 
 The three "easy" secrets are **self-healing**: delete the single row, and
 `load_or_create_*` in

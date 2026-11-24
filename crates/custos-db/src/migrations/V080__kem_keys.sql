@@ -1,4 +1,4 @@
--- V079: per-account KEM keys for Atproto Spaces (ADR-0043).
+-- V080: per-account KEM keys for Atproto Spaces (ADR-0043).
 -- Applied in a single transaction by the migration runner.
 --
 -- A KEM key is the account's `#atproto_kem` verification method: syncers combine it with a

@@ -54,12 +54,12 @@ pub enum SecretFamily {
     /// leaving either stranded under the old KEK would break the re-wrap's
     /// all-or-nothing guarantee.
     NotificationSenderKeys,
-    /// Per-account Spaces KEM keys, active and staged (`kem_keys`, V079).
+    /// Per-account Spaces KEM keys, active and staged (`kem_keys`, V080).
     KemKeys,
-    /// `reserveKemKey` reservations (`reserved_kem_keys`, V079).
+    /// `reserveKemKey` reservations (`reserved_kem_keys`, V080).
     ReservedKemKeys,
     /// The DID ceremony's KEM key on the pending account
-    /// (`pending_accounts.kem_private_key_encrypted`, V079; nullable).
+    /// (`pending_accounts.kem_private_key_encrypted`, V080; nullable).
     PendingKemKeys,
 }
 

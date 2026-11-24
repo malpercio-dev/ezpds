@@ -48,7 +48,7 @@ We will give every account a dedicated P-256 KEM key, separate from its signing
 key, and publish it the same way every other key in a Custos DID document is
 published.
 
-- **Custody.** KEM keys live in their own `kem_keys` table (V079) with the
+- **Custody.** KEM keys live in their own `kem_keys` table (V080) with the
   `active`/`staged` lifecycle and the master-key AES-256-GCM wrapping of
   `signing_keys`. They never get a `purpose` column in `signing_keys`, so the
   commit-signer lookup cannot return one. Reservations (`reserved_kem_keys`) and

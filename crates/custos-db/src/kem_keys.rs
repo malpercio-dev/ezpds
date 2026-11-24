@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! Per-account KEM key queries (V079, ADR-0043).
+//! Per-account KEM key queries (V080, ADR-0043).
 //!
 //! The KEM key is the account's `#atproto_kem` verification method. A syncer reading a space
 //! record combines it with a throwaway key of its own to agree a MAC secret with this host; the
