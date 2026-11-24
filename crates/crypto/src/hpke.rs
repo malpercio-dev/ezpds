@@ -17,8 +17,10 @@
 //! content that renders as authentic.
 
 use hpke::{
-    aead::AesGcm256, kdf::HkdfSha256, kem::DhP256HkdfSha256, Deserializable, Kem as _, OpModeR,
-    OpModeS, Serializable,
+    aead::{AesGcm256, ExportOnlyAead},
+    kdf::HkdfSha256,
+    kem::DhP256HkdfSha256,
+    Deserializable, Kem as _, OpModeR, OpModeS, Serializable,
 };
 use p256::elliptic_curve::sec1::ToSec1Point;
 
@@ -112,6 +114,34 @@ pub fn open_notification(
         NOTIFY_AAD,
     )
     .map_err(|_| opaque())
+}
+
+/// RFC 9180 `info` for the Spaces MAC shared secret (the reference's `HPKE_INFO`).
+pub const SPACE_MAC_INFO: &[u8] = b"atproto-mac";
+
+/// Spaces repo-host side of the MAC key agreement: RFC 9180 §6.2 base-mode secret export,
+/// DHKEM(P-256, HKDF-SHA256) + HKDF-SHA256 + Export-only, `info` = [`SPACE_MAC_INFO`],
+/// empty exporter context, `L = 32`.
+///
+/// `enc` is the syncer's ephemeral public key (its MAC request `keyid`) as SEC1 bytes,
+/// either encoding; `kem_private_key` is the author's `#atproto_kem` scalar. The result is
+/// the HMAC-SHA256 key for that one request. Every failure is the same opaque error.
+pub fn space_mac_secret(enc: &[u8], kem_private_key: &[u8; 32]) -> Result<[u8; 32], CryptoError> {
+    hpke_export(enc, kem_private_key, SPACE_MAC_INFO)
+}
+
+fn hpke_export(enc: &[u8], sk: &[u8; 32], info: &[u8]) -> Result<[u8; 32], CryptoError> {
+    let opaque = || CryptoError::Decryption("hpke export failed".to_string());
+    let sk = private_key_from_bytes(sk).map_err(|_| opaque())?;
+    // The encapsulated key is a public key on the wire; normalize a compressed one too.
+    let enc_pk = public_key_from_sec1(enc).map_err(|_| opaque())?;
+    let enc =
+        <Kem as hpke::Kem>::EncappedKey::from_bytes(&enc_pk.to_bytes()).map_err(|_| opaque())?;
+    let ctx = hpke::setup_receiver::<ExportOnlyAead, Kdf, Kem>(&OpModeR::Base, &sk, &enc, info)
+        .map_err(|_| opaque())?;
+    let mut out = [0u8; 32];
+    ctx.export(b"", &mut out).map_err(|_| opaque())?;
+    Ok(out)
 }
 
 /// Derive the uncompressed SEC1 public key for a raw 32-byte P-256 secret scalar.
@@ -318,6 +348,63 @@ mod tests {
     fn public_key_for_secret_matches_the_kem() {
         let (sk, pk) = keypair(&[17u8; 32]);
         assert_eq!(public_key_for_secret(&sk).unwrap(), pk);
+    }
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    // The CFRG `test-vectors.json` P-256 export-only entry (kem 16 / kdf 1 / aead 65535):
+    // its `enc` and `skRm` are shared by both vectors below.
+    const EXPORT_ENC: &str = "04d804370b7e24b94749eb1dc8df6d4d4a5d75f9effad01739ebcad5c54a40d57aaa8b4190fc124dbde2e4f1e1d1b012a3bc4038157dc29b55533a932306d8d38d";
+    const EXPORT_SK_RM: &str = "62c3868357a464f8461d03aa0182c7cebcde841036aea7230ddc7339f1088346";
+
+    fn export_sk() -> [u8; 32] {
+        unhex(EXPORT_SK_RM).try_into().unwrap()
+    }
+
+    #[test]
+    fn export_matches_the_cfrg_export_only_vector() {
+        let out = hpke_export(&unhex(EXPORT_ENC), &export_sk(), b"Ode on a Grecian Urn").unwrap();
+        assert_eq!(
+            out.to_vec(),
+            unhex("8cf837d5bf1994f0fac3ee1faa671d07e9a38b7f6153bdbb8a66b90159ef7d13")
+        );
+    }
+
+    #[test]
+    fn space_mac_secret_matches_the_reference_kem_vector() {
+        // The reference's `kem.test.ts` "matches HPKE secret export" vector.
+        let expected = unhex("2060e0558d1b34c10086bc137f849bb79ba59fcdc30544418e35c9cd301f0d0d");
+        assert_eq!(
+            space_mac_secret(&unhex(EXPORT_ENC), &export_sk())
+                .unwrap()
+                .to_vec(),
+            expected
+        );
+
+        // A did:key carries the compressed point; it must derive the same secret.
+        let compressed = p256::PublicKey::from_sec1_bytes(&unhex(EXPORT_ENC))
+            .unwrap()
+            .to_sec1_point(true)
+            .as_bytes()
+            .to_vec();
+        assert_eq!(
+            space_mac_secret(&compressed, &export_sk())
+                .unwrap()
+                .to_vec(),
+            expected
+        );
+    }
+
+    #[test]
+    fn space_mac_secret_rejects_malformed_keys() {
+        assert!(space_mac_secret(&[0u8; 65], &export_sk()).is_err());
+        assert!(space_mac_secret(&[], &export_sk()).is_err());
+        assert!(space_mac_secret(&unhex(EXPORT_ENC), &[0u8; 32]).is_err());
     }
 
     #[test]

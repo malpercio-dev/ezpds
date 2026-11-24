@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-11-07
+Last verified: 2026-11-23
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace:
@@ -22,7 +22,8 @@ Provides cryptographic primitives for the ezpds workspace:
 - the Spaces (permissioned data) primitives: the LtHash multiset hash over a
   permissioned repo's contents and the deniable commit sign/verify pair,
   pinned to the reference golden vectors from the atproto `permissioned-data`
-  branch.
+  branch, plus the MAC stack: HPKE secret export for the per-request MAC key, an
+  RFC 9651 structured-field codec, and RFC 9421 signature bases and MACs.
 
 This is a pure functional core -- no I/O, no database, no config. Each
 primitive's full contract is in [Contracts](#contracts) below.
@@ -462,6 +463,26 @@ pub fn verify_space_commit(
 - `verify_space_commit` checks version, rev-vs-ctx agreement, MAC, then the signature via the dual-curve `did:key` path (foreign authors may sign ES256K; signing here stays P-256-only).
 - Errors: `CryptoError::Space` for a ctx field over the u16 length prefix, a bad state length, version/rev/MAC mismatch; `CryptoError::SignatureVerification` from the signature path.
 
+**`space_mac_secret`**
+
+```rust
+pub fn space_mac_secret(enc: &[u8], kem_private_key: &[u8; 32]) -> Result<[u8; 32], CryptoError>
+```
+
+- The repo host's half of the Spaces MAC key agreement: RFC 9180 §6.2 base-mode secret export, DHKEM(P-256, HKDF-SHA256) + HKDF-SHA256 + Export-only (`0xFFFF`), `info = SPACE_MAC_INFO` (`atproto-mac`), empty exporter context, `L = 32`. `enc` is the syncer's key share (SEC1, either encoding); `kem_private_key` is the author's `#atproto_kem` scalar. Every failure is one opaque `CryptoError::Decryption`.
+- Pinned by two vectors in `hpke.rs`: the CFRG P-256 export-only entry (`8cf837d5…`) and the reference `kem.test.ts` vector (`2060e055…`).
+
+**`sf`** — RFC 9651 structured fields
+
+- `parse_dictionary` / `serialize_dictionary` (+ `serialize_inner_list`, `serialize_item`, `param`) over `Dictionary`, `Member`, `InnerList`, `Item`, `BareItem`. Serialization is canonical, which is what an `sf`-flagged component is signed over. Ordered, with a repeated key overwriting in place.
+- Decimal, Date, and Display String items are rejected as unparseable; nothing Spaces reads uses them.
+
+**`http_signature`** — RFC 9421 signature base and the Spaces MAC profiles
+
+- `signature_base`, `format_components`, `members_with_tag`, and `find_signature` (with `SignatureRequirements`) are shared by the MAC and the space-credential verifier. `find_signature` selects the one signature by `tag`, never by label, and checks its covered components, `alg`, and `keyid`.
+- MACs: `MacProfile::{Commit, Record}` (tag = covered header name, `atproto-space-commit` / `atproto-space-record`); `format_mac_request` / `parse_mac_request` for `Accept-Signature` (accepts only `keyid`, `tag`, `alg` = `hmac-sha256`; `keyid` must be a DID); `commit_mac_headers` / `record_mac_headers` answer under the requested label and parameters as given; `verify_commit_mac` / `verify_record_mac` re-serialize the covered header before checking, so insignificant whitespace is accepted.
+- Vectors: `tests/fixtures/space/mac-vectors-unconfirmed.json` is self-minted (upstream publishes no MAC output) and **unconfirmed against the reference**; `tests/space_mac_vectors.rs` reproduces it end to end.
+
 ### Public types
 
 **`DevicePublicKey`**
@@ -537,7 +558,7 @@ pub fn verify_space_commit(
 
 ## Dependencies
 
-- **Uses**: hpke (RFC 9180 sealing for notification payloads; moves in lockstep with p256 — root `Cargo.toml` says why), p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation and the space-commit MAC key), hmac (HMAC-SHA256 for the space-commit MAC), blake3 (XOF element expansion for the Spaces LtHash), serde/serde_json (struct serialization)
+- **Uses**: hpke (RFC 9180 sealing for notification payloads; moves in lockstep with p256 — root `Cargo.toml` says why), p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation and the space-commit MAC key), hmac (HMAC-SHA256 for the space-commit MAC and the RFC 9421 Spaces MACs), blake3 (XOF element expansion for the Spaces LtHash), serde/serde_json (struct serialization)
 - **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; `seal_notification` + the padding arithmetic for outbound push notifications, with `p256_public_key_from_did_key`/`p256_keypair_from_secret` for the device-key and sender-key encodings; sovereign-session canonical proof encoding and dual-curve verification; `crates/custos-core/src/identity/plc.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client; `mint_service_auth_jwt` for the disaster-recovery `createAccount` service-auth token — `crates/obsign-core/src/disaster_recovery.rs`)
 
 ## Invariants
@@ -564,6 +585,8 @@ pub fn verify_space_commit(
 - `src/service_auth.rs` - offline atproto inter-service (service-auth) JWT minting via the external-signer callback; the wallet-side twin of the PDS's `auth/jwt.rs` minting, used for sovereign disaster recovery
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic) + share envelope v2 (`ShareEnvelope`, base32/mnemonic encode-decode, `split_secret_into_envelopes`/`combine_envelopes`)
 - `src/mnemonic.rs` - BIP-39-style 256-word list + byte↔word encoding for the human-custody Share 3 (module-private; used by `shamir.rs`)
-- `src/hpke.rs` - HPKE seal/open for notification payloads (pinned suite) + serialized-body padding arithmetic
+- `src/hpke.rs` - HPKE seal/open for notification payloads (pinned suite), the Spaces MAC secret export, and serialized-body padding arithmetic
 - `src/space.rs` - Spaces LtHash multiset hash + deniable commit sign/verify (golden-vector pinned)
+- `src/sf.rs` - RFC 9651 structured-field Dictionary codec
+- `src/http_signature.rs` - RFC 9421 signature base, find-by-tag, and the Spaces commit/record MAC profiles
 - `src/error.rs` - CryptoError enum
