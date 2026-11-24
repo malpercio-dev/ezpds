@@ -549,11 +549,11 @@ test('update_bluesky_profile takes an image by path or by an upload_blob ref', a
 });
 
 test('spaces: the agent tool surface drives a permissioned space end-to-end', async (t) => {
-  // The space is the account's own simplespace, created by the owner (full
-  // session) the way the wallet would — the agent then reads and writes it
-  // under its space:* grant.
+  // The space is the account's own public memberspace, created by its
+  // authority (full session) the way the wallet would — the agent then reads
+  // and writes it under its space:* grant.
   const spaceUri = `at://${account.did}/space/org.example.bucket/main`;
-  const createSpace = await fetch(`${pds.baseUrl}/xrpc/com.atproto.simplespace.createSpace`, {
+  const createSpace = await fetch(`${pds.baseUrl}/xrpc/com.atproto.space.createSpace`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -562,9 +562,7 @@ test('spaces: the agent tool surface drives a permissioned space end-to-end', as
     body: JSON.stringify({
       spaceType: 'org.example.bucket',
       skey: 'main',
-      readPolicy: { $type: 'com.atproto.simplespace.defs#publicPolicy' },
-      writePolicy: { $type: 'com.atproto.simplespace.defs#publicPolicy' },
-      appAccess: { $type: 'com.atproto.simplespace.defs#open' },
+      policy: { $type: 'com.atproto.memberspace.policy', publicRead: true, publicWrite: true },
     }),
   });
   assert.ok(createSpace.ok, `createSpace failed: ${await createSpace.text()}`);
@@ -605,7 +603,7 @@ test('spaces: the agent tool surface drives a permissioned space end-to-end', as
 
   const spaces = toolJson(await client.callTool({ name: 'list_spaces', arguments: {} }));
   assert.ok(
-    spaces.spaces.some((space: any) => space.uri === spaceUri),
+    spaces.spaces.some((space: any) => space.space === spaceUri),
     `list_spaces reports the space (got ${JSON.stringify(spaces)})`,
   );
 });

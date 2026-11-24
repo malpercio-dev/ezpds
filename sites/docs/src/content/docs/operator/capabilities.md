@@ -231,8 +231,8 @@ The [Atproto Spaces](https://github.com/bluesky-social/proposals) alpha surface:
 permissioned space repos a client writes with `space:` OAuth grants
 (`com.atproto.space.*` record CRUD), signature-bound space credentials for
 cross-host reads, oplog and two-root CAR sync for syncers, and the
-`com.atproto.simplespace.*` management routes (create a space, member lists,
-deletion). The protocol is **pre-launch alpha**: the upstream lexicons carry a
+space management routes (`com.atproto.space.createSpace` and friends, the
+memberspace member list, deletion). The protocol is **pre-launch alpha**: the upstream lexicons carry a
 breaking-changes warning until launch, so treat the surface as
 interop-for-implementers rather than a stability promise.
 

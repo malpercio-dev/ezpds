@@ -5,8 +5,8 @@
 //! What stays file-local on purpose, because it genuinely differs rather than merely being
 //! spelled differently: each module's `setup()` (different fixtures per surface), `write_one`
 //! (`space_notify_routes_test`'s fans a write out to registered subscribers,
-//! `space_sync_routes_test`'s does not), and `simplespace_routes_test::create_body` (builds a
-//! space *declaration*, not a record write).
+//! `space_sync_routes_test`'s does not), and `space_policy_routes_test::create_body` (builds a
+//! `createSpace` body, not a record write).
 
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
@@ -137,4 +137,34 @@ pub fn space_record_body(
         "rkey": rkey,
         "record": {"text": text},
     })
+}
+
+/// A memberspace policy in its stored form; `public` opens both reads and writes.
+pub fn memberspace_policy(public: bool) -> String {
+    serde_json::json!({
+        "$type": crate::policy::MEMBERSPACE,
+        "publicRead": public,
+        "publicWrite": public,
+        "publishPolicy": false,
+        "publishMembers": false,
+    })
+    .to_string()
+}
+
+/// Seed a space this host is the authority for, at `uri`, under the stored `policy`.
+pub async fn seed_authority_space(db: &sqlx::SqlitePool, uri: &str, policy: &str) {
+    let space = custos_core::space_uri::parse_space_ref(uri).unwrap();
+    let created = crate::db::spaces::create_space(
+        db,
+        &crate::db::spaces::NewSpace {
+            uri: &space.uri,
+            authority_did: &space.authority,
+            space_type: &space.space_type,
+            skey: &space.skey,
+        },
+        policy,
+    )
+    .await
+    .unwrap();
+    assert!(created, "{uri} already exists");
 }

@@ -1163,7 +1163,7 @@ pub fn allows_blob(scope: &str, mime_type: &str) -> bool {
 /// `Manage` reuses [`RepoAction`] because the `manage=` verbs are spelled with the same three
 /// words — but they act on the space itself, not on a record in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// `Record`/`Manage` are constructed by the space write and simplespace management routes,
+// `Record`/`Manage` are constructed by the space write and space management routes,
 // which land after the read seam.
 #[allow(dead_code)]
 pub enum SpaceOp<'a> {

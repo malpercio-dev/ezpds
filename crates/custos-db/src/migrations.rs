@@ -334,4 +334,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 78,
         sql: include_str!("migrations/V078__oauth_token_resource.sql"),
     },
+    Migration {
+        version: 79,
+        sql: include_str!("migrations/V079__space_policy.sql"),
+    },
 ];

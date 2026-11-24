@@ -1,0 +1,31 @@
+meta {
+  name: Memberspace List Members
+  type: http
+  seq: 175
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.memberspace.listMembers?space=at://{{did}}/space/org.example.bucket/main&limit=100
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://{{did}}/space/org.example.bucket/main
+  limit: 100
+  ~cursor:
+}
+
+docs {
+  Page through a memberspace's member list: { members: [{ did, read, write }], cursor? },
+  keyset paged by DID ascending ("limit" 1..1000, default 100; the cursor is the last DID of a
+  full page, a short page ends the walk).
+
+  OAuth only — a space credential does not reach it — with a "space:…?action=read_self"
+  grant, authority only. Errors: 400 SpaceNotFound, 400 NotAuthorized, 400 PolicyMismatch,
+  403 InsufficientScope.
+}

@@ -15,7 +15,6 @@ import type * as com_atproto_memberspace from './com.atproto.memberspace.js';
 import type * as com_atproto_personalspace from './com.atproto.personalspace.js';
 import type * as com_atproto_repo from './com.atproto.repo.js';
 import type * as com_atproto_server from './com.atproto.server.js';
-import type * as com_atproto_simplespace from './com.atproto.simplespace.js';
 import type * as com_atproto_space from './com.atproto.space.js';
 import type * as com_atproto_sync from './com.atproto.sync.js';
 
@@ -195,46 +194,6 @@ export type XrpcMethods = {
     params: com_atproto_server.UpdateEmailParams;
     input: com_atproto_server.UpdateEmailInput;
     output: com_atproto_server.UpdateEmailOutput;
-  };
-  "com.atproto.simplespace.checkUserAccess": {
-    params: com_atproto_simplespace.CheckUserAccessParams;
-    input: com_atproto_simplespace.CheckUserAccessInput;
-    output: com_atproto_simplespace.CheckUserAccessOutput;
-  };
-  "com.atproto.simplespace.createSpace": {
-    params: com_atproto_simplespace.CreateSpaceParams;
-    input: com_atproto_simplespace.CreateSpaceInput;
-    output: com_atproto_simplespace.CreateSpaceOutput;
-  };
-  "com.atproto.simplespace.deleteSpace": {
-    params: com_atproto_simplespace.DeleteSpaceParams;
-    input: com_atproto_simplespace.DeleteSpaceInput;
-    output: com_atproto_simplespace.DeleteSpaceOutput;
-  };
-  "com.atproto.simplespace.getSpace": {
-    params: com_atproto_simplespace.GetSpaceParams;
-    input: com_atproto_simplespace.GetSpaceInput;
-    output: com_atproto_simplespace.GetSpaceOutput;
-  };
-  "com.atproto.simplespace.listMembers": {
-    params: com_atproto_simplespace.ListMembersParams;
-    input: com_atproto_simplespace.ListMembersInput;
-    output: com_atproto_simplespace.ListMembersOutput;
-  };
-  "com.atproto.simplespace.putMember": {
-    params: com_atproto_simplespace.PutMemberParams;
-    input: com_atproto_simplespace.PutMemberInput;
-    output: com_atproto_simplespace.PutMemberOutput;
-  };
-  "com.atproto.simplespace.removeMember": {
-    params: com_atproto_simplespace.RemoveMemberParams;
-    input: com_atproto_simplespace.RemoveMemberInput;
-    output: com_atproto_simplespace.RemoveMemberOutput;
-  };
-  "com.atproto.simplespace.updateSpace": {
-    params: com_atproto_simplespace.UpdateSpaceParams;
-    input: com_atproto_simplespace.UpdateSpaceInput;
-    output: com_atproto_simplespace.UpdateSpaceOutput;
   };
   "com.atproto.space.applyWrites": {
     params: com_atproto_space.ApplyWritesParams;

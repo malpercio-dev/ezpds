@@ -159,17 +159,20 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/space/putRecord.json"),
     include_str!("../../lexicons/com/atproto/space/registerNotify.json"),
     include_str!("../../lexicons/com/atproto/space/unregisterNotify.json"),
-    // The PDS-required simplespace management surface (`com.atproto.simplespace.*`), same
-    // branch. `checkUserAccess` and `notifySpaceDeleted` are vendored for byte-parity but not
-    // registered: this server only sends them or a managing app serves them.
-    include_str!("../../lexicons/com/atproto/simplespace/createSpace.json"),
-    include_str!("../../lexicons/com/atproto/simplespace/defs.json"),
-    include_str!("../../lexicons/com/atproto/simplespace/deleteSpace.json"),
-    include_str!("../../lexicons/com/atproto/simplespace/getSpace.json"),
-    include_str!("../../lexicons/com/atproto/simplespace/listMembers.json"),
-    include_str!("../../lexicons/com/atproto/simplespace/putMember.json"),
-    include_str!("../../lexicons/com/atproto/simplespace/removeMember.json"),
-    include_str!("../../lexicons/com/atproto/simplespace/updateSpace.json"),
+    // Space management and the three baseline policies its `policy` union reaches, at the
+    // frozen pin. `managedspace.checkAccess` is vendored but not registered: this server only
+    // calls it; a managing app serves it.
+    include_str!("../../lexicons/com/atproto/space/createSpace.json"),
+    include_str!("../../lexicons/com/atproto/space/deleteSpace.json"),
+    include_str!("../../lexicons/com/atproto/space/getSpace.json"),
+    include_str!("../../lexicons/com/atproto/space/updateSpace.json"),
+    include_str!("../../lexicons/com/atproto/personalspace/policy.json"),
+    include_str!("../../lexicons/com/atproto/memberspace/policy.json"),
+    include_str!("../../lexicons/com/atproto/managedspace/policy.json"),
+    include_str!("../../lexicons/com/atproto/memberspace/defs.json"),
+    include_str!("../../lexicons/com/atproto/memberspace/listMembers.json"),
+    include_str!("../../lexicons/com/atproto/memberspace/putMembers.json"),
+    include_str!("../../lexicons/com/atproto/memberspace/removeMembers.json"),
 ];
 
 /// A procedure's declared input body: its encoding and (for JSON inputs) its schema.

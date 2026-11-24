@@ -808,13 +808,14 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
     'list_spaces',
     {
       description:
-        'List the permissioned spaces the user’s repository has written to (a repo host tracks ' +
-        'writers, not memberships), optionally filtered by space type or authority DID. ' +
+        'List the permissioned spaces the user’s repository has written to or is the authority ' +
+        'for (a repo host tracks writers, not memberships), optionally filtered by space type or ' +
+        'authority DID. ' +
         'Requires a space: grant in the agent’s scopes.',
       annotations: { readOnlyHint: true },
       inputSchema: {
         type: z.string().optional().describe('Filter to spaces of this type NSID'),
-        did: z.string().optional().describe('Filter to spaces under this authority DID'),
+        spaceDid: z.string().optional().describe('Filter to spaces under this authority DID'),
         limit: z.number().int().min(1).max(100).optional().describe('Page size (default 50)'),
         cursor: z.string().optional().describe('Cursor from a previous page'),
       },
@@ -825,7 +826,12 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
         const token = await session.accessToken();
         const spaces = await xrpc(session.pdsUrl, 'com.atproto.space.listSpaces', {
           token,
-          params: { spaceType: args.type, did: args.did, limit: args.limit, cursor: args.cursor },
+          params: {
+            spaceType: args.type,
+            spaceDid: args.spaceDid,
+            limit: args.limit,
+            cursor: args.cursor,
+          },
         });
         return ok(spaces);
       } catch (err) {

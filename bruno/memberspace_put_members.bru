@@ -1,0 +1,34 @@
+meta {
+  name: Memberspace Put Members
+  type: http
+  seq: 173
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.memberspace.putMembers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main",
+    "members": [
+      { "did": "did:plc:memberaaaaaaaaaaaaaaaaaa", "read": true, "write": true }
+    ]
+  }
+}
+
+docs {
+  Add members to a memberspace, or replace their read/write access, in one commit (at most
+  100; a DID listed twice takes its last entry). The read bit is consulted at credential
+  issuance, the write bit when a write notification arrives. With publishMembers, each
+  member's com.atproto.memberspace.member/<did> record is written in the same commit.
+
+  "space:…?manage=update", authority only. Errors: 400 SpaceNotFound, 400 NotAuthorized,
+  400 PolicyMismatch (not a memberspace), 403 InsufficientScope.
+}

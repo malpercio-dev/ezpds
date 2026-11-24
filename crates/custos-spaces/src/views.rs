@@ -1,18 +1,16 @@
 // pattern: Imperative Shell
 
-//! Shared handler-free support for the `com.atproto.space.*` and `com.atproto.simplespace.*`
+//! Shared handler-free support for the `com.atproto.space.*` and `com.atproto.memberspace.*`
 //! routes (routes may not import one another): space-ref parsing, the `validate`-flag record
 //! check, stored-block decoding, the `{uri, cid, validationStatus}` shape every write route
-//! answers with, the simplespace config's lexicon ↔ column mapping, and the
-//! `putMember`/`removeMember` write body.
+//! answers with, and loading an active space with its policy.
 //!
 //! Authorization is deliberately *not* here — it lives in `auth/space.rs`, the one seam every
-//! space route enters through; `write_membership` is called only after the route has already
-//! authenticated the space owner.
+//! space route enters through.
 
 use crate::db::spaces::SpaceRow;
 use crate::space_record_write::SpaceCommitOutcome;
-use common::{ApiError, ApiResultExt, ErrorCode};
+use common::{ApiError, ErrorCode};
 use custos_core::lexicon::RecordValidation;
 use custos_core::space_uri::SpaceRef;
 use custos_core::CoreState;
@@ -95,7 +93,7 @@ fn decode_error(e: impl std::fmt::Display) -> ApiError {
 /// Confirm this host is the space's authority — the precondition for every space-host method
 /// (`registerNotify`, `unregisterNotify`, `listRepos`).
 ///
-/// A `spaces` row with no simplespace config is a space this host only keeps repos in; its
+/// A `spaces` row with no policy is a space this host only keeps repos in; its
 /// authority is elsewhere and is the one to answer. That reads as `SpaceNotFound`, the same
 /// reply a space this host has never heard of gets — whether some other authority's space
 /// happens to have a repo here is not a fact this surface discloses.
@@ -251,217 +249,33 @@ pub async fn space_blob_cids(
     }
 }
 
-// ── simplespace config ───────────────────────────────────────────────────────
+// ── space policy ─────────────────────────────────────────────────────────────
 
-const PUBLIC_POLICY: &str = "com.atproto.simplespace.defs#publicPolicy";
-const MEMBER_LIST_POLICY: &str = "com.atproto.simplespace.defs#memberListPolicy";
-const MANAGING_APP_POLICY: &str = "com.atproto.simplespace.defs#managingAppPolicy";
-const OPEN_APP_ACCESS: &str = "com.atproto.simplespace.defs#open";
-const ALLOW_LIST_APP_ACCESS: &str = "com.atproto.simplespace.defs#allowList";
-
-/// The `$type` of a union member, with the optional `lex:` URI prefix a client may send.
-fn union_type(value: &serde_json::Value) -> &str {
-    value
-        .get("$type")
-        .and_then(serde_json::Value::as_str)
-        .map(|t| t.strip_prefix("lex:").unwrap_or(t))
-        .unwrap_or("")
-}
-
-/// Map a lexicon `readPolicy`/`writePolicy` union to the `(policy, managing_app)` columns.
+/// Load the space this host is the authority for at `space`, with its policy, or
+/// `SpaceNotFound`: absent, deleted, or recorded only as a foreign authority's space (no policy)
+/// all read the same — the reference's `getActiveSpacePolicy`.
 ///
-/// `policy` is an open union, and the spec makes a host reject any value it does not
-/// implement at create/update time rather than store what it cannot enforce — so an
-/// unrecognized member is refused here, never stored and never silently downgraded.
-///
-/// `managingApp` is a service identifier: a DID with an optional service fragment
-/// (`did:web:example.com#forum`). Both halves are checked here — the DID against the canonical
-/// validator, and a fragment (when the `#` is present at all) for being non-empty. The
-/// reference checks only the `did:` prefix, which admits `did:` and `did:web:#`: values no
-/// resolution can ever turn into an endpoint, so a space configured with one would refuse every
-/// non-authority request forever. That is the same "never store a config this host cannot
-/// enforce" rule the open unions above follow, applied one level down.
-///
-/// Whether a *well-formed* identifier resolves to a reachable service stays a mint-time
-/// question, where an unreachable managing app denies rather than invalidating stored config.
-pub fn policy_from_lex(
-    value: &serde_json::Value,
-) -> Result<(&'static str, Option<String>), ApiError> {
-    match union_type(value) {
-        PUBLIC_POLICY => Ok(("public", None)),
-        MEMBER_LIST_POLICY => Ok(("member-list", None)),
-        MANAGING_APP_POLICY => {
-            let managing_app = value
-                .get("managingApp")
-                .and_then(serde_json::Value::as_str)
-                .filter(|app| is_service_identifier(app))
-                .ok_or_else(|| {
-                    ApiError::new(
-                        ErrorCode::UnsupportedPolicy,
-                        "managingApp must be a DID with an optional service fragment",
-                    )
-                })?;
-            Ok(("managing-app", Some(managing_app.to_string())))
-        }
-        other => Err(ApiError::new(
-            ErrorCode::UnsupportedPolicy,
-            format!("unsupported policy: {other}"),
-        )),
-    }
-}
-
-/// A service identifier: a DID, optionally followed by `#` and a non-empty service fragment.
-///
-/// The DID half goes through `identity::did::is_valid_did`, the canonical validator the lexicon
-/// `did` string format already uses, rather than a second prefix check that would drift from it.
-fn is_service_identifier(value: &str) -> bool {
-    match value.split_once('#') {
-        Some((did, fragment)) => {
-            !fragment.is_empty() && custos_core::identity::did::is_valid_did(did)
-        }
-        None => custos_core::identity::did::is_valid_did(value),
-    }
-}
-
-/// Map a lexicon `appAccess` union to the `(app_access, app_allowed)` columns, the latter the
-/// JSON array of allow-listed client IDs (`None` for `open`).
-///
-/// An `allowList` with no entries is accepted and admits nothing: an authority may legitimately
-/// close a space to every app, and inventing an "empty means open" reading would turn the
-/// strictest config into the weakest one.
-pub fn app_access_from_lex(
-    value: &serde_json::Value,
-) -> Result<(&'static str, Option<String>), ApiError> {
-    match union_type(value) {
-        OPEN_APP_ACCESS => Ok(("open", None)),
-        ALLOW_LIST_APP_ACCESS => {
-            let allowed: Vec<&str> = value
-                .get("allowed")
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| {
-                    ApiError::new(
-                        ErrorCode::UnsupportedAppAccess,
-                        "allowList appAccess requires an \"allowed\" array of client IDs",
-                    )
-                })?
-                .iter()
-                .map(|entry| {
-                    entry.as_str().ok_or_else(|| {
-                        ApiError::new(
-                            ErrorCode::UnsupportedAppAccess,
-                            "allowList entries must be client ID strings",
-                        )
-                    })
-                })
-                .collect::<Result<_, _>>()?;
-            let json = serde_json::to_string(&allowed)
-                .or_internal_as("failed to encode allowList", "internal server error")?;
-            Ok(("allowList", Some(json)))
-        }
-        other => Err(ApiError::new(
-            ErrorCode::UnsupportedAppAccess,
-            format!("unsupported appAccess: {other}"),
-        )),
-    }
-}
-
-/// A stored `(policy, managing_app)` pair as its lexicon union value.
-fn policy_to_lex(policy: Option<&str>, managing_app: Option<&str>) -> serde_json::Value {
-    match policy {
-        Some("public") => serde_json::json!({ "$type": PUBLIC_POLICY }),
-        Some("managing-app") => serde_json::json!({
-            "$type": MANAGING_APP_POLICY,
-            "managingApp": managing_app.unwrap_or_default(),
-        }),
-        _ => serde_json::json!({ "$type": MEMBER_LIST_POLICY }),
-    }
-}
-
-/// The `getSpace` body for a stored simplespace row.
-pub fn simplespace_view(row: &SpaceRow) -> serde_json::Value {
-    let app_access = match row.app_access.as_deref() {
-        Some("allowList") => serde_json::json!({
-            "$type": ALLOW_LIST_APP_ACCESS,
-            "allowed": row.allowed_client_ids(),
-        }),
-        _ => serde_json::json!({ "$type": OPEN_APP_ACCESS }),
-    };
-    serde_json::json!({
-        "uri": row.uri,
-        "readPolicy": policy_to_lex(row.policy.as_deref(), row.managing_app.as_deref()),
-        "writePolicy": policy_to_lex(
-            row.write_policy.as_deref(),
-            row.write_managing_app.as_deref(),
-        ),
-        "appAccess": app_access,
-    })
-}
-
-/// Load the simplespace this host answers for at `space`, or `SpaceNotFound`: absent, deleted,
-/// or recorded only as a foreign authority's space (no config) all read the same — the
-/// reference's `getActiveSpaceConfig`.
-///
-/// Generic over the executor so a mutating route can run it inside the same transaction as
-/// its write: checked-then-written outside one, a concurrent `deleteSpace` could land between
-/// the check and the write and be partially undone (a tombstone with config set can never be
+/// Generic over the executor so a mutating route can run it inside the same transaction as its
+/// write: checked-then-written outside one, a concurrent `deleteSpace` could land between the
+/// check and the write and be partially undone (a tombstone with a policy set can never be
 /// created again).
-pub async fn load_active_simplespace<'e, E>(db: E, space: &SpaceRef) -> Result<SpaceRow, ApiError>
+pub async fn load_active_space<'e, E>(
+    db: E,
+    space: &SpaceRef,
+) -> Result<(SpaceRow, crate::policy::SpacePolicy), ApiError>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
-    crate::db::spaces::get_space(db, &space.uri)
+    let row = crate::db::spaces::get_space(db, &space.uri)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space.uri, "failed to load space");
             ApiError::new(ErrorCode::InternalError, "internal server error")
         })?
-        .filter(|row| row.deleted_at.is_none() && row.policy.is_some())
-        .ok_or_else(|| ApiError::new(ErrorCode::SpaceNotFound, "space not found"))
-}
-
-/// Which `com.atproto.simplespace.{putMember,removeMember}` operation [`write_membership`]
-/// performs.
-pub enum MembershipAction {
-    /// Add the member, or replace their read/write access.
-    Put {
-        read: bool,
-        write: bool,
-    },
-    Remove,
-}
-
-/// Shared write body for `simplespace.putMember` / `simplespace.removeMember`, called after the
-/// route has already authenticated the space owner (see the module doc). Loads the active
-/// simplespace and puts or removes `did` on its member list inside one transaction, so a
-/// member row can never land after a concurrent `deleteSpace` has already wiped the list. Both
-/// operations are idempotent (an upsert / a no-op DELETE).
-pub async fn write_membership(
-    state: &CoreState,
-    space: &SpaceRef,
-    did: &str,
-    action: MembershipAction,
-) -> Result<(), ApiError> {
-    let verb = match action {
-        MembershipAction::Put { .. } => "put",
-        MembershipAction::Remove => "remove",
-    };
-    let internal = |e: sqlx::Error| {
-        tracing::error!(error = %e, space = %space.uri, "failed to {verb} member");
-        ApiError::new(ErrorCode::InternalError, "internal server error")
-    };
-
-    let mut tx = state.db.begin().await.map_err(internal)?;
-    load_active_simplespace(&mut *tx, space).await?;
-    match action {
-        MembershipAction::Put { read, write } => {
-            crate::db::spaces::put_member(&mut *tx, &space.uri, did, read, write)
-                .await
-                .map_err(internal)?
-        }
-        MembershipAction::Remove => crate::db::spaces::remove_member(&mut *tx, &space.uri, did)
-            .await
-            .map_err(internal)?,
-    }
-    tx.commit().await.map_err(internal)?;
-    Ok(())
+        .filter(|row| row.deleted_at.is_none())
+        .ok_or_else(|| ApiError::new(ErrorCode::SpaceNotFound, "space not found"))?;
+    let policy = row
+        .space_policy()?
+        .ok_or_else(|| ApiError::new(ErrorCode::SpaceNotFound, "space not found"))?;
+    Ok((row, policy))
 }

@@ -26,8 +26,8 @@ pub struct RegisterNotifyInput {
 /// never delivers.
 ///
 /// Answered only for a space this host is the authority for, and only to a caller holding a
-/// space credential (or the owner's own OAuth grant) — the same admission
-/// `simplespace.getSpace` uses. Re-registering renews the existing row's expiry.
+/// space credential (or the authority's own OAuth grant) — the same admission
+/// the space-level space-host reads use. Re-registering renews the existing row's expiry.
 pub async fn space_register_notify(
     State(state): State<CoreState>,
     method: Method,

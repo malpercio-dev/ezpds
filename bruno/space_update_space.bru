@@ -1,0 +1,31 @@
+meta {
+  name: Space Update Space
+  type: http
+  seq: 170
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.updateSpace
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main",
+    "policy": { "$type": "com.atproto.memberspace.policy", "publicRead": true }
+  }
+}
+
+docs {
+  Replace a space's policy wholesale. A different $type migrates the space: the member list
+  is deleted (switching back does not restore it) while the writer set is kept. The published
+  policy and member records follow the new policy in the same commit.
+
+  "space:…?manage=update", authority only. Errors: 400 SpaceNotFound, 400 NotAuthorized,
+  400 UnsupportedPolicy, 403 InsufficientScope.
+}

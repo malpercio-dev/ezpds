@@ -36,7 +36,7 @@ const COLLECTION: &str = "org.example.note";
 const SPACE: &str = "at://did:plc:alicenotifyaaaaaaaaaaaa/space/org.example.bucket/main";
 const FOREIGN_SPACE: &str = "at://did:plc:foreignauthorityaaaaaaa/space/org.example.bucket/main";
 
-/// Alice hosts an account and a simplespace of her own; Bob is a second local account.
+/// Alice hosts an account and a public memberspace of her own; Bob is a second local account.
 async fn setup() -> CoreState {
     let state = state_with_master_key().await;
     seed_account_with_repo(&state.db, ALICE).await;
@@ -45,14 +45,16 @@ async fn setup() -> CoreState {
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.simplespace.createSpace",
+            "com.atproto.space.createSpace",
             &alice,
             serde_json::json!({
                 "spaceType": TYPE,
                 "skey": "main",
-                "readPolicy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
-                "writePolicy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
-                "appAccess": { "$type": "com.atproto.simplespace.defs#open" },
+                "policy": {
+                    "$type": "com.atproto.memberspace.policy",
+                    "publicRead": true,
+                    "publicWrite": true,
+                },
             }),
         ),
     )
@@ -317,7 +319,7 @@ async fn register_notify_refuses_an_unresolvable_service() {
 /// space happens to have a repo here.
 ///
 /// (An OAuth caller never reaches this check: `authenticate_space_access` already refuses a
-/// non-authority with `NotSpaceOwner`.)
+/// non-authority with `NotAuthorized`.)
 #[tokio::test]
 async fn space_host_methods_refuse_a_foreign_authoritys_space() {
     let state = setup().await;
@@ -468,20 +470,20 @@ async fn notify_write_records_a_foreign_repo_in_the_writer_set() {
     assert_eq!(body["repos"][0]["repoRev"], "3kabcdefghij2");
 }
 
-/// Under a `member-list` write policy, a non-member's report is acknowledged but never tracked;
-/// granting the member's `write` bit is what admits it.
+/// Without `publicWrite`, a non-member's report is acknowledged but never tracked; granting the
+/// member's `write` bit is what admits it.
 #[tokio::test]
-async fn notify_write_from_a_non_member_is_ignored_under_a_member_list_write_policy() {
+async fn notify_write_from_a_non_member_is_ignored_without_public_write() {
     let state = setup().await;
     let alice = access_jwt(&state.jwt_secret, ALICE);
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.simplespace.updateSpace",
+            "com.atproto.space.updateSpace",
             &alice,
             serde_json::json!({
                 "space": SPACE,
-                "writePolicy": { "$type": "com.atproto.simplespace.defs#memberListPolicy" },
+                "policy": { "$type": "com.atproto.memberspace.policy", "publicRead": true },
             }),
         ),
     )
@@ -504,9 +506,12 @@ async fn notify_write_from_a_non_member_is_ignored_under_a_member_list_write_pol
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.simplespace.putMember",
+            "com.atproto.memberspace.putMembers",
             &alice,
-            serde_json::json!({ "space": SPACE, "did": carol, "read": false, "write": true }),
+            serde_json::json!({
+                "space": SPACE,
+                "members": [{ "did": carol, "read": false, "write": true }],
+            }),
         ),
     )
     .await;
@@ -697,7 +702,7 @@ async fn deleting_a_space_drops_its_writer_set() {
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.simplespace.deleteSpace",
+            "com.atproto.space.deleteSpace",
             &alice,
             serde_json::json!({ "space": SPACE }),
         ),

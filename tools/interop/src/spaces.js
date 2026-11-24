@@ -1,15 +1,15 @@
-// Atproto Spaces checks: drive the com.atproto.space + com.atproto.simplespace
+// Atproto Spaces checks: drive the com.atproto.space + com.atproto.memberspace
 // alpha surface end-to-end, in the two shapes that matter.
 //
 //   spacesRoundTrip     authority = self, everything on one host: create a
-//                       simplespace, write/read/list records in it, exercise the
+//                       memberspace, write/read/list records in it, exercise the
 //                       sync reads, tear the space down again.
 //   crossHostRoundTrip  the shape a foreign implementation judges us on: a repo
 //                       host and a space host that need not be the same server.
 //                       Delegation token from the member's own PDS → signature-bound
 //                       credential from the authority → credential-authed reads
 //                       on both sides.
-//   allowListRefusal    an `allowList` space must refuse a credential request
+//   allowListRefusal    an `allowedApps` space must refuse a credential request
 //                       that names no client — the one app-perimeter assertion
 //                       reachable without a publicly hosted client_id document.
 //
@@ -29,8 +29,7 @@ import { resolveDidDoc, spaceEndpointFromDoc } from './identity.js';
 const SPACE_TYPE = 'dev.malpercio.interop.bucket';
 const COLLECTION = 'dev.malpercio.interop.note';
 
-const OPEN_APP_ACCESS = { $type: 'com.atproto.simplespace.defs#open' };
-const PUBLIC_POLICY = { $type: 'com.atproto.simplespace.defs#publicPolicy' };
+const PUBLIC_POLICY = { $type: 'com.atproto.memberspace.policy', publicRead: true, publicWrite: true };
 
 /** `at://<authority>/space/<type>/<skey>` → its parts. */
 export function parseSpaceUri(uri) {
@@ -39,19 +38,19 @@ export function parseSpaceUri(uri) {
   return { authority: match[1], type: match[2], skey: match[3] };
 }
 
-export async function createSpace(name, skey, { appAccess = OPEN_APP_ACCESS, policy = PUBLIC_POLICY } = {}) {
+export async function createSpace(name, skey, { policy = PUBLIC_POLICY } = {}) {
   const account = await ensureSession(name);
-  await xrpc(accountHost(account), 'com.atproto.simplespace.createSpace', {
+  await xrpc(accountHost(account), 'com.atproto.space.createSpace', {
     method: 'POST',
     token: account.accessJwt,
-    body: { spaceType: SPACE_TYPE, skey, readPolicy: policy, writePolicy: policy, appAccess },
+    body: { spaceType: SPACE_TYPE, skey, policy },
   });
   return `at://${account.did}/space/${SPACE_TYPE}/${skey}`;
 }
 
 export async function deleteSpace(name, spaceUri) {
   const account = await ensureSession(name);
-  return xrpc(accountHost(account), 'com.atproto.simplespace.deleteSpace', {
+  return xrpc(accountHost(account), 'com.atproto.space.deleteSpace', {
     method: 'POST',
     token: account.accessJwt,
     body: { space: spaceUri },
@@ -122,7 +121,7 @@ export async function spacesRoundTrip(name) {
       token: token(),
       params: { did: account.did },
     });
-    if (!spaces.spaces.some((s) => s.uri === spaceUri)) throw new Error('space missing from listSpaces');
+    if (!spaces.spaces.some((s) => s.space === spaceUri)) throw new Error('space missing from listSpaces');
 
     const latest = await xrpc(host, 'com.atproto.space.getLatestCommit', {
       token: token(),
@@ -266,12 +265,6 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
 
     // …and on the space host — the side that is the authority. `listRepos` is the writer
     // set the authority tracks, so the member's repo must show up here after the write.
-    const config = await xrpc(authorityHost, 'com.atproto.simplespace.getSpace', {
-      params: { space: spaceUri },
-      spaceSig: toAuthority,
-    });
-    if (config.uri !== spaceUri) throw new Error(`getSpace answered for ${config.uri}, not ${spaceUri}`);
-
     const repos = await xrpc(authorityHost, 'com.atproto.space.listRepos', {
       params: { space: spaceUri },
       spaceSig: toAuthority,
@@ -298,9 +291,6 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
       authority,
       member: member.did,
       credentialUnboundRejected: unbound.status,
-      readPolicy: config.readPolicy?.$type ?? null,
-      writePolicy: config.writePolicy?.$type ?? null,
-      appAccess: config.appAccess?.$type ?? null,
       memberInAuthorityListRepos: listed,
       car: exported,
     };
@@ -314,7 +304,7 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
 }
 
 /**
- * An `allowList` space must refuse a credential request that names no client — including
+ * A memberspace with `allowedApps` must refuse a credential request that names no client — including
  * the authority's own, which is the part a host is likeliest to get wrong.
  *
  * The positive half (an allow-listed app presenting a matching attestation) needs a
@@ -323,13 +313,13 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
 export async function allowListRefusal(name) {
   const account = getAccount(loadState(), name);
   const spaceUri = await createSpace(name, `interop-${randomSuffix(6)}`, {
-    appAccess: { $type: 'com.atproto.simplespace.defs#allowList', allowed: ['https://interop.invalid/client-metadata.json'] },
+    policy: { ...PUBLIC_POLICY, allowedApps: ['https://interop.invalid/client-metadata.json'] },
   });
   try {
     const err = await acquireSpaceCredential({ memberName: name, spaceUri }).then(() => null, (e) => e);
-    if (!err) throw new Error('allowList space minted a credential for a request naming no client');
+    if (!err) throw new Error('allowedApps space minted a credential for a request naming no client');
     if (!(err instanceof HttpError) || err.status !== 403 || err.body?.error !== 'AppNotAuthorized') {
-      throw new Error(`allowList refusal was not AppNotAuthorized/403: ${err.message}`);
+      throw new Error(`allowedApps refusal was not AppNotAuthorized/403: ${err.message}`);
     }
     return { space: spaceUri, authority: account.did, refusedWith: err.body.error, status: err.status };
   } finally {

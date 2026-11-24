@@ -54,14 +54,16 @@ async fn create_own_space(state: &CoreState, token: &str) {
         send(
             state,
             post(
-                "com.atproto.simplespace.createSpace",
+                "com.atproto.space.createSpace",
                 token,
                 serde_json::json!({
                     "spaceType": "org.example.bucket",
                     "skey": "main",
-                    "readPolicy": {"$type": "com.atproto.simplespace.defs#publicPolicy"},
-                    "writePolicy": {"$type": "com.atproto.simplespace.defs#publicPolicy"},
-                    "appAccess": {"$type": "com.atproto.simplespace.defs#open"},
+                    "policy": {
+                        "$type": "com.atproto.memberspace.policy",
+                        "publicRead": true,
+                        "publicWrite": true,
+                    },
                 }),
             ),
         )
@@ -315,12 +317,12 @@ async fn credential_requests_are_rate_limited_per_bound_key() {
     assert_eq!(body_json(response).await["error"], "RateLimitExceeded");
 }
 
-/// `simplespace.getSpace` for `space` under `credential`, signed by `key` and addressed to the
-/// space's authority.
+/// `space.listRepos` (a space-level space-host read) for `space` under `credential`, signed by
+/// `key` and addressed to the space's authority.
 fn get_space_signed(space: &str, key: &SpaceSigKey, credential: &str) -> Request<Body> {
-    let mut b = Request::builder().method(http::Method::GET).uri(format!(
-        "/xrpc/com.atproto.simplespace.getSpace?space={space}"
-    ));
+    let mut b = Request::builder()
+        .method(http::Method::GET)
+        .uri(format!("/xrpc/com.atproto.space.listRepos?space={space}"));
     b.headers_mut()
         .unwrap()
         .extend(key.credential_headers(credential, DID));

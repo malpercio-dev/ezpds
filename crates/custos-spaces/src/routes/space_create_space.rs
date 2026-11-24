@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! com.atproto.simplespace.createSpace — create a space anchored on the caller's own DID.
+//! com.atproto.space.createSpace — create a space with the caller as its authority.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, Uri};
@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::auth::space::{authenticate_space_caller, require_space_grant};
 use crate::db::spaces::{create_space, NewSpace};
+use crate::policy::SpacePolicy;
 use common::{ApiError, ErrorCode};
 use custos_core::auth::oauth_scopes::{RepoAction, SpaceOp};
 use custos_core::lexicon::LexiconInput;
@@ -21,20 +22,17 @@ pub struct CreateSpaceInput {
     space_type: String,
     /// Optional space key (record-key syntax); a TID is generated when absent.
     skey: Option<String>,
-    /// `readPolicy` / `writePolicy` unions — mapped by `views::policy_from_lex`.
-    read_policy: serde_json::Value,
-    write_policy: serde_json::Value,
-    /// `appAccess` union — mapped by `views::app_access_from_lex`.
-    app_access: serde_json::Value,
+    /// The space policy union, normalized by `SpacePolicy::from_lex`.
+    policy: serde_json::Value,
 }
 
-/// POST /xrpc/com.atproto.simplespace.createSpace
+/// POST /xrpc/com.atproto.space.createSpace
 ///
-/// The space URI is built from the authenticated DID, so the caller is the owner by
-/// construction; what the `manage=create` grant is matched against is that URI. The config
-/// unions are open: an unimplemented member is refused (`UnsupportedPolicy` /
-/// `UnsupportedAppAccess`) before anything is stored.
-pub async fn simplespace_create_space(
+/// The space URI is built from the authenticated DID, so the caller is the authority by
+/// construction; what the `manage=create` grant is matched against is that URI. An unsupported
+/// policy is refused (`UnsupportedPolicy`) before anything is stored, and a policy that asks to
+/// be published is written to the authority's repo in the same transaction as the space.
+pub async fn space_create_space(
     State(state): State<CoreState>,
     method: Method,
     uri: Uri,
@@ -48,36 +46,32 @@ pub async fn simplespace_create_space(
         user.did, input.space_type
     ))?;
     require_space_grant(&state, &user, &space, SpaceOp::Manage(RepoAction::Create)).await?;
+    let policy = SpacePolicy::from_lex(&input.policy)?;
 
-    let (policy, managing_app) = crate::views::policy_from_lex(&input.read_policy)?;
-    let (write_policy, write_managing_app) = crate::views::policy_from_lex(&input.write_policy)?;
-    let (app_access, app_allowed) = crate::views::app_access_from_lex(&input.app_access)?;
-
+    let internal = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space.uri, "failed to create space");
+        ApiError::new(ErrorCode::InternalError, "internal server error")
+    };
+    let mut tx = state.db.begin().await.map_err(internal)?;
     let created = create_space(
-        &state.db,
+        &mut *tx,
         &NewSpace {
             uri: &space.uri,
             authority_did: &space.authority,
             space_type: &space.space_type,
             skey: &space.skey,
-            policy: Some(policy),
-            app_access: Some(app_access),
-            app_allowed: app_allowed.as_deref(),
-            managing_app: managing_app.as_deref(),
-            write_policy: Some(write_policy),
-            write_managing_app: write_managing_app.as_deref(),
         },
+        &policy.to_json().to_string(),
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, space = %space.uri, "failed to create space");
-        ApiError::new(ErrorCode::InternalError, "internal server error")
-    })?;
+    .map_err(internal)?;
     if !created {
         return Err(ApiError::new(
             ErrorCode::SpaceAlreadyExists,
-            "space already exists",
+            "Space already exists",
         ));
     }
-    Ok(Json(serde_json::json!({ "uri": space.uri })))
+    let ops = crate::policy::policy_record_ops(&mut tx, &space, &policy).await?;
+    crate::policy::commit_with_published(&state, tx, &space, &ops).await?;
+    Ok(Json(serde_json::json!({ "space": space.uri })))
 }

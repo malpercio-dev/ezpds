@@ -1,0 +1,31 @@
+meta {
+  name: Space Delete Space
+  type: http
+  seq: 171
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.deleteSpace
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main"
+  }
+}
+
+docs {
+  Delete a space: the row survives as a tombstone (credential renewals answer SpaceDeleted)
+  with its policy cleared; the member list, notification registrations, writer set and the
+  authority's own repo go with it, and registered syncers are told to drop their copies.
+  Idempotent: an already-deleted space answers 200.
+
+  "space:…?manage=delete", authority only. Errors: 400 SpaceNotFound, 400 NotAuthorized,
+  403 InsufficientScope.
+}

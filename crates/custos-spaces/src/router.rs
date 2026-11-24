@@ -16,7 +16,7 @@ use custos_core::CoreState;
 use crate::routes::*;
 
 /// The public (CORS'd) half of the Spaces surface: every `com.atproto.space.*` and
-/// `com.atproto.simplespace.*` method. Empty when `[spaces] enabled` is off.
+/// `com.atproto.memberspace.*` method. Empty when `[spaces] enabled` is off.
 pub fn router<S>(config: &SpacesConfig) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -88,35 +88,32 @@ where
             "/xrpc/com.atproto.space.unregisterNotify",
             post(space_unregister_notify),
         )
-        // The PDS-required simplespace management surface: spaces anchored on a local account's
-        // own DID, managed by that account under `manage=` grants.
+        // Space management: spaces anchored on a local account's own DID, managed by that
+        // account under `manage=` grants, and the memberspace policy's member list.
         .route(
-            "/xrpc/com.atproto.simplespace.putMember",
-            post(simplespace_put_member),
+            "/xrpc/com.atproto.space.createSpace",
+            post(space_create_space),
         )
         .route(
-            "/xrpc/com.atproto.simplespace.createSpace",
-            post(simplespace_create_space),
+            "/xrpc/com.atproto.space.deleteSpace",
+            post(space_delete_space),
+        )
+        .route("/xrpc/com.atproto.space.getSpace", get(space_get_space))
+        .route(
+            "/xrpc/com.atproto.space.updateSpace",
+            post(space_update_space),
         )
         .route(
-            "/xrpc/com.atproto.simplespace.deleteSpace",
-            post(simplespace_delete_space),
+            "/xrpc/com.atproto.memberspace.listMembers",
+            get(memberspace_list_members),
         )
         .route(
-            "/xrpc/com.atproto.simplespace.getSpace",
-            get(simplespace_get_space),
+            "/xrpc/com.atproto.memberspace.putMembers",
+            post(memberspace_put_members),
         )
         .route(
-            "/xrpc/com.atproto.simplespace.listMembers",
-            get(simplespace_list_members),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.removeMember",
-            post(simplespace_remove_member),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.updateSpace",
-            post(simplespace_update_space),
+            "/xrpc/com.atproto.memberspace.removeMembers",
+            post(memberspace_remove_members),
         )
 }
 

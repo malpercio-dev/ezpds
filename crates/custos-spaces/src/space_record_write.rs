@@ -3,9 +3,11 @@
 //! The single write choke point for permissioned space repos — the
 //! `record_write.rs` analog for the DB-backed, MST-less store (V065).
 //!
-//! Every mutation of a space repo flows through [`apply_space_writes`]:
-//! validate → CAS rev → update LtHash state → append oplog — all inside one
-//! SQLite transaction, so a space commit is atomic by construction. That is
+//! Every mutation of a space repo flows through [`apply_space_writes`] (or, for
+//! the policy module's published records, [`apply_space_writes_in_tx`] on the
+//! caller's transaction): validate → CAS rev → update LtHash state → append
+//! oplog — all inside one SQLite transaction, so a space commit is atomic by
+//! construction. That is
 //! the structural difference from the public path: the public repo's write
 //! spans a non-transactional block store and needs per-DID locks plus a
 //! post-commit GC; here the record rows, the oplog, and the repo head commit
@@ -124,6 +126,11 @@ pub struct SpaceCommitOutcome {
 /// itself must already exist ([`ErrorCode::SpaceNotFound`] otherwise).
 /// Returns [`ErrorCode::Conflict`] when the rev CAS loses to a concurrent
 /// commit — nothing lands, the client retries against the new head.
+///
+/// The published policy and member collections (`crate::policy::PUBLISHED_COLLECTIONS`) are
+/// refused here in any repo: only the policy module writes them, through
+/// [`apply_space_writes_in_tx`], from the space's configuration. The import leg accepts them as
+/// they arrive, as the reference's import does.
 pub async fn apply_space_writes(
     state: &CoreState,
     space: &SpaceRef,
@@ -131,15 +138,100 @@ pub async fn apply_space_writes(
     ops: &[SpaceWriteOp],
     admission: SpaceWriteAdmission,
 ) -> Result<SpaceCommitOutcome, ApiError> {
-    let space_uri = space.uri.as_str();
+    validate_ops(ops)?;
+    if admission == SpaceWriteAdmission::Active {
+        if let Some(op) = ops
+            .iter()
+            .find(|op| crate::policy::PUBLISHED_COLLECTIONS.contains(&op.collection.as_str()))
+        {
+            return Err(ApiError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "{} records are published by the PDS from a space's configuration and cannot be written directly",
+                    op.collection
+                ),
+            ));
+        }
+    }
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to open space write transaction");
+        internal_error()
+    })?;
+    let commit = commit_ops(state, &mut tx, space, did, ops, admission).await?;
+    tx.commit().await.map_err(|e| {
+        tracing::error!(error = %e, space = %space.uri, did = %did, "failed to commit space write transaction");
+        internal_error()
+    })?;
+    Ok(commit.announce(state))
+}
+
+/// Apply `ops` to `did`'s repo inside the caller's transaction — the policy module's publish
+/// entry, so a policy or member record lands or is withdrawn atomically with the configuration
+/// change it mirrors. Skips the published-collection refusal [`apply_space_writes`] applies.
+///
+/// `None` when there is nothing to write. Otherwise the caller commits its transaction and then
+/// calls [`PendingSpaceCommit::announce`], which fires the post-commit notification fan-out.
+pub(crate) async fn apply_space_writes_in_tx(
+    state: &CoreState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space: &SpaceRef,
+    did: &str,
+    ops: &[SpaceWriteOp],
+) -> Result<Option<PendingSpaceCommit>, ApiError> {
+    if ops.is_empty() {
+        return Ok(None);
+    }
+    validate_ops(ops)?;
+    commit_ops(state, tx, space, did, ops, SpaceWriteAdmission::Active)
+        .await
+        .map(Some)
+}
+
+/// A space commit written inside a transaction that has not committed yet.
+pub(crate) struct PendingSpaceCommit {
+    space: SpaceRef,
+    did: String,
+    update: crate::db::space_notify::WriterUpdate,
+    outcome: SpaceCommitOutcome,
+}
+
+impl PendingSpaceCommit {
+    /// Best-effort, post-commit and non-blocking: tell the space host (or, when that is us, the
+    /// registered syncers) that this repo advanced. Called once the transaction has committed;
+    /// every write path ends here, so none can silently skip it.
+    pub(crate) fn announce(self, state: &CoreState) -> SpaceCommitOutcome {
+        use crate::db::space_notify::WriterUpdate;
+        let (space, did, outcome) = (&self.space, self.did.as_str(), &self.outcome);
+        match self.update {
+            WriterUpdate::Accepted(revs) => drop(crate::space_notify::forward_write(
+                state,
+                space,
+                did,
+                &outcome.rev,
+                &outcome.hash,
+                revs,
+            )),
+            WriterUpdate::NotAuthority => drop(crate::space_notify::report_write(
+                state,
+                space,
+                did,
+                &outcome.rev,
+                &outcome.hash,
+            )),
+            // Our own commit's rev always advances; nothing to announce if it somehow did not.
+            WriterUpdate::Stale => {}
+        }
+        self.outcome
+    }
+}
+
+/// Validate every op before touching the database: record path shape, the schema-free
+/// record-format gate, and value presence. (The lexicon `validate`-flag check is a route-layer
+/// concern, layered on by the CRUD surface exactly as the public routes do.)
+fn validate_ops(ops: &[SpaceWriteOp]) -> Result<(), ApiError> {
     if ops.is_empty() {
         return Err(ApiError::new(ErrorCode::InvalidRequest, "no writes given"));
     }
-
-    // Validate every op before touching the database: record path shape, the
-    // schema-free record-format gate, and value presence. (The lexicon
-    // `validate`-flag check is a route-layer concern, layered on by the CRUD
-    // surface exactly as the public routes do.)
     for op in ops {
         repo_engine::validate_record_path(&op.collection, &op.rkey)
             .map_err(|e| ApiError::new(ErrorCode::InvalidRequest, e.to_string()))?;
@@ -158,10 +250,20 @@ pub async fn apply_space_writes(
         }
     }
 
-    let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to open space write transaction");
-        internal_error()
-    })?;
+    Ok(())
+}
+
+/// The commit itself, on the caller's transaction. Any error leaves the transaction to be
+/// dropped, which rolls it back.
+async fn commit_ops(
+    state: &CoreState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space: &SpaceRef,
+    did: &str,
+    ops: &[SpaceWriteOp],
+    admission: SpaceWriteAdmission,
+) -> Result<PendingSpaceCommit, ApiError> {
+    let space_uri = space.uri.as_str();
 
     // A deactivated, suspended, or taken-down account is read-only, exactly as
     // on the public write path — except on the import leg, which admits the
@@ -171,17 +273,15 @@ pub async fn apply_space_writes(
     // `space_repos`, not `accounts`, so a pre-transaction check would leave a
     // window for a concurrent deactivation to land between check and commit.
     use custos_db::accounts::AccountLifecycle;
-    let admitted = match custos_db::accounts::account_lifecycle(&mut *tx, did).await? {
+    let admitted = match custos_db::accounts::account_lifecycle(&mut **tx, did).await? {
         Some(AccountLifecycle::Active) => true,
         Some(AccountLifecycle::Deactivated) => admission == SpaceWriteAdmission::Import,
         Some(_) => false,
         None => {
-            tx.rollback().await.ok();
             return Err(ApiError::new(ErrorCode::NotFound, "account not found"));
         }
     };
     if !admitted {
-        tx.rollback().await.ok();
         return Err(ApiError::new(
             ErrorCode::Forbidden,
             "account is deactivated",
@@ -191,10 +291,10 @@ pub async fn apply_space_writes(
     // Record a foreign authority's space if this host has not seen it before. The reference does
     // the same on every space write, and it is what makes a foreign authority's space usable:
     // nothing else in the protocol tells a repo host that its user has joined one. The row
-    // carries no simplespace config — that belongs to the authority.
+    // carries no policy — that belongs to the authority.
     //
     // A space anchored on the writer's own DID is never recorded here: the spec requires it to
-    // exist already, so it must have been made by `createSpace` (which is what writes the config).
+    // exist already, so it must have been made by `createSpace` (which is what writes the policy).
     //
     // Divergence from the reference, which additionally *clears* `deleted_at` here: a tombstone
     // is only ever written for a space this host is the authority for, and resurrecting one on a
@@ -204,18 +304,12 @@ pub async fn apply_space_writes(
     let own_space = space.authority == did;
     if !own_space {
         crate::db::spaces::insert_space(
-            &mut *tx,
+            &mut **tx,
             &crate::db::spaces::NewSpace {
                 uri: space_uri,
                 authority_did: &space.authority,
                 space_type: &space.space_type,
                 skey: &space.skey,
-                policy: None,
-                app_access: None,
-                app_allowed: None,
-                managing_app: None,
-                write_policy: None,
-                write_managing_app: None,
             },
         )
         .await
@@ -224,7 +318,7 @@ pub async fn apply_space_writes(
             internal_error()
         })?;
     }
-    let row = crate::db::spaces::get_space(&mut *tx, space_uri)
+    let row = crate::db::spaces::get_space(&mut **tx, space_uri)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, "failed to load space");
@@ -235,28 +329,25 @@ pub async fn apply_space_writes(
     // operator takedown could land between check and commit. `SpaceNotFound` for the
     // takedown, never `SpaceDeleted` — see `auth::space::require_space_servable`.
     if row.as_ref().is_some_and(|row| row.deleted_at.is_some()) {
-        tx.rollback().await.ok();
         return Err(ApiError::new(
             ErrorCode::SpaceNotFound,
             "space has been deleted",
         ));
     }
-    // An own space that was never created (no row, or a config-less row recorded before this
+    // An own space that was never created (no row, or a policy-less row recorded before this
     // rule) is refused rather than silently made.
     if row
         .as_ref()
         .is_none_or(|row| own_space && row.policy.is_none())
     {
-        tx.rollback().await.ok();
         return Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"));
     }
     if row.is_some_and(|row| row.takendown_at.is_some()) {
-        tx.rollback().await.ok();
         return Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"));
     }
 
     // Load the repo head, or start a fresh one on first write.
-    let existing_repo = crate::db::space_repos::get_repo(&mut *tx, space_uri, did)
+    let existing_repo = crate::db::space_repos::get_repo(&mut **tx, space_uri, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, did = %did, "failed to load space repo");
@@ -291,7 +382,7 @@ pub async fn apply_space_writes(
     let advanced = match &prev_rev {
         Some(prev) => {
             crate::db::space_repos::advance_repo_rev(
-                &mut *tx,
+                &mut **tx,
                 space_uri,
                 did,
                 &new_rev,
@@ -301,7 +392,7 @@ pub async fn apply_space_writes(
             .await
         }
         None => {
-            crate::db::space_repos::insert_repo(&mut *tx, space_uri, did, &new_rev, &lthash.state())
+            crate::db::space_repos::insert_repo(&mut **tx, space_uri, did, &new_rev, &lthash.state())
                 .await
         }
     }
@@ -310,7 +401,6 @@ pub async fn apply_space_writes(
         internal_error()
     })?;
     if !advanced {
-        tx.rollback().await.ok();
         return Err(ApiError::new(
             ErrorCode::Conflict,
             "space repo was modified concurrently; retry against the current head",
@@ -325,7 +415,7 @@ pub async fn apply_space_writes(
     let mut write_cost: u64 = 0;
     for op in ops {
         let existing = crate::db::space_repos::get_record(
-            &mut *tx,
+            &mut **tx,
             space_uri,
             did,
             &op.collection,
@@ -341,14 +431,12 @@ pub async fn apply_space_writes(
         match op.action {
             SpaceWriteAction::Create | SpaceWriteAction::Put | SpaceWriteAction::Update => {
                 if op.action == SpaceWriteAction::Create && prev_cid.is_some() {
-                    tx.rollback().await.ok();
                     return Err(ApiError::new(
                         ErrorCode::RecordAlreadyExists,
                         "record already exists; use putRecord to update",
                     ));
                 }
                 if op.action == SpaceWriteAction::Update && prev_cid.is_none() {
-                    tx.rollback().await.ok();
                     return Err(ApiError::new(
                         ErrorCode::RecordNotFound,
                         "record does not exist; use createRecord or putRecord to create it",
@@ -371,7 +459,7 @@ pub async fn apply_space_writes(
                 lthash.add(&format_set_hash_element(&op.collection, &op.rkey, &cid));
 
                 crate::db::space_repos::upsert_record(
-                    &mut *tx,
+                    &mut **tx,
                     space_uri,
                     did,
                     &op.collection,
@@ -386,7 +474,7 @@ pub async fn apply_space_writes(
                     internal_error()
                 })?;
                 crate::db::space_repos::insert_repo_op(
-                    &mut *tx,
+                    &mut **tx,
                     space_uri,
                     did,
                     &new_rev,
@@ -409,7 +497,6 @@ pub async fn apply_space_writes(
             }
             SpaceWriteAction::Delete => {
                 let Some(prev) = prev_cid else {
-                    tx.rollback().await.ok();
                     return Err(ApiError::new(
                         ErrorCode::RecordNotFound,
                         "record does not exist",
@@ -418,7 +505,7 @@ pub async fn apply_space_writes(
                 lthash.remove(&format_set_hash_element(&op.collection, &op.rkey, &prev));
                 write_cost += custos_core::rate_limit::WRITE_COST_DELETE;
                 crate::db::space_repos::delete_record(
-                    &mut *tx,
+                    &mut **tx,
                     space_uri,
                     did,
                     &op.collection,
@@ -430,7 +517,7 @@ pub async fn apply_space_writes(
                     internal_error()
                 })?;
                 crate::db::space_repos::insert_repo_op(
-                    &mut *tx,
+                    &mut **tx,
                     space_uri,
                     did,
                     &new_rev,
@@ -478,14 +565,14 @@ pub async fn apply_space_writes(
     // keyed on the head answers `RepoNotFound` and the next write starts a fresh repo. The
     // commit itself is still announced below with the empty-set hash, which is how the authority
     // and its syncers learn the repo is gone.
-    let emptied = !crate::db::space_repos::repo_has_records(&mut *tx, space_uri, did)
+    let emptied = !crate::db::space_repos::repo_has_records(&mut **tx, space_uri, did)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, did = %did, "failed to count space records");
             internal_error()
         })?;
     if emptied {
-        crate::db::space_repos::delete_repo(&mut tx, space_uri, did)
+        crate::db::space_repos::delete_repo(tx, space_uri, did)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, space = %space_uri, did = %did, "failed to delete emptied space repo");
@@ -498,7 +585,7 @@ pub async fn apply_space_writes(
     // trivially matches its own rev.
     let finalized = emptied
         || crate::db::space_repos::advance_repo_rev(
-        &mut *tx,
+        &mut **tx,
         space_uri,
         did,
         &new_rev,
@@ -511,7 +598,6 @@ pub async fn apply_space_writes(
         internal_error()
     })?;
     if !finalized {
-        tx.rollback().await.ok();
         tracing::error!(space = %space_uri, did = %did, "space repo head vanished mid-transaction");
         return Err(internal_error());
     }
@@ -521,37 +607,22 @@ pub async fn apply_space_writes(
     // the facts the authority reports. The query no-ops for a space whose authority is
     // elsewhere.
     let hash = lthash.digest();
-    let update = crate::db::space_notify::upsert_writer(&mut tx, space_uri, did, &new_rev, &hash)
+    let update = crate::db::space_notify::upsert_writer(tx, space_uri, did, &new_rev, &hash)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, did = %did, "failed to record space writer");
             internal_error()
         })?;
 
-    tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, space = %space_uri, did = %did, "failed to commit space write transaction");
-        internal_error()
-    })?;
-
-    // Best-effort, post-commit and non-blocking: tell the space host (or, when that is us, the
-    // registered syncers) that this repo advanced. Placed here rather than in each record route
-    // so no write path can be added that silently skips it.
-    use crate::db::space_notify::WriterUpdate;
-    match update {
-        WriterUpdate::Accepted(revs) => drop(crate::space_notify::forward_write(
-            state, space, did, &new_rev, &hash, revs,
-        )),
-        WriterUpdate::NotAuthority => drop(crate::space_notify::report_write(
-            state, space, did, &new_rev, &hash,
-        )),
-        // Our own commit's rev always advances; nothing to announce if it somehow did not.
-        WriterUpdate::Stale => {}
-    }
-
-    Ok(SpaceCommitOutcome {
-        rev: new_rev,
-        hash,
-        results,
+    Ok(PendingSpaceCommit {
+        space: space.clone(),
+        did: did.to_string(),
+        update,
+        outcome: SpaceCommitOutcome {
+            rev: new_rev,
+            hash,
+            results,
+        },
     })
 }
 
@@ -797,7 +868,7 @@ mod tests {
 
     /// A first write into a space this host has never seen records it, so a
     /// member can join a foreign authority's space with no prior setup — and
-    /// the row it writes claims no simplespace config, which belongs to the
+    /// the row it writes claims no policy, which belongs to the
     /// authority.
     #[tokio::test]
     async fn first_write_records_an_unknown_space() {
@@ -823,7 +894,7 @@ mod tests {
             .unwrap()
             .expect("the write recorded the space");
         assert_eq!(row.authority_did, "did:plc:someoneelse");
-        assert!(row.policy.is_none() && row.app_access.is_none());
+        assert!(row.policy.is_none());
         let (space_type, skey): (String, String) =
             sqlx::query_as("SELECT space_type, skey FROM spaces WHERE uri = ?")
                 .bind(&unknown.uri)

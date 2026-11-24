@@ -13,7 +13,7 @@
 //! Verifying it means resolving `client_id` — a URL the *caller* chose — to its
 //! `client-metadata.json` and then to the keys that document publishes. Both fetches go through
 //! the SSRF-hardened client, and the attested `client_id` is only as trustworthy as that
-//! resolution: skip it and `appAccess: #allowList` degrades from an enforceable perimeter to an
+//! resolution: skip it and memberspace's `allowedApps` degrades from an enforceable perimeter to an
 //! unverified claim. The key resolution itself is shared verbatim with the token endpoint
 //! ([`custos_core::auth::jwks::client_verification_key`]).
 //!

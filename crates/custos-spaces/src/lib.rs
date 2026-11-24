@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! The Atproto Spaces feature: the `com.atproto.space.*` and `com.atproto.simplespace.*` routes,
+//! The Atproto Spaces feature: the `com.atproto.space.*` and `com.atproto.memberspace.*` routes,
 //! `/v1/space/import-repo` and the operator's `/v1/admin/spaces` pair, the space authorization
 //! seam, the space query modules, both space sweeps, and the `spaces` capability entry.
 //!
@@ -17,6 +17,7 @@ use sqlx::SqliteConnection;
 mod auth;
 mod capability;
 mod db;
+mod policy;
 mod router;
 mod routes;
 mod space_jti_sweep;
@@ -88,11 +89,12 @@ pub async fn purge_account_rows(tx: &mut SqliteConnection, did: &str) -> Result<
 #[cfg(test)]
 mod purge_tests {
     use super::*;
-    use crate::db::spaces::{insert_space, NewSpace};
     use crate::space_record_write::{
         apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
     };
-    use crate::test_support::{seed_account_with_repo, state_with_master_key};
+    use crate::test_support::{
+        memberspace_policy, seed_account_with_repo, seed_authority_space, state_with_master_key,
+    };
 
     /// Every account FK on a space table is scoped by [`PURGE_ACCOUNT_SQL`], so a `space*` table
     /// added without extending the purge fails here rather than FK-failing the reaper.
@@ -118,23 +120,7 @@ mod purge_tests {
         let did = "did:plc:purgespaces";
         seed_account_with_repo(&state.db, did).await;
         let space = "at://did:plc:purgespaces/space/org.example.bucket/self";
-        insert_space(
-            &state.db,
-            &NewSpace {
-                uri: space,
-                authority_did: did,
-                space_type: "org.example.bucket",
-                skey: "self",
-                policy: Some("member-list"),
-                app_access: Some("open"),
-                app_allowed: None,
-                managing_app: None,
-                write_policy: None,
-                write_managing_app: None,
-            },
-        )
-        .await
-        .unwrap();
+        seed_authority_space(&state.db, space, &memberspace_policy(false)).await;
         apply_space_writes(
             &state,
             &custos_core::space_uri::parse_space_ref(space).unwrap(),

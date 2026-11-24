@@ -1,0 +1,26 @@
+meta {
+  name: Space Get Space
+  type: http
+  seq: 172
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.getSpace?space=at://{{did}}/space/org.example.bucket/main
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://{{did}}/space/org.example.bucket/main
+}
+
+docs {
+  A space and its normalized policy: { space, policy }. OAuth only with a
+  "space:…?action=read_self" grant, authority only — a space credential does not reach it (a
+  policy can publish itself to readers instead). Errors: 400 SpaceNotFound, 400 NotAuthorized,
+  403 InsufficientScope.
+}

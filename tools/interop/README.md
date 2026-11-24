@@ -188,10 +188,10 @@ Three commands, in order of how much of the protocol they touch:
 ```sh
 just interop spaces-test --name primary          # authority = self, one host
 just interop spaces-cross-host --member primary  # + delegation → space credential → credential-authed reads
-just interop spaces-allowlist --name primary     # allowList refuses an unattested credential request
+just interop spaces-allowlist --name primary     # allowedApps refuses an unattested credential request
 ```
 
-`spaces-test` is the single-host round-trip: `simplespace.createSpace` → `space.createRecord`
+`spaces-test` is the single-host round-trip: `space.createSpace` → `space.createRecord`
 → get/list/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` → teardown. It reads the
 space export as a **parsed** CAR, not a byte count: two roots in order (signed commit, then
 the DRISL record index), every block verified against the CID naming it, and the written
@@ -208,7 +208,7 @@ host on:
    (`space.getSpaceCredential`, Bearer delegation + an RFC 9421 `atproto-space` signature
    naming the key, which becomes the credential's `cnf.kid`);
 4. that credential drives reads on **both** hosts — `space.getRecord`/`listRepoOps`/`getRepo`
-   on the repo host, `simplespace.getSpace`/`space.listRepos` on the authority — each under
+   on the repo host, `space.listRepos` on the authority — each under
    `Authorization: Atproto-Space`, signed together with the request's audience (the repo
    owner's DID on the repo host, the authority's DID on the space host);
 5. it also asserts the credential is **refused** when presented without its signature. A host that
@@ -261,11 +261,11 @@ and so stay manual:
 
 | Surface | Why it needs a host |
 |---|---|
-| client attestation (the positive `allowList` case, managing-app policies) | the authority resolves the caller's `client_id` **URL** to fetch its JWKS |
+| client attestation (the positive `allowedApps` case, managedspace policies) | the authority resolves the caller's `client_id` **URL** to fetch its JWKS |
 | `registerNotify` → receive `notifyWrite` (acting as a syncer) | the space host POSTs to the syncer's endpoint |
 | the alpha `@atproto` TS SDK as a client; the bulletin sample app | ship on atproto's `permissioned-data` branch and move weekly |
 
-`spaces-allowlist` covers the reachable half of the app perimeter: an `allowList` space
+`spaces-allowlist` covers the reachable half of the app perimeter: an `allowedApps` space
 must answer `AppNotAuthorized` (403) to a credential request naming no client — including
 the authority's own request, which is the part a host is likeliest to get wrong. The Friday
 [alpha-watch routine](../../docs/operations/spaces-alpha-watch-routine.md) tracks the spec
@@ -279,9 +279,9 @@ drift that would invalidate any of this.
 | ensure account | provisioning flow: claim code → mobile account → PDS repo-signing key → client-signed did:plc genesis op → handle → session |
 | identity | `resolveHandle`, `/.well-known/atproto-did`, and the plc.directory DID doc all agree; PDS endpoint in the doc points at this deployment |
 | CRUD | createRecord → getRecord (CID match) → listRecords → deleteRecord |
-| spaces | Atproto Spaces round-trip on the account's own PDS: `simplespace.createSpace` → `space.createRecord` → getRecord/listRecords/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` (CAR parsed: two roots, blocks verified against their CIDs, record present in the index) → deleteRecord → `deleteSpace` (random skey per run; the space is torn down even on failure) |
+| spaces | Atproto Spaces round-trip on the account's own PDS: `space.createSpace` → `space.createRecord` → getRecord/listRecords/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` (CAR parsed: two roots, blocks verified against their CIDs, record present in the index) → deleteRecord → `deleteSpace` (random skey per run; the space is torn down even on failure) |
 | spaces credential | delegation token → signature-bound space credential → credential-authed reads on both the repo host and the authority; the credential is rejected when presented without its signature |
-| spaces allowList | an `allowList` space answers `AppNotAuthorized` to a credential request naming no client |
+| spaces allowedApps | an `allowedApps` space answers `AppNotAuthorized` to a credential request naming no client |
 | firehose | a live `subscribeRepos` subscriber sees the `#commit` frame for a write, correct repo + op path |
 | sync | CAR export parses, root CID == `getLatestCommit`, `getRepoStatus` active, repo in `listRepos` |
 | network | relay (`bsky.network`) crawl status + AppView profile visibility — **informational** (staging may not be crawled); PDS→AppView service-proxy auth leg must pass |
