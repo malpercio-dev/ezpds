@@ -178,14 +178,6 @@ export type GetSpaceOutput = {
   space: string;
   policy: com_atproto_personalspace.Policy | com_atproto_memberspace.Policy | com_atproto_managedspace.Policy | { $type: string };
 };
-export type GetSpaceCredentialParams = undefined;
-export type GetSpaceCredentialInput = {
-  space: string;
-  clientAttestation?: string;
-};
-export type GetSpaceCredentialOutput = {
-  credential: string;
-};
 export type ImportRepoParams = undefined;
 export type ImportRepoInput = Uint8Array;
 export type ImportRepoOutput = undefined;

@@ -26,15 +26,15 @@ where
         return Router::new();
     }
     Router::new()
-        // The space-credential mint pair: an OAuth session trades a delegation token for a
-        // key-bound space credential.
+        // The space-credential mint pair: an OAuth session mints a delegation token, and the space
+        // authority trades it for a key-bound space credential.
         .route(
             "/xrpc/com.atproto.space.getDelegationToken",
             get(get_delegation_token),
         )
         .route(
-            "/xrpc/com.atproto.space.getSpaceCredential",
-            post(get_space_credential),
+            "/xrpc/com.atproto.space.authorizeSpaceSync",
+            post(authorize_space_sync),
         )
         // Atproto Spaces: the permissioned-data surface for a user's own space repos. Reads and
         // writes are OAuth-authed here; the space-credential branch a syncer uses arrives with

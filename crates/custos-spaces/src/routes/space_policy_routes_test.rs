@@ -79,7 +79,7 @@ async fn stored(state: &CoreState) -> (crate::db::spaces::SpaceRow, crate::polic
 
 async fn may_read(state: &CoreState, did: &str) -> bool {
     let (row, policy) = stored(state).await;
-    authorize_credential_request(state, &row, &policy, did, None)
+    authorize_credential_request(state, &row, &policy, Some(did), None)
         .await
         .is_ok()
 }

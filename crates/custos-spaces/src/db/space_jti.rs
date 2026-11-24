@@ -22,7 +22,7 @@ use sqlx::{Sqlite, SqlitePool};
 /// independent of the same string on another (the table key is `(scope, jti)`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpaceJtiScope {
-    /// `getSpaceCredential`'s single-use delegation tokens.
+    /// `authorizeSpaceSync`'s single-use delegation tokens.
     Delegation,
     /// Client attestation JWTs.
     Attestation,

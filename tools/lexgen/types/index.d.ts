@@ -270,11 +270,6 @@ export type XrpcMethods = {
     input: com_atproto_space.GetSpaceInput;
     output: com_atproto_space.GetSpaceOutput;
   };
-  "com.atproto.space.getSpaceCredential": {
-    params: com_atproto_space.GetSpaceCredentialParams;
-    input: com_atproto_space.GetSpaceCredentialInput;
-    output: com_atproto_space.GetSpaceCredentialOutput;
-  };
   "com.atproto.space.importRepo": {
     params: com_atproto_space.ImportRepoParams;
     input: com_atproto_space.ImportRepoInput;

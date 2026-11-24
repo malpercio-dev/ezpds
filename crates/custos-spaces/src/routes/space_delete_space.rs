@@ -25,7 +25,7 @@ pub struct DeleteSpaceInput {
 
 /// POST /xrpc/com.atproto.space.deleteSpace
 ///
-/// The `spaces` row survives as a tombstone (so `getSpaceCredential` keeps answering
+/// The `spaces` row survives as a tombstone (so `authorizeSpaceSync` keeps answering
 /// `SpaceDeleted`) with its policy cleared; the member list, notify registrations and the
 /// authority's own repo (and the writer set) go with it, and every service that was subscribed
 /// is told to drop its copies. Other members' repos are left where they are — their records are

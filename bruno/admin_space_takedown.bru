@@ -29,7 +29,7 @@ docs {
   space whose authority is a foreign server (see `GET /v1/admin/spaces`).
 
   While a takedown is applied, every space seam answers `SpaceNotFound` for the space:
-  reads, writes, `getSpaceCredential`, write-notification fan-out, and the member-facing
+  reads, writes, `authorizeSpaceSync`, write-notification fan-out, and the member-facing
   `com.atproto.space.listSpaces`, which omits it. `SpaceNotFound` and not `SpaceDeleted`
   on purpose — `SpaceDeleted` is the spec's durable "drop your copy" signal to syncers,
   and a takedown is reversible. It is also the reply an unknown space gets, so which

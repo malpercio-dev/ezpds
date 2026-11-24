@@ -22,6 +22,8 @@ pub struct SpaceRow {
     /// authority's tombstone is durable and clears the policy, this is a reversible refusal to
     /// serve that leaves everything else in place.
     pub takendown_at: Option<String>,
+    /// The space revision of the latest writer-set change (V074), `None` before the first.
+    pub last_space_rev: Option<String>,
 }
 
 impl SpaceRow {
@@ -69,7 +71,8 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as::<_, SpaceRow>(
-        "SELECT uri, authority_did, policy, deleted_at, takendown_at FROM spaces WHERE uri = ?",
+        "SELECT uri, authority_did, policy, deleted_at, takendown_at, last_space_rev FROM spaces \
+         WHERE uri = ?",
     )
     .bind(uri)
     .fetch_optional(executor)
@@ -146,7 +149,7 @@ where
 }
 
 /// Tombstone a space: set `deleted_at` and drop its policy. The row stays so
-/// `getSpaceCredential` keeps answering `SpaceDeleted`; with no policy left, `createSpace`
+/// `authorizeSpaceSync` keeps answering `SpaceDeleted`; with no policy left, `createSpace`
 /// may claim the URI again.
 pub async fn mark_space_deleted<'e, E>(executor: E, uri: &str) -> Result<(), sqlx::Error>
 where

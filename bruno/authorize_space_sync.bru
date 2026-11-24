@@ -1,0 +1,53 @@
+meta {
+  name: Authorize Space Sync (space.authorizeSpaceSync)
+  type: http
+  seq: 141
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.authorizeSpaceSync
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "space": "at://did:plc:exampleauthority/space/org.example.bucket/self",
+    "credentialKey": "{{credentialKey}}",
+    "delegationToken": "{{delegationToken}}",
+    "clientAttestation": "{{clientAttestation}}"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  credentialKey: <the client's P-256 did:key (did:key:zDn…) — becomes the credential's cnf.kid>
+  delegationToken: <token from getDelegationToken on the user's PDS — omit the field for a publicRead memberspace>
+  clientAttestation: <ES256 atproto-client-attestation+jwt signed by a key in the client's metadata JWKS: iss = sub = client_id, aud {authorityDid}#atproto_pds, fresh iat/exp, single-use jti — omit the field unless the space gates on the app>
+}
+
+docs {
+  Atproto Spaces (proposal 0016). Called on the space authority's PDS, with no request
+  authorization: mints a 10 min space credential (`typ atproto-space-credential+jwt`, `kid
+  #atproto`, no `aud`, `cnf.kid` = `credentialKey`) and returns it with the space's current
+  `spaceRev` (omitted before the space's first update). The credential is then presented as
+  `Authorization: Atproto-Space-Credential <credential>` with an `Atproto-Space-Audience`
+  header (the repo owner's DID on a repo read, the authority's on a space-level one) and an
+  RFC 9421 signature tagged `atproto-space-credential` covering both, by the `credentialKey`.
+
+  `delegationToken` names the account (its `aud` is `{authorityDid}#atproto_pds`); without
+  one, only a `publicRead` memberspace mints. `clientAttestation` is verified whenever present:
+  `client_id` (its `iss`/`sub`) is resolved to its client-metadata document and the JWKS that
+  document publishes, and the `jti` is spent single-use. The attested client_id is what
+  memberspace's `allowedApps` is matched against, and what is forwarded to a managing app's
+  `checkAccess`. The lexicon's `notify` is not read yet.
+
+  Errors (lexicon names, all HTTP 400): InvalidRequest (credentialKey not a P-256 did:key),
+  SpaceNotFound (unknown, or not anchored on an account here), RepoTakendown / RepoDeactivated
+  (the authority's account), SpaceDeleted, InvalidDelegationToken (bad
+  signature/typ/kid/sub/aud/exp, or already used), InvalidClientAttestation (malformed,
+  unresolvable client_id, wrong signature/aud, expired, or replayed), AppNotAuthorized (no
+  attestation, or a client_id not on `allowedApps`), AccountNotAuthorized (refused on the
+  account: not a reading member, no delegation token on a space that is not publicRead, or a
+  managing app that answered no or could not be reached).
+}

@@ -178,13 +178,14 @@ Every `com.atproto.space.*` read/sync route authenticates through
 `auth::space::authenticate_space_read` (`crates/custos-spaces/src/auth/space.rs`), the
 one seam accepting a covering OAuth grant *or* a space credential — never a
 bearer credential. A credential is bound to a P-256 key (`cnf.kid`) and every
-use carries an RFC 9421 `atproto-space` signature over `Authorization` and
-`Atproto-Space-Audience`; the audience must be the DID the request is for, so a
-credential captured at one host cannot be replayed at another. Replay against
-the same audience is allowed until the 10-minute credential expires, by spec.
-The compiler confines `verify_space_credential` (private to `auth::space`) and
-`verify_space_signature` (`pub(super)` in `auth`) to that seam; the mint route
-can only reach `verify_delegation_signature`, which checks the exchange shape.
+use carries an RFC 9421 signature tagged `atproto-space-credential` over
+`Authorization` and `Atproto-Space-Audience`; the audience must be the DID the
+request is for, so a credential captured at one host cannot be replayed at
+another. Replay against the same audience is allowed until the 10-minute
+credential expires, by spec. The key is named at minting (`authorizeSpaceSync`'s
+`credentialKey`) without proof of possession, which every use then supplies. The
+compiler confines `verify_space_credential` (private to `auth::space`) and
+`verify_credential_signature` (`pub(super)` in `auth`) to that seam.
 
 ### Supply chain
 

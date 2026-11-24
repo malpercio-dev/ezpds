@@ -27,7 +27,8 @@ pub struct SpaceListReposParams {
 ///
 /// Answered only for a space this host is the authority for. A space whose row carries no
 /// policy is one this host merely keeps repos in, and its authority is the one to
-/// ask, so it reads as `SpaceNotFound` — the same reply an unknown space gets.
+/// ask, so it reads as `SpaceNotFound` — the same reply an unknown space gets. A taken-down or
+/// deactivated authority answers `RepoTakendown` / `RepoDeactivated`.
 pub async fn space_list_repos(
     State(state): State<CoreState>,
     method: Method,
@@ -37,6 +38,8 @@ pub async fn space_list_repos(
 ) -> Result<impl IntoResponse, ApiError> {
     let space = crate::views::parse_space(&params.space)?;
     crate::auth::space::authenticate_space_access(&state, &headers, &method, &uri, &space).await?;
+    // The authority's own status gates the writer listing, whoever is asking.
+    crate::auth::space::require_active_space_host(&state, &space).await?;
 
     crate::views::require_local_authority(&state, &space).await?;
 
