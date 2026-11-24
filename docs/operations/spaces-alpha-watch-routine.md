@@ -1,6 +1,6 @@
 # Spaces alpha watch routine
 
-**Last verified:** 2026-08-20
+**Last verified:** 2026-11-23
 
 A cloud-hosted Claude Code Routine (fresh remote session per run, surviving any
 one machine — unlike the machine-local routines in
@@ -31,15 +31,21 @@ Wave 10: Spaces implementation issues never silently drift from upstream.
 > (Custos PDS). The Spaces alpha ships updates on Thursdays; you run on Friday
 > to catch this week's changes.
 >
-> Context: `docs/design-plans/2026-07-17-permissioned-data-gap-analysis.md` is
-> the living gap analysis pinned to the Spaces spec. Its §0 is a dated
+> Context: docs/operations/spaces-alpha-watch-routine.md in the repo documents
+> this routine. docs/design-plans/2026-07-17-permissioned-data-gap-analysis.md
+> is the living gap analysis pinned to the Spaces spec. Its §0 is a dated
 > spec-delta log naming the proposals-repo commits it was last synced against.
 > Implementation is tracked in Linear (team MM, project ezpds, label "Wave 10:
-> Spaces", issues MM-506…MM-518); the issue breakdown is §7 of that doc.
+> Spaces") as the open issues titled "Spaces: …"; the slice plan is the
+> resolution comment on MM-675. The closed issues MM-506…MM-518 are history:
+> never map a delta to them. The conformance target is frozen at the
+> `permissioned-data` branch of `bluesky-social/atproto` at commit 047d603.
+> Anything upstream past that commit is a NEW issue for the maintainer to
+> triage, never a silent pin bump.
 >
 > Steps:
 > 1. In the ezpds checkout, `git fetch origin main` and read the gap-analysis
->    doc from `origin/main`. Note the newest proposals-repo commit its §0
+>    doc from origin/main. Note the newest proposals-repo commit its §0
 >    references.
 > 2. `git clone --filter=blob:none
 >    https://github.com/bluesky-social/proposals` into scratch space and diff
@@ -47,19 +53,25 @@ Wave 10: Spaces implementation issues never silently drift from upstream.
 > 3. If the proposal changed, also sparse-clone the `permissioned-data` branch
 >    of `bluesky-social/atproto` (paths `lexicons/` and `packages/space/`) and
 >    check whether the lexicon file set, golden test vectors, or endpoint
->    surface moved relative to what the doc claims.
+>    surface moved relative to what the doc claims and relative to the pin
+>    047d603.
 > 4. If there are NO material changes: finish with a one-line "no spec changes
 >    this week" report. Do not commit, push, or open a PR.
 > 5. If there ARE material changes: update the doc — append dated entries to
 >    §0 and correct every affected section (repo format, auth, endpoints,
->    scopes, phasing, risks, §7 issue rows). Branch
->    `claude/spaces-alpha-watch-YYYYMMDD` from `origin/main`, run
->    `scripts/docs-check.sh`, commit, push, and open a PR titled "Spaces alpha
->    watch: spec deltas for YYYY-MM-DD". In the PR body, summarize each delta
->    and name the Wave 10 issues it affects. Docs-only changes need no
->    changelog fragment.
+>    scopes, phasing, risks). Branch `claude/spaces-alpha-watch-YYYYMMDD` from
+>    origin/main, run `scripts/docs-check.sh`, commit, push, and open a PR
+>    titled "Spaces alpha watch: spec deltas for YYYY-MM-DD". In the PR body,
+>    summarize each delta and, for each, either name the open "Spaces: …"
+>    issue it affects or, if it lands past the pin or fits no open issue,
+>    propose a new issue (title plus one-paragraph scope) for the maintainer
+>    to file. Never write MM-659 (the closed conformance map) in a PR title or
+>    body: merging would cascade Done to its children. Docs-only changes need
+>    no changelog fragment.
 > 6. If the Linear connector is available in your session, also comment the
->    relevant deltas on the affected Wave 10 issues; if it is not, the PR body
->    is the record.
+>    relevant deltas on the affected open "Spaces: …" issues, writing upstream
+>    pull requests as "pull request 5864" (no `#`, which Linear links to
+>    unrelated ezpds PRs). Do not create issues yourself. If the connector is
+>    not available, the PR body is the record.
 >
 > Follow the repo conventions in CLAUDE.md / AGENTS.md throughout.
