@@ -5,9 +5,10 @@
 //! A syncer reading a space record checks a MAC keyed by a secret it agrees with the writer's
 //! host, using the writer's `#atproto_kem` key from its DID document. If the document does not
 //! publish the key this host actually holds, no syncer can verify what the account writes, so
-//! every space write route calls [`require_kem_key_published`] first and refuses with
-//! `KemKeyNotPublished` until the account publishes it (`POST /v1/kem-key`). Reads stay open;
-//! they are served without a MAC.
+//! every space write route calls [`require_kem_key_published`] first (and
+//! `policy::commit_with_published` calls [`require_kem_key_published_in`] before it publishes
+//! records), refusing with `KemKeyNotPublished` until the account publishes it
+//! (`POST /v1/kem-key`). Reads stay open; they are served without a MAC.
 //!
 //! The check reads this host's cached copy of the account's document, never plc.directory: the
 //! cache is refreshed by every path that changes the document here (genesis, the KEM ceremony,
