@@ -354,6 +354,7 @@ fn build_child_genesis_op(
     delegation_seed: &[u8; 32],
     index: u32,
     repo_key_id: &crypto::DidKeyUri,
+    kem_key_id: &crypto::DidKeyUri,
     handle: &str,
     pds_url: &str,
 ) -> Result<crypto::PlcGenesisOp, AgentsError> {
@@ -366,6 +367,7 @@ fn build_child_genesis_op(
     crypto::build_did_plc_genesis_op_multi_rotation_with_external_signer(
         &rotation_keys,
         repo_key_id,
+        Some(kem_key_id),
         handle,
         pds_url,
         crate::disaster_recovery::recovery_sign_closure(child_key.private_key_bytes.clone()),
@@ -378,9 +380,9 @@ fn build_child_genesis_op(
 /// Mint the agent an account of its own, then confirm the claim with it.
 ///
 /// The order matters and is not rearrangeable. The child's `did:plc` *is* the hash of the genesis
-/// operation, so every key the operation names has to exist first: the repo-signing key is reserved
-/// anonymously from the PDS (there is no DID yet to reserve it against), and the rotation key is
-/// derived locally at `index` off the delegation seed.
+/// operation, so every key the operation names has to exist first: the repo-signing key and the
+/// Spaces KEM key are reserved anonymously from the PDS (there is no DID yet to reserve them
+/// against), and the rotation key is derived locally at `index` off the delegation seed.
 ///
 /// Everything that can reject — handle validation, genesis verification, the reserved-key check,
 /// plc.directory publication — happens on the server strictly before the claim attempt is spent,
@@ -404,11 +406,21 @@ async fn mint_child_from_claim_impl(
                 message: format!("could not reserve a signing key: {e}"),
             })
         })?;
+    // The child's genesis op publishes this as `atproto_kem`; the PDS refuses a child without it.
+    let kem_key = pds_client
+        .reserve_kem_key(pds_url, None)
+        .await
+        .map_err(|e| {
+            AgentsError::Shared(SharedFailure::NetworkError {
+                message: format!("could not reserve a KEM key: {e}"),
+            })
+        })?;
 
     let genesis = build_child_genesis_op(
         delegation_seed,
         index,
         &crypto::DidKeyUri(repo_key),
+        &crypto::DidKeyUri(kem_key),
         handle,
         pds_url,
     )?;
@@ -763,9 +775,15 @@ mod tests {
     #[test]
     fn child_genesis_is_signed_by_the_derived_child_key() {
         let repo_key = test_repo_key();
-        let genesis =
-            build_child_genesis_op(&TEST_SEED, 0, &repo_key, "scribe.example.com", TEST_PDS)
-                .unwrap();
+        let genesis = build_child_genesis_op(
+            &TEST_SEED,
+            0,
+            &repo_key,
+            &repo_key,
+            "scribe.example.com",
+            TEST_PDS,
+        )
+        .unwrap();
 
         let expected = crypto::derive_recovery_keypair(&crypto::derive_child_seed(&TEST_SEED, 0))
             .unwrap()
@@ -790,9 +808,16 @@ mod tests {
         let repo_key = test_repo_key();
         let dids: Vec<String> = (0..3)
             .map(|i| {
-                build_child_genesis_op(&TEST_SEED, i, &repo_key, "scribe.example.com", TEST_PDS)
-                    .unwrap()
-                    .did
+                build_child_genesis_op(
+                    &TEST_SEED,
+                    i,
+                    &repo_key,
+                    &repo_key,
+                    "scribe.example.com",
+                    TEST_PDS,
+                )
+                .unwrap()
+                .did
             })
             .collect();
         assert_eq!(
@@ -806,10 +831,24 @@ mod tests {
     #[test]
     fn the_same_index_re_derives_the_same_child_key() {
         let repo_key = test_repo_key();
-        let a =
-            build_child_genesis_op(&TEST_SEED, 2, &repo_key, "a.example.com", TEST_PDS).unwrap();
-        let b =
-            build_child_genesis_op(&TEST_SEED, 2, &repo_key, "a.example.com", TEST_PDS).unwrap();
+        let a = build_child_genesis_op(
+            &TEST_SEED,
+            2,
+            &repo_key,
+            &repo_key,
+            "a.example.com",
+            TEST_PDS,
+        )
+        .unwrap();
+        let b = build_child_genesis_op(
+            &TEST_SEED,
+            2,
+            &repo_key,
+            &repo_key,
+            "a.example.com",
+            TEST_PDS,
+        )
+        .unwrap();
         assert_eq!(a.did, b.did);
     }
 
@@ -1063,6 +1102,12 @@ mod tests {
                 .path("/xrpc/com.atproto.server.reserveSigningKey");
             then.status(200)
                 .json_body(serde_json::json!({ "signingKey": test_repo_key().0 }));
+        });
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.reserveKemKey");
+            then.status(200)
+                .json_body(serde_json::json!({ "kemKey": test_repo_key().0 }));
         });
         server.mock(|when, then| {
             when.method(httpmock::Method::POST)

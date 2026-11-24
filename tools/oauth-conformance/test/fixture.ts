@@ -218,6 +218,7 @@ export async function startFixture(
           rotationKeyPrivateHex: created.rotationKeyPrivateHex,
           recoveryKeyId: created.recoveryKeyId,
           repoSigningKeyId: created.repoSigningKeyId,
+          kemKeyId: created.kemKeyId,
         },
         pds.baseUrl,
       ),

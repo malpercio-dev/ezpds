@@ -126,6 +126,16 @@ pub(crate) async fn mint_child_account(
                 "plcOp atproto key is not reserved on this server",
             )
         })?;
+    // A child publishes its Spaces KEM key from genesis, like every account this server creates:
+    // the minter reserves it with `reserveKemKey` beside the signing key, and the op must name
+    // exactly that reservation (ADR-0043).
+    let kem_key = custos_core::kem::reserved_kem_key_for_op(
+        state,
+        &child_did,
+        &verified.verification_methods,
+    )
+    .await?
+    .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "plcOp atproto_kem key is required"))?;
     let master_key: &[u8; 32] = state
         .config
         .signing_key_master_key
@@ -166,6 +176,7 @@ pub(crate) async fn mint_child_account(
             &child_did,
             &did_document,
             &repo_key,
+            &kem_key,
             &registration_id,
             &scopes_json,
             &root_string,
@@ -411,6 +422,7 @@ async fn prepare_child(
     child_did: &str,
     did_document: &serde_json::Value,
     repo_key: &RepoSigningKey,
+    kem_key: &custos_db::kem_keys::KemKey,
     registration_id: &str,
     scopes: &str,
     root: &str,
@@ -470,6 +482,9 @@ async fn prepare_child(
                 "failed to store child signing key",
             )
         })?;
+    custos_db::kem_keys::insert_active_kem_key(&mut *tx, child_did, kem_key)
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store child KEM key"))?;
     for (cid, bytes) in blocks {
         custos_db::blocks::put_block_with_rev(
             &mut tx,

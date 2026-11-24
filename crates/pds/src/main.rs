@@ -41,6 +41,7 @@ mod state;
 mod telemetry;
 mod transfer;
 mod uniqueness;
+mod wallet_plc_op;
 mod xrpc_dispatch;
 
 use common::code_gen;

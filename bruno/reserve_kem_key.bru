@@ -1,0 +1,38 @@
+meta {
+  name: Reserve KEM Key
+  type: http
+  seq: 169
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.server.reserveKemKey
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "did": "{{did}}"
+  }
+}
+
+docs {
+  # POST /xrpc/com.atproto.server.reserveKemKey
+
+  Reserve the Spaces KEM key a not-yet-created account will publish as `#atproto_kem`.
+  The counterpart of `reserveSigningKey`: filed under `did` when one is given (idempotent),
+  otherwise under the returned did:key (an agent-child mint, whose DID is the hash of an op
+  that must already name the key; anonymous calls are rate-limited per caller).
+
+  ## Response (200)
+
+  ```json
+  { "kemKey": "did:key:zDn..." }
+  ```
+
+  ## Errors
+
+  - `400` — `did` is not a valid DID
+  - `429` — too many anonymous reservations from this caller
+  - `503` — signing-key master key not configured
+}

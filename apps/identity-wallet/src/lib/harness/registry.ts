@@ -386,6 +386,7 @@ export function buildRegistry(state: WalletState): Registry {
     prepare_did_web_ceremony: (): DidWebPreparation => ({
       deviceKeyMultibase: `z${fakeDeviceKeyId('did:web')}`,
       repoKeyMultibase: `z${fakeDeviceKeyId('did:web:repo')}`,
+      kemKeyMultibase: `z${fakeDeviceKeyId('did:web:kem')}`,
       pdsUrl: state.pdsUrl ?? DEFAULT_PDS_URL,
     }),
     complete_did_web_ceremony: (args): DIDCeremonyResult => {

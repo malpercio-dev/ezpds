@@ -1205,6 +1205,23 @@ async fn test_reserve_signing_key_success() {
     assert_eq!(result.unwrap(), signing_key);
 }
 
+/// reserve_kem_key POSTs to reserveKemKey and parses the kemKey response
+#[tokio::test]
+async fn test_reserve_kem_key_success() {
+    let mock_server = MockServer::start();
+    mock_server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/xrpc/com.atproto.server.reserveKemKey");
+        then.status(200)
+            .json_body(serde_json::json!({ "kemKey": "did:key:zKem" }));
+    });
+
+    let result = PdsClient::new()
+        .reserve_kem_key(&mock_server.base_url(), None)
+        .await;
+    assert_eq!(result.unwrap(), "did:key:zKem");
+}
+
 /// reserve_signing_key returns NetworkError on non-2xx status
 #[tokio::test]
 async fn test_reserve_signing_key_error() {

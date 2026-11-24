@@ -1,0 +1,46 @@
+meta {
+  name: Complete KEM key, self-hosted did:web (POST /v1/kem-key/complete)
+  type: http
+  seq: 172
+}
+
+post {
+  url: {{baseUrl}}/v1/kem-key/complete
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/kem-key/complete (self-hosted did:web)
+
+  After uploading the updated `did.json` to your domain, ask Custos to check it. Custos fetches
+  the live document through its SSRF-hardened client and promotes the staged key only if the
+  document's `#atproto_kem` is exactly that key; it then caches the document and emits
+  `#identity`. A Custos-hosted did:web needs no completion (`POST /v1/kem-key` published it)
+  and answers 400 here.
+
+  ## Response (200)
+
+  ```json
+  { "kemKey": "did:key:zStagedKemKey", "status": "published" }
+  ```
+
+  ## Errors
+
+  - `400` — no key staged, the document is not valid JSON, its `id` is not your DID, it does
+    not publish the staged key, or the account's document is Custos-hosted
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+  - `404` / `502` — the did.json endpoint is missing or unreachable
+}

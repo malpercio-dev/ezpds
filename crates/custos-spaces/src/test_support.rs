@@ -16,6 +16,14 @@ pub use custos_core::test_support::*;
 use custos_core::CoreState;
 use tower::ServiceExt;
 
+/// [`custos_core::test_support::seed_account_with_repo`], plus a published KEM key: every space
+/// writer needs one, or its writes answer `KemKeyNotPublished`.
+pub async fn seed_account_with_repo(db: &sqlx::SqlitePool, did: &str) -> crypto::P256Keypair {
+    let kp = core::seed_account_with_repo(db, did).await;
+    core::publish_kem_key(db, did).await;
+    kp
+}
+
 /// Both Spaces routers over `state`, wrapped as `pds` wraps them (see
 /// [`custos_core::test_support::test_app`]).
 pub fn test_app(state: CoreState) -> Router {

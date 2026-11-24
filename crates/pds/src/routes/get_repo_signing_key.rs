@@ -2,22 +2,30 @@
 //
 // Gathers: pending-session Bearer token, master key (config), DB pool
 // Processes: auth → reuse-or-generate per-account P-256 key → encrypt → store on pending account
-// Returns: JSON { keyId, publicKey, algorithm }; 401 without a pending session; 503 if no master key
+// Returns: JSON { keyId, publicKey, algorithm, kemKeyId, kemPublicKey }; 401 without a pending
+//          session; 503 if no master key
 
 //! GET /v1/repo-signing-key — issue (idempotently) the authenticated pending
 //! account's ATProto repo signing key. The wallet publishes the returned
 //! did:key as the new DID's `#atproto` verification method, and the PDS later
 //! signs every repo commit with this per-account key, not the shared operator
 //! key (`relay_signing_keys`).
+//!
+//! The same call issues the account's Spaces KEM key (ADR-0043), which the
+//! wallet publishes as `#atproto_kem` in the same genesis op. Both keys are
+//! issued here, before the DID exists, because a did:plc is the hash of its
+//! genesis op: every key the op names has to be known before the wallet signs.
 
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::Serialize;
 
-use common::{ApiError, ApiResultExt, ErrorCode};
+use common::{ApiError, ApiResultExt};
 
 use crate::app::AppState;
 use custos_core::auth::guards::require_pending_session;
-use custos_db::repo_keys::{get_pending_repo_key, set_pending_repo_key, RepoSigningKey};
+use custos_core::kem::generate_wrapped_key;
+use custos_db::kem_keys::{get_pending_kem_key, set_pending_kem_key};
+use custos_db::repo_keys::{get_pending_repo_key, set_pending_repo_key};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +33,9 @@ pub struct RepoSigningKeyResponse {
     key_id: String,
     public_key: String,
     algorithm: String,
+    /// The KEM key the genesis op must publish as `verificationMethods.atproto_kem`.
+    kem_key_id: String,
+    kem_public_key: String,
 }
 
 pub async fn get_repo_signing_key(
@@ -33,60 +44,48 @@ pub async fn get_repo_signing_key(
 ) -> Result<Json<RepoSigningKeyResponse>, ApiError> {
     let session = require_pending_session(&headers, &state.db).await?;
 
-    // Idempotent: a retried ceremony must receive the same key it already
+    // Idempotent: a retried ceremony must receive the same keys it already
     // published, or op verification at /v1/dids would reject the mismatch.
-    if let Some(existing) = get_pending_repo_key(&state.db, &session.account_id)
+    let repo_key = match get_pending_repo_key(&state.db, &session.account_id)
         .await
         .or_internal_as(
             "failed to read pending repo signing key",
             "failed to read signing key",
-        )?
-    {
-        return Ok(Json(RepoSigningKeyResponse {
-            key_id: existing.key_id,
-            public_key: existing.public_key,
-            algorithm: "p256".to_string(),
-        }));
-    }
-
-    let master_key: &[u8; 32] = state
-        .config
-        .signing_key_master_key
-        .as_ref()
-        .map(|s| &*s.0)
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::ServiceUnavailable,
-                "signing key master key not configured",
-            )
-        })?;
-
-    let keypair = crypto::generate_p256_keypair().or_internal_as(
-        "failed to generate repo signing key",
-        "key generation failed",
-    )?;
-    let private_key_encrypted = crypto::encrypt_private_key(&keypair.private_key_bytes, master_key)
-        .or_internal_as(
-            "failed to encrypt repo signing key",
-            "key encryption failed",
-        )?;
-
-    let key = RepoSigningKey {
-        key_id: keypair.key_id.to_string(),
-        public_key: keypair.public_key,
-        private_key_encrypted,
+        )? {
+        Some(existing) => existing,
+        None => {
+            let key = generate_wrapped_key(&state)?;
+            set_pending_repo_key(&state.db, &session.account_id, &key)
+                .await
+                .or_internal_as(
+                    "failed to store repo signing key",
+                    "failed to store signing key",
+                )?;
+            key
+        }
     };
-    set_pending_repo_key(&state.db, &session.account_id, &key)
+    // Issued separately from the repo key so a pending account that fetched its repo key
+    // before KEM keys existed still gets one on its next call.
+    let kem_key = match get_pending_kem_key(&state.db, &session.account_id)
         .await
-        .or_internal_as(
-            "failed to store repo signing key",
-            "failed to store signing key",
-        )?;
+        .or_internal_as("failed to read pending KEM key", "failed to read KEM key")?
+    {
+        Some(existing) => existing,
+        None => {
+            let key = generate_wrapped_key(&state)?;
+            set_pending_kem_key(&state.db, &session.account_id, &key)
+                .await
+                .or_internal_as("failed to store KEM key", "failed to store KEM key")?;
+            key
+        }
+    };
 
     Ok(Json(RepoSigningKeyResponse {
-        key_id: key.key_id,
-        public_key: key.public_key,
+        key_id: repo_key.key_id,
+        public_key: repo_key.public_key,
         algorithm: "p256".to_string(),
+        kem_key_id: kem_key.key_id,
+        kem_public_key: kem_key.public_key,
     }))
 }
 
@@ -209,6 +208,13 @@ mod tests {
         assert_eq!(resp2.status(), StatusCode::OK);
         let j2 = body_json(resp2).await;
         assert_eq!(j2["keyId"].as_str().unwrap(), key_id1);
+
+        // The KEM key is issued with it, is stable too, and is never the signing key.
+        let kem_id = j1["kemKeyId"].as_str().unwrap();
+        assert!(kem_id.starts_with("did:key:z"));
+        assert_ne!(kem_id, key_id1);
+        assert_eq!(j2["kemKeyId"], j1["kemKeyId"]);
+        assert_eq!(j2["kemPublicKey"], j1["kemPublicKey"]);
     }
 
     #[tokio::test]

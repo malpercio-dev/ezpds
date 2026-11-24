@@ -29,7 +29,7 @@ variable.
 
 The authoritative inventory is `SecretFamily::ALL` in
 [`crates/custos-db/src/kek.rs`](../../crates/custos-db/src/kek.rs) — the single list the
-re-wrap tool iterates. There are **eight** KEK-wrapped storage families:
+re-wrap tool iterates. The families an incident has to account for:
 
 | Secret | Table(s) / column | Migration | Recovery class |
 | -- | -- | -- | -- |
@@ -41,6 +41,8 @@ re-wrap tool iterates. There are **eight** KEK-wrapped storage families:
 | JWT HS256 secret | `jwt_signing_secret` | V015 | Easy — drop row, re-mint |
 | Iroh Ed25519 node key | `iroh_identity` | V022 | Easy — drop row, re-mint |
 | PDS-held Shamir Share 2 | `accounts.recovery_share` | V010 | **Hard** — requires the original KEK |
+| **Per-account Spaces KEM keys** (`verificationMethods.atproto_kem`, active and staged) | `kem_keys` | V080 | **Medium** — re-stage through `POST /v1/kem-key` |
+| Pre-reserved KEM keys / not-yet-activated accounts' KEM keys | `reserved_kem_keys`, `pending_accounts.kem_private_key_encrypted` | V080 | Easy — delete; clients reserve again |
 
 The three "easy" secrets are **self-healing**: delete the single row, and
 `load_or_create_*` in
@@ -101,6 +103,17 @@ Set a **fresh** KEK, then recover each secret family:
 3. **Escrow Shamir shares** — **permanently undecryptable.** There is no
    server-side re-mint because a replacement would no longer be one of the
    shares issued to the user. Recovery must use the user's Share 1 and Share 3.
+4. **Re-stage KEM keys** — the KEM keys in `kem_keys` are undecryptable too, so
+   this host can no longer compute the Spaces MACs syncers check (ADR-0043). Each
+   account re-stages through `POST /v1/kem-key`: a Custos-hosted did:web is
+   republished at once; a did:plc account's wallet signs an op setting
+   `atproto_kem` to the new key and the PDS completes it
+   (`POST /v1/kem-key/complete`); a self-hosted did:web user uploads the updated
+   `did.json`, then completes. Delete `reserved_kem_keys` rows and clear
+   `pending_accounts.kem_*` so reservations and ceremonies start fresh. No rotation
+   key is involved, and the account's commits and identity are unaffected; do this
+   after the easy secrets and before the repo-key rotations, so it rides along with
+   the same wallet prompt queue.
 
 > **Takeaway:** a lost KEK is *nearly as bad as a compromised one*, purely because
 > of the repo keys. Loss and compromise share the same hard recovery path
@@ -169,16 +182,25 @@ node id.
   unauthorized ops). The repo is self-certifying. So the identity itself is not
   lost; the commit-signing key is what must be rotated.
 
+### 2.5 Re-stage KEM keys
+
+A leaked KEM key lets its holder compute the Spaces MACs syncers accept as proof
+that this host served a record (ADR-0043). Re-stage every account's key exactly as in
+1.2 step 4 (`POST /v1/kem-key`, then the wallet-signed or `did.json` completion), and
+delete the reservation and pending rows. Order it before the repo-key rotations in
+2.4: it needs no rotation key, so it is not blocked on the slowest wallets.
+
 ---
 
 ## Quick reference — ordering
 
 **Loss:** verify backup → (if recoverable) restore & boot, done → else: new KEK →
-drop + re-mint easy secrets → per-account wallet-driven repo-key rotation.
+drop + re-mint easy secrets → re-stage KEM keys → per-account wallet-driven
+repo-key rotation.
 
 **Compromise:** rotate `EZPDS_ADMIN_TOKEN` + mail tokens + env access → new KEK +
-`pds rewrap-master-key` → drop + re-mint easy secrets → per-account wallet-driven
-repo-key rotation.
+`pds rewrap-master-key` → drop + re-mint easy secrets → re-stage KEM keys →
+per-account wallet-driven repo-key rotation.
 
 ---
 

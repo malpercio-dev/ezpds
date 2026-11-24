@@ -47,6 +47,14 @@ pub async fn activate_account_handler(
     }
     oauth_scopes::require_account(&user.scope_claim, "status", "manage")?;
 
+    // An account that holds a Spaces KEM key comes back online only once its DID document
+    // publishes that key (ADR-0043). This is the end of an inbound migration: the wallet's
+    // migration op should have set `atproto_kem` to the key `getRecommendedDidCredentials`
+    // handed it, and a document that skipped it would leave every syncer unable to agree a MAC
+    // secret with us. Checked against a freshly resolved document, never the cache, like the
+    // reference's `assertValidDidDocumentForService`.
+    require_kem_key_published_for_activation(&state, &user.did).await?;
+
     // Build the Sync v1.1 `#sync` state assertion (a CAR carrying just the signed commit block)
     // *before* opening the transaction: this crate's single-connection pool can't serve the block
     // read while the transaction holds the connection. It is best-effort — an account with no repo,
@@ -149,6 +157,32 @@ pub async fn activate_account_handler(
     }
 
     Ok(StatusCode::OK)
+}
+
+/// Refuse to activate a deactivated account whose live DID document does not publish the KEM key
+/// it holds. A no-op for an account with no KEM key, or one that is already active (activating
+/// it again changes nothing, so it costs no DID resolution).
+async fn require_kem_key_published_for_activation(
+    state: &AppState,
+    did: &common::Did,
+) -> Result<(), ApiError> {
+    let Some(held) = custos_db::kem_keys::get_active_kem_key(&state.db, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to load KEM key for activation");
+            ApiError::new(ErrorCode::InternalError, "failed to activate account")
+        })?
+    else {
+        return Ok(());
+    };
+    if custos_db::accounts::account_lifecycle(&state.db, did).await?
+        != Some(custos_db::accounts::AccountLifecycle::Deactivated)
+    {
+        return Ok(());
+    }
+    let document =
+        custos_core::identity::resolution::resolve_did_document_force_refresh(state, did).await?;
+    custos_core::kem::check_activation_document(did, &document, &held)
 }
 
 /// Assemble the Sync v1.1 `#sync` input for an account being reactivated: a CARv1 (root = the
@@ -371,6 +405,64 @@ mod tests {
 
         let response = app(state).oneshot(activate_request(&token)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A deactivated account holding a KEM key stays deactivated until its live DID document
+    /// publishes that key.
+    #[tokio::test]
+    async fn activation_requires_the_live_document_to_publish_the_kem_key() {
+        use crate::routes::test_utils::{seed_account_with_repo, seed_kem_key};
+        use wiremock::{
+            matchers::{method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+
+        let did = "did:plc:kemactivation00000000000";
+        let plc = MockServer::start().await;
+        let state = test_state_with_plc_url(plc.uri()).await;
+        seed_account_with_repo(&state.db, did).await;
+        sqlx::query("UPDATE accounts SET deactivated_at = '2026-01-01T00:00:00Z' WHERE did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let held = seed_kem_key(&state.db, did).await;
+        let token = access_jwt(&state.jwt_secret, did);
+        let doc = |kem: &str| {
+            serde_json::json!({
+                "id": did,
+                "verificationMethod": [{"id": "#atproto_kem", "type": "Multikey",
+                    "controller": did, "publicKeyMultibase": kem}],
+            })
+        };
+
+        let stale = Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(doc("zSomethingElse")))
+            .mount_as_scoped(&plc)
+            .await;
+        let refused = app(state.clone())
+            .oneshot(activate_request(&token))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert!(deactivated_at(&state.db, did).await.is_some());
+        drop(stale);
+
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(doc(held.key_id.strip_prefix("did:key:").unwrap())),
+            )
+            .mount(&plc)
+            .await;
+        let accepted = app(state.clone())
+            .oneshot(activate_request(&token))
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+        assert!(deactivated_at(&state.db, did).await.is_none());
     }
 
     #[tokio::test]

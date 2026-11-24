@@ -22,7 +22,7 @@
 //!   `AuthFactorTokenRequired` for email 2FA), `refresh_session` (rotate a Bearer pair;
 //!   no sub/aud validation — see `sovereign_session::refresh_bearer_session`),
 //!   `fetch_repo_car`,
-//!   `fetch_blob`/`fetch_blob_with_type`, `list_blobs`, `reserve_signing_key`,
+//!   `fetch_blob`/`fetch_blob_with_type`, `list_blobs`, `reserve_signing_key`, `reserve_kem_key`,
 //!   `delete_account`.
 //!
 //! **Status classification.** Every call routes non-2xx responses through

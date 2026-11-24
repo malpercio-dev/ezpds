@@ -96,7 +96,20 @@ async fn seed_matching_did_document(db: &sqlx::SqlitePool, kp: &crypto::P256Keyp
 #[tokio::test]
 async fn wallet_authorized_outbound_migration_transfers_repo_and_blobs_to_a_peer_pds() {
     let source_state = state_with_master_key_and_url(SOURCE_URL).await;
-    let dest_state = state_with_master_key_and_url(DEST_URL).await;
+    // The destination resolves the repointed document from this mock at activation.
+    let plc = wiremock::MockServer::start().await;
+    let dest_state = {
+        let base = state_with_master_key_and_url(DEST_URL).await;
+        let mut config = (*base.config).clone();
+        config.plc_directory_url = plc.uri();
+        crate::app::AppState {
+            core: custos_core::CoreState {
+                config: std::sync::Arc::new(config),
+                ..base.core
+            },
+            ..base
+        }
+    };
     assert_ne!(
         source_state.config.resolve_server_did(),
         dest_state.config.resolve_server_did(),
@@ -374,6 +387,47 @@ async fn wallet_authorized_outbound_migration_transfers_repo_and_blobs_to_a_peer
     assert_eq!(status_json["indexedRecords"], 2);
     assert_eq!(status_json["expectedBlobs"], 1);
     assert_eq!(status_json["importedBlobs"], 1);
+
+    // The wallet's migration op repointed the DID at the destination with the KEM key the
+    // destination recommended; activation checks the live document publishes it.
+    let recommended = body_json(
+        dest_app
+            .clone()
+            .oneshot(bearer(
+                "GET",
+                "/xrpc/com.atproto.identity.getRecommendedDidCredentials".to_string(),
+                Some(&dest_token),
+                Body::empty(),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let kem_key = recommended["verificationMethods"]["atproto_kem"]
+        .as_str()
+        .expect("the destination recommends its KEM key")
+        .to_string();
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(format!("/{MIGRATING_DID}")))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": MIGRATING_DID,
+                "alsoKnownAs": [format!("at://{HANDLE}")],
+                "verificationMethod": [{
+                    "id": format!("{MIGRATING_DID}#atproto_kem"),
+                    "type": "Multikey",
+                    "controller": MIGRATING_DID,
+                    "publicKeyMultibase": kem_key.strip_prefix("did:key:").unwrap(),
+                }],
+                "service": [{
+                    "id": "#atproto_pds",
+                    "type": "AtprotoPersonalDataServer",
+                    "serviceEndpoint": DEST_URL,
+                }],
+            })),
+        )
+        .mount(&plc)
+        .await;
 
     let activate_resp = dest_app
         .clone()

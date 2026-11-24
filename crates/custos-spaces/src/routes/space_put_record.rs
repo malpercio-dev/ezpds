@@ -41,6 +41,8 @@ pub async fn space_put_record(
     let user =
         crate::auth::space::authenticate_space_write(&state, &headers, &method, &uri, &body.repo)
             .await?;
+    // Refused until the writer's DID document publishes its KEM key (ADR-0043).
+    crate::kem_gate::require_kem_key_published(&state, &user.did).await?;
 
     // Read before the scope check, unlike the reference, which reads inside the write
     // transaction. The gap only ever mis-picks `update` for a record concurrently deleted (or

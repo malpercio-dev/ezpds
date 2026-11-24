@@ -379,8 +379,31 @@ impl PdsClient {
         pds_url: &str,
         did: Option<&str>,
     ) -> Result<String, PdsClientError> {
+        self.reserve_key(pds_url, did, "reserveSigningKey", "signingKey")
+            .await
+    }
+
+    /// Reserve a Spaces KEM key on the PDS, the counterpart of [`Self::reserve_signing_key`]
+    /// (`com.atproto.server.reserveKemKey`, returning `kemKey`). The genesis op publishes it as
+    /// `verificationMethods.atproto_kem`; the PDS holds the private half.
+    pub async fn reserve_kem_key(
+        &self,
+        pds_url: &str,
+        did: Option<&str>,
+    ) -> Result<String, PdsClientError> {
+        self.reserve_key(pds_url, did, "reserveKemKey", "kemKey")
+            .await
+    }
+
+    async fn reserve_key(
+        &self,
+        pds_url: &str,
+        did: Option<&str>,
+        method: &'static str,
+        field: &'static str,
+    ) -> Result<String, PdsClientError> {
         let url = format!(
-            "{}/xrpc/com.atproto.server.reserveSigningKey",
+            "{}/xrpc/com.atproto.server.{method}",
             pds_url.trim_end_matches('/')
         );
 
@@ -395,28 +418,26 @@ impl PdsClient {
             .send()
             .await
             .map_err(|e| {
-                self.note_transport_failure("reserveSigningKey", Some(&url), &e);
+                self.note_transport_failure(method, Some(&url), &e);
                 PdsClientError::NetworkError {
-                    message: format!("failed to reserve signing key: {}", e),
+                    message: format!("failed to call {method}: {}", e),
                 }
             })?;
 
-        let resp = xrpc_ok("reserveSigningKey", resp, self.observer.as_ref()).await?;
+        let resp = xrpc_ok(method, resp, self.observer.as_ref()).await?;
 
-        #[derive(Deserialize)]
-        struct ReserveSigningKeyResponse {
-            #[serde(rename = "signingKey")]
-            signing_key: String,
-        }
-
-        resp.json::<ReserveSigningKeyResponse>()
-            .await
-            .map(|r| r.signing_key)
-            .map_err(|e| {
-                self.note_transport_failure("reserveSigningKey", Some(&url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("failed to parse reserve_signing_key response: {}", e),
-                }
+        let parsed = resp.json::<serde_json::Value>().await.map_err(|e| {
+            self.note_transport_failure(method, Some(&url), &e);
+            PdsClientError::NetworkError {
+                message: format!("failed to parse {method} response: {}", e),
+            }
+        })?;
+        parsed
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| PdsClientError::NetworkError {
+                message: format!("{method} response has no {field}"),
             })
     }
 

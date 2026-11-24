@@ -54,11 +54,18 @@ pub enum SecretFamily {
     /// leaving either stranded under the old KEK would break the re-wrap's
     /// all-or-nothing guarantee.
     NotificationSenderKeys,
+    /// Per-account Spaces KEM keys, active and staged (`kem_keys`, V080).
+    KemKeys,
+    /// `reserveKemKey` reservations (`reserved_kem_keys`, V080).
+    ReservedKemKeys,
+    /// The DID ceremony's KEM key on the pending account
+    /// (`pending_accounts.kem_private_key_encrypted`, V080; nullable).
+    PendingKemKeys,
 }
 
 impl SecretFamily {
     /// Every KEK-wrapped column in the schema, in sweep order.
-    pub const ALL: [SecretFamily; 10] = [
+    pub const ALL: [SecretFamily; 13] = [
         SecretFamily::SigningKeys,
         SecretFamily::ReservedSigningKeys,
         SecretFamily::PendingAccounts,
@@ -69,6 +76,9 @@ impl SecretFamily {
         SecretFamily::RecoveryShares,
         SecretFamily::RecoveryEscrow,
         SecretFamily::NotificationSenderKeys,
+        SecretFamily::KemKeys,
+        SecretFamily::ReservedKemKeys,
+        SecretFamily::PendingKemKeys,
     ];
 
     /// The owning table name, for reporting and error messages.
@@ -84,6 +94,9 @@ impl SecretFamily {
             SecretFamily::RecoveryShares => "accounts.recovery_share",
             SecretFamily::RecoveryEscrow => "recovery_escrow",
             SecretFamily::NotificationSenderKeys => "notification_sender_keys",
+            SecretFamily::KemKeys => "kem_keys",
+            SecretFamily::ReservedKemKeys => "reserved_kem_keys",
+            SecretFamily::PendingKemKeys => "pending_accounts.kem_private_key_encrypted",
         }
     }
 
@@ -119,6 +132,14 @@ impl SecretFamily {
                 // UPDATE's text bind converts back under SQLite's INTEGER affinity.
                 "SELECT CAST(kid AS TEXT), secret_key_encrypted FROM notification_sender_keys"
             }
+            SecretFamily::KemKeys => "SELECT id, private_key_encrypted FROM kem_keys",
+            SecretFamily::ReservedKemKeys => {
+                "SELECT id, private_key_encrypted FROM reserved_kem_keys"
+            }
+            SecretFamily::PendingKemKeys => {
+                "SELECT id, kem_private_key_encrypted FROM pending_accounts \
+                 WHERE kem_private_key_encrypted IS NOT NULL"
+            }
         }
     }
 
@@ -152,6 +173,13 @@ impl SecretFamily {
             }
             SecretFamily::NotificationSenderKeys => {
                 "UPDATE notification_sender_keys SET secret_key_encrypted = ? WHERE kid = ?"
+            }
+            SecretFamily::KemKeys => "UPDATE kem_keys SET private_key_encrypted = ? WHERE id = ?",
+            SecretFamily::ReservedKemKeys => {
+                "UPDATE reserved_kem_keys SET private_key_encrypted = ? WHERE id = ?"
+            }
+            SecretFamily::PendingKemKeys => {
+                "UPDATE pending_accounts SET kem_private_key_encrypted = ? WHERE id = ?"
             }
         }
     }

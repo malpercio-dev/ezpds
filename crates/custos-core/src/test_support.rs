@@ -997,13 +997,20 @@ pub async fn reserve_repo_key(db: &sqlx::SqlitePool) -> crypto::P256Keypair {
 }
 
 /// A wallet-signed did:plc genesis op for a child account: a throwaway rotation key in
-/// `rotationKeys[0]` (the slot the server requires to have signed the op) and `signing_key` as the
-/// `atproto` verification method.
-pub fn child_genesis_op(handle: &str, pds: &str, signing_key: &str) -> serde_json::Value {
+/// `rotationKeys[0]` (the slot the server requires to have signed the op), `signing_key` as the
+/// `atproto` verification method, and `kem_key` as `atproto_kem`.
+pub fn child_genesis_op(
+    handle: &str,
+    pds: &str,
+    signing_key: &str,
+    kem_key: &str,
+) -> serde_json::Value {
     let rotation = crypto::generate_p256_keypair().unwrap();
-    let op = crypto::build_did_plc_genesis_op(
-        &rotation.key_id,
-        &crypto::DidKeyUri(signing_key.to_string()),
+    let signing_key = crypto::DidKeyUri(signing_key.to_string());
+    let op = crypto::build_did_plc_genesis_op_multi_rotation(
+        &[rotation.key_id.clone(), signing_key.clone()],
+        &signing_key,
+        Some(&crypto::DidKeyUri(kem_key.to_string())),
         &rotation.private_key_bytes,
         handle,
         pds,
@@ -1375,5 +1382,71 @@ impl crate::notify::Notifier for RecordingNotifier {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(payload);
         Box::pin(std::future::ready(()))
+    }
+}
+
+/// A fresh P-256 key wrapped under [`test_master_key`], shaped for the key tables.
+pub fn wrapped_test_key() -> (crypto::P256Keypair, custos_db::kem_keys::KemKey) {
+    let kp = crypto::generate_p256_keypair().unwrap();
+    let key = custos_db::kem_keys::KemKey {
+        key_id: kp.key_id.to_string(),
+        public_key: kp.public_key.clone(),
+        private_key_encrypted: crypto::encrypt_private_key(
+            &kp.private_key_bytes,
+            &test_master_key(),
+        )
+        .unwrap(),
+    };
+    (kp, key)
+}
+
+/// Give an existing account an active KEM key and return it.
+pub async fn seed_kem_key(db: &sqlx::SqlitePool, did: &str) -> custos_db::kem_keys::KemKey {
+    let (_, key) = wrapped_test_key();
+    custos_db::kem_keys::insert_active_kem_key(db, did, &key)
+        .await
+        .unwrap();
+    key
+}
+
+/// File an anonymous `reserveKemKey` reservation, as an agent-child minter does.
+pub async fn reserve_kem_key(db: &sqlx::SqlitePool) -> crypto::P256Keypair {
+    let (kp, key) = wrapped_test_key();
+    custos_db::kem_keys::insert_reserved_kem_key(db, None, &key)
+        .await
+        .unwrap();
+    kp
+}
+
+/// Give `did` an active KEM key and publish it as `#atproto_kem` in the account's cached DID
+/// document (merged into an existing document, or a minimal one if none is cached), so space
+/// writes pass the KEM gate.
+pub async fn publish_kem_key(db: &sqlx::SqlitePool, did: &str) -> custos_db::kem_keys::KemKey {
+    let key = seed_kem_key(db, did).await;
+    let mut doc = custos_db::dids::get_did_document(db, did)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| serde_json::json!({ "id": did }));
+    with_kem_method(&mut doc, did, &key.key_id);
+    custos_db::dids::upsert_did_document(db, did, &doc)
+        .await
+        .unwrap();
+    key
+}
+
+/// Add `kem_key_id` to `doc` as its `#atproto_kem` verification method.
+pub fn with_kem_method(doc: &mut serde_json::Value, did: &str, kem_key_id: &str) {
+    let method = serde_json::json!({
+        "id": format!("{did}#atproto_kem"),
+        "type": "Multikey",
+        "controller": did,
+        "publicKeyMultibase": kem_key_id.strip_prefix("did:key:").unwrap_or(kem_key_id),
+    });
+    match doc
+        .get_mut("verificationMethod")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        Some(methods) => methods.push(method),
+        None => doc["verificationMethod"] = serde_json::json!([method]),
     }
 }

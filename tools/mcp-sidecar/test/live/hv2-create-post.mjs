@@ -51,11 +51,19 @@ const reserved = await json(
     body: '{}',
   }),
 );
+const reservedKem = await json(
+  await fetch(`${BASE}/xrpc/com.atproto.server.reserveKemKey`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  }),
+);
 const walletKey = await newKeypair();
 const childHandle = `hv2-agent-${randomSuffix(6)}.${domain}`;
 const { did: childDid, signedOp } = await buildGenesisOp({
   rotationKeyId: walletKey.keyId,
   repoSigningKeyId: reserved.signingKey,
+  kemKeyId: reservedKem.kemKey,
   rotationKeypair: walletKey.keypair,
   handle: childHandle,
   pdsUrl: BASE,

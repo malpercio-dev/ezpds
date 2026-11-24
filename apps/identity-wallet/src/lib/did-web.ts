@@ -27,13 +27,20 @@ export function didWebFromDomain(input: string): string {
   return `did:web:${raw}`;
 }
 
-/** Compose the exact document the user must publish before Custos promotes the account. */
+/**
+ * Compose the exact document the user must publish before Custos promotes the account.
+ *
+ * `kemKeyMultibase` is the Spaces KEM key Custos holds for the account; it is published as
+ * `#atproto_kem` so other servers can agree MAC secrets with Custos. A Custos that predates KEM
+ * keys issues none, and the document then omits the entry.
+ */
 export function composeDidWebDocument(
   domain: string,
   handle: string,
   deviceKeyMultibase: string,
   repoKeyMultibase: string,
   pdsUrl: string,
+  kemKeyMultibase?: string | null,
 ): DidWebDocument {
   const did = didWebFromDomain(domain);
   return {
@@ -53,6 +60,9 @@ export function composeDidWebDocument(
         controller: did,
         publicKeyMultibase: repoKeyMultibase,
       },
+      ...(kemKeyMultibase
+        ? [{ id: '#atproto_kem', type: 'Multikey' as const, controller: did, publicKeyMultibase: kemKeyMultibase }]
+        : []),
     ],
     service: [
       {

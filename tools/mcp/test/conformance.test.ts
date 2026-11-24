@@ -651,11 +651,18 @@ test('cooperative mint: handle_hint → claim as child → the agent writes as i
   ).json();
   assert.equal(preview.handleHint, handle, 'claim-preview surfaces the proposed handle');
 
-  // The wallet's half: reserve the repo signing key, then sign the child's genesis op with a
+  // The wallet's half: reserve the repo signing and KEM keys, then sign the child's genesis op with a
   // rotation key it holds. `buildGenesisOp` also fills a middle recovery slot the server does not
   // inspect for children — only rotationKeys[0] (the signer) and the atproto key matter here.
   const reserved: any = await (
     await fetch(`${pds.baseUrl}/xrpc/com.atproto.server.reserveSigningKey`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+  ).json();
+  const reservedKem: any = await (
+    await fetch(`${pds.baseUrl}/xrpc/com.atproto.server.reserveKemKey`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
@@ -667,6 +674,7 @@ test('cooperative mint: handle_hint → claim as child → the agent writes as i
     rotationKeyId: rotationKey.keyId,
     recoveryKeyId: spare.keyId,
     repoSigningKeyId: reserved.signingKey,
+    kemKeyId: reservedKem.kemKey,
     rotationKeypair: rotationKey.keypair,
     handle,
     pdsUrl: pds.baseUrl,

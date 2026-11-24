@@ -338,4 +338,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 79,
         sql: include_str!("migrations/V079__space_policy.sql"),
     },
+    Migration {
+        version: 80,
+        sql: include_str!("migrations/V080__kem_keys.sql"),
+    },
 ];

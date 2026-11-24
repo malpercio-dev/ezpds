@@ -59,6 +59,7 @@ use crate::routes::get_session::get_session;
 use crate::routes::get_subject_status::get_subject_status;
 use crate::routes::health::health;
 use crate::routes::import_repo::import_repo;
+use crate::routes::kem_key::{complete_kem_key_handler, stage_kem_key_handler};
 use crate::routes::landing::landing;
 use crate::routes::list_app_passwords::list_app_passwords_handler;
 use crate::routes::list_records::list_records;
@@ -81,7 +82,7 @@ use crate::routes::request_email_confirmation::request_email_confirmation;
 use crate::routes::request_email_update::request_email_update;
 use crate::routes::request_password_reset::request_password_reset;
 use crate::routes::request_plc_operation_signature::request_plc_operation_signature;
-use crate::routes::reserve_signing_key::reserve_signing_key;
+use crate::routes::reserve_signing_key::{reserve_kem_key, reserve_signing_key};
 use crate::routes::reset_password::reset_password;
 use crate::routes::resolve_handle::resolve_handle_handler;
 use crate::routes::resolve_identity::{
@@ -225,6 +226,10 @@ pub fn app(state: AppState) -> Router {
             post(reserve_signing_key),
         )
         .route(
+            "/xrpc/com.atproto.server.reserveKemKey",
+            post(reserve_kem_key),
+        )
+        .route(
             "/xrpc/com.atproto.server.createInviteCode",
             post(create_invite_code),
         )
@@ -356,6 +361,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/recovery/initiate", post(recovery_initiate))
         .route("/v1/recovery/release", post(recovery_release))
         .route("/v1/recovery/release/cancel", post(recovery_release_cancel))
+        .route("/v1/kem-key", post(stage_kem_key_handler))
+        .route("/v1/kem-key/complete", post(complete_kem_key_handler))
         .route("/v1/repo-keys/rotation", post(begin_repo_key_rotation))
         .route(
             "/v1/repo-keys/rotation/complete",

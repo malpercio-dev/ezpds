@@ -107,7 +107,13 @@ pub struct MintedChild {
 /// claimed capability — exactly what a delete must later unwind.
 pub async fn mint_child_for(state: &CoreState, handle: &str, token: &str) -> MintedChild {
     let repo_key = reserve_repo_key(&state.db).await;
-    let op = child_genesis_op(handle, &state.config.public_url, &repo_key.key_id.0);
+    let kem_key = reserve_kem_key(&state.db).await;
+    let op = child_genesis_op(
+        handle,
+        &state.config.public_url,
+        &repo_key.key_id.0,
+        &kem_key.key_id.0,
+    );
     let response = test_app(state.clone())
         .oneshot(child_request(
             "/agent/child",

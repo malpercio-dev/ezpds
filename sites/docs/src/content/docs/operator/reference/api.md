@@ -74,6 +74,8 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/dids/{did}` | Custos HTTP |
 | `/v1/handles` | Custos HTTP |
 | `/v1/handles/{handle}` | Custos HTTP |
+| `/v1/kem-key` | Custos HTTP |
+| `/v1/kem-key/complete` | Custos HTTP |
 | `/v1/notifications/register` | Custos HTTP |
 | `/v1/notifications/register/{deviceUuid}` | Custos HTTP |
 | `/v1/notifications/sender-keys` | Custos HTTP |
@@ -139,6 +141,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/xrpc/com.atproto.server.requestEmailConfirmation` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.requestEmailUpdate` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.requestPasswordReset` | AT Protocol XRPC |
+| `/xrpc/com.atproto.server.reserveKemKey` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.reserveSigningKey` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.resetPassword` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.revokeAppPassword` | AT Protocol XRPC |

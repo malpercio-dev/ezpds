@@ -613,3 +613,71 @@ async fn a_malformed_space_ref_is_rejected_by_the_lexicon_layer() {
         );
     }
 }
+
+/// Every space write route refuses with `KemKeyNotPublished` until the writer's cached DID
+/// document publishes its active KEM key: first with no key at all (an account from before KEM
+/// keys), then with a key held but not yet published. Publishing opens writes.
+#[tokio::test]
+async fn space_writes_wait_for_a_published_kem_key() {
+    let state = state_with_master_key().await;
+    custos_core::test_support::seed_account_with_repo(&state.db, DID).await;
+    let token = access_jwt(&state.jwt_secret, DID);
+    let record =
+        serde_json::json!({"space": SPACE, "repo": DID, "collection": COLLECTION, "rkey": "aaa"});
+    let mut put = record.clone();
+    put["record"] = serde_json::json!({"text": "hi"});
+    let writes = [
+        ("com.atproto.space.createRecord", create_body("aaa", "hi")),
+        ("com.atproto.space.putRecord", put),
+        ("com.atproto.space.deleteRecord", record),
+        (
+            "com.atproto.space.applyWrites",
+            serde_json::json!({"space": SPACE, "repo": DID, "writes": [
+                {"$type": "com.atproto.space.applyWrites#create",
+                 "collection": COLLECTION, "rkey": "bbb", "value": {"text": "hi"}}
+            ]}),
+        ),
+    ];
+    let refused = |state: CoreState| {
+        let writes = writes.clone();
+        let token = token.clone();
+        async move {
+            for (method, body) in writes {
+                let response = crate::test_support::test_app(state.clone())
+                    .oneshot(post(method, &token, body))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{method}");
+                assert_eq!(
+                    body_json(response).await["error"],
+                    "KemKeyNotPublished",
+                    "{method}"
+                );
+            }
+        }
+    };
+
+    refused(state.clone()).await;
+    custos_core::test_support::seed_kem_key(&state.db, DID).await;
+    refused(state.clone()).await;
+
+    // Publishing the key (what POST /v1/kem-key/complete leaves behind) opens writes.
+    let key = custos_db::kem_keys::get_active_kem_key(&state.db, DID)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut doc = serde_json::json!({ "id": DID });
+    custos_core::test_support::with_kem_method(&mut doc, DID, &key.key_id);
+    custos_db::dids::upsert_did_document(&state.db, DID, &doc)
+        .await
+        .unwrap();
+    let response = crate::test_support::test_app(state)
+        .oneshot(post(
+            "com.atproto.space.createRecord",
+            &token,
+            create_body("aaa", "hi"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}

@@ -709,7 +709,7 @@ pub fn space_host_endpoint(did_doc: &Value) -> Option<&str> {
 
 /// The `did:key:` URI of the `verificationMethod` entry whose `id` ends in `#{fragment}` —
 /// matching both the abbreviated (`#atproto`) and fully-qualified (`did#atproto`) id forms.
-fn verification_key(did_doc: &Value, fragment: &str) -> Option<crypto::DidKeyUri> {
+pub(crate) fn verification_key(did_doc: &Value, fragment: &str) -> Option<crypto::DidKeyUri> {
     let suffix = format!("#{fragment}");
     did_doc
         .get("verificationMethod")?

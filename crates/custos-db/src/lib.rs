@@ -15,6 +15,7 @@ pub mod handles;
 pub mod iroh_identity;
 pub mod jwt_secret;
 pub mod kek;
+pub mod kem_keys;
 mod migrations;
 pub mod oauth;
 pub mod refresh_tokens;
