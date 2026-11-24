@@ -23,6 +23,7 @@ declare module 'ezpds-interop/src/account.js' {
     /** `rotationKeys[1]` and `rotationKeys[2]`; needed to rebuild the genesis operation. */
     recoveryKeyId: string;
     repoSigningKeyId: string;
+    kemKeyId?: string;
     [key: string]: unknown;
   }>;
 }
@@ -58,6 +59,7 @@ declare module 'ezpds-interop/src/crypto.js' {
     rotationKeyId: string;
     recoveryKeyId: string;
     repoSigningKeyId: string;
+    kemKeyId?: string;
     rotationKeypair: Keypair;
     handle: string;
     pdsUrl: string;

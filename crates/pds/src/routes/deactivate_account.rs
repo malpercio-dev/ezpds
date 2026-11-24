@@ -111,7 +111,51 @@ pub async fn deactivate_account_handler(
         }
     }
 
+    retire_kem_key_if_migrated_out(&state, &user.did).await;
+
     Ok(StatusCode::OK)
+}
+
+/// After a deactivation, delete the account's KEM keys if its DID document now names another
+/// host (ADR-0043). Deactivating is the last step of migrating away: the new host publishes its
+/// own KEM key, and this host should not keep a private key for an identity it no longer serves.
+/// A plain deactivation (the document still points here) keeps the key, because reactivating
+/// needs it. Best-effort: the deactivation already succeeded, and a key left behind is deleted
+/// with the account.
+async fn retire_kem_key_if_migrated_out(state: &AppState, did: &common::Did) {
+    match custos_db::kem_keys::get_active_kem_key(&state.db, did).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, did = %did, "failed to read KEM key after deactivation (non-fatal)");
+            return;
+        }
+    }
+    let document = match custos_core::identity::resolution::resolve_did_document_force_refresh(
+        state, did,
+    )
+    .await
+    {
+        Ok(document) => document,
+        Err(e) => {
+            tracing::warn!(error = %e, did = %did, "could not resolve DID document after deactivation; KEM key kept (non-fatal)");
+            return;
+        }
+    };
+    let endpoint = custos_core::identity::resolution::service_endpoint(&document, "atproto_pds");
+    if endpoint.map(|e| e.trim_end_matches('/'))
+        == Some(state.config.public_url.trim_end_matches('/'))
+    {
+        return;
+    }
+    match custos_db::kem_keys::delete_kem_keys(&state.db, did).await {
+        Ok(deleted) => {
+            tracing::info!(did = %did, deleted, "deleted KEM key of an account that migrated away")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, did = %did, "failed to delete KEM key after migration (non-fatal)")
+        }
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -124,7 +168,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state};
+    use crate::app::{app, test_state, test_state_with_plc_url};
     use crate::routes::test_utils::{
         access_jwt, body_json, insert_account_with_email as insert_account,
         scoped_access_jwt as scoped_jwt,
@@ -295,5 +339,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Deactivating after the DID document moved to another host deletes the KEM key; a plain
+    /// deactivation keeps it.
+    #[tokio::test]
+    async fn deactivation_after_migrating_away_deletes_the_kem_key() {
+        use crate::routes::test_utils::seed_kem_key;
+        use wiremock::{
+            matchers::{method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+
+        let plc = MockServer::start().await;
+        let state = test_state_with_plc_url(plc.uri()).await;
+        let here = state.config.public_url.clone();
+        for (did, endpoint, kept) in [
+            ("did:plc:kemstays0000000000000000", here.as_str(), true),
+            (
+                "did:plc:kemleaves000000000000000",
+                "https://elsewhere.example.com",
+                false,
+            ),
+        ] {
+            insert_account(&state.db, did, &format!("{}@example.com", &did[8..])).await;
+            seed_kem_key(&state.db, did).await;
+            Mock::given(method("GET"))
+                .and(path(format!("/{did}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": did,
+                    "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer",
+                        "serviceEndpoint": endpoint}],
+                })))
+                .mount(&plc)
+                .await;
+            let token = access_jwt(&state.jwt_secret, did);
+            let response = app(state.clone())
+                .oneshot(deactivate_request(&token, Body::from("{}")))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let held = custos_db::kem_keys::get_active_kem_key(&state.db, did)
+                .await
+                .unwrap();
+            assert_eq!(held.is_some(), kept, "{did}");
+        }
     }
 }

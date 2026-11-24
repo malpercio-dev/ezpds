@@ -137,6 +137,8 @@ export const confirmShareBackup = (did: string): Promise<void> =>
 export type DidWebPreparation = {
   deviceKeyMultibase: string;
   repoKeyMultibase: string;
+  /** The Spaces KEM key to publish as `#atproto_kem`; null from a Custos that predates KEM keys. */
+  kemKeyMultibase: string | null;
   pdsUrl: string;
 };
 

@@ -65,6 +65,7 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM oauth_authorization_codes WHERE did = ?",
     "DELETE FROM handles WHERE did = ?",
     "DELETE FROM signing_keys WHERE did = ?",
+    "DELETE FROM kem_keys WHERE did = ?",
     "DELETE FROM account_preferences WHERE did = ?",
     "DELETE FROM app_passwords WHERE did = ?",
     "DELETE FROM password_reset_tokens WHERE did = ?",
@@ -81,6 +82,7 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM transfer_devices WHERE did = ?",
     "DELETE FROM did_documents WHERE did = ?",
     "DELETE FROM reserved_signing_keys WHERE did = ?",
+    "DELETE FROM reserved_kem_keys WHERE did = ?",
 ];
 
 /// The account's ownership rows in the content-addressed repo block store.

@@ -97,6 +97,12 @@ pub enum ErrorCode {
     /// `com.atproto.space.*` and `com.atproto.memberspace.*` method.
     #[serde(rename = "SpaceNotFound")]
     SpaceNotFound,
+    /// A space write by an account whose DID document does not yet publish its active Spaces KEM
+    /// key as `#atproto_kem`. Readers of the record could not verify its MACs, so the write is
+    /// refused until the key is published (`POST /v1/kem-key`). Custos-specific: the reference
+    /// generates a key at account creation and has no unpublished state.
+    #[serde(rename = "KemKeyNotPublished")]
+    KemKeyNotPublished,
     /// A space write notification carried a repo revision further ahead of this host's clock than
     /// the permitted skew. Declared by `com.atproto.space.notifyWrite`.
     #[serde(rename = "FutureRev")]
@@ -214,6 +220,7 @@ impl ErrorCode {
             ErrorCode::HandleResolutionFailed => "HandleResolutionFailed",
             ErrorCode::BlockNotFound => "BlockNotFound",
             ErrorCode::SpaceNotFound => "SpaceNotFound",
+            ErrorCode::KemKeyNotPublished => "KemKeyNotPublished",
             ErrorCode::FutureRev => "FutureRev",
             ErrorCode::RepoNotFound => "RepoNotFound",
             ErrorCode::RecordNotFound => "RecordNotFound",
@@ -269,6 +276,7 @@ impl ErrorCode {
             // The reference raises all four as `InvalidRequestError` with a named `error`, which
             // is HTTP 400 — clients dispatch on the name, not the status.
             ErrorCode::SpaceNotFound => 400,
+            ErrorCode::KemKeyNotPublished => 400,
             ErrorCode::FutureRev => 400,
             ErrorCode::RepoNotFound => 400,
             ErrorCode::RecordNotFound => 400,

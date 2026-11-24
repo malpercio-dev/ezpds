@@ -46,6 +46,7 @@ src/
   label_state.rs   — Functional Core for the watcher: reduce raw label events to the in-force set and diff against persisted rows
   admin_nonce_sweep.rs— periodic stale `admin_nonces` sweep (pure storage reclamation; retention stays above the replay-acceptance window) — see module doc
   sovereign_session_nonce_sweep.rs— hourly `sovereign_session_nonces` sweep; a compile-time assertion keeps retention above the replay window
+  wallet_plc_op.rs — the PDS half of a wallet-signed PLC op that changes one DID-document key: verify against the current PLC state, submit-or-skip, refresh the cache, `#identity`. Shared by the repo-key rotation and the KEM key ceremony — see module doc
   transfer.rs      — planned device-transfer accept/complete/cancel workflows; `custos_db::transfers` owns the SQL, this module owns the cross-table ordering — see module doc
   session_issuer.rs— shared legacy access+refresh JWT issuance transaction; explicit full-access vs app-password authority — see module doc
   capabilities.rs  — the `CAPABILITIES` table behind `describeServer`'s `custos` extension; a feature crate contributes its entry as a `CAPABILITY` constant listed in its slot, and a golden test pins the fully-enabled order; an entry's `enabled` predicate must be the same condition its routes enforce, and `just capability-docs-check` gates the operator docs. Also owns `IDENTIFYING_VERSION` — see module doc
@@ -147,8 +148,9 @@ the rest. The OAuth endpoints live in [`custos-oauth`](../custos-oauth/AGENTS.md
 | `confirm_email.rs` | `POST /xrpc/com.atproto.server.confirmEmail` — consume the confirm token, set `email_confirmed_at`; full access required |
 | `request_email_update.rs` | `POST /xrpc/com.atproto.server.requestEmailUpdate` — returns `{tokenRequired}`; mints the update token when the current email is confirmed |
 | `update_email.rs` | `POST /xrpc/com.atproto.server.updateEmail` — change the address (token required iff confirmed), reset `email_confirmed_at`; duplicate → 400 |
-| `reserve_signing_key.rs` | `POST /xrpc/com.atproto.server.reserveSigningKey` — public standard-migration signing-key reservation |
-| `get_repo_signing_key.rs` | `GET /v1/repo-signing-key` — idempotently issue the pending account's repo signing key for the mobile DID ceremony — see module doc |
+| `reserve_signing_key.rs` | `POST /xrpc/com.atproto.server.reserveSigningKey` + `reserveKemKey` — the two public pre-account key reservations, one handler body; separate anonymous rate limits — see module doc |
+| `get_repo_signing_key.rs` | `GET /v1/repo-signing-key` — idempotently issue the pending account's repo signing key and Spaces KEM key for the mobile DID ceremony — see module doc |
+| `kem_key.rs` | `POST /v1/kem-key` + `/complete` — install or rotate the Spaces KEM key: wallet-signed PLC op (did:plc), live `did.json` check (self-hosted did:web), or a direct rewrite at stage time (Custos-hosted did:web) (ADR-0043) — see module doc |
 | `create_did.rs` | `POST /v1/dids` — device-signed DID ceremony + promotion, dual-mode on share custody (client-share did:plc / no-escrow did:web) — see module doc |
 | `get_did.rs` | `GET /v1/dids/:did` |
 | `create_account.rs` | `POST /v1/accounts` |

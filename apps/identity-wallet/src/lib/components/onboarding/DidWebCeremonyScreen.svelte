@@ -19,7 +19,7 @@
   onMount(async () => {
     try {
       const keys = await prepareDidWebCeremony();
-      document = composeDidWebDocument(domain, handle, keys.deviceKeyMultibase, keys.repoKeyMultibase, keys.pdsUrl);
+      document = composeDidWebDocument(domain, handle, keys.deviceKeyMultibase, keys.repoKeyMultibase, keys.pdsUrl, keys.kemKeyMultibase);
       rendered = serializeDidWebDocument(document as ReturnType<typeof composeDidWebDocument>);
     } catch { error = 'Could not prepare the domain document. Try again.'; }
     finally { busy = false; }

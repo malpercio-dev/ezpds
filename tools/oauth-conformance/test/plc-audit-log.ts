@@ -26,6 +26,7 @@ export interface AccountKeyMaterial {
   rotationKeyPrivateHex: string;
   recoveryKeyId: string;
   repoSigningKeyId: string;
+  kemKeyId?: string;
 }
 
 /**
@@ -42,6 +43,7 @@ export async function buildAccountAuditLog(
     rotationKeyId: account.rotationKeyId,
     recoveryKeyId: account.recoveryKeyId,
     repoSigningKeyId: account.repoSigningKeyId,
+    kemKeyId: account.kemKeyId,
     rotationKeypair: await keypairFromHex(account.rotationKeyPrivateHex),
     handle: account.handle,
     pdsUrl,

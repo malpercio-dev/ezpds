@@ -125,6 +125,11 @@ async function mintChild(baseUrl: string, parent: TestAccount): Promise<MintedCh
     throw new Error(`reserveSigningKey failed (${reserved.status}): ${JSON.stringify(reserved.body)}`);
   }
   const repoSigningKeyId: string = reserved.body.signingKey;
+  const reservedKem = await postJson(`${baseUrl}/xrpc/com.atproto.server.reserveKemKey`, {});
+  if (reservedKem.status !== 200) {
+    throw new Error(`reserveKemKey failed (${reservedKem.status}): ${JSON.stringify(reservedKem.body)}`);
+  }
+  const kemKeyId: string = reservedKem.body.kemKey;
 
   // The recovery/rotation key: held by the fixture (standing in for the Obsign
   // wallet), signs the genesis op, never sent to the server.
@@ -137,6 +142,7 @@ async function mintChild(baseUrl: string, parent: TestAccount): Promise<MintedCh
     rotationKeyId: walletKey.keyId,
     recoveryKeyId: spare.keyId,
     repoSigningKeyId,
+    kemKeyId,
     rotationKeypair: walletKey.keypair,
     handle,
     pdsUrl: baseUrl,

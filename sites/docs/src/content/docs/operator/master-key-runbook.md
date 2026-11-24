@@ -18,6 +18,8 @@ when something goes wrong with it.
 | Operator-level (legacy) commit-signing keys | No | **Hard** — same path |
 | OAuth signing key, JWT secret, Iroh node key | Yes | Drop the row; re-mints on boot |
 | PDS-held Shamir recovery share (Share 2 of 3) | No | **Hard** — needs the original KEK |
+| Per-account Spaces KEM keys | No | **Medium** — re-stage per account |
+| Reserved and pending KEM keys | Yes | Delete the rows; clients reserve again |
 
 The three self-healing secrets cost little to lose: delete the row and the
 server mints a fresh one under the current KEK on next boot (sessions
@@ -70,6 +72,15 @@ the KEK is genuinely unrecoverable.
    server-side re-mint, because a replacement wouldn't be one of the shares
    already issued to the user. Recovery must fall back to the user's other
    two shares.
+5. **Re-stage KEM keys.** Each account's Spaces KEM key (the `#atproto_kem` key
+   other servers use to check that this server really served a space record)
+   is also undecryptable. Each account re-stages it through `POST /v1/kem-key`:
+   a Custos-hosted did:web is republished at once; a did:plc account's wallet
+   signs an operation setting the new key and the server completes it
+   (`POST /v1/kem-key/complete`); a self-hosted did:web user uploads the
+   updated `did.json`, then completes. Delete the reserved and pending KEM key
+   rows too. No rotation key is involved, so do this before the repo-key
+   rotations.
 
 :::note[Takeaway]
 A lost KEK is nearly as bad as a compromised one, because of the repo keys:
@@ -133,16 +144,24 @@ and can override within the identity directory's recovery window. The repo
 is self-certifying, so the identity itself is never lost; the commit-signing
 key is what must be rotated.
 
+### 2.5 Re-stage KEM keys
+
+A leaked KEM key lets its holder compute the proofs other servers accept that
+this server served a space record. Re-stage every account's key as in step 5
+of Scenario 1, and delete the reserved and pending KEM key rows. It needs no
+rotation key, so run it before the repo-key rotations in 2.4.
+
 ---
 
 ## Quick reference — ordering
 
 **Loss:** verify backup → (if recoverable) restore & boot, done → else: new KEK →
-drop + re-mint easy secrets → per-account wallet-driven repo-key rotation.
+drop + re-mint easy secrets → re-stage KEM keys → per-account wallet-driven
+repo-key rotation.
 
 **Compromise:** rotate `EZPDS_ADMIN_TOKEN` + mail tokens + env access → new KEK +
-`pds rewrap-master-key` → drop + re-mint easy secrets → per-account wallet-driven
-repo-key rotation.
+`pds rewrap-master-key` → drop + re-mint easy secrets → re-stage KEM keys →
+per-account wallet-driven repo-key rotation.
 
 ---
 

@@ -75,8 +75,9 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
       `com.atproto.label.record`, and `com.atproto.server.reserveKemKey`, plus
       `com.atproto.space.listSpaces`, re-vendored with its route. Each is registered in
       `LEXICON_SOURCES` by the change that adds its route; registered so far: `listSpaces`,
-      `space.{createSpace,updateSpace,deleteSpace,getSpace}`, `memberspace.{defs,putMembers,
-      removeMembers,listMembers}`, and the three `*space.policy` documents.
+      `server.reserveKemKey`, `space.{createSpace,updateSpace,deleteSpace,getSpace}`,
+      `memberspace.{defs,putMembers,removeMembers,listMembers}`, and the three `*space.policy`
+      documents.
       `notifyRepoUpdate` refs `com.atproto.space.defs#repoWrite`/`#repoRemoved`, which exist
       only in the `047d603` `defs`; until `defs` moves, lexgen types them as `unknown`.
 

@@ -49,6 +49,7 @@ pub mod get_session;
 pub mod get_subject_status;
 pub mod health;
 pub mod import_repo;
+pub mod kem_key;
 pub mod landing;
 pub mod list_app_passwords;
 pub mod list_records;

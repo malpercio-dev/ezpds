@@ -9,6 +9,7 @@ pub mod capability;
 pub mod crawler;
 pub mod firehose;
 pub mod identity;
+pub mod kem;
 mod layers;
 pub mod lexicon;
 pub mod metrics;

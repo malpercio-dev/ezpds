@@ -1277,10 +1277,12 @@ async fn child_mint_state(agent_auth: AgentAuthConfig) -> (AppState, wiremock::M
 /// genesis op for `handle`.
 async fn child_block(state: &AppState, handle: &str) -> Value {
     let repo_key = crate::routes::test_utils::reserve_repo_key(&state.db).await;
+    let kem_key = crate::routes::test_utils::reserve_kem_key(&state.db).await;
     let op = crate::routes::test_utils::child_genesis_op(
         handle,
         &state.config.public_url,
         &repo_key.key_id.0,
+        &kem_key.key_id.0,
     );
     json!({ "handle": handle, "plcOp": op })
 }
@@ -1514,6 +1516,7 @@ async fn an_unverifiable_child_block_rejects_with_no_partial_state() {
     let unreserved = crate::routes::test_utils::child_genesis_op(
         "stranger.example.com",
         &state.config.public_url,
+        &stranger.key_id.0,
         &stranger.key_id.0,
     );
     let (claim_token, user_code) = register_and_initiate_anonymous_claim(&state).await;

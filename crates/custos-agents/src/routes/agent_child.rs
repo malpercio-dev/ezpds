@@ -414,9 +414,9 @@ mod tests {
     use super::*;
     use crate::test_support::{
         access_jwt, agent_jwt, child_genesis_op as genesis, child_request as request,
-        cnf_bound_access_jwt, get_request, mint_child_for, reserve_repo_key as reserve,
-        seed_account_with_repo, state_with_grace, state_with_plc, test_app, DpopProofKey,
-        MintedChild,
+        cnf_bound_access_jwt, get_request, mint_child_for, reserve_kem_key,
+        reserve_repo_key as reserve, seed_account_with_repo, state_with_grace, state_with_plc,
+        test_app, DpopProofKey, MintedChild,
     };
     use custos_core::firehose::FirehoseEvent;
     use custos_db::agent_auth::get_child_of_parent;
@@ -430,8 +430,14 @@ mod tests {
         let parent = "did:plc:parentchildowner111111";
         seed_account_with_repo(&state.db, parent).await;
         let repo_key = reserve(&state.db).await;
+        let kem_key = reserve_kem_key(&state.db).await;
         let handle = "identity-frame.example.com";
-        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let op = genesis(
+            handle,
+            &state.config.public_url,
+            &repo_key.key_id.0,
+            &kem_key.key_id.0,
+        );
         let token = access_jwt(&[0x42; 32], parent);
 
         // Subscribe before the request so the broadcast frame is delivered to this receiver.
@@ -489,8 +495,14 @@ mod tests {
         let parent = "did:plc:parentchildowner111111";
         seed_account_with_repo(&state.db, parent).await;
         let repo_key = reserve(&state.db).await;
+        let kem_key = reserve_kem_key(&state.db).await;
         let handle = "alice-writer.example.com";
-        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let op = genesis(
+            handle,
+            &state.config.public_url,
+            &repo_key.key_id.0,
+            &kem_key.key_id.0,
+        );
         let token = access_jwt(&[0x42; 32], parent);
 
         let response = test_app(state.clone())
@@ -590,8 +602,14 @@ mod tests {
         let parent = "did:plc:parentchildaudit111111";
         seed_account_with_repo(&state.db, parent).await;
         let repo_key = reserve(&state.db).await;
+        let kem_key = reserve_kem_key(&state.db).await;
         let handle = "audited-writer.example.com";
-        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let op = genesis(
+            handle,
+            &state.config.public_url,
+            &repo_key.key_id.0,
+            &kem_key.key_id.0,
+        );
         let token = access_jwt(&[0x42; 32], parent);
 
         let response = test_app(state.clone())
@@ -666,14 +684,64 @@ mod tests {
         assert_eq!(count, 0);
     }
 
+    /// Child genesis must publish a reserved KEM key: an op that names none, or one this server
+    /// never reserved, is a 400 and mints nothing.
+    #[tokio::test]
+    async fn child_genesis_without_a_reserved_kem_key_is_refused() {
+        let (state, _plc) = state_with_plc().await;
+        let parent = "did:plc:parentkemcheck1111111";
+        seed_account_with_repo(&state.db, parent).await;
+        let token = access_jwt(&[0x42; 32], parent);
+        let handle = "kemless-bot.example.com";
+        let repo_key = reserve(&state.db).await;
+        let rotation = crypto::generate_p256_keypair().unwrap();
+        let no_kem: serde_json::Value = serde_json::from_str(
+            &crypto::build_did_plc_genesis_op(
+                &rotation.key_id,
+                &repo_key.key_id,
+                &rotation.private_key_bytes,
+                handle,
+                &state.config.public_url,
+            )
+            .unwrap()
+            .signed_op_json,
+        )
+        .unwrap();
+        let unreserved = genesis(
+            handle,
+            &state.config.public_url,
+            &repo_key.key_id.0,
+            &crypto::generate_p256_keypair().unwrap().key_id.0,
+        );
+
+        for op in [no_kem, unreserved] {
+            let response = test_app(state.clone())
+                .oneshot(request(
+                    "/agent/child",
+                    Some(&token),
+                    serde_json::json!({"handle": handle, "plcOp": op}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kem_keys")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
     #[tokio::test]
     async fn caller_without_local_parent_cannot_mint() {
         let (state, _plc) = state_with_plc().await;
         let repo_key = reserve(&state.db).await;
+        let kem_key = reserve_kem_key(&state.db).await;
         let op = genesis(
             "outsider-bot.example.com",
             &state.config.public_url,
             &repo_key.key_id.0,
+            &kem_key.key_id.0,
         );
         let token = access_jwt(&[0x42; 32], "did:plc:not-local-parent1111");
         let response = test_app(state.clone())
@@ -706,8 +774,14 @@ mod tests {
         let parent = "did:plc:parentchildretry111111";
         seed_account_with_repo(&state.db, parent).await;
         let repo_key = reserve(&state.db).await;
+        let kem_key = reserve_kem_key(&state.db).await;
         let handle = "alice-retry.example.com";
-        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let op = genesis(
+            handle,
+            &state.config.public_url,
+            &repo_key.key_id.0,
+            &kem_key.key_id.0,
+        );
         let rotation_key = op["rotationKeys"][0].as_str().unwrap();
         let child = custos_core::identity::genesis::verify_and_validate_genesis_op(
             rotation_key,
@@ -787,8 +861,14 @@ mod tests {
         let parent = "did:plc:parentchildresume1111";
         seed_account_with_repo(&state.db, parent).await;
         let repo_key = reserve(&state.db).await;
+        let kem_key = reserve_kem_key(&state.db).await;
         let handle = "alice-resume.example.com";
-        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let op = genesis(
+            handle,
+            &state.config.public_url,
+            &repo_key.key_id.0,
+            &kem_key.key_id.0,
+        );
         let token = access_jwt(&[0x42; 32], parent);
         let mint = || {
             request(

@@ -116,6 +116,18 @@ pub async fn create_did_handler(
                 "repo signing key not provisioned; call GET /v1/repo-signing-key before creating the DID",
             )
         })?;
+    // The Spaces KEM key is issued by the same call. The new DID document must publish it as
+    // `#atproto_kem` so syncers can agree MAC secrets with this host from the account's first
+    // space write (ADR-0043).
+    let kem_key = custos_db::kem_keys::get_pending_kem_key(&state.db, &session.account_id)
+        .await
+        .or_internal_as("failed to load pending KEM key", "failed to load KEM key")?
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::InvalidClaim,
+                "KEM key not provisioned; call GET /v1/repo-signing-key before creating the DID",
+            )
+        })?;
 
     // Settle the account's password policy before doing any other work, so a request that will be
     // refused over it is refused now. The argon2 hash this plans for is deliberately deferred to
@@ -207,6 +219,7 @@ pub async fn create_did_handler(
                     "op verificationMethods.atproto does not match the issued repo signing key",
                 ));
             }
+            custos_core::kem::require_genesis_kem_key(&verified.verification_methods, &kem_key)?;
             // Client-share ceremony: the declared recovery key must actually appear in the
             // op's rotationKeys, so the escrow deposit can never diverge from the DID's
             // public state (an escrowed share whose derived key controls nothing would be a
@@ -236,6 +249,7 @@ pub async fn create_did_handler(
                 &pending.handle,
                 &payload.rotation_key_public,
                 &repo_key.key_id,
+                &kem_key.key_id,
                 &state.config.public_url,
             )?;
             let resolved =
@@ -365,6 +379,7 @@ pub async fn create_did_handler(
             deposit: &deposit,
             password_hash: password_hash.as_deref(),
             repo_key: &repo_key,
+            kem_key: &kem_key,
             genesis_root: &genesis_root_str,
             genesis_rev: &genesis_rev,
             genesis_blocks: &genesis_blocks,
@@ -404,6 +419,7 @@ fn validate_did_web_document(
     handle: &str,
     device_key: &str,
     repo_key: &str,
+    kem_key: &str,
     pds_url: &str,
 ) -> Result<String, ApiError> {
     let did = document
@@ -457,6 +473,17 @@ fn validate_did_web_document(
         return Err(ApiError::new(
             ErrorCode::InvalidClaim,
             "did:web #atproto key does not match the issued repo signing key",
+        ));
+    }
+    // A new self-hosted did:web publishes the KEM key from day one, like a did:plc genesis op.
+    // (An existing did:web may lack it; that case is the activation check's, not this one's.)
+    if !has_key(
+        "atproto_kem",
+        kem_key.strip_prefix("did:key:").unwrap_or(kem_key),
+    ) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidClaim,
+            "did:web #atproto_kem key does not match the issued KEM key",
         ));
     }
 
@@ -629,6 +656,7 @@ struct PendingAccountPromotion<'a> {
     /// column state migration-mode `createAccount` has always written for OAuth-only accounts.
     password_hash: Option<&'a str>,
     repo_key: &'a custos_db::repo_keys::RepoSigningKey,
+    kem_key: &'a custos_db::kem_keys::KemKey,
     genesis_root: &'a str,
     genesis_rev: &'a str,
     genesis_blocks: &'a [(repo_engine::Cid, Vec<u8>)],
@@ -722,6 +750,12 @@ async fn promote_account(state: &AppState, p: PendingAccountPromotion<'_>) -> Re
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
+    // The KEM key moves the same way and becomes the account's active key: the document
+    // promoted above already publishes it, so space writes are open from the start.
+    custos_db::kem_keys::insert_active_kem_key(&mut *tx, did, p.kem_key)
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, "failed to insert KEM key"))
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store KEM key"))?;
 
     let pending_commit = stage_genesis_repo(
         &mut tx,
@@ -794,7 +828,8 @@ mod tests {
             "alsoKnownAs": ["at://alice.example.com"],
             "verificationMethod": [
                 {"id": format!("{did}#device"), "type": "Multikey", "controller": did, "publicKeyMultibase": "zdevice"},
-                {"id": format!("{did}#atproto"), "type": "Multikey", "controller": did, "publicKeyMultibase": "zrepo"}
+                {"id": format!("{did}#atproto"), "type": "Multikey", "controller": did, "publicKeyMultibase": "zrepo"},
+                {"id": format!("{did}#atproto_kem"), "type": "Multikey", "controller": did, "publicKeyMultibase": "zkem"}
             ],
             "service": [{"id": format!("{did}#atproto_pds"), "type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://pds.example.com"}]
         });
@@ -804,6 +839,7 @@ mod tests {
                 "alice.example.com",
                 "did:key:zdevice",
                 "did:key:zrepo",
+                "did:key:zkem",
                 "https://pds.example.com/",
             )
             .unwrap(),
@@ -817,7 +853,8 @@ mod tests {
             "alsoKnownAs": ["at://alice.example.com"],
             "verificationMethod": [
                 {"id": "#device", "type": "Multikey", "controller": did, "publicKeyMultibase": "zdevice"},
-                {"id": "#atproto", "type": "Multikey", "controller": did, "publicKeyMultibase": "zrepo"}
+                {"id": "#atproto", "type": "Multikey", "controller": did, "publicKeyMultibase": "zrepo"},
+                {"id": "#atproto_kem", "type": "Multikey", "controller": did, "publicKeyMultibase": "zkem"}
             ],
             "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://pds.example.com"}]
         });
@@ -827,6 +864,7 @@ mod tests {
                 "alice.example.com",
                 "did:key:zdevice",
                 "did:key:zrepo",
+                "did:key:zkem",
                 "https://pds.example.com/",
             )
             .unwrap(),
@@ -840,6 +878,7 @@ mod tests {
             "alice.example.com",
             "did:key:zdevice",
             "did:key:zrepo",
+            "did:key:zkem",
             "https://pds.example.com",
         )
         .is_err());
@@ -851,6 +890,20 @@ mod tests {
             "alice.example.com",
             "did:key:zdevice",
             "did:key:zrepo",
+            "did:key:zkem",
+            "https://pds.example.com",
+        )
+        .is_err());
+
+        // A new self-hosted did:web must publish the issued KEM key, not some other one.
+        let mut wrong_kem = bare.clone();
+        wrong_kem["verificationMethod"][2]["publicKeyMultibase"] = serde_json::json!("zother");
+        assert!(validate_did_web_document(
+            &wrong_kem,
+            "alice.example.com",
+            "did:key:zdevice",
+            "did:key:zrepo",
+            "did:key:zkem",
             "https://pds.example.com",
         )
         .is_err());
@@ -862,6 +915,7 @@ mod tests {
             "alice.example.com",
             "did:key:zdevice",
             "did:key:zrepo",
+            "did:key:zkem",
             "https://pds.example.com",
         )
         .is_err());
@@ -876,6 +930,8 @@ mod tests {
         /// did:key of the per-account repo signing key issued by GET /v1/repo-signing-key.
         /// The genesis op must publish this as its #atproto verification method.
         repo_signing_key_id: String,
+        /// did:key of the KEM key issued by the same call; published as #atproto_kem.
+        kem_key_id: String,
     }
 
     /// Generate a signed genesis op verifiable by the returned rotation_key_public.
@@ -887,16 +943,20 @@ mod tests {
         handle: &str,
         public_url: &str,
         atproto_key_did: &str,
+        kem_key_did: &str,
     ) -> (String, serde_json::Value) {
-        use crypto::{build_did_plc_genesis_op, generate_p256_keypair, DidKeyUri};
+        use crypto::{build_did_plc_genesis_op_multi_rotation, generate_p256_keypair, DidKeyUri};
         // The device/rotation key signs the op; the per-account key (issued by the PDS)
-        // is published as rotationKeys[1] + verificationMethods.atproto.
+        // is published as rotationKeys[1] + verificationMethods.atproto, and the issued KEM
+        // key as verificationMethods.atproto_kem.
         let device = generate_p256_keypair().expect("device keypair");
         let device_private = *device.private_key_bytes;
-        let genesis_op = build_did_plc_genesis_op(
-            &device.key_id,                          // rotationKeys[0] — signs the op
-            &DidKeyUri(atproto_key_did.to_string()), // rotationKeys[1] + verificationMethods.atproto
-            &device_private,                         // op is signed by the device/rotation key
+        let atproto_key = DidKeyUri(atproto_key_did.to_string());
+        let genesis_op = build_did_plc_genesis_op_multi_rotation(
+            &[device.key_id.clone(), atproto_key.clone()],
+            &atproto_key,
+            Some(&DidKeyUri(kem_key_did.to_string())),
+            &device_private, // op is signed by the device/rotation key
             handle,
             public_url,
         )
@@ -981,12 +1041,29 @@ mod tests {
         )
         .await
         .expect("set pending repo key");
+        let kem_kp = crypto::generate_p256_keypair().expect("kem keypair");
+        custos_db::kem_keys::set_pending_kem_key(
+            db,
+            &account_id,
+            &custos_db::kem_keys::KemKey {
+                key_id: kem_kp.key_id.to_string(),
+                public_key: kem_kp.public_key.clone(),
+                private_key_encrypted: crypto::encrypt_private_key(
+                    &kem_kp.private_key_bytes,
+                    &crate::routes::test_utils::test_master_key(),
+                )
+                .expect("encrypt kem key"),
+            },
+        )
+        .await
+        .expect("set pending kem key");
 
         TestSetup {
             session_token: token.plaintext,
             account_id,
             handle,
             repo_signing_key_id: repo_kp.key_id.0,
+            kem_key_id: kem_kp.key_id.0,
         }
     }
 
@@ -1063,6 +1140,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Subscribe before issuing the request so the genesis firehose events are captured.
@@ -1102,6 +1180,14 @@ mod tests {
                 .unwrap_or(false),
             "response should include a non-empty session_token"
         );
+        // The issued KEM key is the account's active key and the document publishes it.
+        let did = body["did"].as_str().unwrap();
+        let active = custos_db::kem_keys::get_active_kem_key(&db, did)
+            .await
+            .unwrap()
+            .expect("active KEM key");
+        assert_eq!(active.key_id, setup.kem_key_id);
+        assert!(custos_core::kem::publishes(&body["did_document"], &active));
 
         // End-to-end: the issued per-account key was moved into signing_keys (DID-keyed),
         // and the genesis repo was created and its root recorded on the account.
@@ -1354,6 +1440,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
         let signed_op_str = serde_json::to_string(&signed_op).unwrap();
         let verified = crypto::verify_genesis_op(
@@ -1454,6 +1541,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Pre-set pending_did to a DIFFERENT value (tampered/corrupted retry).
@@ -1500,6 +1588,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Corrupt the sig: decode, flip one byte, re-encode.
@@ -1540,6 +1629,7 @@ mod tests {
             "different.handle.com",
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         let app = crate::app::app(state);
@@ -1573,6 +1663,7 @@ mod tests {
             &setup.handle,
             "https://wrong.example.com",
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         let app = crate::app::app(state);
@@ -1606,8 +1697,12 @@ mod tests {
         let setup = insert_test_data(&db).await;
 
         let unrelated_key = crypto::generate_p256_keypair().unwrap().key_id.0;
-        let (rotation_key_public, signed_op) =
-            make_signed_op(&setup.handle, &state.config.public_url, &unrelated_key);
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &unrelated_key,
+            &setup.kem_key_id,
+        );
 
         let app = crate::app::app(state);
         let response = app
@@ -1623,6 +1718,30 @@ mod tests {
 
     /// The ceremony is rejected if the repo signing key was never issued
     /// (GET /v1/repo-signing-key not called before /v1/dids).
+    /// An op publishing a KEM key other than the one issued is rejected.
+    #[tokio::test]
+    async fn mismatched_kem_key_returns_400() {
+        let state = test_state_for_did("http://127.0.0.1:1".to_string()).await;
+        let setup = insert_test_data(&state.db).await;
+        let unrelated = crypto::generate_p256_keypair().unwrap().key_id.0;
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+            &unrelated,
+        );
+
+        let response = crate::app::app(state)
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn missing_repo_signing_key_returns_400() {
         let mock_server = MockServer::start().await;
@@ -1645,6 +1764,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         let app = crate::app::app(state);
@@ -1762,6 +1882,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Derive the DID and pre-insert an accounts row.
@@ -1824,6 +1945,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Pre-store the DID with a registration stamp so the ceremony takes the skip-plc path
@@ -1946,6 +2068,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Derive DID and pre-store it with a registration stamp to trigger the skip_plc path
@@ -2053,6 +2176,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Pre-store pending_did + a registration stamp to use the skip_plc path (no network
@@ -2189,6 +2313,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         let request_body = serde_json::json!({
@@ -2233,6 +2358,7 @@ mod tests {
         handle: &str,
         public_url: &str,
         atproto_key_did: &str,
+        kem_key_did: &str,
     ) -> ClientShareCeremony {
         use crypto::{
             build_did_plc_genesis_op_multi_rotation, derive_recovery_keypair,
@@ -2251,6 +2377,7 @@ mod tests {
                 DidKeyUri(atproto_key_did.to_string()),
             ],
             &DidKeyUri(atproto_key_did.to_string()),
+            Some(&DidKeyUri(kem_key_did.to_string())),
             &device_private,
             handle,
             public_url,
@@ -2308,6 +2435,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
         let escrow_share = ceremony.envelopes[1].encode_share();
 
@@ -2435,6 +2563,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Simulate a first attempt that reached the pre-store AND confirmed registration but
@@ -2498,6 +2627,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // First attempt reached the pre-store but its POST never confirmed.
@@ -2548,6 +2678,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Declare a different (validly-formatted) recovery key than the op carries.
@@ -2581,6 +2712,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Share 3 (the user's copy) must be refused by the escrow.
@@ -2607,6 +2739,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         let response = crate::app::app(state)
@@ -2632,6 +2765,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
         let escrow_share = ceremony.envelopes[1].encode_share().to_string();
 
@@ -2681,6 +2815,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         // Legacy shape: no recoveryKey, no escrowShare.
@@ -2726,6 +2861,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         let body = serde_json::json!({
@@ -2767,6 +2903,7 @@ mod tests {
             &setup.handle,
             &state.config.public_url,
             &setup.repo_signing_key_id,
+            &setup.kem_key_id,
         );
 
         let app = crate::app::app(state);

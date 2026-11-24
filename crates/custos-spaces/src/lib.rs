@@ -17,6 +17,7 @@ use sqlx::SqliteConnection;
 mod auth;
 mod capability;
 mod db;
+mod kem_gate;
 mod policy;
 mod router;
 mod routes;

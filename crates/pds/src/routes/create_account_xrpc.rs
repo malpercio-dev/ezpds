@@ -45,6 +45,7 @@ use custos_core::auth::service_auth::verify_service_auth_resolving_key;
 use custos_core::lexicon::LexiconInput;
 use custos_db::dids::upsert_did_document;
 use custos_db::is_unique_violation;
+use custos_db::kem_keys::{get_active_kem_key, insert_active_kem_key};
 use custos_db::repo_keys::{
     get_reserved_repo_key_by_did, get_reserved_repo_key_by_id, insert_did_signing_key,
     RepoSigningKey,
@@ -190,6 +191,19 @@ async fn create_account_new(
                  call reserveSigningKey first",
             )
         })?;
+    // The KEM key, as the reference does it: a key the op publishes must be one this server
+    // reserved (`reserveKemKey`); an op that publishes none gets a fresh key held unpublished,
+    // so the account can install it later through `POST /v1/kem-key` (ADR-0043).
+    let kem_key = match custos_core::kem::reserved_kem_key_for_op(
+        state,
+        &did,
+        &verified.verification_methods,
+    )
+    .await?
+    {
+        Some(reserved) => reserved,
+        None => custos_core::kem::generate_wrapped_key(state)?,
+    };
 
     // Uniqueness pre-flight (fast rejection before expensive genesis work) and invite pre-check.
     ensure_email_and_handle_free(state, &email, &payload.handle).await?;
@@ -258,6 +272,7 @@ async fn create_account_new(
             password_hash: password_hash.as_deref(),
             did_document: &did_document,
             repo_key: &repo_key,
+            kem_key: &kem_key,
             genesis_root: &genesis_root_str,
             genesis_rev: &genesis_rev,
             genesis_blocks: &genesis_blocks,
@@ -288,6 +303,7 @@ struct NewAccountPromotion<'a> {
     password_hash: Option<&'a str>,
     did_document: &'a serde_json::Value,
     repo_key: &'a RepoSigningKey,
+    kem_key: &'a custos_db::kem_keys::KemKey,
     genesis_root: &'a str,
     genesis_rev: &'a str,
     genesis_blocks: &'a [(repo_engine::Cid, Vec<u8>)],
@@ -336,6 +352,10 @@ async fn promote_new_account(
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
+    insert_active_kem_key(&mut *tx, p.did, p.kem_key)
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, "failed to insert KEM key"))
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store KEM key"))?;
 
     let pending_commit = stage_genesis_repo(
         &mut tx,
@@ -412,6 +432,18 @@ async fn create_account_migration(
         None => {}
         Some(custos_db::accounts::AccountLifecycle::Deactivated) => {
             tracing::info!(did = %did, "createAccount (migration): resuming existing deactivated account");
+            // A return migration lands here too: the account row survived its move away, but its
+            // KEM key was deleted when it left, so issue the key it will publish now.
+            if get_active_kem_key(&state.db, did)
+                .await
+                .or_internal_as("failed to load KEM key", "failed to load KEM key")?
+                .is_none()
+            {
+                let kem_key = custos_core::kem::reserved_for_did_or_fresh(state, did).await?;
+                insert_active_kem_key(&state.db, did, &kem_key)
+                    .await
+                    .or_internal_as("failed to store KEM key", "failed to store KEM key")?;
+            }
             let session = issue_session(state, did, &SessionKind::FullAccess).await?;
             return Ok(Json(CreateAccountResponse {
                 access_jwt: session.access_jwt,
@@ -464,6 +496,10 @@ async fn create_account_migration(
             )
         })?;
 
+    // The KEM key the destination will recommend as `atproto_kem` (`getRecommendedDidCredentials`)
+    // and require at `activateAccount`.
+    let kem_key = custos_core::kem::reserved_for_did_or_fresh(state, did).await?;
+
     ensure_email_and_handle_free(state, &email, &payload.handle).await?;
     precheck_invite_code(state, payload.invite_code.as_deref()).await?;
 
@@ -509,6 +545,10 @@ async fn create_account_migration(
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
+    insert_active_kem_key(&mut *tx, did, &kem_key)
+        .await
+        .inspect_err(|e| tracing::error!(error = %e, "failed to insert KEM key"))
+        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store KEM key"))?;
 
     let session =
         issue_session_in_transaction(&mut tx, state, did, &SessionKind::FullAccess).await?;
@@ -528,6 +568,7 @@ async fn create_account_migration(
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
+
 //
 // `upsert_did_document` (`db::dids`) is called with `&mut *tx`: in migration mode the DID
 // document is already cached locally by the resolver, so a plain INSERT would conflict on the
@@ -950,6 +991,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The op's `atproto_kem` follows the reference: a reserved key is taken and published, an
+    /// unreserved one is refused, and an op without one gets a fresh key held unpublished.
+    #[tokio::test]
+    async fn new_account_kem_key_follows_the_reservation() {
+        for (case, kem) in [("reserved", true), ("unreserved", true), ("absent", false)] {
+            let plc = plc_mock().await;
+            let state = test_state(plc.uri(), false).await;
+            let reserved = reserve_key(&state.db, None).await;
+            let kem_key = if case == "reserved" {
+                crate::routes::test_utils::reserve_kem_key(&state.db)
+                    .await
+                    .key_id
+            } else {
+                crypto::generate_p256_keypair().unwrap().key_id
+            };
+            let device = crypto::generate_p256_keypair().unwrap();
+            let op = crypto::build_did_plc_genesis_op_multi_rotation(
+                &[device.key_id.clone(), reserved.key_id.clone()],
+                &reserved.key_id,
+                kem.then_some(&kem_key),
+                &device.private_key_bytes,
+                "dana.example.com",
+                &state.config.public_url,
+            )
+            .unwrap();
+            let response = app(state.clone())
+                .oneshot(post(
+                    serde_json::json!({
+                        "handle": "dana.example.com",
+                        "email": "dana@example.com",
+                        "password": "hunter2hunter2",
+                        "plcOp": serde_json::from_str::<serde_json::Value>(&op.signed_op_json).unwrap(),
+                    }),
+                    None,
+                ))
+                .await
+                .unwrap();
+            if case == "unreserved" {
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{case}");
+                continue;
+            }
+            assert_eq!(response.status(), StatusCode::OK, "{case}");
+            let active = custos_db::kem_keys::get_active_kem_key(&state.db, &op.did)
+                .await
+                .unwrap()
+                .expect("every new account holds a KEM key");
+            assert_eq!(active.key_id == kem_key.0, case == "reserved", "{case}");
+        }
     }
 
     #[tokio::test]

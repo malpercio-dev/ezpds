@@ -43,12 +43,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::wallet_plc_op::{announce_identity, submit_and_cache, verify_wallet_op};
 use common::{ApiError, ApiResultExt, ErrorCode};
 use custos_core::auth::guards::authenticate_owner;
-use custos_core::identity::plc::{
-    build_did_document_from_op, ensure_did_plc, fetch_current_plc_state,
-};
-use custos_db::dids::upsert_did_document;
+use custos_core::identity::plc::ensure_did_plc;
 use custos_db::repo_keys::{
     get_signing_key_by_did, get_staged_signing_key, promote_staged_signing_key, stage_rotation_key,
     RepoSigningKey,
@@ -162,41 +160,9 @@ pub async fn complete_repo_key_rotation(
     let did = authenticate_owner(&headers, &method, &uri, &state).await?;
     ensure_did_plc(&did)?;
 
-    let operation_str = serde_json::to_string(&request.operation).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize submitted rotation operation");
-        ApiError::new(ErrorCode::InvalidRequest, "operation is not valid JSON")
-    })?;
-
     // The operation must be authorized by, and relate to, the DID's CURRENT PLC state.
-    let current = fetch_current_plc_state(
-        &state.http_client,
-        &state.config.plc_directory_url,
-        did.as_str(),
-    )
-    .await?;
-    let authorized_keys: Vec<crypto::DidKeyUri> = current
-        .rotation_keys
-        .iter()
-        .cloned()
-        .map(crypto::DidKeyUri)
-        .collect();
-    let verified = crypto::verify_plc_operation(&operation_str, &authorized_keys).map_err(|e| {
-        tracing::warn!(error = %e, did = %did, "rotation operation failed verification");
-        ApiError::new(
-            ErrorCode::InvalidRequest,
-            "operation is not signed by a current rotation key",
-        )
-    })?;
-
-    // Either the op chains onto the current head (normal path — we submit it), or it IS
-    // the current head (a retry after a submit whose cutover didn't land — we only flip).
-    let already_landed = verified.cid == current.cid;
-    if !already_landed && verified.prev.as_deref() != Some(current.cid.as_str()) {
-        return Err(ApiError::new(
-            ErrorCode::InvalidRequest,
-            "operation does not chain onto the current PLC head (prev mismatch)",
-        ));
-    }
+    let op = verify_wallet_op(&state, did.as_str(), &request.operation).await?;
+    let (verified, current, already_landed) = (&op.verified, &op.current, op.already_landed);
 
     let op_atproto_key = verified
         .verification_methods
@@ -267,33 +233,7 @@ pub async fn complete_repo_key_rotation(
     {
         let _write_guard = state.repo_write_locks.lock(&did).await;
 
-        if !already_landed {
-            custos_core::identity::genesis::post_to_plc_directory(
-                &state.http_client,
-                &state.config.plc_directory_url,
-                &did,
-                &operation_str,
-            )
-            .await?;
-        }
-
-        // Refresh the cached DID document so local reads reflect the new key. The PLC
-        // directory is the source of truth; a cache-update failure is logged, not fatal.
-        match build_did_document_from_op(
-            &did,
-            &verified.verification_methods,
-            &verified.also_known_as,
-            &verified.services,
-        ) {
-            Ok(doc) => {
-                if let Err(e) = upsert_did_document(&state.db, &did, &doc).await {
-                    tracing::warn!(error = %e, did = %did, "failed to refresh cached DID document after rotation (non-fatal)");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, did = %did, "rotation operation had no renderable DID document; cache left unchanged");
-            }
-        }
+        submit_and_cache(&state, &did, &op).await?;
 
         // Promote staged → active and delete the retired key, atomically. A false return
         // means no staged row matched — acceptable only if a concurrent retry already
@@ -317,15 +257,8 @@ pub async fn complete_repo_key_rotation(
         }
     }
 
-    // Announce the identity change so relays re-resolve the document. `None` handle =
-    // "the identity changed, re-resolve" — the honest signal for a key rotation.
-    if let Err(e) = state.firehose.emit_identity(did.to_string(), None).await {
-        tracing::warn!(
-            error = %e,
-            did = %did,
-            "failed to sequence #identity firehose event after signing-key rotation (non-fatal)"
-        );
-    }
+    // Announce the identity change so relays re-resolve the document.
+    announce_identity(&state, &did).await;
 
     tracing::info!(did = %did, key_id = %staged.key_id, "repo signing-key rotation complete");
     Ok(Json(CompleteRotationResponse {

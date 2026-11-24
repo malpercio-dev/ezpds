@@ -1,0 +1,66 @@
+meta {
+  name: Complete KEM key, did:plc (POST /v1/kem-key/complete)
+  type: http
+  seq: 171
+}
+
+post {
+  url: {{baseUrl}}/v1/kem-key/complete
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "operation": {
+      "type": "plc_operation",
+      "prev": "bafyrei...",
+      "sig": "...",
+      "rotationKeys": ["did:key:zDeviceKey", "did:key:zPdsKey"],
+      "verificationMethods": {
+        "atproto": "did:key:zPdsKey",
+        "atproto_kem": "did:key:zStagedKemKey"
+      },
+      "alsoKnownAs": ["at://alice.example.com"],
+      "services": {
+        "atproto_pds": {
+          "type": "AtprotoPersonalDataServer",
+          "endpoint": "https://pds.example.com"
+        }
+      }
+    }
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/kem-key/complete (did:plc)
+
+  Submit the wallet-signed PLC op publishing the staged KEM key, then make it the active key.
+  The op must be signed by a current rotation key, chain onto the PLC head, set
+  `verificationMethods.atproto_kem` to the staged key, drop `atproto_space` /
+  `atproto_space_host` if present, and change nothing else. The PDS submits it to
+  plc.directory, refreshes its cached document, promotes the key (deleting the one it
+  replaces), and emits `#identity`. Retry-safe: an op already at the PLC head is not
+  resubmitted, and a repeat after promotion returns 200.
+
+  ## Response (200)
+
+  ```json
+  { "kemKey": "did:key:zStagedKemKey", "status": "published" }
+  ```
+
+  ## Errors
+
+  - `400` — no key staged, no `operation`, unauthorized signer, stale `prev`, wrong key, or
+    any change beyond `atproto_kem` and the retired space entries
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+  - `502`-class `PlcDirectoryError` — plc.directory unreachable or rejected the operation
+}

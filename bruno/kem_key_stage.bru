@@ -1,0 +1,47 @@
+meta {
+  name: Stage KEM key (POST /v1/kem-key)
+  type: http
+  seq: 170
+}
+
+post {
+  url: {{baseUrl}}/v1/kem-key
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/kem-key
+
+  Stage a fresh Spaces KEM key for the account (ADR-0043). Space writes answer
+  `KemKeyNotPublished` until the account's DID document publishes its active KEM key as
+  `#atproto_kem`; this is how an account installs or rotates it. Always mints a new key,
+  replacing any key staged earlier.
+
+  - **did:plc / self-hosted did:web:** returns `status: "staged"`. Publish the key (a
+    wallet-signed PLC op, or an updated `did.json`), then call `/v1/kem-key/complete`.
+  - **Custos-hosted did:web:** Custos writes the key into the served document, promotes it,
+    and emits `#identity` at once; returns `status: "published"`.
+
+  Authenticate as the account owner (wallet session token or full-access OAuth/XRPC token;
+  agent-derived and app-password credentials refused).
+
+  ## Response (200)
+
+  ```json
+  { "kemKey": "did:key:zDn...", "status": "staged" }
+  ```
+
+  ## Errors
+
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+  - `503` — signing-key master key not configured
+}

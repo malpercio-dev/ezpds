@@ -84,6 +84,8 @@ export function computeCid(signedOp) {
  *                     `recoveryKey` to POST /v1/dids; the server verifies it appears here),
  *   rotationKeys[2] = the PDS-issued per-account repo signing key, which is also
  *                     verificationMethods.atproto (it signs repo commits on the PDS).
+ * `kemKeyId`, when given, is the PDS-held Spaces KEM key, published as
+ * verificationMethods.atproto_kem; Custos requires it on POST /v1/dids and child mints.
  *
  * Returns the derived DID (`did:plc:` + first 24 chars of base32(sha256(signed
  * op DAG-CBOR))), the signed op as a JSON-ready object, and the op's CID (the
@@ -93,6 +95,7 @@ export async function buildGenesisOp({
   rotationKeyId,
   recoveryKeyId,
   repoSigningKeyId,
+  kemKeyId,
   rotationKeypair,
   handle,
   pdsUrl,
@@ -110,6 +113,7 @@ export async function buildGenesisOp({
     rotationKeys: [rotationKeyId, recoveryKeyId, repoSigningKeyId],
     verificationMethods: {
       atproto: repoSigningKeyId,
+      ...(kemKeyId ? { atproto_kem: kemKeyId } : {}),
     },
   };
 

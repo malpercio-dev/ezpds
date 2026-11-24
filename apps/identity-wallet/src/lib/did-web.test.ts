@@ -3,11 +3,12 @@ import { composeDidWebDocument, didWebDocumentUrl, didWebFromDomain, serializeDi
 
 describe('did:web ceremony document', () => {
   it('publishes the device key, reserved repo key, and Custos service', () => {
-    const doc = composeDidWebDocument('Alice.Example.com', 'alice.example.com', 'zdevice', 'zrepo', 'https://pds.example.com/');
+    const doc = composeDidWebDocument('Alice.Example.com', 'alice.example.com', 'zdevice', 'zrepo', 'https://pds.example.com/', 'zkem');
     expect(doc.id).toBe('did:web:alice.example.com');
     expect(doc.verificationMethod.map((vm) => [vm.id, vm.publicKeyMultibase])).toEqual([
       ['#device', 'zdevice'],
       ['#atproto', 'zrepo'],
+      ['#atproto_kem', 'zkem'],
     ]);
     expect(doc.service[0]).toMatchObject({ id: '#atproto_pds', serviceEndpoint: 'https://pds.example.com' });
   });

@@ -182,6 +182,7 @@ where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
 pub fn build_did_plc_genesis_op_multi_rotation_with_external_signer<F>(
     rotation_keys: &[DidKeyUri],    // ordered, highest-priority first, e.g. [device, recovery, PDS]
     signing_key: &DidKeyUri,        // PDS key → verificationMethods.atproto (need not be in rotation_keys)
+    kem_key: Option<&DidKeyUri>,    // PDS-held Spaces KEM key → verificationMethods.atproto_kem
     handle: &str,
     service_endpoint: &str,
     sign: F,                        // callback: &[u8] -> Result<Vec<u8>, CryptoError>
@@ -191,12 +192,14 @@ where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
 pub fn build_did_plc_genesis_op_multi_rotation(
     rotation_keys: &[DidKeyUri],
     signing_key: &DidKeyUri,
+    kem_key: Option<&DidKeyUri>,
     signing_private_key: &[u8; 32],  // private key for signing_key; op signed with it, low-S normalized
     handle: &str,
     service_endpoint: &str,
 ) -> Result<PlcGenesisOp, CryptoError>
 ```
 - Like the two-key builders but takes the **full ordered `rotationKeys` list** instead of hardcoding `[device, PDS]`. For key recovery the list is `[device, recovery, PDS]` — recovery in a middle slot so the device key stays highest-priority. `verificationMethods.atproto` is always the PDS `signing_key`, regardless of the rotation-key list.
+- `kem_key`, when given, is published as `verificationMethods.atproto_kem` beside `atproto` (ADR-0043); it never enters `rotationKeys`. The two-key builders publish none.
 - The two-key `build_did_plc_genesis_op[_with_external_signer]` now delegate to the same internal core, so their output is byte-identical to before (guarded by the golden DID test).
 - Server-side note: `verify_and_validate_genesis_op` only pins `rotationKeys[0]`, so a 3-key op already passes validation — this is a builder-side capability.
 - Errors: `CryptoError::PlcOperation` if `rotation_keys` is empty **or longer than 5** (PLC's rotation-key cap), the callback errors, `signing_private_key` is an invalid P-256 scalar, or serialization fails.

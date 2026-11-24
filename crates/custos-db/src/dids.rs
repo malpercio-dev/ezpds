@@ -295,10 +295,41 @@ pub async fn update_also_known_as(
 /// document without importing from `routes/`; reached through the `test-support` feature.
 #[cfg(any(test, feature = "test-support"))]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // fixture: a failed seed panics the test
-pub async fn seed_did_document(db: &SqlitePool, did: &str, document: serde_json::Value) {
+pub async fn seed_did_document(db: &SqlitePool, did: &str, mut document: serde_json::Value) {
+    // A fixture may already have published the account's KEM key into a cached document
+    // (`custos_core::test_support::publish_kem_key`); carry that entry over unless the new
+    // document names its own, so seeding a document never silently closes space writes.
+    let is_kem = |m: &serde_json::Value| {
+        m.get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| id.ends_with("#atproto_kem"))
+    };
+    let carried = get_did_document(db, did)
+        .await
+        .expect("read did_document")
+        .and_then(|old| {
+            old.get("verificationMethod")?
+                .as_array()?
+                .iter()
+                .find(|m| is_kem(m))
+                .cloned()
+        });
+    if let Some(kem) = carried {
+        let methods = document
+            .as_object_mut()
+            .expect("document is an object")
+            .entry("verificationMethod")
+            .or_insert_with(|| serde_json::json!([]));
+        if let Some(methods) = methods.as_array_mut() {
+            if !methods.iter().any(is_kem) {
+                methods.push(kem);
+            }
+        }
+    }
     sqlx::query(
         "INSERT INTO did_documents (did, document, created_at, updated_at) \
-         VALUES (?, ?, datetime('now'), datetime('now'))",
+         VALUES (?, ?, datetime('now'), datetime('now')) \
+         ON CONFLICT(did) DO UPDATE SET document = excluded.document",
     )
     .bind(did)
     .bind(document.to_string())

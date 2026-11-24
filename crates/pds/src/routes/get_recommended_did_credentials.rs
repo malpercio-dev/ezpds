@@ -4,10 +4,10 @@
 //!
 //! Returns the DID-document fields this PDS recommends a (new or migrating) account's PLC
 //! operation contain — `{ rotationKeys, alsoKnownAs, verificationMethods, services }`: the
-//! PDS-held rotation key, the account's `#atproto` verification method, its handle(s), and this
-//! server's `atproto_pds` endpoint — plus the Atproto Spaces entries (`atproto_space`,
-//! `atproto_space_host`), set explicitly to the same key and host: Custos signs space
-//! credentials with the account signing key and serves as the account's space host itself.
+//! PDS-held rotation key, the account's `#atproto` verification method, its `#atproto_kem` Spaces
+//! KEM key when it holds one (ADR-0043), its handle(s), and this server's `atproto_pds` endpoint.
+//! The same set the reference recommends: the earlier `atproto_space` / `atproto_space_host`
+//! entries are gone, so a migration op built from this drops them.
 //!
 //! Consumed by migrating wallets/clients — which fetch these from the destination PDS and fold
 //! them into the operation they then sign, putting their own device key ahead of the
@@ -65,22 +65,27 @@ pub async fn get_recommended_did_credentials(
 
     let mut verification_methods = BTreeMap::new();
     verification_methods.insert("atproto".to_string(), signing_key.key_id.clone());
-    verification_methods.insert("atproto_space".to_string(), signing_key.key_id.clone());
+    // An account created or migrated here always holds a KEM key; one that moved away and back
+    // may not until `createAccount` re-issues it, and then the entry is simply absent, as in the
+    // reference.
+    if let Some(kem_key) = custos_db::kem_keys::get_active_kem_key(&state.db, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to load KEM key");
+            ApiError::new(ErrorCode::InternalError, "failed to load account keys")
+        })?
+    {
+        verification_methods.insert(
+            custos_core::kem::KEM_VERIFICATION_METHOD_ID.to_string(),
+            kem_key.key_id,
+        );
+    }
 
     let mut services = BTreeMap::new();
     services.insert(
         "atproto_pds".to_string(),
         RecommendedService {
             service_type: "AtprotoPersonalDataServer".to_string(),
-            endpoint: state.config.public_url.clone(),
-        },
-    );
-    // Proposal 0016 names the service id but no service type; `AtprotoSpaceHost` follows the
-    // `AtprotoPersonalDataServer` / `AtprotoLabeler` naming, and resolvers match on id.
-    services.insert(
-        "atproto_space_host".to_string(),
-        RecommendedService {
-            service_type: "AtprotoSpaceHost".to_string(),
             endpoint: state.config.public_url.clone(),
         },
     );
@@ -102,7 +107,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::{access_jwt, body_json, seed_account_with_signing_key};
+    use crate::routes::test_utils::{
+        access_jwt, body_json, seed_account_with_signing_key, seed_kem_key,
+    };
 
     fn get_req(jwt: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
@@ -119,6 +126,7 @@ mod tests {
         let state = test_state().await;
         let did = "did:plc:reccreds1111111111111111";
         let key_id = seed_account_with_signing_key(&state.db, did, "alice.example.com").await;
+        let kem = seed_kem_key(&state.db, did).await;
         let jwt = access_jwt(&[0x42u8; 32], did);
 
         let response = app(state).oneshot(get_req(Some(&jwt))).await.unwrap();
@@ -136,15 +144,23 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("https://"));
-        // Spaces entries: same key, same host, published explicitly.
-        assert_eq!(json["verificationMethods"]["atproto_space"], key_id);
+        // The KEM key rides beside the signing key; the old space entries are gone.
+        assert_eq!(json["verificationMethods"]["atproto_kem"], kem.key_id);
         assert_eq!(
-            json["services"]["atproto_space_host"]["type"],
-            "AtprotoSpaceHost"
+            json["verificationMethods"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["atproto", "atproto_kem"]
         );
         assert_eq!(
-            json["services"]["atproto_space_host"]["endpoint"],
-            json["services"]["atproto_pds"]["endpoint"]
+            json["services"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["atproto_pds"]
         );
     }
 

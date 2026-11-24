@@ -116,6 +116,8 @@ export async function createAccount({ name, kind, handle, claimCode }) {
     rotationKeyId: rotationKey.keyId,
     recoveryKeyId: recoveryKey.keyId,
     repoSigningKeyId: repoKey.keyId,
+    // Issued by the same call; the new DID document publishes it as #atproto_kem.
+    kemKeyId: repoKey.kemKeyId,
     rotationKeypair: rotationKey.keypair,
     handle,
     pdsUrl: BASE_URL,
@@ -124,6 +126,7 @@ export async function createAccount({ name, kind, handle, claimCode }) {
   persist({
     provisioningStatus: 'keys-generated',
     repoSigningKeyId: repoKey.keyId,
+    kemKeyId: repoKey.kemKeyId,
     rotationKeyId: rotationKey.keyId,
     rotationKeyPrivateHex: rotationKey.privateKeyHex,
     recoveryKeyId: recoveryKey.keyId,

@@ -268,6 +268,34 @@ mod tests {
         .await
         .unwrap();
 
+        sqlx::query(
+            "INSERT INTO kem_keys \
+             (id, did, key_type, public_key, private_key_encrypted, created_at) \
+             VALUES ('did:key:zKem', 'did:plc:rewraptest', 'p256', 'zPub5', ?, \
+                     datetime('now'))",
+        )
+        .bind(enc(&pt("kem_keys"), key))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO reserved_kem_keys \
+             (id, did, key_type, public_key, private_key_encrypted, created_at) \
+             VALUES ('did:key:zReservedKem', NULL, 'p256', 'zPub6', ?, datetime('now'))",
+        )
+        .bind(enc(&pt("reserved_kem_keys"), key))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE pending_accounts SET kem_key_id = 'did:key:zPendingKem', \
+             kem_public_key = 'zPub7', kem_private_key_encrypted = ? WHERE id = 'pending-1'",
+        )
+        .bind(enc(&pt("pending_accounts.kem_private_key_encrypted"), key))
+        .execute(pool)
+        .await
+        .unwrap();
+
         plaintexts
     }
 

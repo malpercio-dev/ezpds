@@ -311,6 +311,7 @@ where
     build_genesis_op_core(
         vec![rotation_key.0.clone(), signing_key.0.clone()],
         signing_key,
+        None,
         handle,
         service_endpoint,
         sign,
@@ -331,6 +332,9 @@ where
 /// - `rotation_keys`: The ordered rotation keys, highest-priority first (e.g. `[device, recovery, PDS]`).
 ///   Must be non-empty.
 /// - `signing_key`: The PDS's signing key, placed at `verificationMethods.atproto`.
+/// - `kem_key`: The PDS-held KEM key, placed at `verificationMethods.atproto_kem` when given.
+///   Syncers use it to agree a per-request MAC secret with the account's host (Atproto Spaces);
+///   it never signs anything.
 /// - `handle`: The account handle, e.g. `"alice.example.com"`.
 /// - `service_endpoint`: The PDS's public URL.
 /// - `sign`: Callback receiving CBOR-encoded unsigned op bytes; must return the raw 64-byte r‖s
@@ -342,6 +346,7 @@ where
 pub fn build_did_plc_genesis_op_multi_rotation_with_external_signer<F>(
     rotation_keys: &[DidKeyUri],
     signing_key: &DidKeyUri,
+    kem_key: Option<&DidKeyUri>,
     handle: &str,
     service_endpoint: &str,
     sign: F,
@@ -359,6 +364,7 @@ where
     build_genesis_op_core(
         rotation_keys.iter().map(|k| k.0.clone()).collect(),
         signing_key,
+        kem_key,
         handle,
         service_endpoint,
         sign,
@@ -378,6 +384,7 @@ where
 pub fn build_did_plc_genesis_op_multi_rotation(
     rotation_keys: &[DidKeyUri],
     signing_key: &DidKeyUri,
+    kem_key: Option<&DidKeyUri>,
     signing_private_key: &[u8; 32],
     handle: &str,
     service_endpoint: &str,
@@ -388,6 +395,7 @@ pub fn build_did_plc_genesis_op_multi_rotation(
     build_did_plc_genesis_op_multi_rotation_with_external_signer(
         rotation_keys,
         signing_key,
+        kem_key,
         handle,
         service_endpoint,
         |data| {
@@ -399,10 +407,12 @@ pub fn build_did_plc_genesis_op_multi_rotation(
 }
 
 /// Shared core for both genesis builders: constructs the op with the given ordered `rotation_keys`,
-/// `verificationMethods.atproto = signing_key`, and a single `atproto_pds` service, then signs it.
+/// `verificationMethods.atproto = signing_key` (plus `atproto_kem = kem_key` when given), and a
+/// single `atproto_pds` service, then signs it.
 fn build_genesis_op_core<F>(
     rotation_keys: Vec<String>,
     signing_key: &DidKeyUri,
+    kem_key: Option<&DidKeyUri>,
     handle: &str,
     service_endpoint: &str,
     sign: F,
@@ -413,6 +423,9 @@ where
     // Step 1: Build the unsigned operation.
     let mut verification_methods = BTreeMap::new();
     verification_methods.insert("atproto".to_string(), signing_key.0.clone());
+    if let Some(kem_key) = kem_key {
+        verification_methods.insert("atproto_kem".to_string(), kem_key.0.clone());
+    }
 
     let mut services = BTreeMap::new();
     services.insert(
@@ -1683,6 +1696,7 @@ mod tests {
         let op = build_did_plc_genesis_op_multi_rotation_with_external_signer(
             &golden_three_rotation_keys(),
             &DidKeyUri(GOLDEN_SIGNING_KEY.to_string()),
+            None,
             GOLDEN_HANDLE,
             GOLDEN_ENDPOINT,
             // Same fixed stand-in signature (bytes 1..=64) as the golden signed op.
@@ -1715,6 +1729,7 @@ mod tests {
         let op = build_did_plc_genesis_op_multi_rotation_with_external_signer(
             &rotation_keys,
             &pds.key_id,
+            None,
             "alice.example.com",
             "https://pds.example.com",
             |data| {
@@ -1748,6 +1763,7 @@ mod tests {
         let recovery = generate_p256_keypair().expect("recovery keypair");
         let pds = generate_p256_keypair().expect("pds keypair");
         let pds_private = *pds.private_key_bytes;
+        let kem = generate_p256_keypair().expect("kem keypair");
 
         let op = build_did_plc_genesis_op_multi_rotation(
             &[
@@ -1756,14 +1772,22 @@ mod tests {
                 pds.key_id.clone(),
             ],
             &pds.key_id,
+            Some(&kem.key_id),
             &pds_private,
             "alice.example.com",
             "https://pds.example.com",
         )
         .expect("build 3-key genesis op");
 
-        verify_genesis_op(&op.signed_op_json, &pds.key_id)
+        let verified = verify_genesis_op(&op.signed_op_json, &pds.key_id)
             .expect("op must verify against the PDS signing key");
+        // The KEM key rides beside the signing key, never in its place.
+        let expected: BTreeMap<String, String> = [
+            ("atproto".to_string(), pds.key_id.0.clone()),
+            ("atproto_kem".to_string(), kem.key_id.0.clone()),
+        ]
+        .into();
+        assert_eq!(verified.verification_methods, expected);
     }
 
     #[test]
@@ -1772,6 +1796,7 @@ mod tests {
         let result = build_did_plc_genesis_op_multi_rotation_with_external_signer(
             &[],
             &pds.key_id,
+            None,
             "alice.example.com",
             "https://pds.example.com",
             |_| Ok((1u8..=64).collect()),
@@ -1789,6 +1814,7 @@ mod tests {
         let result = build_did_plc_genesis_op_multi_rotation_with_external_signer(
             &keys,
             &pds.key_id,
+            None,
             "alice.example.com",
             "https://pds.example.com",
             |_| Ok((1u8..=64).collect()),
@@ -1801,6 +1827,7 @@ mod tests {
         let ok = build_did_plc_genesis_op_multi_rotation_with_external_signer(
             &keys[..5],
             &pds.key_id,
+            None,
             "alice.example.com",
             "https://pds.example.com",
             |_| Ok((1u8..=64).collect()),

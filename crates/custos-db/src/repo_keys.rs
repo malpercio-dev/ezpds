@@ -30,6 +30,253 @@ pub struct RepoSigningKey {
     pub private_key_encrypted: String,
 }
 
+/// Which per-account P-256 key a query reads. The repo signing key and the KEM key have the same
+/// three homes (pending account, reservation, promoted account) and the same stored shape, but
+/// separate tables, so the commit-signer lookup can never return a KEM key. Every query below
+/// takes the family; the public functions here are the signing family's, and
+/// [`crate::kem_keys`] holds the KEM family's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyFamily {
+    Signing,
+    Kem,
+}
+
+impl KeyFamily {
+    /// The promoted account's keys, with an `'active'`/`'staged'` status column.
+    fn promoted(self) -> &'static str {
+        match self {
+            KeyFamily::Signing => "signing_keys",
+            KeyFamily::Kem => "kem_keys",
+        }
+    }
+
+    /// Reservations made before the account exists.
+    fn reserved(self) -> &'static str {
+        match self {
+            KeyFamily::Signing => "reserved_signing_keys",
+            KeyFamily::Kem => "reserved_kem_keys",
+        }
+    }
+
+    /// The `pending_accounts` column prefix: `{prefix}_key_id`, `{prefix}_public_key`,
+    /// `{prefix}_private_key_encrypted`.
+    fn pending_prefix(self) -> &'static str {
+        match self {
+            KeyFamily::Signing => "repo_signing",
+            KeyFamily::Kem => "kem",
+        }
+    }
+}
+
+type KeyRow = (String, String, String);
+
+fn key_from_row((key_id, public_key, private_key_encrypted): KeyRow) -> RepoSigningKey {
+    RepoSigningKey {
+        key_id,
+        public_key,
+        private_key_encrypted,
+    }
+}
+
+pub(crate) async fn set_pending_key(
+    pool: &SqlitePool,
+    family: KeyFamily,
+    account_id: &str,
+    key: &RepoSigningKey,
+) -> Result<(), sqlx::Error> {
+    let p = family.pending_prefix();
+    let sql = format!(
+        "UPDATE pending_accounts \
+         SET {p}_key_id = ?, {p}_public_key = ?, {p}_private_key_encrypted = ? \
+         WHERE id = ?"
+    );
+    sqlx::query(&sql)
+        .bind(&key.key_id)
+        .bind(&key.public_key)
+        .bind(&key.private_key_encrypted)
+        .bind(account_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn get_pending_key(
+    pool: &SqlitePool,
+    family: KeyFamily,
+    account_id: &str,
+) -> Result<Option<RepoSigningKey>, sqlx::Error> {
+    let p = family.pending_prefix();
+    let sql = format!(
+        "SELECT {p}_key_id, {p}_public_key, {p}_private_key_encrypted \
+         FROM pending_accounts WHERE id = ?"
+    );
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(&sql)
+        .bind(account_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(match row {
+        Some((Some(key_id), Some(public_key), Some(private_key_encrypted))) => {
+            Some(key_from_row((key_id, public_key, private_key_encrypted)))
+        }
+        _ => None,
+    })
+}
+
+pub(crate) async fn insert_active_key<'e, E>(
+    executor: E,
+    family: KeyFamily,
+    did: &str,
+    key: &RepoSigningKey,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let sql = format!(
+        "INSERT INTO {} \
+         (id, did, key_type, public_key, private_key_encrypted, created_at) \
+         VALUES (?, ?, 'p256', ?, ?, datetime('now'))",
+        family.promoted()
+    );
+    sqlx::query(&sql)
+        .bind(&key.key_id)
+        .bind(did)
+        .bind(&key.public_key)
+        .bind(&key.private_key_encrypted)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn insert_reserved_key(
+    pool: &SqlitePool,
+    family: KeyFamily,
+    did: Option<&str>,
+    key: &RepoSigningKey,
+) -> Result<bool, sqlx::Error> {
+    let sql = format!(
+        "INSERT INTO {} \
+         (id, did, key_type, public_key, private_key_encrypted, created_at) \
+         VALUES (?, ?, 'p256', ?, ?, datetime('now')) \
+         ON CONFLICT(did) DO NOTHING",
+        family.reserved()
+    );
+    let result = sqlx::query(&sql)
+        .bind(&key.key_id)
+        .bind(did)
+        .bind(&key.public_key)
+        .bind(&key.private_key_encrypted)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// A reservation by `column` (`did` or `id`).
+pub(crate) async fn get_reserved_key(
+    pool: &SqlitePool,
+    family: KeyFamily,
+    column: &'static str,
+    value: &str,
+) -> Result<Option<RepoSigningKey>, sqlx::Error> {
+    let sql = format!(
+        "SELECT id, public_key, private_key_encrypted FROM {} WHERE {column} = ? LIMIT 1",
+        family.reserved()
+    );
+    let row: Option<KeyRow> = sqlx::query_as(&sql)
+        .bind(value)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(key_from_row))
+}
+
+/// The promoted account's key with `status` (`'active'` or `'staged'`).
+pub(crate) async fn get_key_by_status(
+    pool: &SqlitePool,
+    family: KeyFamily,
+    did: &str,
+    status: &'static str,
+) -> Result<Option<RepoSigningKey>, sqlx::Error> {
+    let sql = format!(
+        "SELECT id, public_key, private_key_encrypted FROM {} \
+         WHERE did = ? AND status = ? ORDER BY created_at DESC LIMIT 1",
+        family.promoted()
+    );
+    let row: Option<KeyRow> = sqlx::query_as(&sql)
+        .bind(did)
+        .bind(status)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(key_from_row))
+}
+
+pub(crate) async fn stage_key(
+    pool: &SqlitePool,
+    family: KeyFamily,
+    did: &str,
+    key: &RepoSigningKey,
+) -> Result<(), sqlx::Error> {
+    let table = family.promoted();
+    let mut tx = pool.begin().await?;
+    sqlx::query(&format!(
+        "DELETE FROM {table} WHERE did = ? AND status = 'staged'"
+    ))
+    .bind(did)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(&format!(
+        "INSERT INTO {table} \
+         (id, did, key_type, public_key, private_key_encrypted, created_at, status) \
+         VALUES (?, ?, 'p256', ?, ?, datetime('now'), 'staged')"
+    ))
+    .bind(&key.key_id)
+    .bind(did)
+    .bind(&key.public_key)
+    .bind(&key.private_key_encrypted)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn promote_staged_key(
+    pool: &SqlitePool,
+    family: KeyFamily,
+    did: &str,
+    staged_key_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let table = family.promoted();
+    let mut tx = pool.begin().await?;
+    // Retire the active rows first: `kem_keys` allows one row per (did, status), so the
+    // staged row cannot become active while the old active row still exists.
+    let staged_exists: Option<(String,)> = sqlx::query_as(&format!(
+        "SELECT id FROM {table} WHERE did = ? AND id = ? AND status = 'staged'"
+    ))
+    .bind(did)
+    .bind(staged_key_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if staged_exists.is_none() {
+        // Nothing staged under that id — roll back rather than deleting the
+        // account's only active key.
+        return Ok(false);
+    }
+    sqlx::query(&format!(
+        "DELETE FROM {table} WHERE did = ? AND status = 'active' AND id != ?"
+    ))
+    .bind(did)
+    .bind(staged_key_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(&format!(
+        "UPDATE {table} SET status = 'active' WHERE did = ? AND id = ? AND status = 'staged'"
+    ))
+    .bind(did)
+    .bind(staged_key_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
 /// Store the generated per-account repo signing key on the pending account.
 /// Overwrites any existing key for the pending account (the ceremony endpoint
 /// is idempotent and reuses the existing key, so this only writes once).
@@ -38,19 +285,7 @@ pub async fn set_pending_repo_key(
     account_id: &str,
     key: &RepoSigningKey,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE pending_accounts \
-         SET repo_signing_key_id = ?, repo_signing_public_key = ?, \
-             repo_signing_private_key_encrypted = ? \
-         WHERE id = ?",
-    )
-    .bind(&key.key_id)
-    .bind(&key.public_key)
-    .bind(&key.private_key_encrypted)
-    .bind(account_id)
-    .execute(pool)
-    .await?;
-    Ok(())
+    set_pending_key(pool, KeyFamily::Signing, account_id, key).await
 }
 
 /// Fetch the per-account repo signing key from the pending account.
@@ -59,24 +294,7 @@ pub async fn get_pending_repo_key(
     pool: &SqlitePool,
     account_id: &str,
 ) -> Result<Option<RepoSigningKey>, sqlx::Error> {
-    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT repo_signing_key_id, repo_signing_public_key, \
-                repo_signing_private_key_encrypted \
-         FROM pending_accounts WHERE id = ?",
-    )
-    .bind(account_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(match row {
-        Some((Some(key_id), Some(public_key), Some(private_key_encrypted))) => {
-            Some(RepoSigningKey {
-                key_id,
-                public_key,
-                private_key_encrypted,
-            })
-        }
-        _ => None,
-    })
+    get_pending_key(pool, KeyFamily::Signing, account_id).await
 }
 
 /// Insert the per-account signing key into `signing_keys` (DID-keyed).
@@ -89,18 +307,7 @@ pub async fn insert_did_signing_key<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    sqlx::query(
-        "INSERT INTO signing_keys \
-         (id, did, key_type, public_key, private_key_encrypted, created_at) \
-         VALUES (?, ?, 'p256', ?, ?, datetime('now'))",
-    )
-    .bind(&key.key_id)
-    .bind(did)
-    .bind(&key.public_key)
-    .bind(&key.private_key_encrypted)
-    .execute(executor)
-    .await?;
-    Ok(())
+    insert_active_key(executor, KeyFamily::Signing, did, key).await
 }
 
 /// Store a standard account-migration signing-key reservation.
@@ -113,19 +320,7 @@ pub async fn insert_reserved_repo_key(
     did: Option<&str>,
     key: &RepoSigningKey,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "INSERT INTO reserved_signing_keys \
-         (id, did, key_type, public_key, private_key_encrypted, created_at) \
-         VALUES (?, ?, 'p256', ?, ?, datetime('now')) \
-         ON CONFLICT(did) DO NOTHING",
-    )
-    .bind(&key.key_id)
-    .bind(did)
-    .bind(&key.public_key)
-    .bind(&key.private_key_encrypted)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() == 1)
+    insert_reserved_key(pool, KeyFamily::Signing, did, key).await
 }
 
 /// Fetch a reserved account-migration signing key by migrating DID.
@@ -133,20 +328,7 @@ pub async fn get_reserved_repo_key_by_did(
     pool: &SqlitePool,
     did: &str,
 ) -> Result<Option<RepoSigningKey>, sqlx::Error> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT id, public_key, private_key_encrypted FROM reserved_signing_keys \
-         WHERE did = ? LIMIT 1",
-    )
-    .bind(did)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(
-        |(key_id, public_key, private_key_encrypted)| RepoSigningKey {
-            key_id,
-            public_key,
-            private_key_encrypted,
-        },
-    ))
+    get_reserved_key(pool, KeyFamily::Signing, "did", did).await
 }
 
 /// Fetch a reserved account-migration signing key by did:key id.
@@ -154,20 +336,7 @@ pub async fn get_reserved_repo_key_by_id(
     pool: &SqlitePool,
     key_id: &str,
 ) -> Result<Option<RepoSigningKey>, sqlx::Error> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT id, public_key, private_key_encrypted FROM reserved_signing_keys \
-         WHERE id = ? LIMIT 1",
-    )
-    .bind(key_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(
-        |(key_id, public_key, private_key_encrypted)| RepoSigningKey {
-            key_id,
-            public_key,
-            private_key_encrypted,
-        },
-    ))
+    get_reserved_key(pool, KeyFamily::Signing, "id", key_id).await
 }
 
 /// Fetch the per-account signing key for a promoted DID (used to sign commits).
@@ -178,20 +347,7 @@ pub async fn get_signing_key_by_did(
     pool: &SqlitePool,
     did: &str,
 ) -> Result<Option<RepoSigningKey>, sqlx::Error> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT id, public_key, private_key_encrypted FROM signing_keys \
-         WHERE did = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(did)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(
-        |(key_id, public_key, private_key_encrypted)| RepoSigningKey {
-            key_id,
-            public_key,
-            private_key_encrypted,
-        },
-    ))
+    get_key_by_status(pool, KeyFamily::Signing, did, "active").await
 }
 
 /// Stage a freshly generated rotation key for `did`, replacing any prior staged
@@ -204,24 +360,7 @@ pub async fn stage_rotation_key(
     did: &str,
     key: &RepoSigningKey,
 ) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM signing_keys WHERE did = ? AND status = 'staged'")
-        .bind(did)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "INSERT INTO signing_keys \
-         (id, did, key_type, public_key, private_key_encrypted, created_at, status) \
-         VALUES (?, ?, 'p256', ?, ?, datetime('now'), 'staged')",
-    )
-    .bind(&key.key_id)
-    .bind(did)
-    .bind(&key.public_key)
-    .bind(&key.private_key_encrypted)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(())
+    stage_key(pool, KeyFamily::Signing, did, key).await
 }
 
 /// Fetch the staged rotation key for `did`, if a rotation is in progress.
@@ -229,20 +368,7 @@ pub async fn get_staged_signing_key(
     pool: &SqlitePool,
     did: &str,
 ) -> Result<Option<RepoSigningKey>, sqlx::Error> {
-    let row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT id, public_key, private_key_encrypted FROM signing_keys \
-         WHERE did = ? AND status = 'staged' ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(did)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(
-        |(key_id, public_key, private_key_encrypted)| RepoSigningKey {
-            key_id,
-            public_key,
-            private_key_encrypted,
-        },
-    ))
+    get_key_by_status(pool, KeyFamily::Signing, did, "staged").await
 }
 
 /// Rotation cutover: promote the staged key to active and delete the retired
@@ -258,27 +384,7 @@ pub async fn promote_staged_signing_key(
     did: &str,
     staged_key_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let promoted = sqlx::query(
-        "UPDATE signing_keys SET status = 'active' \
-         WHERE did = ? AND id = ? AND status = 'staged'",
-    )
-    .bind(did)
-    .bind(staged_key_id)
-    .execute(&mut *tx)
-    .await?;
-    if promoted.rows_affected() != 1 {
-        // Nothing staged under that id — roll back rather than deleting the
-        // account's only active key.
-        return Ok(false);
-    }
-    sqlx::query("DELETE FROM signing_keys WHERE did = ? AND status = 'active' AND id != ?")
-        .bind(did)
-        .bind(staged_key_id)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    Ok(true)
+    promote_staged_key(pool, KeyFamily::Signing, did, staged_key_id).await
 }
 
 #[cfg(test)]

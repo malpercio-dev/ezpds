@@ -74,6 +74,7 @@ declare module 'ezpds-interop/src/crypto.js' {
     rotationKeyId: string;
     recoveryKeyId: string;
     repoSigningKeyId: string;
+    kemKeyId?: string;
     rotationKeypair: unknown;
     handle: string;
     pdsUrl: string;

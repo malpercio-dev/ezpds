@@ -106,6 +106,7 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/server/deactivateAccount.json"),
     include_str!("../../lexicons/com/atproto/server/deleteAccount.json"),
     include_str!("../../lexicons/com/atproto/server/requestPasswordReset.json"),
+    include_str!("../../lexicons/com/atproto/server/reserveKemKey.json"),
     include_str!("../../lexicons/com/atproto/server/reserveSigningKey.json"),
     include_str!("../../lexicons/com/atproto/server/resetPassword.json"),
     include_str!("../../lexicons/com/atproto/server/revokeAppPassword.json"),
@@ -578,6 +579,7 @@ mod tests {
             "com.atproto.server.deactivateAccount",
             "com.atproto.server.deleteAccount",
             "com.atproto.server.requestPasswordReset",
+            "com.atproto.server.reserveKemKey",
             "com.atproto.server.reserveSigningKey",
             "com.atproto.server.resetPassword",
             "com.atproto.server.revokeAppPassword",
@@ -928,6 +930,7 @@ mod tests {
     #[test]
     fn schemas_with_no_required_properties_accept_empty_bodies() {
         expect_valid("com.atproto.server.deactivateAccount", json!({}));
+        expect_valid("com.atproto.server.reserveKemKey", json!({}));
         expect_valid("com.atproto.server.reserveSigningKey", json!({}));
         expect_valid("com.atproto.identity.signPlcOperation", json!({}));
     }
@@ -1270,6 +1273,7 @@ mod tests {
             "com.atproto.server.createInviteCodes",
             "com.atproto.server.createSession",
             "com.atproto.server.getServiceAuth",
+            "com.atproto.server.reserveKemKey",
             "com.atproto.server.reserveSigningKey",
             "com.atproto.sync.getLatestCommit",
             "com.atproto.sync.getRepoStatus",

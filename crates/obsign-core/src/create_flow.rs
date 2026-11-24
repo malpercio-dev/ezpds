@@ -61,11 +61,14 @@ struct CreateMobileAccountResponse {
     next_step: NextStep,
 }
 
-/// Response from GET /v1/repo-signing-key — this account's per-account repo signing key.
+/// Response from GET /v1/repo-signing-key — this account's per-account repo signing key, and
+/// the Spaces KEM key the same call issues (absent from a Custos that predates KEM keys).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PdsSigningKey {
     key_id: String,
+    #[serde(default)]
+    kem_key_id: Option<String>,
 }
 
 /// Request body for POST /v1/dids — submit the signed genesis op for DID promotion.
@@ -197,6 +200,9 @@ pub struct DIDCeremonyResult {
 pub struct DidWebPreparation {
     pub device_key_multibase: String,
     pub repo_key_multibase: String,
+    /// The KEM key the document must publish as `#atproto_kem`; `None` from a Custos that
+    /// predates KEM keys.
+    pub kem_key_multibase: Option<String>,
     pub pds_url: String,
 }
 
@@ -558,10 +564,15 @@ pub async fn perform_did_ceremony(
         DidKeyUri(pds_key.key_id.clone()),
     ];
     let signing_key = DidKeyUri(pds_key.key_id.clone());
+    // The PDS-held Spaces KEM key rides in the same op as `verificationMethods.atproto_kem`, so
+    // the new DID document publishes it from the start. It never signs and never enters
+    // `rotationKeys`.
+    let kem_key = pds_key.kem_key_id.clone().map(DidKeyUri);
 
     let genesis_op = build_did_plc_genesis_op_multi_rotation_with_external_signer(
         &rotation_keys,
         &signing_key,
+        kem_key.as_ref(),
         &handle,
         &pds_base_url,
         |data| {
@@ -745,6 +756,10 @@ pub async fn prepare_did_web_ceremony(state: &Core) -> Result<DidWebPreparation,
             .strip_prefix("did:key:")
             .unwrap_or(&repo_key.key_id)
             .to_string(),
+        kem_key_multibase: repo_key
+            .kem_key_id
+            .as_deref()
+            .map(|id| id.strip_prefix("did:key:").unwrap_or(id).to_string()),
         pds_url: state
             .custos_client()
             .base_url_str()
