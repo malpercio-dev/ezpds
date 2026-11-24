@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Build and run the Atproto Spaces reference PDS from source at the frozen pin, via
+# atproto's packages/dev-env multi-PDS setup (http loopback PDSes + a local PLC), started
+# through ../reference/multi-pds.mjs on configurable ports.
+#
+#   reference-pds build          clone/fetch, check out the pin, verify the SHA, install, build
+#   reference-pds up [N]         build, then run N PDSes (default 2) in the foreground; Ctrl-C stops
+#   reference-pds smoke [N]      build, start, run the interop account steps against every PDS, stop
+#
+# Never `latest` or an image tag: the pin is a reference commit, and moving it is a decision.
+set -euo pipefail
+
+PIN=047d6032a21be01df8447489f0d6b59d2cc60af8   # atproto permissioned-data, frozen
+BRANCH=permissioned-data
+CACHE="${EZPDS_REFERENCE_CACHE:-$HOME/.cache/ezpds/reference-pds}"
+SRC="$CACHE/atproto"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The pinned repo demands pnpm 12 (packageManager) and Node ^22.23.4 (devEngines, onFail:
+# error). corepack fetches the pinned pnpm into a shim dir that every nested `pnpm run`
+# resolves first; the devenv's Node 22.22 is accepted with the runtime check relaxed,
+# because letting pnpm download a runtime picks Node 26, which better-sqlite3 cannot build.
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm_config_runtime_on_fail=ignore
+mkdir -p "$CACHE/bin"
+corepack enable --install-directory "$CACHE/bin" pnpm
+export PATH="$CACHE/bin:$PATH"
+
+build() {
+  if [ ! -d "$SRC/.git" ]; then
+    git clone --filter=blob:none --no-checkout https://github.com/bluesky-social/atproto.git "$SRC"
+  fi
+  if [ "$(cat "$CACHE/built" 2>/dev/null)" = "$PIN" ] && [ "$(git -C "$SRC" rev-parse HEAD)" = "$PIN" ]; then
+    return
+  fi
+  git -C "$SRC" cat-file -e "$PIN^{commit}" 2>/dev/null || git -C "$SRC" fetch origin "$BRANCH"
+  git -C "$SRC" checkout -q --detach "$PIN"
+  local head
+  head="$(git -C "$SRC" rev-parse HEAD)"
+  [ "$head" = "$PIN" ] || { echo "checked out $head, expected $PIN" >&2; exit 1; }
+  # The monorepo's own build: prebuild (lexicon codegen) → tsc → postbuild (the OAuth UI
+  # bundles the PDS imports at startup).
+  (cd "$SRC" && pnpm install --frozen-lockfile && pnpm build)
+  echo "$PIN" > "$CACHE/built"
+}
+
+# PLC on $PORT, PDS i on $PORT + i. The default sits clear of dev-env's own 2581–2583, so
+# a dev-env left running elsewhere is never in the way; EZPDS_REFERENCE_PORT moves it.
+PORT="${EZPDS_REFERENCE_PORT:-2680}"
+network=(node --enable-source-maps "$here/../reference/multi-pds.mjs" "$SRC")
+
+ports_free() {
+  local p
+  for p in $(seq "$PORT" $((PORT + $1))); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then
+      echo "port $p is already in use — set EZPDS_REFERENCE_PORT to another base port" >&2
+      exit 1
+    fi
+  done
+}
+
+up() {
+  ports_free "$1"
+  exec "${network[@]}" "$1" "$PORT"
+}
+
+smoke() {
+  # state/pid stay global: the EXIT trap fires after this function returns.
+  local count="$1" log="$CACHE/smoke.log"
+  ports_free "$count"
+  state="$(mktemp -d "${TMPDIR:-/tmp}/reference-pds-smoke.XXXXXX")"
+  "${network[@]}" "$count" "$PORT" > "$log" 2>&1 &
+  pid=$!
+  # `set -e` holds inside the trap, and `wait` on the killed child returns 143.
+  trap 'rc=$?; kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true; rm -rf "$state"; exit $rc' EXIT
+  for _ in $(seq 1 120); do
+    grep -qx 'ready' "$log" && break
+    kill -0 $pid 2>/dev/null || { cat "$log" >&2; exit 1; }
+    sleep 1
+  done
+  grep -qx 'ready' "$log" || { cat "$log" >&2; echo "reference PDSes did not come up in 120s" >&2; exit 1; }
+
+  local plc
+  plc="$(sed -n 's/^PLC \(http[^ ]*\)$/\1/p' "$log")"
+  echo "PLC  $plc"
+  export EZPDS_PLC_URL="$plc" EZPDS_INTEROP_STATE_DIR="$state" EZPDS_INTEROP_PACE_MS=0
+  local i=0
+  for url in $(sed -n 's/^PDS[0-9]* \(http[^ ]*\)$/\1/p' "$log"); do
+    i=$((i + 1))
+    echo "PDS$i $url"
+    "$here/interop" create-account --name "ref$i" --host "$url"
+    "$here/interop" crud-test --name "ref$i"
+  done
+  [ "$i" -ge "$count" ] || { echo "expected $count PDS URLs in the log, found $i" >&2; exit 1; }
+  echo "smoke: $i reference PDSes — create-account + crud-test passed on each"
+}
+
+cmd="${1:-up}"
+count="${2:-2}"
+build
+case "$cmd" in
+  build) ;;
+  up) up "$count" ;;
+  smoke) smoke "$count" ;;
+  *) echo "usage: reference-pds [build|up|smoke] [pds-count]" >&2; exit 2 ;;
+esac

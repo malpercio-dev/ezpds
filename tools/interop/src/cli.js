@@ -3,7 +3,7 @@
 
 import { parseArgs } from 'node:util';
 import { BASE_URL, ALLOWED_TARGET } from './config.js';
-import { describeServer, health, createAccount, ensureSession, getSession, importSession, scheduleEphemeralDeletion, mintClaimCode } from './account.js';
+import { describeServer, health, createAccount, createStandardAccount, ensureSession, getSession, importSession, scheduleEphemeralDeletion, mintClaimCode } from './account.js';
 import { verifyIdentity } from './identity.js';
 import { createPost, crudRoundTrip, getRecord, listRecords, deleteRecord } from './records.js';
 import { watchFirehose, firehoseWriteCheck } from './firehose.js';
@@ -27,6 +27,9 @@ Server
 
 Accounts (credentials persist in .state/state.json — gitignored)
   create-account --name <n> [--ephemeral] [--handle h] [--claim-code c]
+  create-account --name <n> --host <url> [--handle h]
+                                   standard createAccount on ANY PDS (e.g. the reference PDS);
+                                   checks the new DID doc at EZPDS_PLC_URL names that host
   import-session --name <n> --host <url> --identifier <id> --password <pw>
                                    adopt an existing account on ANY PDS (incl. foreign)
   whoami --name <n>                getSession for the account
@@ -47,8 +50,8 @@ Checks
   relay-status                     relay crawl status only
   appview-profile [--did d | --name <n>]   AppView profile lookup
   post --name <n> --text "..."     create a plain post (no mentions)
-  get-record --did d --collection c --rkey r     read a single record
-  list-records --did d [--collection c]          list records in a collection
+  get-record --did d --collection c --rkey r [--host url]   read a single record
+  list-records --did d [--collection c] [--host url]        list records in a collection
   delete-record --name <n> --collection c --rkey r   delete a record
   firehose [--cursor c] [--seconds s]   stream frames to stdout
 
@@ -66,8 +69,8 @@ Migration (requires --target-pds; needs a second PDS instance; not part of suite
 Suite
   suite [--name <n>] [--no-interact] [--lifecycle]   full end-to-end run + JSON report
 
-Environment: EZPDS_BASE_URL (default staging), EZPDS_ADMIN_TOKEN,
-EZPDS_INTEROP_PACE_MS, EZPDS_INTEROP_STATE_DIR.
+Environment: EZPDS_BASE_URL (default staging), EZPDS_ADMIN_TOKEN, EZPDS_PLC_URL
+(default plc.directory), EZPDS_INTEROP_PACE_MS, EZPDS_INTEROP_STATE_DIR.
 `;
 
 function flags(args, extra = {}) {
@@ -124,6 +127,11 @@ async function main() {
       console.log(await mintClaimCode());
       break;
     case 'create-account': {
+      if (v.host) {
+        const account = await createStandardAccount({ name: requireName(v), host: v.host, handle: v.handle });
+        print({ did: account.did, handle: account.handle, host: account.host });
+        break;
+      }
       const account = await createAccount({
         name: requireName(v),
         kind: v.ephemeral ? 'ephemeral' : 'persistent',
@@ -199,10 +207,10 @@ async function main() {
       break;
     }
     case 'get-record':
-      print(await getRecord(v.did, v.collection, v.rkey));
+      print(await getRecord(v.did, v.collection, v.rkey, v.host));
       break;
     case 'list-records':
-      print(await listRecords(v.did, v.collection ?? 'app.bsky.feed.post'));
+      print(await listRecords(v.did, v.collection ?? 'app.bsky.feed.post', {}, v.host));
       break;
     case 'delete-record':
       print(await deleteRecord(requireName(v), v.collection, v.rkey));
