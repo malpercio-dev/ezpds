@@ -41,6 +41,7 @@ Requirements: Node ≥ 22.12 (in the devenv shell). Environment:
 |---|---|---|
 | `EZPDS_BASE_URL` | Target PDS | `https://ezpds-staging.up.railway.app` |
 | `EZPDS_ADMIN_TOKEN` | Mint claim codes (signup requires one) | unset |
+| `EZPDS_PLC_URL` | PLC directory (e.g. the reference PDS's local PLC) | `https://plc.directory` |
 | `EZPDS_INTEROP_PACE_MS` | Min gap between requests | `350` |
 | `EZPDS_INTEROP_STATE_DIR` | State/credentials/reports dir | `tools/interop/.state` |
 
@@ -114,6 +115,58 @@ the other interop commands (`account`, `sync`, `records`, the `suite`) still tar
 the configured `BASE_URL` — they do **not** yet read the per-account `pds`. Use
 `migrate verify --target-pds <url>` (which takes the destination explicitly) to
 confirm the migrated account on the new PDS.
+
+## Reference PDS
+
+The Spaces conformance target is the reference implementation at a frozen commit: atproto
+`permissioned-data` @ `047d6032a21be01df8447489f0d6b59d2cc60af8`. `just reference-pds` builds
+it **from source** at that commit and runs `packages/dev-env`'s multi-PDS setup. It never
+uses `latest` or an image tag. Moving the pin is a decision with its own ticket, so the SHA
+is a constant in `bin/reference-pds`.
+
+```sh
+just reference-pds            # build if needed, then serve 2 PDSes + a local PLC (Ctrl-C stops)
+just reference-pds up 3       # 3 PDSes
+just reference-pds smoke      # start, run create-account + crud-test on every PDS, stop
+just reference-pds build      # clone/fetch, check out + verify the pin, install, build
+```
+
+`up` prints the hosts (introspection on `http://localhost:2581`, PLC on
+`http://localhost:2582`, `pds1` on `http://localhost:2583`, later PDSes on random ports)
+and seeds `alice`/`bob`/`carol` on each (`<name>-pass`). Point the CLI at them with the
+account's `--host` and the local PLC:
+
+```sh
+export EZPDS_PLC_URL=http://localhost:2582 EZPDS_INTEROP_PACE_MS=0
+just interop create-account --name ref1 --host http://localhost:2583   # standard createAccount
+just interop crud-test --name ref1
+just interop import-session --name alice --host http://localhost:2583 \
+  --identifier alice.test --password alice-pass                        # a seeded account
+```
+
+`create-account --host` uses standard `com.atproto.server.createAccount`, not the Custos
+`/v1/*` ceremony. The PDS mints the did:plc, and the command reads the DID document back
+from `EZPDS_PLC_URL` and requires it to name that host. Defaults are unchanged: without
+`--host` and `EZPDS_PLC_URL`, everything still targets staging and plc.directory.
+
+Gotchas:
+
+- **Toolchain.** The pinned repo requires pnpm 12 (`packageManager`) and Node `^22.23.4`
+  (`devEngines`, `onFail: error`). The script fetches pnpm 12 with corepack into the cache.
+  It runs the devenv's Node 22.22 with `pnpm_config_runtime_on_fail=ignore`, because letting
+  pnpm download a runtime picks Node 26, and better-sqlite3 has no build for it.
+- **Fixed ports.** `bin-multi-pds` hard-codes 2581–2583. Another dev-env still running there
+  makes it die with `EADDRINUSE`, so the script refuses to start until those ports are free.
+- **Cache.** The clone and build live in `~/.cache/ezpds/reference-pds`
+  (`EZPDS_REFERENCE_CACHE` overrides). A `built` stamp holding the pin skips the cold build
+  (several minutes) on later runs. Delete the stamp to force a rebuild.
+- **Ephemeral.** Every PDS and the PLC keep their data in temp dirs, so stopping the
+  process discards all accounts. `smoke` uses a throwaway state dir for the same reason.
+  For manual runs, reuse `--name`s only within one `up`, or point
+  `EZPDS_INTEROP_STATE_DIR` somewhere disposable.
+- **Handles.** The handles are `.test`/`.test2`/…, which only the dev-env's in-process
+  mocks resolve. `verify-identity` (HTTPS well-known handle resolution) therefore cannot
+  pass here. The PLC check in `create-account --host` covers the identity leg.
 
 ## Atproto Spaces
 

@@ -9,7 +9,7 @@
 //   5. handle registration         POST /v1/handles
 //   6. standard session            POST /xrpc/com.atproto.server.createSession
 
-import { BASE_URL, ADMIN_TOKEN, defaultEmail } from './config.js';
+import { BASE_URL, ADMIN_TOKEN, PLC_URL, defaultEmail } from './config.js';
 import { request, xrpc } from './http.js';
 import {
   newKeypair,
@@ -281,6 +281,49 @@ export async function importSession({ name, host, identifier, password }) {
     createdAt: new Date().toISOString(),
   };
   saveState(state);
+  return state.accounts[name];
+}
+
+/**
+ * Create an account on any atproto PDS with the standard `com.atproto.server.createAccount`
+ * — the path a non-Custos host (e.g. the reference PDS from `just reference-pds`) offers in
+ * place of the `/v1/*` provisioning ceremony. The PDS mints the did:plc itself, so the new
+ * DID document is then read back from PLC_URL and must name this host as its PDS. Recorded
+ * as `foreign` with its host, like `import-session`.
+ */
+export async function createStandardAccount({ name, host, handle }) {
+  const state = loadState();
+  if (state.accounts[name]) {
+    throw new Error(`account "${name}" already exists in state (did: ${state.accounts[name].did}). Pick another --name.`);
+  }
+  const base = host.replace(/\/+$/, '');
+  if (!handle) {
+    const server = await xrpc(base, 'com.atproto.server.describeServer');
+    const domain = server.availableUserDomains?.[0];
+    if (!domain) throw new Error(`${base} advertises no availableUserDomains; pass --handle explicitly`);
+    handle = `${name.replace(/[^a-z0-9-]/gi, '-').toLowerCase()}-${randomSuffix(4)}.${domain.replace(/^\./, '')}`;
+  }
+  const password = randomPassword();
+  const session = await xrpc(base, 'com.atproto.server.createAccount', {
+    method: 'POST',
+    body: { handle, email: defaultEmail(name), password },
+  });
+  state.accounts[name] = {
+    name,
+    kind: 'foreign',
+    host: base,
+    did: session.did,
+    handle: session.handle,
+    password,
+    accessJwt: session.accessJwt,
+    refreshJwt: session.refreshJwt,
+    createdAt: new Date().toISOString(),
+  };
+  saveState(state);
+
+  const doc = await request(`${PLC_URL}/${session.did}`);
+  const pds = doc.service?.find((s) => s.id === '#atproto_pds' || s.id === `${session.did}#atproto_pds`)?.serviceEndpoint;
+  if (pds !== base) throw new Error(`${PLC_URL}/${session.did} names PDS ${pds}, expected ${base}`);
   return state.accounts[name];
 }
 

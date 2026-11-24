@@ -237,6 +237,15 @@ interop *args:
 interop-test:
     cd tools/interop && pnpm test
 
+# Build the Atproto Spaces reference PDS from source at the frozen pin (atproto
+# permissioned-data @ 047d603, cached under ~/.cache/ezpds/reference-pds) and run
+# packages/dev-env's multi-PDS setup: `just reference-pds` serves N (default 2) http
+# loopback PDSes + a local PLC in the foreground and prints their URLs;
+# `just reference-pds smoke` starts them, runs the interop account steps against each,
+# and stops. Needs node/pnpm + network; not part of `just ci`. See tools/interop/README.md.
+reference-pds mode="up" count="2":
+    tools/interop/bin/reference-pds {{mode}} {{count}}
+
 # Install dependencies for the Custos MCP server (tools/mcp) — one-time setup.
 mcp-setup:
     cd tools/mcp && pnpm install
