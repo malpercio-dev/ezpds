@@ -234,7 +234,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::spaces::{insert_space, NewSpace};
     use crate::test_support::test_state;
 
     const SPACE: &str = "at://did:plc:authoritywritersaaaaaaaa/space/org.example.bucket/main";
@@ -261,23 +260,12 @@ mod tests {
     #[tokio::test]
     async fn space_revs_chain_across_writers_and_survive_a_purged_writer() {
         let state = test_state().await;
-        insert_space(
+        crate::test_support::seed_authority_space(
             &state.db,
-            &NewSpace {
-                uri: SPACE,
-                authority_did: "did:plc:authoritywritersaaaaaaaa",
-                space_type: "org.example.bucket",
-                skey: "main",
-                policy: Some("public"),
-                app_access: Some("open"),
-                app_allowed: None,
-                managing_app: None,
-                write_policy: None,
-                write_managing_app: None,
-            },
+            SPACE,
+            &crate::test_support::memberspace_policy(true),
         )
-        .await
-        .unwrap();
+        .await;
 
         let first = accepted(record(&state.db, ALICE, "3kaaaaaaaaaa2").await);
         assert_eq!(first.prev_space_rev, None);
@@ -300,7 +288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_space_without_simplespace_config_keeps_no_writer_set() {
+    async fn a_space_without_a_policy_keeps_no_writer_set() {
         let state = test_state().await;
         assert_eq!(
             record(&state.db, ALICE, "3kaaaaaaaaaa2").await,

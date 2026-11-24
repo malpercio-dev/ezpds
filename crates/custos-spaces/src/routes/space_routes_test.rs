@@ -103,7 +103,7 @@ async fn create_read_and_list_round_trip() {
         .await
         .unwrap();
     let spaces = body_json(response).await;
-    assert_eq!(spaces["spaces"][0]["uri"], SPACE);
+    assert_eq!(spaces["spaces"][0]["space"], SPACE);
 }
 
 /// `excludeValues` drops the record bodies but keeps the metadata a healing syncer diffs on, and

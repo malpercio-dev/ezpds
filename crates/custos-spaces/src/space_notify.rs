@@ -147,7 +147,7 @@ fn spawn_write(
     tokio::spawn(async move {
         let _permit = fanout_permits().acquire().await;
 
-        // Whether this host is the space's authority: a `spaces` row with simplespace config. A
+        // Whether this host is the space's authority: a `spaces` row with a policy. A
         // forward needs it, a report needs the authority elsewhere. A deleted or taken-down space
         // sends nothing: a taken-down space must stop acting as space host entirely.
         let is_authority = match crate::db::spaces::get_space(&state.db, &space.uri).await {
@@ -428,30 +428,32 @@ mod tests {
     async fn authority_state() -> CoreState {
         let state = state_with_master_key().await;
         seed_account_with_repo(&state.db, AUTHORITY).await;
-        seed_space(&state, Some("public")).await;
+        seed_space(&state, Some(&crate::test_support::memberspace_policy(true))).await;
         state
     }
 
     /// The space's row: with a policy this host is its authority, without one it only keeps
     /// repos in it.
     async fn seed_space(state: &CoreState, policy: Option<&str>) {
-        insert_space(
-            &state.db,
-            &NewSpace {
-                uri: SPACE,
-                authority_did: AUTHORITY,
-                space_type: "org.example.bucket",
-                skey: "main",
-                policy,
-                app_access: policy.map(|_| "open"),
-                app_allowed: None,
-                managing_app: None,
-                write_policy: None,
-                write_managing_app: None,
-            },
-        )
-        .await
-        .unwrap();
+        match policy {
+            Some(policy) => {
+                crate::test_support::seed_authority_space(&state.db, SPACE, policy).await
+            }
+            None => {
+                let space = parse_space_ref(SPACE).unwrap();
+                insert_space(
+                    &state.db,
+                    &NewSpace {
+                        uri: &space.uri,
+                        authority_did: &space.authority,
+                        space_type: &space.space_type,
+                        skey: &space.skey,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        }
     }
 
     /// A subscriber's DID document, publishing exactly one service entry.

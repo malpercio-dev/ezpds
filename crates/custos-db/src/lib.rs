@@ -822,6 +822,222 @@ mod tests {
         );
     }
 
+    /// V079 converts every pre-V079 space policy shape into the `$type`-discriminated policy
+    /// (the reference's `configToPolicy`): read/write policy combinations, open and allow-listed
+    /// app access, an unparseable allow list, a managing app on either side, and a foreign space
+    /// with no config. Managedspace conversions drop their member rows; memberspaces keep theirs.
+    #[tokio::test]
+    async fn v079_converts_every_old_space_policy_shape() {
+        let pool = in_memory_pool().await;
+        apply_migrations_before(&pool, 79).await;
+
+        // uri, read policy, read app, write policy, write app, app_access, app_allowed
+        type OldRow<'a> = (&'a str, [Option<&'a str>; 6]);
+        let rows: &[OldRow] = &[
+            (
+                "at://did:plc:a/space/t/public",
+                [
+                    Some("public"),
+                    None,
+                    Some("public"),
+                    None,
+                    Some("open"),
+                    None,
+                ],
+            ),
+            (
+                "at://did:plc:a/space/t/split",
+                [
+                    Some("public"),
+                    None,
+                    Some("member-list"),
+                    None,
+                    Some("open"),
+                    None,
+                ],
+            ),
+            (
+                "at://did:plc:a/space/t/members",
+                [
+                    Some("member-list"),
+                    None,
+                    Some("member-list"),
+                    None,
+                    Some("allowList"),
+                    Some(r#"["https://app.example/client.json"]"#),
+                ],
+            ),
+            (
+                "at://did:plc:a/space/t/garbage",
+                [
+                    Some("member-list"),
+                    None,
+                    Some("public"),
+                    None,
+                    Some("allowList"),
+                    Some("not json"),
+                ],
+            ),
+            (
+                "at://did:plc:a/space/t/nulllist",
+                [
+                    Some("member-list"),
+                    None,
+                    Some("member-list"),
+                    None,
+                    Some("allowList"),
+                    None,
+                ],
+            ),
+            (
+                "at://did:plc:a/space/t/readapp",
+                [
+                    Some("managing-app"),
+                    Some("did:web:app.example#forum"),
+                    Some("public"),
+                    None,
+                    Some("allowList"),
+                    Some("[]"),
+                ],
+            ),
+            (
+                "at://did:plc:a/space/t/writeapp",
+                [
+                    Some("member-list"),
+                    None,
+                    Some("managing-app"),
+                    Some("did:web:w.example"),
+                    Some("open"),
+                    None,
+                ],
+            ),
+            (
+                "at://did:plc:b/space/t/foreign",
+                [None, None, None, None, None, None],
+            ),
+        ];
+        for (uri, [read, read_app, write, write_app, app_access, app_allowed]) in rows {
+            let (authority, rest) = uri["at://".len()..].split_once("/space/").unwrap();
+            let (space_type, skey) = rest.split_once('/').unwrap();
+            sqlx::query(
+                "INSERT INTO spaces (uri, authority_did, space_type, skey, policy, managing_app, \
+                 write_policy, write_managing_app, app_access, app_allowed, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+            )
+            .bind(uri)
+            .bind(authority)
+            .bind(space_type)
+            .bind(skey)
+            .bind(read)
+            .bind(read_app)
+            .bind(write)
+            .bind(write_app)
+            .bind(app_access)
+            .bind(app_allowed)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO space_members (space_uri, member_did, added_at, can_read, can_write) \
+                 VALUES (?, 'did:plc:member', datetime('now'), 1, 0)",
+            )
+            .bind(uri)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let v079 = MIGRATIONS.iter().find(|m| m.version == 79).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(v079.sql)
+            .execute(&mut *tx)
+            .await
+            .expect("V079 must apply over populated spaces");
+        tx.commit().await.unwrap();
+
+        let member = |read: bool, write: bool, apps: Option<serde_json::Value>| {
+            let mut policy = serde_json::json!({
+                "$type": "com.atproto.memberspace.policy",
+                "publicRead": read,
+                "publicWrite": write,
+                "publishPolicy": false,
+                "publishMembers": false,
+            });
+            if let Some(apps) = apps {
+                policy["allowedApps"] = apps;
+            }
+            Some(policy)
+        };
+        let managed = |app: &str| {
+            Some(serde_json::json!({
+                "$type": "com.atproto.managedspace.policy",
+                "managingApp": app,
+                "publishPolicy": false,
+            }))
+        };
+        let expected = [
+            ("public", member(true, true, None), true),
+            ("split", member(true, false, None), true),
+            (
+                "members",
+                member(
+                    false,
+                    false,
+                    Some(serde_json::json!(["https://app.example/client.json"])),
+                ),
+                true,
+            ),
+            (
+                "garbage",
+                member(false, true, Some(serde_json::json!([]))),
+                true,
+            ),
+            (
+                "nulllist",
+                member(false, false, Some(serde_json::json!([]))),
+                true,
+            ),
+            ("readapp", managed("did:web:app.example#forum"), false),
+            ("writeapp", managed("did:web:w.example"), false),
+            ("foreign", None, true),
+        ];
+        for (skey, policy, keeps_members) in expected {
+            let (stored, policy_type, members): (Option<String>, Option<String>, i64) =
+                sqlx::query_as(
+                    "SELECT s.policy, s.policy_type, \
+                   (SELECT COUNT(*) FROM space_members m WHERE m.space_uri = s.uri) \
+                 FROM spaces s WHERE s.skey = ?",
+                )
+                .bind(skey)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            let stored: Option<serde_json::Value> =
+                stored.map(|json| serde_json::from_str(&json).unwrap());
+            assert_eq!(stored, policy, "{skey}");
+            assert_eq!(
+                policy_type.as_deref(),
+                policy.as_ref().and_then(|p| p["$type"].as_str()),
+                "{skey}"
+            );
+            assert_eq!(members, i64::from(keeps_members), "{skey} member rows");
+        }
+
+        for column in [
+            "managing_app",
+            "write_policy",
+            "write_managing_app",
+            "app_access",
+            "app_allowed",
+        ] {
+            let query = format!("SELECT {column} FROM spaces");
+            assert!(
+                sqlx::query(&query).fetch_optional(&pool).await.is_err(),
+                "{column} must be gone"
+            );
+        }
+    }
+
     /// schema_migrations records version=1 with a non-null applied_at.
     /// Verifies that version and timestamp fields are recorded correctly.
     #[tokio::test]

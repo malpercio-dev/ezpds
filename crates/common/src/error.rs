@@ -94,7 +94,7 @@ pub enum ErrorCode {
     #[serde(rename = "BlockNotFound")]
     BlockNotFound,
     /// The named space is unknown to this host, or has been deleted. Declared by every
-    /// `com.atproto.space.*` and `com.atproto.simplespace.*` method.
+    /// `com.atproto.space.*` and `com.atproto.memberspace.*` method.
     #[serde(rename = "SpaceNotFound")]
     SpaceNotFound,
     /// A space write notification carried a repo revision further ahead of this host's clock than
@@ -139,18 +139,18 @@ pub enum ErrorCode {
     /// unresolvable client, wrong signature, wrong audience, expired, or replayed.
     #[serde(rename = "InvalidClientAttestation")]
     InvalidClientAttestation,
-    /// A simplespace management call by an account that is not the space's authority.
-    #[serde(rename = "NotSpaceOwner")]
-    NotSpaceOwner,
+    /// A space management call by an account that is not the space's authority.
+    #[serde(rename = "NotAuthorized")]
+    NotAuthorized,
     /// `createSpace` named a space that already exists (and is not deleted).
     #[serde(rename = "SpaceAlreadyExists")]
     SpaceAlreadyExists,
-    /// The requested simplespace `policy` is not one this host implements (an open union).
+    /// The requested space `policy` is not one this host implements (an open union).
     #[serde(rename = "UnsupportedPolicy")]
     UnsupportedPolicy,
-    /// The requested simplespace `appAccess` is not one this host implements (an open union).
-    #[serde(rename = "UnsupportedAppAccess")]
-    UnsupportedAppAccess,
+    /// A memberspace method on a space governed by another policy.
+    #[serde(rename = "PolicyMismatch")]
+    PolicyMismatch,
     /// `registerNotify`'s subscriber identifier did not resolve to a DID document with a
     /// matching service endpoint, so a registration for it could never deliver.
     #[serde(rename = "ServiceNotResolvable")]
@@ -224,10 +224,10 @@ impl ErrorCode {
             ErrorCode::AppNotAuthorized => "AppNotAuthorized",
             ErrorCode::InvalidDelegationToken => "InvalidDelegationToken",
             ErrorCode::InvalidClientAttestation => "InvalidClientAttestation",
-            ErrorCode::NotSpaceOwner => "NotSpaceOwner",
+            ErrorCode::NotAuthorized => "NotAuthorized",
             ErrorCode::SpaceAlreadyExists => "SpaceAlreadyExists",
             ErrorCode::UnsupportedPolicy => "UnsupportedPolicy",
-            ErrorCode::UnsupportedAppAccess => "UnsupportedAppAccess",
+            ErrorCode::PolicyMismatch => "PolicyMismatch",
             ErrorCode::ServiceNotResolvable => "ServiceNotResolvable",
         }
     }
@@ -284,13 +284,13 @@ impl ErrorCode {
             // a 401, but the attestation is a body parameter naming the app, and the reference
             // answers a bad one as an invalid request.
             ErrorCode::InvalidClientAttestation => 400,
-            // The reference raises the simplespace management errors as `InvalidRequestError`
-            // too — including NotSpaceOwner, which is an ownership precondition, not an auth
-            // failure (the caller is authenticated; the space is just not theirs).
-            ErrorCode::NotSpaceOwner => 400,
+            // The reference raises the space management errors as `InvalidRequestError` too —
+            // including NotAuthorized, which is an authority precondition, not an auth failure
+            // (the caller is authenticated; the space is just not theirs).
+            ErrorCode::NotAuthorized => 400,
             ErrorCode::SpaceAlreadyExists => 400,
             ErrorCode::UnsupportedPolicy => 400,
-            ErrorCode::UnsupportedAppAccess => 400,
+            ErrorCode::PolicyMismatch => 400,
             ErrorCode::ServiceNotResolvable => 400,
         }
     }

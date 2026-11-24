@@ -1,0 +1,30 @@
+meta {
+  name: Memberspace Remove Members
+  type: http
+  seq: 174
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.memberspace.removeMembers
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main",
+    "dids": ["did:plc:memberaaaaaaaaaaaaaaaaaa"]
+  }
+}
+
+docs {
+  Remove members from a memberspace in one commit (at most 100). A DID that is not a member
+  is ignored. Published member records are withdrawn in the same commit.
+
+  "space:…?manage=update", authority only. Errors: 400 SpaceNotFound, 400 NotAuthorized,
+  400 PolicyMismatch (not a memberspace), 403 InsufficientScope.
+}

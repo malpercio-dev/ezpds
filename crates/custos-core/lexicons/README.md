@@ -9,7 +9,8 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
 - **Source:** <https://github.com/bluesky-social/atproto>, `lexicons/` tree
 - **Pinned at:** tag `@atproto/pds@0.5.18` (retrieved 2026-07-16; the `app.bsky.*` record set
   2026-07-17; the query-params (`type: "query"`) set 2026-07-17). The
-  `com.atproto.{space,simplespace}.*` set is pinned separately, to a `permissioned-data` commit
+  Atproto Spaces set (`com.atproto.{space,memberspace,managedspace,personalspace}.*`) is pinned
+  separately, to a `permissioned-data` commit
   SHA — see the Atproto Spaces scope entry below.
 - **Scope:**
   - **Input procedures:** the `com.atproto.*` documents needed by the natively-handled JSON-input
@@ -44,15 +45,16 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     the permissioned-data surface (the sync group: `listRepoOps`, `getRepo`, `getBlob`,
     `listBlobs`), the notification group (`listRepos`, `registerNotify`,
     `unregisterNotify`, `notifyWrite`, `notifyCredentialRevoked`; `notifySpaceDeleted`, which
-    this server only ever *sends*, is vendored but, like `checkUserAccess`, not registered as a
+    this server only ever *sends*, is vendored but, like `managedspace.checkAccess`, not registered as a
     validation root), plus the `defs`
     document the `getLatestCommit`/`listRepoOps` outputs reach,
     and the two token-flow documents behind `custos-spaces`' `auth/space.rs` (`getDelegationToken`,
     `getSpaceCredential`; both use the `space-ref` string format `space_uri.rs` validates), and
-    the PDS-required management surface `com.atproto.simplespace.*` (`createSpace`,
-    `updateSpace`, `deleteSpace`, `getSpace`, `putMember`, `removeMember`, `listMembers` + the
-    `defs` document their policy/appAccess unions reach; `checkUserAccess` is vendored for byte-parity but served by a
-    managing app, not the PDS).
+    the PDS-required management surface (`com.atproto.space.{createSpace,updateSpace,
+    deleteSpace,getSpace}`, `com.atproto.memberspace.{putMembers,removeMembers,listMembers}` +
+    `memberspace.defs`, and the three baseline policies their `policy` union reaches;
+    `managedspace.checkAccess` is vendored for byte-parity but served by a managing app, not the
+    PDS).
     These are pinned to commits of the `permissioned-data` branch, not the `@atproto/pds` tag
     the rest of this list follows — the alpha ships no tag carrying them. A branch name is not a
     pin: it moves, and the byte-identity claim below is only auditable against a fixed revision,
@@ -60,18 +62,21 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     is split across two pins while the routes catch up:
     - **`619c6e8556db7dd37bb7df1d92a5eae83da8d8b0`** (2026-10-20): every document above —
       the ones live routes validate against, including the ones upstream has since deleted.
-      Fourteen of them changed shape by the frozen pin (`com.atproto.space.{applyWrites,
+      Thirteen of them changed shape by the frozen pin (`com.atproto.space.{applyWrites,
       createRecord,defs,deleteRecord,getBlob,getDelegationToken,getLatestCommit,getRecord,
-      getRepo,listBlobs,listRecords,listRepoOps,listSpaces,putRecord}`); each is re-vendored
-      from `047d603` by the change that moves its route to the new shape, and a deleted one is
-      removed together with its route.
+      getRepo,listBlobs,listRecords,listRepoOps,putRecord}`); each is re-vendored from
+      `047d603` by the change that moves its route to the new shape, and a deleted one is
+      removed together with its route (the `com.atproto.simplespace.*` set already has been).
     - **`047d6032a21be01df8447489f0d6b59d2cc60af8`** (the frozen pin, 2026-11-23): the
       documents first vendored at it — `com.atproto.space.{authorizeSpaceSync,clearRecords,
       confirmRegistration,createSpace,deleteSpace,exportSpaceMeta,getSpace,importRepo,
       importSpaceMeta,listWriters,notifyCredentialsRevoked,notifyRepoUpdate,notifySpaceUpdate,
       policy,removeWriter,updateSpace}`, `com.atproto.{memberspace,managedspace,personalspace}.*`,
-      `com.atproto.label.record`, and `com.atproto.server.reserveKemKey`. None is in
-      `LEXICON_SOURCES` yet: each is registered by the change that adds its route.
+      `com.atproto.label.record`, and `com.atproto.server.reserveKemKey`, plus
+      `com.atproto.space.listSpaces`, re-vendored with its route. Each is registered in
+      `LEXICON_SOURCES` by the change that adds its route; registered so far: `listSpaces`,
+      `space.{createSpace,updateSpace,deleteSpace,getSpace}`, `memberspace.{defs,putMembers,
+      removeMembers,listMembers}`, and the three `*space.policy` documents.
       `notifyRepoUpdate` refs `com.atproto.space.defs#repoWrite`/`#repoRemoved`, which exist
       only in the `047d603` `defs`; until `defs` moves, lexgen types them as `unknown`.
 
@@ -90,7 +95,7 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
      "https://raw.githubusercontent.com/bluesky-social/atproto/refs/tags/%40atproto/pds%400.5.18/lexicons/com/atproto/server/example.json"
    ```
 
-   For the branch-pinned `com.atproto.{space,simplespace}.*` set, substitute the commit SHA for
+   For the branch-pinned Atproto Spaces set, substitute the commit SHA for
    the `refs/tags/...` path segment:
 
    ```sh
@@ -107,7 +112,7 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
 4. `just lexgen` — regenerates the TypeScript types the Node tools import
    (`tools/lexgen/types/`); `just lexgen-check` fails CI if you skip it, and a renamed field
    then fails `pnpm check` in `tools/mcp` at every call site that used it.
-5. When updating the pin, update the tag — or, for `com.atproto.{space,simplespace}.*`, the
+5. When updating the pin, update the tag — or, for the Atproto Spaces set, the
    `permissioned-data` commit SHA — in this README and in the `curl` example.
 
 Do not hand-edit the JSON files: they must stay byte-identical to upstream so validation parity

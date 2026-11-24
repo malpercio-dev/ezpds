@@ -272,8 +272,19 @@ pub async fn list_repo_records(
         .await
 }
 
-/// One page of the spaces an account holds a repo in — spaces it has *written to*, which is
-/// what `listSpaces` reports (a repo host tracks writers, never a member list). Ordered by URI;
+/// One `listSpaces` entry: the space, the account's repo head in it (absent when the account is
+/// the authority but has not written), and the space's revision when the account is its
+/// authority.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AccountSpaceRow {
+    pub uri: String,
+    pub repo_rev: Option<String>,
+    pub lthash_state: Option<Vec<u8>>,
+    pub space_rev: Option<String>,
+}
+
+/// One page of the spaces an account holds a repo in or is the authority for — what
+/// `listSpaces` reports (a repo host tracks writers, never a member list). Ordered by URI;
 /// deleted and operator-taken-down spaces are omitted, matching the `SpaceNotFound` every other
 /// seam answers for them — a listing that named a space no read can open would be a worse answer
 /// than leaving it out.
@@ -284,21 +295,22 @@ pub async fn list_spaces_for_account(
     authority: Option<&str>,
     after: Option<&str>,
     limit: i64,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT s.uri FROM space_repos r JOIN spaces s ON s.uri = r.space_uri \
-         WHERE r.account_did = ? AND s.deleted_at IS NULL AND s.takendown_at IS NULL \
-           AND (? IS NULL OR s.space_type = ?) \
-           AND (? IS NULL OR s.authority_did = ?) \
-           AND (? IS NULL OR s.uri > ?) \
-         ORDER BY s.uri ASC LIMIT ?",
+) -> Result<Vec<AccountSpaceRow>, sqlx::Error> {
+    sqlx::query_as::<_, AccountSpaceRow>(
+        "SELECT s.uri, r.rev AS repo_rev, r.lthash_state, \
+                CASE WHEN s.authority_did = ?1 AND s.policy IS NOT NULL \
+                     THEN s.last_space_rev END AS space_rev \
+         FROM spaces s LEFT JOIN space_repos r ON r.space_uri = s.uri AND r.account_did = ?1 \
+         WHERE (r.account_did IS NOT NULL OR (s.authority_did = ?1 AND s.policy IS NOT NULL)) \
+           AND s.deleted_at IS NULL AND s.takendown_at IS NULL \
+           AND (?2 IS NULL OR s.space_type = ?2) \
+           AND (?3 IS NULL OR s.authority_did = ?3) \
+           AND (?4 IS NULL OR s.uri > ?4) \
+         ORDER BY s.uri ASC LIMIT ?5",
     )
     .bind(account_did)
     .bind(space_type)
-    .bind(space_type)
     .bind(authority)
-    .bind(authority)
-    .bind(after)
     .bind(after)
     .bind(limit)
     .fetch_all(pool)

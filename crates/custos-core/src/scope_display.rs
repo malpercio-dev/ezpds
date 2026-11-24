@@ -1,7 +1,7 @@
 // pattern: Mixed (unavoidable)
 //
 // Turns the `space:` scope tokens of an authorization request into the user-legible text the
-// consent screen shows: the space type declaration's `name` in place of the raw NSID, a named
+// consent screen shows: the space type declaration's `title` in place of the raw NSID, a named
 // authority DID's bidirectionally-verified handle in place of the DID, the collections a bare
 // grant actually covers, and the broad-grant warning. Real network I/O (DNS, HTTP) — like
 // `auth/permission_sets.rs`, whose Lexicon resolution path this reuses, it can't be a pure
@@ -40,11 +40,13 @@ const MAX_SPACE_TYPES_PER_REQUEST: usize = 5;
 /// `key` and `description` are for clients and developers respectively.
 #[derive(Clone, Deserialize)]
 pub struct SpaceTypeDecl {
-    /// Human-readable name shown to users on consent screens.
-    pub name: String,
-    /// Localized `name` values by language code.
-    #[serde(default, rename = "name:lang")]
-    pub name_lang: HashMap<String, String>,
+    /// Human-readable title shown to users on consent screens. Optional: a type without one
+    /// reads as its NSID.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Localized `title` values by language code.
+    #[serde(default, rename = "title:lang")]
+    pub title_lang: HashMap<String, String>,
     /// Collections a space of this type is expected to hold — the default `collection` set for
     /// a `space:` grant of this type.
     #[serde(default)]
@@ -52,19 +54,19 @@ pub struct SpaceTypeDecl {
 }
 
 impl SpaceTypeDecl {
-    /// The declaration's name in the best available language: an exact `name:lang` tag match
-    /// first, then a primary-subtag match (`es-419` accepts an `es` entry), then the base `name`.
-    fn localized_name(&self, langs: &[String]) -> &str {
+    /// The declaration's title in the best available language: an exact `title:lang` tag match
+    /// first, then a primary-subtag match (`es-419` accepts an `es` entry), then the base `title`.
+    fn localized_title(&self, langs: &[String]) -> Option<&str> {
         for tag in langs {
-            if let Some(name) = self.name_lang.get(tag) {
-                return name;
+            if let Some(title) = self.title_lang.get(tag) {
+                return Some(title);
             }
             let primary = tag.split('-').next().unwrap_or(tag);
-            if let Some(name) = self.name_lang.get(primary) {
-                return name;
+            if let Some(title) = self.title_lang.get(primary) {
+                return Some(title);
             }
         }
-        &self.name
+        self.title.as_deref()
     }
 }
 
@@ -119,8 +121,8 @@ pub const WILDCARD_TYPE_LABEL: &str = "Any kind of space";
 /// What the consent screen renders for one `space:` token, in place of the raw token.
 #[derive(Debug, Default, PartialEq)]
 pub struct SpaceDisplay {
-    /// The declaration's localized `name`; `WILDCARD_TYPE_LABEL` for a `*` type, and the raw
-    /// NSID when a concrete type's declaration could not be resolved.
+    /// The declaration's localized `title`; `WILDCARD_TYPE_LABEL` for a `*` type, and the raw
+    /// NSID when a concrete type's declaration could not be resolved or carries no title.
     pub type_label: String,
     /// How the grant's `authority` reads: `None` for `self` (the user's own account, which the
     /// spec says needs no presentation) and for `*` (covered by `broad` instead), otherwise a
@@ -180,7 +182,10 @@ fn build_displays(
 
             let display = SpaceDisplay {
                 type_label: match decl {
-                    Some(d) => d.localized_name(langs).to_string(),
+                    Some(d) => d
+                        .localized_title(langs)
+                        .unwrap_or(&grant.space_type)
+                        .to_string(),
                     // A `*` type has no declaration to name it and never will, so it gets words
                     // rather than the bare glyph — the raw token still shows on the row.
                     None if grant.space_type == "*" => WILDCARD_TYPE_LABEL.to_string(),
@@ -320,8 +325,8 @@ mod tests {
             "type": "space",
             "description": "A discussion forum",
             "key": "any",
-            "name": "AtmoBoards Forum",
-            "name:lang": { "es": "Foro AtmoBoards" },
+            "title": "AtmoBoards Forum",
+            "title:lang": { "es": "Foro AtmoBoards" },
             "collections": ["com.atmoboards.thread", "com.atmoboards.reply"],
         })
     }
@@ -377,7 +382,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn localized_name_is_preferred_when_the_declaration_has_one() {
+    async fn localized_title_is_preferred_when_the_declaration_has_one() {
         let server = MockServer::start().await;
         let nsid = "com.atmoboards.forum";
         let state = state_serving(&server, nsid, forum_decl()).await;

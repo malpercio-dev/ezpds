@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! com.atproto.simplespace.deleteSpace — tombstone a space and delete the authority's own repo.
+//! com.atproto.space.deleteSpace — tombstone a space and delete the authority's own repo.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
@@ -8,7 +8,7 @@ use axum::response::IntoResponse;
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::space::authenticate_space_owner;
+use crate::auth::space::authenticate_space_authority;
 use crate::db::spaces::{delete_members, delete_notify_registrations, mark_space_deleted};
 use common::{ApiError, ErrorCode};
 use custos_core::auth::oauth_scopes::{RepoAction, SpaceOp};
@@ -23,16 +23,16 @@ pub struct DeleteSpaceInput {
     space: String,
 }
 
-/// POST /xrpc/com.atproto.simplespace.deleteSpace
+/// POST /xrpc/com.atproto.space.deleteSpace
 ///
 /// The `spaces` row survives as a tombstone (so `getSpaceCredential` keeps answering
-/// `SpaceDeleted`) with its config cleared; the member list, notify registrations and the
+/// `SpaceDeleted`) with its policy cleared; the member list, notify registrations and the
 /// authority's own repo (and the writer set) go with it, and every service that was subscribed
 /// is told to drop its copies. Other members' repos are left where they are — their records are
 /// theirs — and simply stop being readable or writable (spec deletion semantics); their hosts
 /// are deliberately not notified.
 /// Idempotent: a space already deleted answers 200; one that never existed, `SpaceNotFound`.
-pub async fn simplespace_delete_space(
+pub async fn space_delete_space(
     State(state): State<CoreState>,
     method: Method,
     uri: Uri,
@@ -40,7 +40,7 @@ pub async fn simplespace_delete_space(
     LexiconInput(input): LexiconInput<DeleteSpaceInput>,
 ) -> Result<impl IntoResponse, ApiError> {
     let space = crate::views::parse_space(&input.space)?;
-    authenticate_space_owner(
+    authenticate_space_authority(
         &state,
         &headers,
         &method,

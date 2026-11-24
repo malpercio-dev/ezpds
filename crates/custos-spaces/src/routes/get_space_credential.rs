@@ -71,14 +71,14 @@ pub async fn get_space_credential(
     // not overwrite it. Refusing here stops a syncer renewing its way past a takedown — the read
     // seam would refuse it anyway, but a credential should not outlive the operator's action.
     crate::auth::space::require_space_servable(&state, &space).await?;
-    // A row with no simplespace config is a space this PDS only hosts repos for; its authority
-    // lives elsewhere and is the one to ask.
-    if row.policy.is_none() {
+    // A row with no policy is a space this PDS only hosts repos for; its authority lives
+    // elsewhere and is the one to ask.
+    let Some(policy) = row.space_policy()? else {
         return Err(ApiError::new(
             ErrorCode::SpaceNotFound,
             "this server is not the authority for this space",
         ));
-    }
+    };
     // Ordered after the tombstone check on purpose: `SpaceDeleted` is the spec's one durable
     // renewal signal, so a deleted space must keep reporting it even once its authority stops
     // being an active account.
@@ -103,7 +103,14 @@ pub async fn get_space_credential(
         None => None,
     };
 
-    authorize_credential_request(&state, &row, &delegation.user_did, client_id.as_deref()).await?;
+    authorize_credential_request(
+        &state,
+        &row,
+        &policy,
+        &delegation.user_did,
+        client_id.as_deref(),
+    )
+    .await?;
 
     // Signed with the authority account's repo key — the key this server publishes as the
     // authority's `#atproto_space` (and `#atproto`).
@@ -137,10 +144,9 @@ mod tests {
     use crate::auth::space::{
         authenticate_space_read, mint_delegation_token, unix_now, SpaceReader, SPACE_CREDENTIAL_TYP,
     };
-    use crate::db::spaces::{insert_space, NewSpace};
     use crate::test_support::test_app as app;
     use crate::test_support::{
-        body_json, seed_account_with_repo, state_with_master_key, SpaceSigKey,
+        body_json, seed_account_with_repo, seed_authority_space, state_with_master_key, SpaceSigKey,
     };
     use axum::{
         body::Body,
@@ -177,34 +183,14 @@ mod tests {
         repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap()
     }
 
-    async fn seed_space(state: &CoreState, policy: &str) {
-        seed_configured_space(state, policy, None, "open", None).await;
+    /// Seed the space under `policy` (lexicon JSON, normalized as `createSpace` would).
+    async fn seed_space(state: &CoreState, policy: serde_json::Value) {
+        let policy = crate::policy::SpacePolicy::from_lex(&policy).unwrap();
+        seed_authority_space(&state.db, SPACE, &policy.to_json().to_string()).await;
     }
 
-    async fn seed_configured_space(
-        state: &CoreState,
-        policy: &str,
-        managing_app: Option<&str>,
-        app_access: &str,
-        app_allowed: Option<&str>,
-    ) {
-        insert_space(
-            &state.db,
-            &NewSpace {
-                uri: SPACE,
-                authority_did: AUTHORITY,
-                space_type: "org.example.bucket",
-                skey: "self",
-                policy: Some(policy),
-                app_access: Some(app_access),
-                app_allowed,
-                managing_app,
-                write_policy: None,
-                write_managing_app: None,
-            },
-        )
-        .await
-        .unwrap();
+    fn memberspace(public_read: bool) -> serde_json::Value {
+        serde_json::json!({ "$type": crate::policy::MEMBERSPACE, "publicRead": public_read })
     }
 
     async fn add_member(state: &CoreState, did: &str) {
@@ -257,7 +243,7 @@ mod tests {
         let state = state_with_master_key().await;
         seed_identity(&state, AUTHORITY).await;
         let alice = seed_identity(&state, ALICE).await;
-        seed_space(&state, "member-list").await;
+        seed_space(&state, memberspace(false)).await;
         add_member(&state, ALICE).await;
         let space = parse_space_ref(SPACE).unwrap();
         let key = SpaceSigKey::generate();
@@ -315,7 +301,7 @@ mod tests {
         let state = state_with_master_key().await;
         seed_identity(&state, AUTHORITY).await;
         let alice = seed_identity(&state, ALICE).await;
-        seed_space(&state, "member-list").await;
+        seed_space(&state, memberspace(false)).await;
         let space = parse_space_ref(SPACE).unwrap();
         let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
@@ -467,7 +453,7 @@ mod tests {
         client_id
     }
 
-    /// The `allowList` app-access perimeter, end to end: without a verified client attestation
+    /// Memberspace's `allowedApps` perimeter, end to end: without a verified client attestation
     /// the space's client_id list is an unenforceable claim, so this is the test that says the
     /// perimeter is real.
     #[tokio::test]
@@ -479,12 +465,13 @@ mod tests {
         let key = ClientKey::generate();
         let server = wiremock::MockServer::start().await;
         let client_id = serve_client_metadata(&server, &key).await;
-        seed_configured_space(
+        seed_space(
             &state,
-            "public",
-            None,
-            "allowList",
-            Some(&serde_json::json!([client_id]).to_string()),
+            serde_json::json!({
+                "$type": crate::policy::MEMBERSPACE,
+                "publicRead": true,
+                "allowedApps": [client_id],
+            }),
         )
         .await;
 
@@ -554,7 +541,7 @@ mod tests {
         );
     }
 
-    /// The `managing-app` policy hands the per-user decision to the app the config names, and
+    /// A managedspace hands the per-account decision to its managing app's `checkAccess`, and
     /// denies whenever it cannot get an answer — the one policy that defers its decision must
     /// never become the one that skips it.
     #[tokio::test]
@@ -569,28 +556,29 @@ mod tests {
 
         const APP: &str = "did:web:managing.example";
         let server = MockServer::start().await;
-        let check = "/xrpc/com.atproto.simplespace.checkUserAccess";
+        let check = "/xrpc/com.atproto.managedspace.checkAccess";
         // Service auth is what tells the app who is asking; a check reached without it would
         // authorize anyone who found the URL.
         Mock::given(method("GET"))
             .and(path(check))
             .and(query_param("space", SPACE))
-            .and(query_param("user", ALICE))
+            .and(query_param("repo", ALICE))
             .and(wiremock::matchers::header_regex(
                 "authorization",
                 "^Bearer ",
             ))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "authorized": true })),
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "read": true, "write": false })),
             )
             .mount(&server)
             .await;
         Mock::given(method("GET"))
             .and(path(check))
-            .and(query_param("user", BOB))
+            .and(query_param("repo", BOB))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "authorized": false })),
+                    .set_body_json(serde_json::json!({ "read": false, "write": true })),
             )
             .mount(&server)
             .await;
@@ -607,7 +595,14 @@ mod tests {
             }),
         )
         .await;
-        seed_configured_space(&state, "managing-app", Some(APP), "open", None).await;
+        seed_space(
+            &state,
+            serde_json::json!({
+                "$type": crate::policy::MANAGEDSPACE,
+                "managingApp": format!("{APP}#atproto_pds"),
+            }),
+        )
+        .await;
 
         let space = parse_space_ref(SPACE).unwrap();
         let key = SpaceSigKey::generate();
@@ -632,12 +627,14 @@ mod tests {
 
         // A managing app that publishes no endpoint for the named service cannot be asked, and
         // an unaskable app denies rather than being skipped.
-        sqlx::query("UPDATE spaces SET managing_app = ? WHERE uri = ?")
-            .bind("did:web:managing.example#nosuch")
-            .bind(SPACE)
-            .execute(&state.db)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE spaces SET policy = json_set(policy, '$.managingApp', ?) WHERE uri = ?",
+        )
+        .bind("did:web:managing.example#nosuch")
+        .bind(SPACE)
+        .execute(&state.db)
+        .await
+        .unwrap();
         let response = mint(ALICE, &alice).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(body_json(response).await["error"], "UserNotAuthorized");
@@ -648,7 +645,7 @@ mod tests {
         let state = state_with_master_key().await;
         let authority = seed_identity(&state, AUTHORITY).await;
         let alice = seed_identity(&state, ALICE).await;
-        seed_space(&state, "public").await;
+        seed_space(&state, memberspace(true)).await;
         let space = parse_space_ref(SPACE).unwrap();
         let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();

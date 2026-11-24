@@ -451,7 +451,7 @@ pub struct WaitlistConfig {
 ///
 /// The spaces surface is a pre-launch alpha protocol: the upstream lexicons carry a
 /// breaking-changes warning until launch, so it is off by default. Enabling it registers
-/// the `com.atproto.space.*` and `com.atproto.simplespace.*` routes plus
+/// the `com.atproto.space.*` and `com.atproto.memberspace.*` routes plus
 /// `/v1/space/import-repo`, starts the space retention sweeps, and — with a signing-key
 /// master key configured — advertises the `spaces` capability. Disabled, those XRPC
 /// methods answer the catch-all's `MethodNotImplemented`, exactly like a PDS that never

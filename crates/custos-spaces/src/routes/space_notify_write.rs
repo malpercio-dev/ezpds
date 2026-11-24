@@ -91,11 +91,15 @@ pub async fn space_notify_write(
     let Some(row) = crate::db::spaces::get_space(&state.db, &space.uri)
         .await
         .map_err(internal)?
-        .filter(|r| r.deleted_at.is_none() && r.takendown_at.is_none() && r.policy.is_some())
+        .filter(|r| r.deleted_at.is_none() && r.takendown_at.is_none())
     else {
         return ack();
     };
-    if !crate::auth::space::authorize_write_notification(&state, &row, &input.repo).await? {
+    let Some(policy) = row.space_policy()? else {
+        return ack();
+    };
+    if !crate::auth::space::authorize_write_notification(&state, &row, &policy, &input.repo).await?
+    {
         return ack();
     }
     let mut conn = state.db.acquire().await.map_err(internal)?;

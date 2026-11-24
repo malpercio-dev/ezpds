@@ -54,12 +54,12 @@ pub struct ListSpacesParams {
 pub struct HostedSpaceEntry {
     uri: String,
     authority_did: String,
-    /// Whether this host is the space's authority (it holds the simplespace config). `false` is
+    /// Whether this host is the space's authority (it holds the space policy). `false` is
     /// the liability case: repos stored here for a space someone else governs, where takedown is
     /// the only action available.
     local_authority: bool,
     created_at: String,
-    /// The *owner's* tombstone (`simplespace.deleteSpace`), not the operator's.
+    /// The *authority's* tombstone (`space.deleteSpace`), not the operator's.
     #[serde(skip_serializing_if = "Option::is_none")]
     deleted_at: Option<String>,
     /// When the operator took the space down; absent means it is being served.

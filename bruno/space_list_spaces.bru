@@ -17,16 +17,18 @@ auth:bearer {
 params:query {
   limit: 50
   ~spaceType: org.example.bucket
-  ~did: did:plc:authorityaaaaaaaaaaaaaaa
+  ~spaceDid: did:plc:authorityaaaaaaaaaaaaaaa
   ~cursor:
 }
 
 docs {
-  The spaces the authenticated account holds a repo in — spaces it has *written to*. This
-  is deliberately not "spaces I am a member of": a member's PDS only ever learns about a
-  space by storing a repo in it.
+  The spaces the authenticated account has *written to* or is the authority for:
+  { spaces: [{ space, repoRev?, data?, spaceRev? }], cursor? }. "repoRev"/"data" are the
+  account's repo head there when it holds one; "spaceRev" appears only for the authority. This
+  is deliberately not "spaces I am a member of": a member's PDS only ever learns about a space
+  by storing a repo in it.
 
-  Optional "spaceType" and "did" narrow to a space type / authority DID. With no filters, an
+  Optional "spaceType" and "spaceDid" narrow to a space type / authority DID. With no filters, an
   OAuth caller needs a wildcard "space:" grant; narrowing the query narrows what the grant
   has to cover. The cursor is the last space URI of a full page; a short page ends the walk.
 }

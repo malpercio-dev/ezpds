@@ -1,0 +1,48 @@
+meta {
+  name: Space Create Space
+  type: http
+  seq: 169
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.createSpace
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "spaceType": "org.example.bucket",
+    "skey": "main",
+    "policy": {
+      "$type": "com.atproto.memberspace.policy",
+      "publicRead": false,
+      "publicWrite": false,
+      "publishPolicy": false,
+      "publishMembers": false
+    }
+  }
+}
+
+docs {
+  Atproto Spaces: create a space with the authenticated account as its authority. The URI is
+  at://{callerDid}/space/{spaceType}/{skey}; "skey" is optional (a TID is generated when
+  absent) and uses record-key syntax.
+
+  "policy" is an open union over the three baseline policies, all implemented here:
+  com.atproto.personalspace.policy (the authority alone), com.atproto.memberspace.policy
+  (publicRead, publicWrite, optional allowedApps — absent admits any app, [] none — and the
+  publishPolicy/publishMembers flags), and com.atproto.managedspace.policy (managingApp, a
+  did#serviceId reference asked through checkAccess, and publishPolicy). The policy is stored
+  normalized: unknown fields dropped, defaults filled. An unknown $type is refused with 400
+  UnsupportedPolicy and never stored. With publishPolicy, a com.atproto.space.policy/self record
+  lands in the authority's repo in the same commit.
+
+  Responds { space }. Errors: 400 SpaceAlreadyExists when an active space already holds the
+  URI (a deleted one may be created again), 403 InsufficientScope when the OAuth grant carries
+  no "space:…?manage=create" covering the space.
+}

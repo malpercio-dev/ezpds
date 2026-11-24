@@ -27,14 +27,14 @@
 //! * **The read seam** — [`authenticate_space_read`] accepts a covering OAuth grant on the
 //!   caller's *own* repo *or* a signature-bound space credential for any repo in the space,
 //!   never a bearer credential. [`authenticate_space_access`] is the same pair of arms for a
-//!   method that names a space but no repo (`simplespace.getSpace`), and
-//!   [`authenticate_space_owner`] is the OAuth-only arm every simplespace management method
-//!   *on an existing space* takes: grant check, then "the caller *is* the authority"
-//!   (`NotSpaceOwner`). `createSpace` is the exception — a space anchored on the caller's own
-//!   DID has no prior owner to check, so it takes [`authenticate_space_caller`] and the grant
-//!   check alone. The credential arm takes `Authorization: Atproto-Space <credential>` plus an
+//!   space-host method that names a space but no repo (`listRepos`, `registerNotify`), and
+//!   [`authenticate_space_authority`] is the OAuth-only arm every space management method *on
+//!   an existing space* takes (`updateSpace`, `getSpace`, the memberspace methods): grant check,
+//!   then "the caller *is* the authority" (`NotAuthorized`). `createSpace` is the exception — a
+//!   space anchored on the caller's own DID has no prior authority to check, so it takes
+//!   [`authenticate_space_caller`] and the grant check alone. The credential arm takes `Authorization: Atproto-Space <credential>` plus an
 //!   `atproto-space` signature over that header and `Atproto-Space-Audience`, verified against
-//!   `cnf.kid`; the audience must be the DID the request is for (the repo owner on a repo read,
+//!   `cnf.kid`; the audience must be the DID the request is for (the repo's account on a repo read,
 //!   the authority on a space-level one), which is what stops a credential captured at one repo
 //!   host being replayed at another. Replay against the same audience is allowed until expiry,
 //!   by spec. The compiler confines it: `verify_space_credential` is private to this module and
@@ -47,10 +47,11 @@
 //!   its commit transaction.
 //!
 //! * **Credential issuance policy** — [`authorize_credential_request`] is the two-perimeter gate
-//!   behind `getSpaceCredential`: the `appAccess` axis (`open`, or an `allowList` matched against
-//!   the client_id `auth::client_attestation` verified) and then the `policy` axis (`public`,
-//!   `member-list`, or `managing-app`, which asks the configured app over service auth and denies
-//!   on any failure to get an answer).
+//!   behind `getSpaceCredential`, both decided by the space's [`SpacePolicy`]: the app perimeter
+//!   (memberspace's `allowedApps`, matched against the client_id `auth::client_attestation`
+//!   verified) and then the account perimeter (personalspace admits the authority alone,
+//!   memberspace its public flags and member list, managedspace whatever its managing app's
+//!   `checkAccess` answers — denying on any failure to get an answer).
 //!
 //! Both account-key-signed token shapes share `jwt.rs`'s [`sign_jwt`] / [`verify_did_key_jwt`]
 //! core with service auth.
@@ -62,6 +63,7 @@ use serde_json::Value;
 
 use crate::db::space_jti::{insert_jti_if_absent, SpaceJtiScope};
 use crate::db::spaces::{self, SpaceRow};
+use crate::policy::SpacePolicy;
 use custos_core::identity::resolution::{
     atproto_verification_key, dedicated_space_verification_key,
     refresh_did_document_after_signature_mismatch, resolve_did_document, service_endpoint,
@@ -111,7 +113,7 @@ pub fn space_host_aud(space: &SpaceRef) -> String {
 ///
 /// Runs the shared access-auth path, so the RFC 9449 scheme ↔ `cnf.jkt` binding rules are
 /// identical to every other authenticated route's, and then applies the account-lifecycle
-/// gate below. Every account-credential arm of every space and simplespace seam routes
+/// gate below. Every account-credential arm of every space seam routes
 /// through here, so this is the one place the gate has to hold.
 pub async fn authenticate_space_caller(
     state: &CoreState,
@@ -229,11 +231,12 @@ pub async fn authenticate_space_read(
     Ok(SpaceReader::Credential(credential))
 }
 
-/// Authenticate access to a space *itself* (no repo named — `simplespace.getSpace`).
+/// Authenticate access to a space *itself* on the space host (no repo named — `listRepos`,
+/// `registerNotify`, `unregisterNotify`).
 ///
 /// The same two arms as [`authenticate_space_read`]: an account credential must carry a
 /// `read_self` grant for the space *and* belong to the space's authority (the reference's
-/// `assertSpaceScope` + `assertSpaceOwner` — a member hosted here still presents a space
+/// `assertSpaceScope` + `assertSpaceAuthority` — a member hosted here still presents a space
 /// credential, like a member hosted anywhere else); a space credential for the space is
 /// accepted when its signature is addressed to the authority.
 ///
@@ -241,7 +244,7 @@ pub async fn authenticate_space_read(
 /// a local account — so the credential arm additionally requires that authority to be an
 /// active account. A syncer holding a still-valid credential stops being served the moment the
 /// authority is deactivated, suspended, or taken down, exactly as public sync stops serving a
-/// non-active repo. The owner's own arm is one step wider (moderation states only, per
+/// non-active repo. The authority's own arm is one step wider (moderation states only, per
 /// [`authenticate_space_caller`]), so a deactivated authority can still manage its own spaces
 /// through the migration window.
 pub async fn authenticate_space_access(
@@ -253,7 +256,8 @@ pub async fn authenticate_space_access(
 ) -> Result<SpaceReader, ApiError> {
     let Some(token) = presented_space_credential(headers)? else {
         let user =
-            authenticate_space_owner(state, headers, method, uri, space, SpaceOp::ReadSelf).await?;
+            authenticate_space_authority(state, headers, method, uri, space, SpaceOp::ReadSelf)
+                .await?;
         return Ok(SpaceReader::User(user));
     };
     let credential =
@@ -314,13 +318,13 @@ pub async fn require_serviceable_authority(
     Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"))
 }
 
-/// Authenticate a simplespace management call (or owner-only read): an account credential
-/// whose grant covers `op` on `space`, held by the space's authority.
+/// Authenticate a space management call (or authority-only read): an account credential whose
+/// grant covers `op` on `space`, held by the space's authority.
 ///
-/// Grant first, ownership second, as the reference orders them: an app without the `manage`
+/// Grant first, authority second, as the reference orders them: an app without the `manage`
 /// grant learns `InsufficientScope` whether or not the space is its user's. Not the
-/// authority is `NotSpaceOwner` — a precondition failure, not an authentication one.
-pub async fn authenticate_space_owner(
+/// authority is `NotAuthorized` — a precondition failure, not an authentication one.
+pub async fn authenticate_space_authority(
     state: &CoreState,
     headers: &HeaderMap,
     method: &Method,
@@ -332,11 +336,11 @@ pub async fn authenticate_space_owner(
     require_space_grant(state, &user, space, op).await?;
     if user.did != space.authority {
         return Err(ApiError::new(
-            ErrorCode::NotSpaceOwner,
-            "not the space owner",
+            ErrorCode::NotAuthorized,
+            "Not the space authority",
         ));
     }
-    // Last, so the owner of a taken-down space learns no more than a stranger does. Applies to
+    // Last, so the authority of a taken-down space learns no more than a stranger does. Applies to
     // `deleteSpace` too: the operator's refusal already stops the space being served, and a
     // restore has to be able to put it back exactly as it was.
     require_space_servable(state, space).await?;
@@ -776,44 +780,28 @@ async fn verify_space_credential(
 /// `space`. `client_id` is the *attested* client, `None` when the request carried no client
 /// attestation.
 ///
-/// Two perimeters, and the app clears its one first: `appAccess` is decided from the stored
-/// config alone, so an app that is not allow-listed is refused before a third-party managing app
-/// is ever told this user asked. The authority is deliberately **not** exempt from the app
-/// perimeter — an authority that closed its space to all but two apps meant that for itself too.
+/// Two perimeters, and the app clears its one first: memberspace's `allowedApps` is decided from
+/// the stored policy alone, so an app that is not allowed is refused before a third-party
+/// managing app is ever told this user asked. The authority is deliberately **not** exempt from
+/// the app perimeter — an authority that closed its space to all but two apps meant that for
+/// itself too.
 ///
-/// The user perimeter is the read `policy` axis. Here the authority always passes: it is the only
-/// party who can reconfigure the space, so it must not be able to lock itself out. `public`
-/// admits anyone, `member-list` consults `space_members`, and `managing-app` hands the decision
-/// to the app the config names.
+/// The account perimeter is the policy's read decision ([`policy_admits`]), which the authority
+/// always passes.
 pub async fn authorize_credential_request(
     state: &CoreState,
     space: &SpaceRow,
+    policy: &SpacePolicy,
     user_did: &str,
     client_id: Option<&str>,
 ) -> Result<(), ApiError> {
-    if space.app_access.as_deref() == Some("allowList") {
-        let allowed = space.allowed_client_ids();
-        if !client_id.is_some_and(|id| allowed.iter().any(|entry| entry == id)) {
-            return Err(ApiError::new(
-                ErrorCode::AppNotAuthorized,
-                "this space admits only allow-listed applications",
-            ));
-        }
+    if !policy.app_authorized(client_id) {
+        return Err(ApiError::new(
+            ErrorCode::AppNotAuthorized,
+            "Application not authorized for this space",
+        ));
     }
-    if user_did == space.authority_did {
-        return Ok(());
-    }
-    let authorized = policy_admits(
-        state,
-        space,
-        space.policy.as_deref(),
-        space.managing_app.as_deref(),
-        Access::Read,
-        user_did,
-        client_id,
-    )
-    .await?;
-    if authorized {
+    if policy_admits(state, space, policy, Access::Read, user_did, client_id).await? {
         Ok(())
     } else {
         Err(ApiError::new(
@@ -823,26 +811,15 @@ pub async fn authorize_credential_request(
     }
 }
 
-/// Whether the authority tracks and forwards `repo_did`'s write notifications, per the space's
-/// **write** policy. The authority's own repo always passes, mirroring the read side.
+/// Whether the authority tracks and forwards `repo_did`'s write notifications: the policy's
+/// write decision.
 pub async fn authorize_write_notification(
     state: &CoreState,
     space: &SpaceRow,
+    policy: &SpacePolicy,
     repo_did: &str,
 ) -> Result<bool, ApiError> {
-    if repo_did == space.authority_did {
-        return Ok(true);
-    }
-    policy_admits(
-        state,
-        space,
-        space.write_policy.as_deref(),
-        space.write_managing_app.as_deref(),
-        Access::Write,
-        repo_did,
-        None,
-    )
-    .await
+    policy_admits(state, space, policy, Access::Write, repo_did, None).await
 }
 
 /// Which side of a space a policy decision is for.
@@ -852,93 +829,93 @@ enum Access {
     Write,
 }
 
-impl Access {
-    fn as_str(self) -> &'static str {
-        match self {
-            Access::Read => "read",
-            Access::Write => "write",
-        }
-    }
-}
-
-/// Evaluate one policy axis for `user_did`: `public` admits anyone, `member-list` consults
-/// `space_members` (the read or write bit per `access`), and `managing-app` hands the decision
-/// to the app the config names.
+/// Whether `space`'s policy admits `did` for `access` (the reference's `authorizeRepo`).
+///
+/// The authority is admitted under every policy: it is the only party who can reconfigure the
+/// space, so it must not be able to lock itself out. Personalspace admits no one else.
+/// Memberspace admits anyone to read under `publicRead`, otherwise a member with the matching
+/// bit; a write needs the member's write bit when the DID is a member (a member without write
+/// access stays excluded even under `publicWrite`), and `publicWrite` otherwise. Managedspace
+/// hands the decision to its managing app.
 async fn policy_admits(
     state: &CoreState,
     space: &SpaceRow,
-    policy: Option<&str>,
-    managing_app: Option<&str>,
+    policy: &SpacePolicy,
     access: Access,
-    user_did: &str,
+    did: &str,
     client_id: Option<&str>,
 ) -> Result<bool, ApiError> {
+    if did == space.authority_did {
+        return Ok(true);
+    }
     Ok(match policy {
-        Some("public") => true,
-        Some("member-list") => spaces::member_can(
-            &state.db,
-            &space.uri,
-            user_did,
-            matches!(access, Access::Write),
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space.uri, "failed to read space members");
-            ApiError::new(ErrorCode::InternalError, "internal server error")
-        })?,
-        Some("managing-app") => {
-            check_managing_app(state, space, managing_app, access, user_did, client_id).await
+        SpacePolicy::Personal => false,
+        SpacePolicy::Member(member_policy) => {
+            if matches!(access, Access::Read) && member_policy.public_read {
+                return Ok(true);
+            }
+            let member = spaces::get_member(&state.db, &space.uri, did)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, space = %space.uri, "failed to read space members");
+                    ApiError::new(ErrorCode::InternalError, "internal server error")
+                })?;
+            match (access, member) {
+                (Access::Read, member) => member.is_some_and(|m| m.read),
+                (Access::Write, Some(member)) => member.write,
+                (Access::Write, None) => member_policy.public_write,
+            }
         }
-        // Unreachable through create/update, which refuse any policy this host cannot evaluate;
-        // a row that got here some other way is not one to hand out credentials for.
-        _ => false,
+        SpacePolicy::Managed(managed) => {
+            check_access(state, space, &managed.managing_app, did, client_id)
+                .await
+                .is_some_and(|answer| match access {
+                    Access::Read => answer.read,
+                    Access::Write => answer.write,
+                })
+        }
     })
 }
 
-/// The lexicon method a `managing-app` authorization check invokes.
-const CHECK_USER_ACCESS_LXM: &str = "com.atproto.simplespace.checkUserAccess";
+/// The lexicon method a managedspace access check invokes.
+const CHECK_ACCESS_LXM: &str = "com.atproto.managedspace.checkAccess";
 
 /// How long the authority waits on a managing app before treating it as unreachable. Credential
 /// minting is interactive, and a stalled app must not hold the request open.
-const CHECK_USER_ACCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const CHECK_ACCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Ask the space's `managingApp` whether to authorize `user_did`, as the authority and under
-/// service auth (`com.atproto.simplespace.checkUserAccess`).
+/// Ask a managedspace's managing app for `repo`'s read and write access, as the authority and
+/// under service auth (`com.atproto.managedspace.checkAccess`). Resolved on every call; nothing
+/// is cached. `client_id` is sent for a read only: a write notification does not identify the
+/// app that made the write.
 ///
-/// **Every** failure denies — unresolvable DID, no published endpoint, transport error, non-2xx,
-/// unparseable body. Failing open would hand out credentials for exactly the spaces that asked
-/// for the strictest gate, so the one policy that defers its decision must not become the one
-/// that skips it when the decider is down.
+/// **Every** failure denies (`None`) — unresolvable DID, no published endpoint, transport error,
+/// timeout, non-2xx, a body without both booleans. Failing open would hand out credentials for
+/// exactly the spaces that asked for the strictest gate.
 ///
-/// `managingApp` is a service identifier: a DID with an optional service fragment. Without a
-/// fragment the DID's `#atproto_pds` entry is used, since a bare DID names an account and an
-/// account is served by its PDS. The `aud` is the identifier as published, fragment and all, so
-/// a multi-service app can tell which of its services was addressed.
-async fn check_managing_app(
+/// `managingApp` is a `did#serviceId` reference. A bare DID (only possible on a policy V079
+/// carried over) uses the DID's `#atproto_pds` entry. The `aud` is the reference as published,
+/// fragment and all, so a multi-service app can tell which of its services was addressed.
+async fn check_access(
     state: &CoreState,
     space: &SpaceRow,
-    managing_app: Option<&str>,
-    access: Access,
-    user_did: &str,
+    managing_app: &str,
+    repo: &str,
     client_id: Option<&str>,
-) -> bool {
-    let Some(managing_app) = managing_app else {
-        return false;
-    };
-    let (did, fragment) = match managing_app.split_once('#') {
-        Some((did, fragment)) => (did, fragment),
-        None => (managing_app, "atproto_pds"),
-    };
+) -> Option<crate::policy::Access> {
+    let (did, fragment) = managing_app
+        .split_once('#')
+        .unwrap_or((managing_app, "atproto_pds"));
 
     let deny = |reason: &str| {
         tracing::warn!(
             space = %space.uri,
             managing_app = %managing_app,
-            user = %user_did,
+            repo = %repo,
             reason,
-            "managing-app check denied",
+            "managing app check failed; denying",
         );
-        false
+        None
     };
 
     let Ok(did_doc) = resolve_did_document(state, did).await else {
@@ -964,7 +941,7 @@ async fn check_managing_app(
         master_key,
         &space.authority_did,
         managing_app,
-        Some(CHECK_USER_ACCESS_LXM),
+        Some(CHECK_ACCESS_LXM),
         now,
         now + 60,
     )
@@ -974,25 +951,24 @@ async fn check_managing_app(
     };
 
     let Ok(mut url) = url::Url::parse(&format!(
-        "{}/xrpc/{CHECK_USER_ACCESS_LXM}",
+        "{}/xrpc/{CHECK_ACCESS_LXM}",
         endpoint.trim_end_matches('/')
     )) else {
         return deny("the managing app's published endpoint is not a URL");
     };
     url.query_pairs_mut()
         .append_pair("space", &space.uri)
-        .append_pair("user", user_did)
-        .append_pair("access", access.as_str());
-    if let (Access::Read, Some(client_id)) = (access, client_id) {
+        .append_pair("repo", repo);
+    if let Some(client_id) = client_id {
         url.query_pairs_mut().append_pair("clientId", client_id);
     }
-    // The endpoint comes from a DID document the space's own config points at, so it is
+    // The endpoint comes from a DID document the space's own policy points at, so it is
     // caller-influenced: the hardened client is what decides which address this reaches.
     let response = state
         .hardened_http_client
         .get(&custos_core::identity::proxy::CallerUrl::new(url))
         .bearer_auth(token)
-        .timeout(CHECK_USER_ACCESS_TIMEOUT)
+        .timeout(CHECK_ACCESS_TIMEOUT)
         .send()
         .await;
     let response = match response {
@@ -1000,9 +976,16 @@ async fn check_managing_app(
         Ok(response) => return deny(&format!("managing app answered HTTP {}", response.status())),
         Err(e) => return deny(&format!("could not reach the managing app: {e}")),
     };
-    match response.json::<Value>().await {
-        Ok(body) => body.get("authorized").and_then(Value::as_bool) == Some(true),
-        Err(e) => deny(&format!("managing app answer was not readable: {e}")),
+    let body = match response.json::<Value>().await {
+        Ok(body) => body,
+        Err(e) => return deny(&format!("managing app answer was not readable: {e}")),
+    };
+    match (
+        body.get("read").and_then(Value::as_bool),
+        body.get("write").and_then(Value::as_bool),
+    ) {
+        (Some(read), Some(write)) => Some(crate::policy::Access { read, write }),
+        _ => deny("managing app answer lacks read and write"),
     }
 }
 
@@ -1079,7 +1062,6 @@ pub(crate) use custos_core::time::unix_now;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::spaces::{insert_space, NewSpace};
     use crate::test_support::{
         access_jwt, app_pass_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
         SpaceSigKey,
@@ -1743,202 +1725,174 @@ mod tests {
         assert!(call(app_pass, own, ALICE).await.is_ok());
     }
 
-    #[tokio::test]
-    async fn issuance_policy_user_perimeter_public_member_list_and_managing_app() {
-        let state = state_with_master_key().await;
-        let mut row = crate::db::spaces::SpaceRow {
-            uri: SPACE.to_string(),
-            authority_did: AUTHORITY.to_string(),
-            policy: Some("member-list".to_string()),
-            app_access: Some("open".to_string()),
-            app_allowed: None,
-            managing_app: None,
-            write_policy: None,
-            write_managing_app: None,
-            deleted_at: None,
-            takendown_at: None,
-        };
-        insert_space(
-            &state.db,
-            &NewSpace {
-                uri: SPACE,
-                authority_did: AUTHORITY,
-                space_type: "org.example.bucket",
-                skey: "self",
-                policy: Some("member-list"),
-                app_access: Some("open"),
-                app_allowed: None,
-                managing_app: None,
-                write_policy: None,
-                write_managing_app: None,
-            },
-        )
-        .await
-        .unwrap();
-
-        // The authority always may; a non-member may not; a member may.
-        assert!(authorize_credential_request(&state, &row, AUTHORITY, None)
-            .await
-            .is_ok());
-        let err = authorize_credential_request(&state, &row, ALICE, None)
-            .await
-            .unwrap_err();
-        assert_eq!(*err.code(), ErrorCode::UserNotAuthorized);
-        sqlx::query(
-            "INSERT INTO space_members (space_uri, member_did, added_at) VALUES (?, ?, 'now')",
-        )
-        .bind(SPACE)
-        .bind(ALICE)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        assert!(authorize_credential_request(&state, &row, ALICE, None)
-            .await
-            .is_ok());
-
-        row.policy = Some("public".to_string());
-        assert!(
-            authorize_credential_request(&state, &row, "did:plc:stranger", None)
-                .await
-                .is_ok()
-        );
-
-        // `managing-app` with no app to ask denies — the policy that defers its decision must
-        // never become the one that skips it.
-        row.policy = Some("managing-app".to_string());
-        assert_eq!(
-            authorize_credential_request(&state, &row, "did:plc:stranger", None)
-                .await
-                .unwrap_err()
-                .code(),
-            &ErrorCode::UserNotAuthorized
-        );
-        // ...and the authority still passes its own user perimeter, so a misconfigured
-        // managing app cannot lock the owner out of its own space.
-        assert!(authorize_credential_request(&state, &row, AUTHORITY, None)
-            .await
-            .is_ok());
+    fn member_policy(
+        public_read: bool,
+        public_write: bool,
+        allowed_apps: Option<Vec<&str>>,
+    ) -> SpacePolicy {
+        SpacePolicy::Member(crate::policy::MemberPolicy {
+            public_read,
+            public_write,
+            allowed_apps: allowed_apps.map(|apps| apps.into_iter().map(str::to_string).collect()),
+            publish_policy: false,
+            publish_members: false,
+        })
     }
 
-    /// The read and write axes are independent: a member-list read policy consults the `read`
-    /// bit, a member-list write policy the `write` bit, and neither borrows the other's.
+    async fn seeded_row(state: &CoreState, policy: &SpacePolicy) -> SpaceRow {
+        crate::test_support::seed_authority_space(&state.db, SPACE, &policy.to_json().to_string())
+            .await;
+        spaces::get_space(&state.db, SPACE).await.unwrap().unwrap()
+    }
+
     #[tokio::test]
-    async fn read_and_write_policies_consult_their_own_member_bits() {
+    async fn issuance_account_perimeter_under_each_baseline_policy() {
         let state = state_with_master_key().await;
-        insert_space(
-            &state.db,
-            &NewSpace {
-                uri: SPACE,
-                authority_did: AUTHORITY,
-                space_type: "org.example.bucket",
-                skey: "self",
-                policy: Some("member-list"),
-                app_access: Some("open"),
-                app_allowed: None,
-                managing_app: None,
-                write_policy: Some("member-list"),
-                write_managing_app: None,
-            },
-        )
-        .await
-        .unwrap();
-        let row = spaces::get_space(&state.db, SPACE).await.unwrap().unwrap();
+        let members_only = member_policy(false, false, None);
+        let row = seeded_row(&state, &members_only).await;
+        let issue = |policy: SpacePolicy, did: &'static str| {
+            let (state, row) = (state.clone(), row.clone());
+            async move { authorize_credential_request(&state, &row, &policy, did, None).await }
+        };
+
+        // Memberspace: the authority always may; a non-member may not; a reading member may.
+        assert!(issue(members_only.clone(), AUTHORITY).await.is_ok());
+        assert_eq!(
+            *issue(members_only.clone(), ALICE).await.unwrap_err().code(),
+            ErrorCode::UserNotAuthorized
+        );
+        spaces::put_member(&state.db, SPACE, ALICE, true, false)
+            .await
+            .unwrap();
+        assert!(issue(members_only.clone(), ALICE).await.is_ok());
+        assert!(issue(member_policy(true, false, None), "did:plc:stranger")
+            .await
+            .is_ok());
+
+        // Personalspace admits the authority alone, members or not.
+        assert!(issue(SpacePolicy::Personal, AUTHORITY).await.is_ok());
+        assert!(issue(SpacePolicy::Personal, ALICE).await.is_err());
+
+        // Managedspace with no app to ask denies — the policy that defers its decision must
+        // never become the one that skips it — and the authority still passes, so a
+        // misconfigured managing app cannot lock it out of its own space.
+        let managed = SpacePolicy::Managed(crate::policy::ManagedPolicy {
+            managing_app: "did:web:unresolvable.invalid#app".to_string(),
+            publish_policy: false,
+        });
+        assert_eq!(
+            *issue(managed.clone(), ALICE).await.unwrap_err().code(),
+            ErrorCode::UserNotAuthorized
+        );
+        assert!(issue(managed, AUTHORITY).await.is_ok());
+    }
+
+    /// Reads consult a member's `read` bit and writes its `write` bit, neither borrowing the
+    /// other's; `publicWrite` admits a non-member but never a member without write access.
+    #[tokio::test]
+    async fn reads_and_writes_consult_their_own_member_bits() {
+        let state = state_with_master_key().await;
+        let policy = member_policy(false, false, None);
+        let row = seeded_row(&state, &policy).await;
 
         spaces::put_member(&state.db, SPACE, ALICE, true, false)
             .await
             .unwrap();
-        assert!(authorize_credential_request(&state, &row, ALICE, None)
-            .await
-            .is_ok());
-        assert!(!authorize_write_notification(&state, &row, ALICE)
+        assert!(
+            authorize_credential_request(&state, &row, &policy, ALICE, None)
+                .await
+                .is_ok()
+        );
+        assert!(!authorize_write_notification(&state, &row, &policy, ALICE)
             .await
             .unwrap());
 
         spaces::put_member(&state.db, SPACE, ALICE, false, true)
             .await
             .unwrap();
-        assert!(authorize_credential_request(&state, &row, ALICE, None)
-            .await
-            .is_err());
-        assert!(authorize_write_notification(&state, &row, ALICE)
+        assert!(
+            authorize_credential_request(&state, &row, &policy, ALICE, None)
+                .await
+                .is_err()
+        );
+        assert!(authorize_write_notification(&state, &row, &policy, ALICE)
             .await
             .unwrap());
 
-        // A public write policy admits a repo that is no member.
-        let mut open_writes = row.clone();
-        open_writes.write_policy = Some("public".to_string());
+        let open_writes = member_policy(false, true, None);
         assert!(
-            authorize_write_notification(&state, &open_writes, "did:plc:stranger")
+            authorize_write_notification(&state, &row, &open_writes, "did:plc:stranger")
+                .await
+                .unwrap()
+        );
+        spaces::put_member(&state.db, SPACE, ALICE, true, false)
+            .await
+            .unwrap();
+        assert!(
+            !authorize_write_notification(&state, &row, &open_writes, ALICE)
                 .await
                 .unwrap()
         );
     }
 
     #[tokio::test]
-    async fn issuance_policy_app_perimeter_is_the_allow_list() {
+    async fn issuance_app_perimeter_is_memberspace_allowed_apps() {
         let state = state_with_master_key().await;
         const ALLOWED: &str = "https://allowed.example.com/client-metadata.json";
         const OTHER: &str = "https://other.example.com/client-metadata.json";
-        let mut row = crate::db::spaces::SpaceRow {
-            uri: SPACE.to_string(),
-            authority_did: AUTHORITY.to_string(),
-            policy: Some("public".to_string()),
-            app_access: Some("allowList".to_string()),
-            app_allowed: Some(serde_json::json!([ALLOWED]).to_string()),
-            managing_app: None,
-            write_policy: None,
-            write_managing_app: None,
-            deleted_at: None,
-            takendown_at: None,
-        };
+        let policy = member_policy(true, false, Some(vec![ALLOWED]));
+        let row = seeded_row(&state, &policy).await;
 
-        async fn refusal(
-            state: &CoreState,
-            row: &crate::db::spaces::SpaceRow,
-            did: &str,
-            client: Option<&str>,
-        ) -> ErrorCode {
-            authorize_credential_request(state, row, did, client)
-                .await
-                .unwrap_err()
-                .code()
-                .clone()
-        }
+        let refusal = |policy: SpacePolicy, did: &'static str, client: Option<&'static str>| {
+            let (state, row) = (state.clone(), row.clone());
+            async move {
+                authorize_credential_request(&state, &row, &policy, did, client)
+                    .await
+                    .unwrap_err()
+                    .code()
+                    .clone()
+            }
+        };
 
         // No attestation at all, and an attestation naming an app that is not on the list.
         assert_eq!(
-            refusal(&state, &row, ALICE, None).await,
+            refusal(policy.clone(), ALICE, None).await,
             ErrorCode::AppNotAuthorized
         );
         assert_eq!(
-            refusal(&state, &row, ALICE, Some(OTHER)).await,
+            refusal(policy.clone(), ALICE, Some(OTHER)).await,
             ErrorCode::AppNotAuthorized
         );
         // The authority is NOT exempt from the app perimeter: closing a space to all but one
-        // app closed it for the owner too.
+        // app closed it for the authority too.
         assert_eq!(
-            refusal(&state, &row, AUTHORITY, None).await,
+            refusal(policy.clone(), AUTHORITY, None).await,
             ErrorCode::AppNotAuthorized
         );
-
-        // The allow-listed app clears the perimeter, and `public` then admits the user.
+        // The allowed app clears the perimeter, and `publicRead` then admits the user.
         assert!(
-            authorize_credential_request(&state, &row, ALICE, Some(ALLOWED))
+            authorize_credential_request(&state, &row, &policy, ALICE, Some(ALLOWED))
                 .await
                 .is_ok()
         );
-
-        // An allow list with no entries admits nothing — never read as "open".
-        row.app_allowed = Some("[]".to_string());
+        // An empty list admits nothing; an absent one admits any app.
         assert_eq!(
-            refusal(&state, &row, ALICE, Some(ALLOWED)).await,
+            refusal(
+                member_policy(true, false, Some(vec![])),
+                ALICE,
+                Some(ALLOWED)
+            )
+            .await,
             ErrorCode::AppNotAuthorized
         );
-        // An unreadable list is the same refusal, not an accidental opening.
-        row.app_allowed = None;
-        assert_eq!(
-            refusal(&state, &row, ALICE, Some(ALLOWED)).await,
-            ErrorCode::AppNotAuthorized
-        );
+        assert!(authorize_credential_request(
+            &state,
+            &row,
+            &member_policy(true, false, None),
+            ALICE,
+            None
+        )
+        .await
+        .is_ok());
     }
 }

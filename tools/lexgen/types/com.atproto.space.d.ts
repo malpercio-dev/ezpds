@@ -266,8 +266,8 @@ export type ListReposRepo = {
   spaceRev: string;
 };
 export type ListSpacesParams = {
+  spaceDid?: string;
   spaceType?: string;
-  did?: string;
   limit?: number;
   cursor?: string;
 };
@@ -278,7 +278,10 @@ export type ListSpacesOutput = {
 };
 export type ListSpacesSpaceView = {
   $type?: "com.atproto.space.listSpaces#spaceView";
-  uri: string;
+  space: string;
+  repoRev?: string;
+  data?: { $bytes: string };
+  spaceRev?: string;
 };
 export type ListWritersParams = {
   space: string;

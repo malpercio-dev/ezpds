@@ -12,13 +12,11 @@ crates/custos-core/src/scope_display.rs 1
 crates/custos-firehose/src/routes/sync_subscribe_repos.rs 3
 crates/custos-oauth/src/routes/oauth_consent.rs 3
 crates/custos-oauth/src/routes/oauth_token/mod.rs 1
-crates/custos-spaces/src/auth/space.rs 7
+crates/custos-spaces/src/auth/space.rs 6
 crates/custos-spaces/src/routes/admin_spaces.rs 1
-crates/custos-spaces/src/routes/simplespace_put_member.rs 1
-crates/custos-spaces/src/routes/simplespace_remove_member.rs 1
 crates/custos-spaces/src/routes/space_get_repo.rs 2
 crates/custos-spaces/src/routes/space_list_records.rs 1
-crates/custos-spaces/src/views.rs 5
+crates/custos-spaces/src/views.rs 4
 crates/pds/src/routes/account_usage.rs 1
 crates/pds/src/routes/activate_account.rs 1
 crates/pds/src/routes/admin_account_repair.rs 2

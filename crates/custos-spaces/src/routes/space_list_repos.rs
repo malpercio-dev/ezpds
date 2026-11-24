@@ -26,7 +26,7 @@ pub struct SpaceListReposParams {
 /// elsewhere they may lag, and that repo's host is the source of truth.
 ///
 /// Answered only for a space this host is the authority for. A space whose row carries no
-/// simplespace config is one this host merely keeps repos in, and its authority is the one to
+/// policy is one this host merely keeps repos in, and its authority is the one to
 /// ask, so it reads as `SpaceNotFound` — the same reply an unknown space gets.
 pub async fn space_list_repos(
     State(state): State<CoreState>,

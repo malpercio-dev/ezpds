@@ -1,6 +1,7 @@
 // pattern: Imperative Shell
 
-//! com.atproto.space.listSpaces — the spaces the authenticated account holds a repo in.
+//! com.atproto.space.listSpaces — the spaces the authenticated account holds a repo in or is
+//! the authority for.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
@@ -22,15 +23,17 @@ pub struct SpaceListSpacesParams {
     /// Filter to spaces of this type.
     space_type: Option<String>,
     /// Filter to spaces under this authority DID.
-    did: Option<String>,
+    space_did: Option<String>,
     limit: Option<i64>,
     cursor: Option<String>,
 }
 
 /// GET /xrpc/com.atproto.space.listSpaces
 ///
-/// Lists the spaces the caller has *written to*, which is not "spaces I'm a member of" — a
-/// member's PDS only ever learns about a space by storing a repo in it.
+/// Lists the spaces the caller has *written to* or is the authority for, which is not "spaces
+/// I'm a member of" — a member's PDS only ever learns about a space by storing a repo in it.
+/// Each entry carries the caller's repo head there (`repoRev` and its commit `data`) when it has
+/// one, and the space's revision (`spaceRev`) when the caller is its authority.
 pub async fn space_list_spaces(
     State(state): State<CoreState>,
     method: Method,
@@ -51,7 +54,7 @@ pub async fn space_list_spaces(
             &user.scope_claim,
             &SpaceRequest {
                 space_type: params.space_type.as_deref().unwrap_or("*"),
-                authority: params.did.as_deref().unwrap_or("*"),
+                authority: params.space_did.as_deref().unwrap_or("*"),
                 skey: "*",
                 op: SpaceOp::ReadSelf,
                 account_did: &user.did,
@@ -61,11 +64,11 @@ pub async fn space_list_spaces(
     }
 
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let uris = crate::db::space_repos::list_spaces_for_account(
+    let spaces = crate::db::space_repos::list_spaces_for_account(
         &state.db,
         &user.did,
         params.space_type.as_deref(),
-        params.did.as_deref(),
+        params.space_did.as_deref(),
         params.cursor.as_deref(),
         limit,
     )
@@ -75,12 +78,33 @@ pub async fn space_list_spaces(
         ApiError::new(ErrorCode::InternalError, "failed to list spaces")
     })?;
 
-    let next = (uris.len() as i64 == limit)
-        .then(|| uris.last().cloned())
+    let next = (spaces.len() as i64 == limit)
+        .then(|| spaces.last().map(|space| space.uri.clone()))
         .flatten();
-    let mut body = serde_json::json!({
-        "spaces": uris.iter().map(|uri| serde_json::json!({ "uri": uri })).collect::<Vec<_>>(),
-    });
+    let views = spaces
+        .iter()
+        .map(|space| {
+            let mut view = serde_json::json!({ "space": space.uri });
+            if let (Some(rev), Some(state)) = (&space.repo_rev, &space.lthash_state) {
+                let digest = crypto::LtHash::from_state(state)
+                    .map_err(|e| {
+                        ApiError::internal_as(
+                            e,
+                            "stored LtHash state is malformed",
+                            "failed to list spaces",
+                        )
+                    })?
+                    .digest();
+                view["repoRev"] = rev.clone().into();
+                view["data"] = crate::views::lex_bytes(&digest);
+            }
+            if let Some(space_rev) = &space.space_rev {
+                view["spaceRev"] = space_rev.clone().into();
+            }
+            Ok(view)
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    let mut body = serde_json::json!({ "spaces": views });
     if let Some(cursor) = next {
         body["cursor"] = serde_json::Value::String(cursor);
     }

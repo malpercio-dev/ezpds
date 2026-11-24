@@ -39,7 +39,7 @@ Accounts (credentials persist in .state/state.json — gitignored)
 Checks
   verify-identity --name <n>       handle ↔ DID ↔ plc.directory agreement
   crud-test --name <n>             create/read/list/delete round-trip
-  spaces-test --name <n>           Atproto Spaces round-trip (simplespace + records + sync reads)
+  spaces-test --name <n>           Atproto Spaces round-trip (memberspace + records + sync reads)
   spaces-cross-host --member <n> [--authority <n>] [--space <uri>] [--space-host <url>]
                                    delegation token → signature-bound credential → credential-authed
                                    reads on the repo host AND the space host

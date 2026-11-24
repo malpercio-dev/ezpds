@@ -9,7 +9,7 @@ use custos_core::capability::Capability;
 pub const CAPABILITY: Capability = Capability {
     name: "spaces",
     control: "spaces.enabled signing_key_master_key",
-    summary: "The Atproto Spaces alpha surface: permissioned space repos with signature-bound space credentials, oplog/CAR sync, and simplespace management.",
+    summary: "The Atproto Spaces alpha surface: permissioned space repos with signature-bound space credentials, oplog/CAR sync, and space policy management.",
     // Two conditions, both required. `spaces.enabled` is the operator switch: off (the
     // default while the protocol is pre-launch alpha), the routes are not registered at
     // all. The master key is the gate on an enabled surface being *whole*: writes

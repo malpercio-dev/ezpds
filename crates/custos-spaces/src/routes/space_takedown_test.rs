@@ -302,14 +302,16 @@ async fn a_taken_down_uri_cannot_be_re_created() {
     let token = scoped_access_jwt(&state.jwt_secret, DID, &grant);
     let create = || {
         post(
-            "/xrpc/com.atproto.simplespace.createSpace",
+            "/xrpc/com.atproto.space.createSpace",
             &token,
             serde_json::json!({
                 "spaceType": "org.example.bucket",
                 "skey": "own",
-                "readPolicy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
-                "writePolicy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
-                "appAccess": { "$type": "com.atproto.simplespace.defs#open" },
+                "policy": {
+                    "$type": "com.atproto.memberspace.policy",
+                    "publicRead": true,
+                    "publicWrite": true,
+                },
             }),
         )
     };
@@ -323,7 +325,7 @@ async fn a_taken_down_uri_cannot_be_re_created() {
     let (status, body) = send(
         &state,
         post(
-            "/xrpc/com.atproto.simplespace.deleteSpace",
+            "/xrpc/com.atproto.space.deleteSpace",
             &token,
             serde_json::json!({ "space": local_space }),
         ),

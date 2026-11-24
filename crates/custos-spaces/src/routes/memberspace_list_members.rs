@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! com.atproto.simplespace.listMembers — page through a space's member list.
+//! com.atproto.memberspace.listMembers — page through a memberspace's member list.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, Uri};
@@ -8,7 +8,7 @@ use axum::response::Json;
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use crate::auth::space::authenticate_space_owner;
+use crate::auth::space::authenticate_space_authority;
 use common::{ApiError, ErrorCode};
 use custos_core::auth::oauth_scopes::SpaceOp;
 use custos_core::lexicon::LexiconParams;
@@ -22,12 +22,12 @@ pub struct ListMembersParams {
     cursor: Option<String>,
 }
 
-/// GET /xrpc/com.atproto.simplespace.listMembers
+/// GET /xrpc/com.atproto.memberspace.listMembers
 ///
-/// OAuth only, and owner only: the member list is the authority's own state, so a space
+/// OAuth only, authority only, memberspace only (`PolicyMismatch` otherwise): the member list is the authority's own state, so a space
 /// credential does not reach it and a member hosted elsewhere cannot enumerate it. Keyset
 /// paged by DID; the cursor is the last DID of a full page.
-pub async fn simplespace_list_members(
+pub async fn memberspace_list_members(
     State(state): State<CoreState>,
     method: Method,
     uri: Uri,
@@ -35,8 +35,10 @@ pub async fn simplespace_list_members(
     LexiconParams(params): LexiconParams<ListMembersParams>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let space = crate::views::parse_space(&params.space)?;
-    authenticate_space_owner(&state, &headers, &method, &uri, &space, SpaceOp::ReadSelf).await?;
-    crate::views::load_active_simplespace(&state.db, &space).await?;
+    authenticate_space_authority(&state, &headers, &method, &uri, &space, SpaceOp::ReadSelf)
+        .await?;
+    let (_, policy) = crate::views::load_active_space(&state.db, &space).await?;
+    policy.require_memberspace()?;
 
     // The lexicon layer has already bounded `limit` to 1..=1000.
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
