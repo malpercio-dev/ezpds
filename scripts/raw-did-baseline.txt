@@ -16,7 +16,7 @@ crates/custos-spaces/src/auth/space.rs 5
 crates/custos-spaces/src/routes/admin_spaces.rs 1
 crates/custos-spaces/src/routes/space_get_repo.rs 2
 crates/custos-spaces/src/routes/space_list_records.rs 1
-crates/custos-spaces/src/views.rs 4
+crates/custos-spaces/src/views.rs 3
 crates/pds/src/routes/account_usage.rs 1
 crates/pds/src/routes/activate_account.rs 1
 crates/pds/src/routes/admin_account_repair.rs 2

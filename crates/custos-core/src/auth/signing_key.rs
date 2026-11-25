@@ -242,13 +242,9 @@ fn build_encoding_key(
     Ok(jsonwebtoken::EncodingKey::from_ec_der(pkcs8_der.as_bytes()))
 }
 
-/// Load and decrypt the per-account repo signing key for a promoted DID.
-///
-/// The raw private scalar, for the one caller that cannot go through [`CommitSigner`]: a space
-/// repo's deniable commit signs a context string rather than a commit block, and derives its MAC
-/// key from the same material (`crypto::sign_space_commit`). Stays wrapped so it is wiped on
-/// drop rather than left in the caller's stack frame.
-pub async fn load_repo_signing_key(
+/// Load and decrypt the per-account repo signing key for a promoted DID. Stays wrapped so it is
+/// wiped on drop rather than left in the caller's stack frame.
+async fn load_repo_signing_key(
     pool: &sqlx::SqlitePool,
     did: &str,
     master_key: &[u8; 32],

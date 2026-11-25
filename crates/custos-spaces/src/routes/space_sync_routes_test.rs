@@ -61,7 +61,7 @@ async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
 
 // ── listRepoOps ─────────────────────────────────────────────────────────────
 
-/// A head response carries every op in commit order, the current signed commit, and no
+/// A head response carries every op in commit order, the current commit, and no
 /// cursor. Creates carry a null `prev`, updates the previous cid, and only a record's
 /// *current* value is inlined — the superseded create's value is left off.
 #[tokio::test]
@@ -101,9 +101,11 @@ async fn list_repo_ops_reports_ops_values_and_head_commit() {
 
     assert_eq!(
         body["commit"]["rev"], head_rev,
-        "a head response carries the current signed commit"
+        "a head response carries the current commit"
     );
-    assert!(body["commit"]["hash"]["$bytes"].is_string());
+    assert_eq!(body["commit"]["repo"], DID);
+    assert_eq!(body["commit"]["space"], SPACE);
+    assert!(body["commit"]["data"]["$bytes"].is_string());
     assert!(body.get("cursor").is_none(), "no cursor at the head");
 }
 
@@ -153,8 +155,8 @@ async fn list_repo_ops_since_delete_and_exclude_values() {
     );
 }
 
-/// A full page carries a cursor and no commit; the cursor resumes exactly where the page
-/// ended, and the final (short) page carries the commit.
+/// Every page carries the commit, and a full page a cursor too; the cursor resumes exactly
+/// where the page ended, and the final (short) page has none.
 #[tokio::test]
 async fn list_repo_ops_paginates_with_cursor() {
     let (state, _kp) = setup().await;
@@ -174,9 +176,9 @@ async fn list_repo_ops_paginates_with_cursor() {
         .unwrap();
     let first = body_json(response).await;
     assert_eq!(first["ops"].as_array().unwrap().len(), 2);
-    assert!(
-        first.get("commit").is_none(),
-        "a full page does not sign a commit"
+    assert_eq!(
+        first["commit"]["rev"], revs[2],
+        "a full page carries the current commit too"
     );
     let cursor = first["cursor"].as_str().unwrap().to_string();
 
@@ -199,7 +201,7 @@ async fn list_repo_ops_paginates_with_cursor() {
     );
     assert!(second.get("cursor").is_none());
 
-    // The cursor takes precedence over `since` (per the lexicon): a `since` at the head, which
+    // The cursor takes precedence over `since`: a `since` at the head, which
     // on its own would exclude every op, must not shrink a cursor-driven page.
     let head_rev = &revs[2];
     let response = crate::test_support::test_app(state.clone())
@@ -290,28 +292,25 @@ fn parse_car(bytes: &[u8]) -> ParsedCar {
     }
 }
 
-/// The decoded signed-commit root block.
+/// The decoded commit root block.
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CommitBlock {
     ver: u8,
-    #[serde(with = "serde_bytes")]
-    hash: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    ikm: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    sig: Vec<u8>,
-    #[serde(with = "serde_bytes")]
-    mac: Vec<u8>,
+    repo: String,
+    space: String,
     rev: String,
+    #[serde(with = "serde_bytes")]
+    data: Vec<u8>,
 }
 
 /// The full streaming-verification journey a syncer takes: two roots in order (commit,
-/// index), commit verifies against the author's signing key, the index folds to an LtHash
-/// digest equal to the commit's hash, and the record blocks follow in the index's canonical
-/// order with bytes that hash to the CIDs the index promised.
+/// index), the commit describes this repo head, the index folds to an LtHash digest equal to
+/// the commit's `data`, and the record blocks follow in the index's canonical order with bytes
+/// that hash to the CIDs the index promised. (The MAC over the commit is `space_mac_test`'s.)
 #[tokio::test]
 async fn get_repo_car_verifies_end_to_end() {
-    let (state, kp) = setup().await;
+    let (state, _kp) = setup().await;
     let token = access_jwt(&state.jwt_secret, DID);
 
     // rkeys chosen so canonical (length-first) order differs from plain lexicographic:
@@ -344,30 +343,15 @@ async fn get_repo_car_verifies_end_to_end() {
     assert_eq!(car.blocks[0].0, car.roots[0], "commit block first");
     assert_eq!(car.blocks[1].0, car.roots[1], "index block second");
 
-    // The commit block verifies as a deniable commit by this author over this repo head.
+    // The commit block is this repo's head, and nothing else.
     let commit: CommitBlock = serde_ipld_dagcbor::from_slice(&car.blocks[0].1).unwrap();
+    assert_eq!(commit.ver, 1);
+    assert_eq!(commit.repo, DID);
+    assert_eq!(commit.space, SPACE);
     assert_eq!(commit.rev, head_rev);
-    let signed = crypto::SignedSpaceCommit {
-        ver: commit.ver,
-        hash: commit.hash.clone().try_into().unwrap(),
-        ikm: commit.ikm.clone().try_into().unwrap(),
-        sig: commit.sig.clone().try_into().unwrap(),
-        mac: commit.mac.clone().try_into().unwrap(),
-        rev: commit.rev.clone(),
-    };
-    crypto::verify_space_commit(
-        &signed,
-        &crypto::SpaceCommitCtx {
-            space: SPACE,
-            author: DID,
-            rev: &head_rev,
-        },
-        &kp.key_id,
-    )
-    .expect("commit must verify against the account's signing key");
 
     // The index decodes as a path → CID-link map in canonical key order, and folding its
-    // entries into an LtHash reproduces the commit's hash — the syncer's integrity check.
+    // entries into an LtHash reproduces the commit's `data` — the syncer's integrity check.
     let index: Vec<(String, ipld_core::ipld::Ipld)> = {
         let decoded: std::collections::BTreeMap<String, ipld_core::ipld::Ipld> =
             serde_ipld_dagcbor::from_slice(&car.blocks[1].1).unwrap();
@@ -405,8 +389,8 @@ async fn get_repo_car_verifies_end_to_end() {
     }
     assert_eq!(
         fold.digest().as_slice(),
-        commit.hash.as_slice(),
-        "index entries must fold to the commit hash"
+        commit.data.as_slice(),
+        "index entries must fold to the commit's data"
     );
 
     // Record blocks follow in index order, each hashing to the CID the index promised.
@@ -448,7 +432,7 @@ async fn get_repo_exclude_values_carries_only_roots() {
     assert_eq!(car.blocks.len(), 2, "no record blocks under excludeValues");
 }
 
-/// An empty repo (never written) is RepoNotFound — there is no commit to sign.
+/// An empty repo (never written) is RepoNotFound — there is no commit.
 #[tokio::test]
 async fn get_repo_unknown_repo_is_repo_not_found() {
     let (state, _kp) = setup().await;

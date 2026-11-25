@@ -13,9 +13,9 @@ pub const CAPABILITY: Capability = Capability {
     // Two conditions, both required. `spaces.enabled` is the operator switch: off (the
     // default while the protocol is pre-launch alpha), the routes are not registered at
     // all. The master key is the gate on an enabled surface being *whole*: writes
-    // succeed without one, but every sync serving (`getLatestCommit`/`listRepoOps`/
-    // `getRepo`) mints a per-serving signed commit from the account's KEK-wrapped repo
-    // signing key and answers 503 without it. A deployment no syncer can sync from does
-    // not offer spaces.
+    // succeed without one, but a syncer's read (`getRecord`/`getLatestCommit`/
+    // `listRepoOps`/`getRepo`) carries a MAC keyed through the account's KEK-wrapped KEM
+    // key and answers 503 without it. A deployment no syncer can sync from does not offer
+    // spaces.
     enabled: |config| config.spaces.enabled && config.signing_key_master_key.is_some(),
 };

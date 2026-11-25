@@ -227,9 +227,9 @@ pub struct SpaceCarRecord {
 /// A permissioned-space repo parsed out of the two-root CAR `com.atproto.space.getRepo` writes.
 #[derive(Debug)]
 pub struct SpaceCar {
-    /// The signed-commit root block, verbatim. Kept for the caller to inspect; a destination
-    /// host re-signs its own commit rather than adopting this one, since the commit is bound
-    /// to the source's `rev` and to a per-serving `ikm`.
+    /// The commit root block, verbatim. Kept for the caller to inspect; a destination host
+    /// builds its own commit from its own state rather than adopting this one, since the
+    /// commit is bound to the source's `rev`.
     pub commit: Vec<u8>,
     /// Every record the index named, in index order.
     pub records: Vec<SpaceCarRecord>,
@@ -237,17 +237,16 @@ pub struct SpaceCar {
 
 /// Parse and validate the two-root CAR of an Atproto Spaces repo.
 ///
-/// The mirror of `com.atproto.space.getRepo`'s export: roots are `[signed commit, DRISL index]`
+/// The mirror of `com.atproto.space.getRepo`'s export: roots are `[commit, DRISL index]`
 /// and the index maps `{collection}/{rkey}` to a record CID link. Validation is the same
 /// front-end `import_repo_car` uses (framing, CIDv1 + SHA2-256, every block hashes to its CID),
 /// so a record block that does not match the CID its index entry promised is rejected before
 /// the caller sees it. There is no MST here to walk, so reachability is exactly "the index
 /// names it and the CAR carries it".
 ///
-/// Deliberately silent about the commit's signature: the commit is signed by the *source*
-/// host's key over the source's `rev`, and a destination re-signs from its own state. What
-/// authenticates an import is the account credential presented to the route, as for
-/// `com.atproto.repo.importRepo`.
+/// Deliberately silent about the commit: it describes the *source* host's head, and a
+/// destination builds its own from its own state. What authenticates an import is the account
+/// credential presented to the route, as for `com.atproto.repo.importRepo`.
 pub async fn import_space_car(car_bytes: &[u8]) -> Result<SpaceCar, CarImportError> {
     validate_car(car_bytes)?;
 

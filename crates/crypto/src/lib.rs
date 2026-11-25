@@ -22,8 +22,8 @@ pub use account_delete::{
 pub use error::CryptoError;
 pub use hpke::{
     base64url_len, open_notification, pad_len_for_bucket, plaintext_pad_len, public_key_for_secret,
-    seal_notification, space_mac_secret, SealedNotification, APNS_MAX_PAYLOAD_BYTES, NOTIFY_AAD,
-    NOTIFY_INFO, PADDING_BUCKETS, SPACE_MAC_INFO,
+    seal_notification, space_mac_encapsulate, space_mac_secret, SealedNotification,
+    APNS_MAX_PAYLOAD_BYTES, NOTIFY_AAD, NOTIFY_INFO, PADDING_BUCKETS, SPACE_MAC_INFO,
 };
 pub use keys::{
     decrypt_private_key, decrypt_secret_bytes, derive_child_seed, derive_delegation_seed,
@@ -55,7 +55,4 @@ pub use sovereign_session::{
     encode_sovereign_session_envelope, SOVEREIGN_SESSION_DOMAIN, SOVEREIGN_SESSION_METHOD,
     SOVEREIGN_SESSION_PATH,
 };
-pub use space::{
-    encode_space_commit_ctx, format_set_hash_element, sign_space_commit, verify_space_commit,
-    LtHash, SignedSpaceCommit, SpaceCommitCtx, LTHASH_STATE_BYTES, SPACE_COMMIT_VERSION,
-};
+pub use space::{format_set_hash_element, LtHash, LTHASH_STATE_BYTES, SPACE_COMMIT_VERSION};
