@@ -48,7 +48,7 @@ Requirements: Node ≥ 22.12 (in the devenv shell). Environment:
 Without `EZPDS_ADMIN_TOKEN`, pass a pre-minted code to `create-account
 --claim-code <code>`.
 
-`just interop-test` unit-checks the pure pieces offline (DPoP proof construction, CAR
+`just interop-test` unit-checks the pure pieces offline (DPoP proof construction, STAR
 parsing); everything else is exercised by running the commands against a deployment.
 
 The `bin/interop` wrapper auto-configures Node for proxied environments
@@ -193,9 +193,8 @@ just interop spaces-allowlist --name primary     # allowedApps refuses an unatte
 
 `spaces-test` is the single-host round-trip: `space.createSpace` → `space.createRecord`
 → get/list/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` → teardown. It reads the
-space export as a **parsed** CAR, not a byte count: two roots in order (signed commit, then
-the DRISL record index), every block verified against the CID naming it, and the written
-record present in the index and carried as a block.
+space export as a **parsed** `atproto-space-repo` STAR archive, not a byte count: the commit as
+its metadata, record keys in strict order, and the written record among them.
 
 `spaces-cross-host` drives the credential flow a foreign implementation actually judges a
 host on:
@@ -279,7 +278,7 @@ drift that would invalidate any of this.
 | ensure account | provisioning flow: claim code → mobile account → PDS repo-signing key → client-signed did:plc genesis op → handle → session |
 | identity | `resolveHandle`, `/.well-known/atproto-did`, and the plc.directory DID doc all agree; PDS endpoint in the doc points at this deployment |
 | CRUD | createRecord → getRecord (CID match) → listRecords → deleteRecord |
-| spaces | Atproto Spaces round-trip on the account's own PDS: `space.createSpace` → `space.createRecord` → getRecord/listRecords/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` (CAR parsed: two roots, blocks verified against their CIDs, record present in the index) → deleteRecord → `deleteSpace` (random skey per run; the space is torn down even on failure) |
+| spaces | Atproto Spaces round-trip on the account's own PDS: `space.createSpace` → `space.createRecord` → getRecord/listRecords/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` (STAR archive parsed: the commit as metadata, keys in strict order, the record present) → deleteRecord → `deleteSpace` (random skey per run; the space is torn down even on failure) |
 | spaces credential | delegation token → signature-bound space credential → credential-authed reads on both the repo host and the authority; the credential is rejected when presented without its signature |
 | spaces allowedApps | an `allowedApps` space answers `AppNotAuthorized` to a credential request naming no client |
 | firehose | a live `subscribeRepos` subscriber sees the `#commit` frame for a write, correct repo + op path |

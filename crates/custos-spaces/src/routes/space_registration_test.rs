@@ -19,9 +19,7 @@ use crate::db::space_notify::{
     put_registration, registrations_for_space, PutRegistration, Registration,
 };
 use crate::space_notify::MAX_REGISTRATIONS;
-use crate::space_record_write::{
-    apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
-};
+use crate::space_record_write::{apply_space_writes, SpaceWriteAction, SpaceWriteOp};
 use crate::test_support::{
     memberspace_policy, seed_account_with_repo, seed_authority_space, send, state_with_master_key,
 };
@@ -115,7 +113,6 @@ async fn write(state: &CoreState, rkey: &str) {
             rkey: rkey.to_string(),
             value: Some(serde_json::json!({ "text": rkey })),
         }],
-        SpaceWriteAdmission::Active,
     )
     .await
     .unwrap();

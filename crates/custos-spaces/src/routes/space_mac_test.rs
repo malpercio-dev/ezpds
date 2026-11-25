@@ -17,9 +17,7 @@ use custos_core::CoreState;
 use tower::ServiceExt;
 
 use crate::auth::space::{mint_space_credential, unix_now};
-use crate::space_record_write::{
-    apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
-};
+use crate::space_record_write::{apply_space_writes, SpaceWriteAction, SpaceWriteOp};
 use crate::test_support::{access_jwt, body_json, state_with_master_key, test_app, SpaceSigKey};
 use custos_core::space_uri::parse_space_ref;
 
@@ -84,7 +82,6 @@ async fn write(state: &CoreState) {
             rkey: "aaa".to_string(),
             value: Some(serde_json::json!({ "text": "hello" })),
         }],
-        SpaceWriteAdmission::Active,
     )
     .await
     .unwrap();
@@ -219,8 +216,11 @@ async fn verify(method: &str, response: Response, key_share: &str, secret: &[u8;
         return;
     }
     let commit = if method == "getRepo" {
-        let car = repo_engine::import_space_car(&bytes).await.unwrap();
-        serde_ipld_dagcbor::from_slice::<Commit>(&car.commit).unwrap()
+        let star =
+            repo_engine::SpaceStarReader::new(repo_engine::StarProfile::SpaceRepo, &bytes[..])
+                .unwrap();
+        let meta = serde_ipld_dagcbor::to_vec(star.meta()).unwrap();
+        serde_ipld_dagcbor::from_slice::<Commit>(&meta).unwrap()
     } else {
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         Commit::from_json(&body["commit"])

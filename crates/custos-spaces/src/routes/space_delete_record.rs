@@ -77,7 +77,6 @@ pub async fn space_delete_record(
                 rkey: body.rkey,
                 value: None,
             }],
-            crate::space_record_write::SpaceWriteAdmission::Active,
         )
         .await?;
     }

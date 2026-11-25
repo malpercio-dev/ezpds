@@ -23,7 +23,7 @@ import { ensureSession } from './account.js';
 import { randomSuffix } from './crypto.js';
 import { accountHost, loadState, getAccount } from './state.js';
 import { newSpaceKey } from './space-signature.js';
-import { parseCar, decodeBlock } from './car.js';
+import { parseStar } from './star.js';
 import { resolveDidDoc, spaceEndpointFromDoc } from './identity.js';
 
 const SPACE_TYPE = 'dev.malpercio.interop.bucket';
@@ -58,30 +58,23 @@ export async function deleteSpace(name, spaceUri) {
 }
 
 /**
- * Assert a space-export CAR is structurally what the lexicon promises, rather than
- * merely non-empty: CARv1, two roots in order (commit, then the DRISL record
- * index), every block hashing to the CID that names it, and `path` present in the
- * index pointing at a block the CAR actually carries.
+ * Assert a space export is structurally what the lexicon promises, rather than
+ * merely non-empty: an `atproto-space-repo` STAR archive whose metadata is the
+ * commit, records in strict key order, and `path` among them.
  */
-async function assertSpaceCar(bytes, path) {
-  const car = await parseCar(bytes);
-  if (car.roots.length !== 2) throw new Error(`space getRepo CAR declares ${car.roots.length} roots, expected 2 (commit, index)`);
-  const [commitCid, indexCid] = car.roots;
-
-  const commit = decodeBlock(car, commitCid);
-  if (!commit.rev || !commit.data) throw new Error('space getRepo commit root carries no rev/data');
-
-  const index = decodeBlock(car, indexCid);
-  const recordCid = index?.[path];
-  if (!recordCid) throw new Error(`space getRepo index does not list ${path} (has: ${Object.keys(index ?? {}).join(', ') || 'nothing'})`);
-  if (!car.blocks.has(recordCid.toString())) throw new Error(`space getRepo index points at ${recordCid} but the CAR carries no such block`);
-
-  return { bytes: bytes.length, blocks: car.blocks.size, commitRev: commit.rev, recordCid: recordCid.toString() };
+function assertSpaceStar(bytes, path) {
+  const { meta, pairs } = parseStar(bytes);
+  if (meta.$type !== 'atproto-space-repo') throw new Error(`space getRepo archive is a ${meta.$type}, expected atproto-space-repo`);
+  if (!meta.rev || !meta.data) throw new Error('space getRepo commit carries no rev/data');
+  if (!pairs.some((p) => p.key === path)) {
+    throw new Error(`space getRepo archive does not carry ${path} (has: ${pairs.map((p) => p.key).join(', ') || 'nothing'})`);
+  }
+  return { bytes: bytes.length, records: pairs.length, commitRev: meta.rev };
 }
 
 /**
  * Create space → write a record → read it back (get/list/listSpaces) → sync
- * reads (getLatestCommit, listRepoOps, getRepo CAR) → delete the record →
+ * reads (getLatestCommit, listRepoOps, getRepo archive) → delete the record →
  * delete the space. Self-contained; always attempts the space teardown.
  */
 export async function spacesRoundTrip(name) {
@@ -135,12 +128,12 @@ export async function spacesRoundTrip(name) {
     });
     if (!ops.ops.some((op) => op.rkey === rkey)) throw new Error('write missing from space listRepoOps');
 
-    const car = await xrpc(host, 'com.atproto.space.getRepo', {
+    const star = await xrpc(host, 'com.atproto.space.getRepo', {
       token: token(),
       params: { space: spaceUri, repo: account.did },
       raw: true,
     });
-    const exported = await assertSpaceCar(new Uint8Array(await car.arrayBuffer()), `${COLLECTION}/${rkey}`);
+    const exported = assertSpaceStar(new Uint8Array(await star.arrayBuffer()), `${COLLECTION}/${rkey}`);
 
     await xrpc(host, 'com.atproto.space.deleteRecord', {
       method: 'POST',
@@ -148,7 +141,7 @@ export async function spacesRoundTrip(name) {
       body: { space: spaceUri, repo: account.did, collection: COLLECTION, rkey },
     });
 
-    return { space: spaceUri, uri: created.uri, cid: created.cid, commitRev: latest.commit.rev, car: exported };
+    return { space: spaceUri, uri: created.uri, cid: created.cid, commitRev: latest.commit.rev, export: exported };
   } finally {
     // Teardown failure must not mask the real result; deleteSpace is idempotent.
     await deleteSpace(name, spaceUri).catch((err) => {
@@ -256,12 +249,12 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
     });
     if (!ops.ops.some((op) => op.rkey === rkey)) throw new Error('write missing from credential-authed listRepoOps');
 
-    const car = await xrpc(repoHost, 'com.atproto.space.getRepo', {
+    const star = await xrpc(repoHost, 'com.atproto.space.getRepo', {
       params: { space: spaceUri, repo: member.did },
       raw: true,
       spaceSig: toRepo,
     });
-    const exported = await assertSpaceCar(new Uint8Array(await car.arrayBuffer()), `${COLLECTION}/${rkey}`);
+    const exported = assertSpaceStar(new Uint8Array(await star.arrayBuffer()), `${COLLECTION}/${rkey}`);
 
     // …and on the space host — the side that is the authority. `listRepos` is the writer
     // set the authority tracks, so the member's repo must show up here after the write.
@@ -292,7 +285,7 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
       member: member.did,
       credentialUnboundRejected: unbound.status,
       memberInAuthorityListRepos: listed,
-      car: exported,
+      export: exported,
     };
   } finally {
     if (ownedSpace) {

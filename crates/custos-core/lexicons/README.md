@@ -62,8 +62,8 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     is split across two pins while the routes catch up:
     - **`619c6e8556db7dd37bb7df1d92a5eae83da8d8b0`** (2026-10-20): every document above —
       the ones live routes validate against, including the ones upstream has since deleted.
-      Twelve of them changed shape by the frozen pin; eight still wait here
-      (`com.atproto.space.{applyWrites,createRecord,deleteRecord,getBlob,getRepo,listBlobs,
+      Twelve of them changed shape by the frozen pin; seven still wait here
+      (`com.atproto.space.{applyWrites,createRecord,deleteRecord,getBlob,listBlobs,
       listRecords,putRecord}`). Each is re-vendored from `047d603` by the change that moves its
       route to the new shape, and a deleted one is removed together with its route (the
       `com.atproto.simplespace.*` set already has been).
@@ -74,12 +74,14 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
       policy,removeWriter,updateSpace}`, `com.atproto.{memberspace,managedspace,personalspace}.*`,
       `com.atproto.label.record`, and `com.atproto.server.reserveKemKey`, plus
       `com.atproto.space.{listSpaces,getDelegationToken,defs,getLatestCommit,getRecord,
-      listRepoOps}`, re-vendored with their routes (the last four with the read MACs). Each is
+      listRepoOps,getRepo}`, re-vendored with their routes (`defs` through `listRepoOps` with the
+      read MACs, `getRepo` with the STAR archive). Each is
       registered in `LEXICON_SOURCES` by the change that adds its route; registered so far:
       `listSpaces`, `getDelegationToken`, `authorizeSpaceSync`, `server.reserveKemKey`,
       `space.{createSpace,updateSpace,deleteSpace,getSpace,notifyRepoUpdate,
-      notifyCredentialsRevoked}`, `memberspace.{defs,putMembers,removeMembers,listMembers}`, and
-      the three `*space.policy` documents.
+      notifyCredentialsRevoked}`, `memberspace.{defs,putMembers,removeMembers,listMembers}`,
+      the three `*space.policy` documents, and `space.{exportSpaceMeta,importRepo,
+      importSpaceMeta}`.
 
     The frozen pin is final: an upstream change after it is new work, never a silent SHA bump.
     The Friday [spaces-alpha-watch routine](../../../docs/operations/spaces-alpha-watch-routine.md)

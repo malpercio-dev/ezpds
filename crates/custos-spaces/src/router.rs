@@ -99,6 +99,19 @@ where
             post(space_delete_space),
         )
         .route("/xrpc/com.atproto.space.getSpace", get(space_get_space))
+        // Migration: the authority's space meta archive, then each repo's archive (`getRepo`).
+        .route(
+            "/xrpc/com.atproto.space.exportSpaceMeta",
+            get(space_export_space_meta),
+        )
+        .route(
+            "/xrpc/com.atproto.space.importSpaceMeta",
+            post(space_import_space_meta),
+        )
+        .route(
+            "/xrpc/com.atproto.space.importRepo",
+            post(space_import_repo),
+        )
         .route(
             "/xrpc/com.atproto.space.updateSpace",
             post(space_update_space),
@@ -118,21 +131,13 @@ where
 }
 
 /// The `/v1/*` (no-CORS) half: the operator's per-space moderation pair, registered regardless of
-/// `[spaces] enabled` because it governs data already stored (ADR-0035), and the inbound
-/// permissioned-repo migration leg, gated with the rest of the surface.
-pub fn internal_router<S>(config: &SpacesConfig) -> Router<S>
+/// `[spaces] enabled` because it governs data already stored (ADR-0035).
+pub fn internal_router<S>(_config: &SpacesConfig) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
     CoreState: FromRef<S>,
 {
-    let router = Router::new()
+    Router::new()
         .route("/v1/admin/spaces", get(list_hosted_spaces))
-        .route("/v1/admin/spaces/takedown", post(set_space_takedown));
-    if !config.enabled {
-        return router;
-    }
-    // A Custos-native `/v1/*` route rather than a `com.atproto.space.*` method: the alpha
-    // lexicons define no space import, so the namespace stays free for whatever the spec
-    // eventually names.
-    router.route("/v1/space/import-repo", post(space_import_repo))
+        .route("/v1/admin/spaces/takedown", post(set_space_takedown))
 }

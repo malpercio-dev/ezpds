@@ -5,7 +5,8 @@
 //! A syncer reading a space record checks a MAC keyed by a secret it agrees with the writer's
 //! host, using the writer's `#atproto_kem` key from its DID document. If the document does not
 //! publish the key this host actually holds, no syncer can verify what the account writes, so
-//! every space write route calls [`require_kem_key_published`] first (and
+//! every space write route but the two migration imports (`space_migration`) calls
+//! [`require_kem_key_published`] first (and
 //! `policy::commit_with_published` calls [`require_kem_key_published_in`] before it publishes
 //! records), refusing with `KemKeyNotPublished` until the account publishes it
 //! (`POST /v1/kem-key`). Reads stay open: [`published_kem_private_key`] is `None` for such an

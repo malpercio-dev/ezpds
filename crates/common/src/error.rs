@@ -176,6 +176,17 @@ pub enum ErrorCode {
     /// A memberspace method on a space governed by another policy.
     #[serde(rename = "PolicyMismatch")]
     PolicyMismatch,
+    /// `com.atproto.space.importRepo`'s STAR archive is malformed or does not verify against its
+    /// own commit.
+    #[serde(rename = "InvalidRepoFile")]
+    InvalidRepoFile,
+    /// `com.atproto.space.importRepo`'s archive is another account's repo.
+    #[serde(rename = "RepoMismatch")]
+    RepoMismatch,
+    /// `com.atproto.space.importSpaceMeta`'s STAR archive is malformed or carries state the
+    /// space's policy does not define.
+    #[serde(rename = "InvalidSpaceMeta")]
+    InvalidSpaceMeta,
     /// The notify endpoint passed to `authorizeSpaceSync` did not echo the
     /// `confirmRegistration` challenge. Declared by `com.atproto.space.authorizeSpaceSync`.
     #[serde(rename = "RegistrationNotConfirmed")]
@@ -263,6 +274,9 @@ impl ErrorCode {
             ErrorCode::SpaceAlreadyExists => "SpaceAlreadyExists",
             ErrorCode::UnsupportedPolicy => "UnsupportedPolicy",
             ErrorCode::PolicyMismatch => "PolicyMismatch",
+            ErrorCode::InvalidRepoFile => "InvalidRepoFile",
+            ErrorCode::RepoMismatch => "RepoMismatch",
+            ErrorCode::InvalidSpaceMeta => "InvalidSpaceMeta",
             ErrorCode::RegistrationNotConfirmed => "RegistrationNotConfirmed",
             ErrorCode::TooManyRegistrations => "TooManyRegistrations",
         }
@@ -332,6 +346,9 @@ impl ErrorCode {
             ErrorCode::SpaceAlreadyExists => 400,
             ErrorCode::UnsupportedPolicy => 400,
             ErrorCode::PolicyMismatch => 400,
+            ErrorCode::InvalidRepoFile => 400,
+            ErrorCode::RepoMismatch => 400,
+            ErrorCode::InvalidSpaceMeta => 400,
             ErrorCode::RegistrationNotConfirmed => 400,
             ErrorCode::TooManyRegistrations => 400,
         }

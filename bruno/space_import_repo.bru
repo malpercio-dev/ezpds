@@ -1,54 +1,43 @@
 meta {
-  name: Import Space Repo (Custos)
+  name: Space Import Repo
   type: http
-  seq: 163
+  seq: 176
 }
 
 post {
-  url: {{baseUrl}}/v1/space/import-repo?space={{spaceUri}}
+  url: {{baseUrl}}/xrpc/com.atproto.space.importRepo
   body: binary
   auth: bearer
 }
 
 auth:bearer {
-  token: {{accessJwt}}
-}
-
-params:query {
-  space: {{spaceUri}}
+  token: {{accessToken}}
 }
 
 headers {
-  Content-Type: application/vnd.ipld.car
+  Content-Type: application/vnd.dasl.star
 }
 
 body:binary {
-  @file: {{spaceRepoCarFilePath}}
+  @file: {{spaceRepoStarFilePath}}
 }
 
 vars:pre-request {
-  baseUrl: http://localhost:8080
-  spaceUri: at://did:plc:authority/space/org.example.bucket/main
-  spaceRepoCarFilePath: ./space-repo.car
+  spaceRepoStarFilePath: ./space-repo.star
 }
 
 docs {
-  Ingest the two-root CAR exported by com.atproto.space.getRepo into the authenticated
-  account's repo in the named space — the permissioned-data leg of account migration.
+  Import the authenticated account's space repo from the STAR archive com.atproto.space.getRepo
+  exported on the old host. The archive names its own space and repo. The account must be
+  deactivated, as for com.atproto.repo.importRepo, and the token needs a grant over the whole
+  space (read, plus create/update/delete on every collection).
 
-  Custos-native (/v1/*) rather than a com.atproto.space.* method: the Atproto Spaces alpha
-  lexicons define no import endpoint.
+  The repo becomes exactly the archive's records, under a fresh rev with an empty oplog, and no
+  write notification fires. Blobs are not carried: list them on the source with
+  space.listBlobs and upload them. If the account is the space's authority, import the space
+  first with space.importSpaceMeta.
 
-  The account must be deactivated, as for com.atproto.repo.importRepo. The repo becomes
-  exactly the CAR's record set: records the CAR's index does not name are removed in the same
-  commit, so a return migration cannot leave a previous residency behind. Blobs are not
-  carried — enumerate them on the source with com.atproto.space.listBlobs and transfer them
-  with uploadBlob. If this host is to be the space's authority, recreate the space policy
-  and member list with createSpace/putMembers.
-
-  The destination's oplog starts fresh: syncers holding a `since` from the old host fold to a
-  set hash that will not match the new head, which is their signal to heal with a full
-  getRepo.
-
-  Returns 200 { rev, records }.
+  Errors: 400 InvalidRepoFile (malformed, or the records do not match the commit), 400
+  RepoMismatch (another account's repo), 400 SpaceNotFound (the authority's space is not
+  imported yet), 403 when the account is active.
 }

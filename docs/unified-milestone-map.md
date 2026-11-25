@@ -307,7 +307,7 @@ a space route means the flag is unset rather than a defect.
 | Delegation + space credentials | Single-use delegation token → space credential bound to a key (`cnf.kid`) by RFC 9421 HTTP message signatures, audience-pinned per request | proposal 0016 |
 | `space:` OAuth scope | Sixth resource type in the granular scope grammar, with consent-page rendering | proposal 0016 |
 | Management surface (`simplespace.*`) | `createSpace`/`updateSpace`/`deleteSpace`/`getSpace`, member list | proposal 0016 |
-| Space repo migration | `space.getRepo` → `POST /v1/space/import-repo` (Custos-native; the alpha defines no import) | this repo |
+| Space repo migration | `space.exportSpaceMeta` → `importSpaceMeta`, then `space.getRepo` → `importRepo` (STAR archives, as the reference) | this repo |
 | Operator surface | Capability entry in `describeServer`, sweep health, operator docs | this repo |
 
 **Upstream risk:** the Spaces alpha is pre-1.0 and still promises breaking changes. The lexicons are

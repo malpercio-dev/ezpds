@@ -97,7 +97,6 @@ mod tests {
                     value: Some(serde_json::json!({ "text": "new" })),
                 },
             ],
-            crate::space_record_write::SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();

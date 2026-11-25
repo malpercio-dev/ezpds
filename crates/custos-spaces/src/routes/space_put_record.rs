@@ -94,7 +94,6 @@ pub async fn space_put_record(
             rkey: body.rkey.clone(),
             value: Some(body.record),
         }],
-        crate::space_record_write::SpaceWriteAdmission::Active,
     )
     .await?;
 

@@ -179,7 +179,6 @@ export type GetRecordOutput = {
 export type GetRepoParams = {
   space: string;
   repo: string;
-  excludeValues?: boolean;
 };
 export type GetRepoInput = undefined;
 export type GetRepoOutput = Uint8Array;
