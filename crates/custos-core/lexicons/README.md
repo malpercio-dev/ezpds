@@ -62,25 +62,24 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     is split across two pins while the routes catch up:
     - **`619c6e8556db7dd37bb7df1d92a5eae83da8d8b0`** (2026-10-20): every document above —
       the ones live routes validate against, including the ones upstream has since deleted.
-      Twelve of them changed shape by the frozen pin (`com.atproto.space.{applyWrites,
-      createRecord,defs,deleteRecord,getBlob,getLatestCommit,getRecord,getRepo,listBlobs,
-      listRecords,listRepoOps,putRecord}`); each is re-vendored from
-      `047d603` by the change that moves its route to the new shape, and a deleted one is
-      removed together with its route (the `com.atproto.simplespace.*` set already has been).
+      Twelve of them changed shape by the frozen pin; eight still wait here
+      (`com.atproto.space.{applyWrites,createRecord,deleteRecord,getBlob,getRepo,listBlobs,
+      listRecords,putRecord}`). Each is re-vendored from `047d603` by the change that moves its
+      route to the new shape, and a deleted one is removed together with its route (the
+      `com.atproto.simplespace.*` set already has been).
     - **`047d6032a21be01df8447489f0d6b59d2cc60af8`** (the frozen pin, 2026-11-23): the
       documents first vendored at it — `com.atproto.space.{authorizeSpaceSync,clearRecords,
       confirmRegistration,createSpace,deleteSpace,exportSpaceMeta,getSpace,importRepo,
       importSpaceMeta,listWriters,notifyCredentialsRevoked,notifyRepoUpdate,notifySpaceUpdate,
       policy,removeWriter,updateSpace}`, `com.atproto.{memberspace,managedspace,personalspace}.*`,
       `com.atproto.label.record`, and `com.atproto.server.reserveKemKey`, plus
-      `com.atproto.space.{listSpaces,getDelegationToken}`, re-vendored with their routes. Each is
+      `com.atproto.space.{listSpaces,getDelegationToken,defs,getLatestCommit,getRecord,
+      listRepoOps}`, re-vendored with their routes (the last four with the read MACs). Each is
       registered in `LEXICON_SOURCES` by the change that adds its route; registered so far:
       `listSpaces`, `getDelegationToken`, `authorizeSpaceSync`, `server.reserveKemKey`,
       `space.{createSpace,updateSpace,deleteSpace,getSpace,notifyRepoUpdate,
       notifyCredentialsRevoked}`, `memberspace.{defs,putMembers,removeMembers,listMembers}`, and
       the three `*space.policy` documents.
-      `notifySpaceUpdate` refs `com.atproto.space.defs#repoWrite`/`#repoRemoved`, which exist
-      only in the `047d603` `defs`; until `defs` moves, lexgen types them as `unknown`.
 
     The frozen pin is final: an upstream change after it is new work, never a silent SHA bump.
     The Friday [spaces-alpha-watch routine](../../../docs/operations/spaces-alpha-watch-routine.md)

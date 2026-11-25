@@ -130,6 +130,27 @@ pub fn space_mac_secret(enc: &[u8], kem_private_key: &[u8; 32]) -> Result<[u8; 3
     hpke_export(enc, kem_private_key, SPACE_MAC_INFO)
 }
 
+/// Syncer side of the Spaces MAC key agreement (the reference's `encapsulate`): a fresh
+/// ephemeral key against the author's published `#atproto_kem` key (a P-256 `did:key`).
+/// Returns the ephemeral public key as a `did:key`, which is the MAC request's `keyid`, and
+/// the secret [`space_mac_secret`] derives from it on the host. Use a new one per request.
+pub fn space_mac_encapsulate(author_kem_key: &str) -> Result<(String, [u8; 32]), CryptoError> {
+    let opaque = || CryptoError::Encryption("hpke encapsulation failed".to_string());
+    let pk = crate::keys::p256_public_key_from_did_key(author_kem_key)
+        .and_then(|bytes| public_key_from_sec1(&bytes))
+        .map_err(|_| opaque())?;
+    let (enc, ctx) =
+        hpke::setup_sender::<ExportOnlyAead, Kdf, Kem>(&OpModeS::Base, &pk, SPACE_MAC_INFO)
+            .map_err(|_| opaque())?;
+    let mut secret = [0u8; 32];
+    ctx.export(b"", &mut secret).map_err(|_| opaque())?;
+    let compressed = p256::PublicKey::from_sec1_bytes(&enc.to_bytes())
+        .map_err(|_| opaque())?
+        .to_sec1_point(true);
+    let key_share = crate::keys::make_device_public_key(compressed.as_bytes()).key_id;
+    Ok((key_share, secret))
+}
+
 fn hpke_export(enc: &[u8], sk: &[u8; 32], info: &[u8]) -> Result<[u8; 32], CryptoError> {
     let opaque = || CryptoError::Decryption("hpke export failed".to_string());
     let sk = private_key_from_bytes(sk).map_err(|_| opaque())?;
@@ -398,6 +419,22 @@ mod tests {
                 .to_vec(),
             expected
         );
+    }
+
+    #[test]
+    fn space_mac_encapsulate_agrees_with_the_host_side() {
+        let author = crate::keys::generate_p256_keypair().unwrap();
+        let (key_share, secret) = space_mac_encapsulate(&author.key_id.0).unwrap();
+        let enc = crate::keys::p256_public_key_from_did_key(&key_share).unwrap();
+        assert_eq!(
+            space_mac_secret(&enc, &author.private_key_bytes).unwrap(),
+            secret
+        );
+
+        let (other_share, other) = space_mac_encapsulate(&author.key_id.0).unwrap();
+        assert_ne!(other_share, key_share, "a fresh ephemeral key per call");
+        assert_ne!(other, secret);
+        assert!(space_mac_encapsulate("did:key:zQ3notp256").is_err());
     }
 
     #[test]

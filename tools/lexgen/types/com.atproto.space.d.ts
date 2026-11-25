@@ -102,14 +102,27 @@ export type CreateSpaceInput = {
 export type CreateSpaceOutput = {
   space: string;
 };
-export type DefsSignedCommit = {
-  $type?: "com.atproto.space.defs#signedCommit";
+export type DefsCommit = {
+  $type?: "com.atproto.space.defs#commit";
   ver: number;
-  hash: { $bytes: string };
-  ikm: { $bytes: string };
-  sig: { $bytes: string };
-  mac: { $bytes: string };
+  repo: string;
+  space: string;
   rev: string;
+  data: { $bytes: string };
+};
+export type DefsRepoWrite = {
+  $type?: "com.atproto.space.defs#repoWrite";
+  repo: string;
+  repoRev: string;
+  data: { $bytes: string };
+  spaceRev: string;
+  prevSpaceRev?: string;
+};
+export type DefsRepoRemoved = {
+  $type?: "com.atproto.space.defs#repoRemoved";
+  repo: string;
+  spaceRev: string;
+  prevSpaceRev?: string;
 };
 export type DeleteRecordParams = undefined;
 export type DeleteRecordInput = {
@@ -149,7 +162,7 @@ export type GetLatestCommitParams = {
 };
 export type GetLatestCommitInput = undefined;
 export type GetLatestCommitOutput = {
-  commit: DefsSignedCommit;
+  commit: DefsCommit;
 };
 export type GetRecordParams = {
   space: string;
@@ -228,7 +241,7 @@ export type ListRepoOpsParams = {
 export type ListRepoOpsInput = undefined;
 export type ListRepoOpsOutput = {
   ops: Array<ListRepoOpsOpEntry>;
-  commit?: DefsSignedCommit;
+  commit: DefsCommit;
   cursor?: string;
 };
 export type ListRepoOpsOpEntry = {
@@ -282,7 +295,7 @@ export type ListWritersParams = {
 };
 export type ListWritersInput = undefined;
 export type ListWritersOutput = {
-  repos: Array<unknown | { $type: string }>;
+  repos: Array<DefsRepoWrite | DefsRepoRemoved | { $type: string }>;
   cursor?: string;
 };
 export type NotifyCredentialsRevokedParams = undefined;
@@ -303,7 +316,7 @@ export type NotifySpaceUpdateParams = undefined;
 export type NotifySpaceUpdateInput = {
   space: string;
   token: string;
-  update: unknown | NotifySpaceUpdateSpaceDeleted | NotifySpaceUpdateRegistrationExpired | { $type: string };
+  update: DefsRepoWrite | DefsRepoRemoved | NotifySpaceUpdateSpaceDeleted | NotifySpaceUpdateRegistrationExpired | { $type: string };
 };
 export type NotifySpaceUpdateOutput = undefined;
 export type NotifySpaceUpdateSpaceDeleted = {

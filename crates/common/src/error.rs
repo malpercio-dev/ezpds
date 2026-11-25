@@ -103,6 +103,11 @@ pub enum ErrorCode {
     /// generates a key at account creation and has no unpublished state.
     #[serde(rename = "KemKeyNotPublished")]
     KemKeyNotPublished,
+    /// A space read whose `Accept-Signature` MAC request is malformed or cannot be answered, or a
+    /// space-credential read that requested no MAC. Declared by `com.atproto.space.{getRecord,
+    /// getLatestCommit,listRepoOps,getRepo}`.
+    #[serde(rename = "InvalidSpaceMac")]
+    InvalidSpaceMac,
     /// A space write notification carried a repo revision further ahead of this host's clock than
     /// the permitted skew. Declared by `com.atproto.space.notifyRepoUpdate`.
     #[serde(rename = "FutureRev")]
@@ -239,6 +244,7 @@ impl ErrorCode {
             ErrorCode::BlockNotFound => "BlockNotFound",
             ErrorCode::SpaceNotFound => "SpaceNotFound",
             ErrorCode::KemKeyNotPublished => "KemKeyNotPublished",
+            ErrorCode::InvalidSpaceMac => "InvalidSpaceMac",
             ErrorCode::FutureRev => "FutureRev",
             ErrorCode::RepoNotFound => "RepoNotFound",
             ErrorCode::RepoTakendown => "RepoTakendown",
@@ -300,6 +306,7 @@ impl ErrorCode {
             // is HTTP 400 — clients dispatch on the name, not the status.
             ErrorCode::SpaceNotFound => 400,
             ErrorCode::KemKeyNotPublished => 400,
+            ErrorCode::InvalidSpaceMac => 400,
             ErrorCode::FutureRev => 400,
             ErrorCode::RepoNotFound => 400,
             ErrorCode::RepoTakendown => 400,

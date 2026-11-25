@@ -1,6 +1,6 @@
 // CARv1 parsing. `parseCarHeader` is enough for the plain sync check (one root,
 // compared against getLatestCommit); the space export needs the full walk, because
-// its whole contract is structural: two roots in order (signed commit, then the
+// its whole contract is structural: two roots in order (commit, then the
 // DRISL record index) with the record blocks following in the index's order.
 //
 // A length check would pass a foreign host's malformed CAR, which is exactly the

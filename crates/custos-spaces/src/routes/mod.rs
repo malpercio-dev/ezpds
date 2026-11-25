@@ -32,6 +32,8 @@ mod space_update_space;
 #[cfg(test)]
 mod space_lifecycle_test;
 #[cfg(test)]
+mod space_mac_test;
+#[cfg(test)]
 mod space_notify_routes_test;
 #[cfg(test)]
 mod space_policy_routes_test;

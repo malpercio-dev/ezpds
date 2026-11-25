@@ -59,7 +59,7 @@ export async function deleteSpace(name, spaceUri) {
 
 /**
  * Assert a space-export CAR is structurally what the lexicon promises, rather than
- * merely non-empty: CARv1, two roots in order (signed commit, then the DRISL record
+ * merely non-empty: CARv1, two roots in order (commit, then the DRISL record
  * index), every block hashing to the CID that names it, and `path` present in the
  * index pointing at a block the CAR actually carries.
  */
@@ -69,7 +69,7 @@ async function assertSpaceCar(bytes, path) {
   const [commitCid, indexCid] = car.roots;
 
   const commit = decodeBlock(car, commitCid);
-  if (!commit.rev || !commit.sig) throw new Error('space getRepo commit root carries no rev/sig');
+  if (!commit.rev || !commit.data) throw new Error('space getRepo commit root carries no rev/data');
 
   const index = decodeBlock(car, indexCid);
   const recordCid = index?.[path];

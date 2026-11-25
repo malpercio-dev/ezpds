@@ -22,6 +22,7 @@ mod policy;
 mod router;
 mod routes;
 mod space_jti_sweep;
+mod space_mac;
 mod space_notify;
 mod space_oplog_sweep;
 pub mod space_record_write;

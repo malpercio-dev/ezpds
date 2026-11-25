@@ -3,11 +3,12 @@
 //! com.atproto.space.getRepo — export a permissioned repo as a two-root CAR, for full-state
 //! recovery.
 //!
-//! The CAR declares two roots in order: the signed commit, then a DRISL index mapping
+//! The CAR declares two roots in order: the commit, then a DRISL index mapping
 //! `{collection}/{rkey}` to record CID in canonical DAG-CBOR map key order (shortest key
 //! first, then bytewise). Record blocks follow in the index's order, so a consumer can verify
-//! as it streams: check sig+mac, fold the index into a running LtHash and compare against the
-//! commit's hash, then check each block against the CID the index promised. `excludeValues`
+//! as it streams: check the response's MAC over the commit (`space_mac`), fold the index into a
+//! running LtHash and compare against the commit's `data`, then check each block against the
+//! CID the index promised. `excludeValues`
 //! writes only the two roots — the index still authenticates against the commit, since the set
 //! hash folds from index entries rather than blocks. Blobs are never included (`getBlob`).
 
@@ -19,14 +20,15 @@ use custos_core::CoreState;
 use serde::ser::SerializeMap;
 use serde::Deserialize;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, Did, ErrorCode};
+use crypto::http_signature::MacProfile;
 use custos_core::lexicon::LexiconParams;
 use repo_engine::Cid;
 
 #[derive(Deserialize)]
 pub struct SpaceGetRepoParams {
     space: String,
-    repo: String,
+    repo: Did,
     #[serde(default, rename = "excludeValues")]
     exclude_values: bool,
 }
@@ -40,7 +42,7 @@ pub async fn space_get_repo(
     LexiconParams(params): LexiconParams<SpaceGetRepoParams>,
 ) -> Result<Response, ApiError> {
     let space = crate::views::parse_space(&params.space)?;
-    crate::auth::space::authenticate_space_read(
+    let reader = crate::auth::space::authenticate_space_read(
         &state,
         &headers,
         &method,
@@ -49,6 +51,9 @@ pub async fn space_get_repo(
         &params.repo,
     )
     .await?;
+    let mac =
+        crate::space_mac::mac_grant(&state, &headers, &reader, &params.repo, MacProfile::Commit)
+            .await?;
     let repo = crate::views::load_repo(&state, &space.uri, &params.repo).await?;
 
     // The index has to precede the blocks it describes, so paths are collected up front; only
@@ -87,7 +92,7 @@ pub async fn space_get_repo(
         ));
     }
 
-    let commit = crate::views::sign_current_commit(&state, &space, &params.repo, &repo).await?;
+    let commit = crate::views::current_commit(&space, &params.repo, &repo)?;
     let commit_bytes = encode_commit_block(&commit);
     let index_bytes = encode_index_block(&entries);
     let (commit_cid, index_cid) = match (
@@ -107,17 +112,18 @@ pub async fn space_get_repo(
     head.extend_from_slice(&repo_engine::car_v1_block_frame(commit_cid, &commit_bytes));
     head.extend_from_slice(&repo_engine::car_v1_block_frame(index_cid, &index_bytes));
 
-    Ok(stream_car(
+    let response = stream_car(
         state,
         space.uri.clone(),
-        params.repo,
+        params.repo.to_string(),
         head,
         if params.exclude_values {
             Vec::new()
         } else {
             entries
         },
-    ))
+    );
+    crate::space_mac::with_commit_mac(response, &commit, mac.as_ref())
 }
 
 /// Canonical DAG-CBOR map key order: shortest first, then bytewise.
@@ -125,37 +131,32 @@ fn canonical_key_order(a: &str, b: &str) -> std::cmp::Ordering {
     a.len().cmp(&b.len()).then_with(|| a.cmp(b))
 }
 
-/// The signed-commit root block, encoded as canonical DAG-CBOR.
+/// The commit root block, `{ver, repo, space, rev, data}`, encoded as canonical DAG-CBOR.
 ///
 /// serde_ipld_dagcbor writes struct fields in declaration order, so this struct declares them
-/// in canonical map key order — length first, then bytewise: ikm, mac, rev, sig, ver, hash. A
+/// in canonical map key order — length first, then bytewise: rev, ver, data, repo, space. A
 /// unit test pins the byte-level ordering against a decoder.
 #[allow(
     clippy::expect_used,
     reason = "DAG-CBOR encoding of a fixed-shape map cannot fail"
 )]
-fn encode_commit_block(commit: &crypto::SignedSpaceCommit) -> Vec<u8> {
+fn encode_commit_block(commit: &crate::views::SpaceCommit) -> Vec<u8> {
     #[derive(serde::Serialize)]
     struct CommitBlock<'a> {
-        #[serde(with = "serde_bytes")]
-        ikm: &'a [u8],
-        #[serde(with = "serde_bytes")]
-        mac: &'a [u8],
         rev: &'a str,
-        #[serde(with = "serde_bytes")]
-        sig: &'a [u8],
         ver: u8,
         #[serde(with = "serde_bytes")]
-        hash: &'a [u8],
+        data: &'a [u8],
+        repo: &'a str,
+        space: &'a str,
     }
     // A tiny fixed-shape map; DAG-CBOR encoding cannot fail.
     serde_ipld_dagcbor::to_vec(&CommitBlock {
-        ikm: &commit.ikm,
-        mac: &commit.mac,
         rev: &commit.rev,
-        sig: &commit.sig,
-        ver: commit.ver,
-        hash: &commit.hash,
+        ver: crypto::SPACE_COMMIT_VERSION,
+        data: &commit.data,
+        repo: &commit.repo,
+        space: &commit.space,
     })
     .expect("encode space commit block")
 }
@@ -272,14 +273,12 @@ fn stream_car(
 mod tests {
     use super::*;
 
-    fn test_commit() -> crypto::SignedSpaceCommit {
-        crypto::SignedSpaceCommit {
-            ver: 1,
-            hash: [1; 32],
-            ikm: [2; 32],
-            sig: [3; 64],
-            mac: [4; 32],
+    fn test_commit() -> crate::views::SpaceCommit {
+        crate::views::SpaceCommit {
+            repo: Did::parse("did:example:alice").unwrap(),
+            space: "at://did:example:alice/space/org.example.bucket/main".to_string(),
             rev: "3lztsjenmq22a".to_string(),
+            data: [1; 32],
         }
     }
 
@@ -290,7 +289,7 @@ mod tests {
     #[test]
     fn commit_block_keys_are_canonically_ordered() {
         let bytes = encode_commit_block(&test_commit());
-        let positions: Vec<usize> = ["ikm", "mac", "rev", "sig", "ver", "hash"]
+        let positions: Vec<usize> = ["rev", "ver", "data", "repo", "space"]
             .iter()
             .map(|key| {
                 // A text-string key of length n < 24 is encoded as 0x60+n followed by the
@@ -305,7 +304,7 @@ mod tests {
             .collect();
         assert!(
             positions.windows(2).all(|w| w[0] < w[1]),
-            "commit block keys must appear in canonical order ikm, mac, rev, sig, ver, hash; got positions {positions:?}"
+            "commit block keys must appear in canonical order rev, ver, data, repo, space; got positions {positions:?}"
         );
     }
 

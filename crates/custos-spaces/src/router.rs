@@ -7,6 +7,7 @@
 
 use axum::{
     extract::FromRef,
+    middleware::map_response,
     routing::{get, post},
     Router,
 };
@@ -14,6 +15,7 @@ use common::SpacesConfig;
 use custos_core::CoreState;
 
 use crate::routes::*;
+use crate::space_mac::vary_accept_signature;
 
 /// The public (CORS'd) half of the Spaces surface: every `com.atproto.space.*` and
 /// `com.atproto.memberspace.*` method. Empty when `[spaces] enabled` is off.
@@ -53,11 +55,17 @@ where
         )
         .route(
             "/xrpc/com.atproto.space.getLatestCommit",
-            get(space_get_latest_commit),
+            get(space_get_latest_commit).layer(map_response(vary_accept_signature)),
         )
         .route("/xrpc/com.atproto.space.getBlob", get(space_get_blob))
-        .route("/xrpc/com.atproto.space.getRecord", get(space_get_record))
-        .route("/xrpc/com.atproto.space.getRepo", get(space_get_repo))
+        .route(
+            "/xrpc/com.atproto.space.getRecord",
+            get(space_get_record).layer(map_response(vary_accept_signature)),
+        )
+        .route(
+            "/xrpc/com.atproto.space.getRepo",
+            get(space_get_repo).layer(map_response(vary_accept_signature)),
+        )
         .route("/xrpc/com.atproto.space.listBlobs", get(space_list_blobs))
         .route(
             "/xrpc/com.atproto.space.listRecords",
@@ -65,7 +73,7 @@ where
         )
         .route(
             "/xrpc/com.atproto.space.listRepoOps",
-            get(space_list_repo_ops),
+            get(space_list_repo_ops).layer(map_response(vary_accept_signature)),
         )
         .route("/xrpc/com.atproto.space.listRepos", get(space_list_repos))
         .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
