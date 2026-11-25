@@ -195,6 +195,9 @@ pub enum ErrorCode {
     /// bound, not a lexicon error.
     #[serde(rename = "TooManyRegistrations")]
     TooManyRegistrations,
+    /// A page `cursor` did not parse. Declared by `com.atproto.space.listRepoOps`.
+    #[serde(rename = "InvalidCursor")]
+    InvalidCursor,
     // Codes for endpoints/designs not yet shipped (tiers, did:web self-service, device
     // leases, Shamir recovery, etc.) are catalogued in docs/provisioning-api-spec.md's
     // status-code appendix; add them here as those designs actually land.
@@ -279,6 +282,7 @@ impl ErrorCode {
             ErrorCode::InvalidSpaceMeta => "InvalidSpaceMeta",
             ErrorCode::RegistrationNotConfirmed => "RegistrationNotConfirmed",
             ErrorCode::TooManyRegistrations => "TooManyRegistrations",
+            ErrorCode::InvalidCursor => "InvalidCursor",
         }
     }
 
@@ -351,6 +355,7 @@ impl ErrorCode {
             ErrorCode::InvalidSpaceMeta => 400,
             ErrorCode::RegistrationNotConfirmed => 400,
             ErrorCode::TooManyRegistrations => 400,
+            ErrorCode::InvalidCursor => 400,
         }
     }
 }
@@ -658,6 +663,7 @@ mod tests {
             (ErrorCode::InvalidRequest, 400),
             (ErrorCode::HandleResolutionFailed, 400),
             (ErrorCode::BlockNotFound, 400),
+            (ErrorCode::InvalidCursor, 400),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
