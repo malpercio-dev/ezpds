@@ -1,6 +1,6 @@
 # custos-db
 
-Last verified: 2026-10-21
+Last verified: 2026-11-24
 
 The PDS database layer every Custos crate shares. Feature crates and `pds` depend on it; it
 depends on no HTTP stack and on nothing above it.
@@ -127,10 +127,13 @@ Enable `test-support` only under `[dev-dependencies]`.
 - `migrations/V077__oauth_grant_agent_records.sql` - Rebuilds `agent_identities` for the `connector` / `oauth_app` grant records (+ `client_id`), adds `oauth_tokens.registration_id` and the `resource` columns on codes and pending consent rows. See "Migration log"
 - `migrations/V079__space_policy.sql` - Converts the simplespace policy columns into one `$type`-discriminated `spaces.policy` JSON column + generated `policy_type`. See "Migration log"
 - `migrations/V070__space_takedown.sql` - Adds `spaces.takendown_at` (the operator's per-space refusal to serve) and its partial index. See "Latest Updates"
+- `migrations/V081__space_notify_registrations_by_endpoint.sql` - Replaces `space_notify_registrations` with the `(endpoint, token)` registrations `authorizeSpaceSync` makes. See "Migration log"
 
 ## Migration log
 
 Newest first. One line per migration that needs more than its file name to explain.
+
+- **V081**: `space_notify_registrations` is dropped and recreated as `(space_uri, endpoint, token, expires_at, expiry_notified)`, PK on the first three. A syncer registers a base URL and an opaque token through `authorizeSpaceSync` (the `registerNotify` DID rows are gone, nothing converts; their syncers register again on their next authorization). `expires_at` is the credential's `exp`; `expiry_notified` is for the one `registrationExpired` notice a lapse is owed; renewal clears it, and nothing sets it yet. The token is plaintext, because every notice carries it; it is never logged or returned. No account FK: a registration names an endpoint, not a DID, so account purge has nothing of it to delete.
 
 - **V080**: Per-account Spaces KEM keys (ADR-0043). `kem_keys` mirrors `signing_keys` (same columns, the V048 `status` built in with a CHECK, plus a unique `(did, status)` index so an account holds at most one active and one staged key); `reserved_kem_keys` mirrors V032's `reserved_signing_keys`; `pending_accounts.kem_{key_id,public_key,private_key_encrypted}` mirror V019's repo-key columns. A separate table, never a `purpose` column on `signing_keys`, so the commit signer cannot pick a KEM key up. All three ciphertext columns are `SecretFamily` entries. `purge_account` deletes `kem_keys` and `reserved_kem_keys` rows by DID.
 

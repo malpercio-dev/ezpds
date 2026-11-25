@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! com.atproto.space.notifyWrite — inbound write notification from a repo host.
+//! com.atproto.space.notifyRepoUpdate — inbound write notification from a repo host.
 
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -16,44 +16,42 @@ use custos_core::auth::jwt::peek_jwt_iss;
 use custos_core::auth::service_auth::verify_service_auth_resolving_key;
 use custos_core::lexicon::LexiconInput;
 
-const LXM: &str = "com.atproto.space.notifyWrite";
+const LXM: &str = "com.atproto.space.notifyRepoUpdate";
 
 /// How far ahead of this host's clock a `repoRev` may be.
 const MAX_REV_SKEW_SECS: u64 = 5 * 60;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NotifyWriteInput {
+pub struct NotifyRepoUpdateInput {
     space: String,
     repo: String,
     repo_rev: String,
     /// Lex-JSON `{"$bytes": "<base64>"}` — the repo's commit hash after the write.
-    hash: serde_json::Value,
+    data: serde_json::Value,
 }
 
-/// POST /xrpc/com.atproto.space.notifyWrite
+/// POST /xrpc/com.atproto.space.notifyRepoUpdate
 ///
 /// Service-auth authenticated, but deliberately **not** through
 /// [`custos_core::auth::service_auth::require_service_auth`]: that guard requires the issuer to be an
 /// account hosted here, and the whole point of this method is that the issuer is somewhere else.
-/// The issuer's key is resolved from the network instead, and it must be one of the two parties
-/// entitled to speak about this write — the repo whose head moved (a repo host reporting its own
-/// user's commit) or the space's authority (a space host forwarding to a registered syncer).
+/// The issuer's key is resolved from the network instead, and it must be the repo whose head
+/// moved, as the reference requires, so no host reports on another account's behalf.
 ///
 /// An authenticated notification is acknowledged without effect when this host is not the
-/// space's authority (a syncer forwarding into a space it merely holds a copy of has nothing to
-/// do with the report), when the space is deleted or taken down, when the space's write policy
+/// space's authority, when the space is deleted or taken down, when the space's write policy
 /// refuses the repo, or when `repoRev` is stale (see
 /// [`upsert_writer`](crate::db::space_notify::upsert_writer)). A `repoRev` further ahead of this
 /// host's clock than [`MAX_REV_SKEW_SECS`] is refused (`FutureRev`): such a revision would pin
 /// the repo's writer-set entry ahead of every honest update.
-pub async fn space_notify_write(
+pub async fn space_notify_repo_update(
     State(state): State<CoreState>,
     headers: HeaderMap,
-    LexiconInput(input): LexiconInput<NotifyWriteInput>,
+    LexiconInput(input): LexiconInput<NotifyRepoUpdateInput>,
 ) -> Result<impl IntoResponse, ApiError> {
     let space = crate::views::parse_space(&input.space)?;
-    let hash = decode_hash(&input.hash)?;
+    let hash = decode_hash(&input.data)?;
     let now = unix_now()?;
     if repo_engine::tid_micros(&input.repo_rev) / 1_000_000 > now + MAX_REV_SKEW_SECS {
         return Err(ApiError::new(
@@ -71,10 +69,10 @@ pub async fn space_notify_write(
                 "service auth token issuer is missing or not a DID",
             )
         })?;
-    if iss != input.repo && iss != space.authority {
+    if iss != input.repo {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
-            "issuer is neither the repo nor the space authority",
+            "issuer is not the repo",
         ));
     }
     let server_did = state.config.resolve_server_did();
@@ -132,7 +130,7 @@ pub async fn space_notify_write(
 /// sha256, so exactly 32 bytes.
 fn decode_hash(value: &serde_json::Value) -> Result<Vec<u8>, ApiError> {
     use base64::Engine as _;
-    let invalid = || ApiError::new(ErrorCode::InvalidRequest, "hash must be 32 bytes");
+    let invalid = || ApiError::new(ErrorCode::InvalidRequest, "data must be 32 bytes");
     let encoded = value
         .get("$bytes")
         .and_then(serde_json::Value::as_str)

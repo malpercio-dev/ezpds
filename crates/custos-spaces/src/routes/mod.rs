@@ -23,11 +23,9 @@ mod space_list_records;
 mod space_list_repo_ops;
 mod space_list_repos;
 mod space_list_spaces;
-mod space_notify_credential_revoked;
-mod space_notify_write;
+mod space_notify_credentials_revoked;
+mod space_notify_repo_update;
 mod space_put_record;
-mod space_register_notify;
-mod space_unregister_notify;
 mod space_update_space;
 
 #[cfg(test)]
@@ -39,6 +37,8 @@ mod space_mac_test;
 mod space_notify_routes_test;
 #[cfg(test)]
 mod space_policy_routes_test;
+#[cfg(test)]
+mod space_registration_test;
 #[cfg(test)]
 mod space_routes_test;
 #[cfg(test)]
@@ -68,9 +68,7 @@ pub(crate) use space_list_records::space_list_records;
 pub(crate) use space_list_repo_ops::space_list_repo_ops;
 pub(crate) use space_list_repos::space_list_repos;
 pub(crate) use space_list_spaces::space_list_spaces;
-pub(crate) use space_notify_credential_revoked::space_notify_credential_revoked;
-pub(crate) use space_notify_write::space_notify_write;
+pub(crate) use space_notify_credentials_revoked::space_notify_credentials_revoked;
+pub(crate) use space_notify_repo_update::space_notify_repo_update;
 pub(crate) use space_put_record::space_put_record;
-pub(crate) use space_register_notify::space_register_notify;
-pub(crate) use space_unregister_notify::space_unregister_notify;
 pub(crate) use space_update_space::space_update_space;

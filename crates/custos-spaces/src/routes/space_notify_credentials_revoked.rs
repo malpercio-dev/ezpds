@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! com.atproto.space.notifyCredentialRevoked — a space authority telling this repo host that
+//! com.atproto.space.notifyCredentialsRevoked — a space authority telling this repo host that
 //! credentials it issued are revoked.
 //!
 //! Short credential lifetime is the spec's main revocation mechanism; this is the fast path. Each
@@ -24,17 +24,17 @@ use custos_core::auth::jwt::{peek_jwt_aud, peek_jwt_iss};
 use custos_core::auth::service_auth::verify_service_auth_resolving_key;
 use custos_core::lexicon::LexiconInput;
 
-const LXM: &str = "com.atproto.space.notifyCredentialRevoked";
+const LXM: &str = "com.atproto.space.notifyCredentialsRevoked";
 
 #[derive(Deserialize)]
-pub struct NotifyCredentialRevokedInput {
+pub struct NotifyCredentialsRevokedInput {
     space: String,
     credentials: Vec<String>,
 }
 
-/// POST /xrpc/com.atproto.space.notifyCredentialRevoked
+/// POST /xrpc/com.atproto.space.notifyCredentialsRevoked
 ///
-/// Service auth, verified like `notifyWrite`'s: the issuer's key is resolved from the network,
+/// Service auth, verified like `notifyRepoUpdate`'s: the issuer's key is resolved from the network,
 /// and the issuer must be the space's authority, since only it issues the space's credentials.
 /// The lexicon addresses the call to a repo DID, so `aud` may be any account hosted here as well
 /// as this server's own DID.
@@ -42,10 +42,10 @@ pub struct NotifyCredentialRevokedInput {
 /// Idempotent. Recorded only for a space this host already knows; a revocation for a space it
 /// holds nothing of is acknowledged without effect, so no foreign DID can grow the table by
 /// naming spaces of its own.
-pub async fn space_notify_credential_revoked(
+pub async fn space_notify_credentials_revoked(
     State(state): State<CoreState>,
     headers: HeaderMap,
-    LexiconInput(input): LexiconInput<NotifyCredentialRevokedInput>,
+    LexiconInput(input): LexiconInput<NotifyCredentialsRevokedInput>,
 ) -> Result<impl IntoResponse, ApiError> {
     let space = crate::views::parse_space(&input.space)?;
     let now = unix_now()?;

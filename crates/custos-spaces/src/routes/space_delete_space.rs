@@ -27,7 +27,7 @@ pub struct DeleteSpaceInput {
 ///
 /// The `spaces` row survives as a tombstone (so `authorizeSpaceSync` keeps answering
 /// `SpaceDeleted`) with its policy cleared; the member list, notify registrations and the
-/// authority's own repo (and the writer set) go with it, and every service that was subscribed
+/// authority's own repo (and the writer set) go with it, and every syncer that was registered
 /// is told to drop its copies. Other members' repos are left where they are — their records are
 /// theirs — and simply stop being readable or writable (spec deletion semantics); their hosts
 /// are deliberately not notified.
@@ -62,11 +62,13 @@ pub async fn space_delete_space(
         return Ok((StatusCode::OK, axum::Json(serde_json::json!({}))));
     }
 
-    // Captured before the transaction drops the registrations: the recipients of
-    // `notifySpaceDeleted` are exactly who was subscribed at the moment of deletion.
-    let subscribers = crate::db::space_notify::subscribers_for_space(
+    // Captured before the transaction drops the registrations: the recipients of the
+    // `spaceDeleted` notice are exactly who was registered at the moment of deletion, lapsed
+    // registrations included.
+    let registrations = crate::db::space_notify::registrations_for_space(
         &state.db,
         &space.uri,
+        false,
         NOTIFY_DELETED_FANOUT_MAX,
     )
     .await
@@ -93,7 +95,7 @@ pub async fn space_delete_space(
     // Best-effort, post-commit: tell the syncers to drop their copies. A syncer that misses this
     // still learns durably — its next credential renewal answers `SpaceDeleted` off the tombstone
     // this transaction just wrote.
-    crate::space_notify::fan_out_space_deleted(&state, &space, subscribers);
+    crate::space_notify::fan_out_space_deleted(&state, &space, registrations);
 
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }
