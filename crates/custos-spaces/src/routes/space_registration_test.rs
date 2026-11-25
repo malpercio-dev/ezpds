@@ -340,3 +340,67 @@ async fn a_refusal_withdraws_the_registration() {
     assert_eq!(body["error"], "AccountNotAuthorized");
     assert!(rows(&state).await.is_empty());
 }
+
+/// Deleting a space owes every registration, lapsed included, a `spaceDeleted`: queued in the
+/// tombstone's transaction and tried at once. Once delivered, nothing stays queued.
+#[tokio::test]
+async fn deleting_a_space_notifies_every_registration() {
+    let state = setup(true).await;
+    let server = syncer().await;
+    let endpoint = endpoint(&server);
+    let now = unix_now().unwrap();
+    hold(&state, &endpoint, "live", now + 600).await;
+    hold(&state, &endpoint, "lapsed", now - 600).await;
+
+    let token = crate::test_support::access_jwt(&state.jwt_secret, AUTHORITY);
+    let (status, body) = send(
+        &state,
+        crate::test_support::xrpc_post(
+            "com.atproto.space.deleteSpace",
+            &token,
+            serde_json::json!({ "space": SPACE }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let notices = loop {
+        let notices = calls(&server, UPDATE).await;
+        if notices.len() == 2 {
+            break notices;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "notices missing");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    let mut tokens: Vec<String> = notices
+        .iter()
+        .map(|notice| {
+            let body: serde_json::Value = serde_json::from_slice(&notice.body).unwrap();
+            assert_eq!(
+                body["update"]["$type"],
+                "com.atproto.space.notifySpaceUpdate#spaceDeleted"
+            );
+            body["token"].as_str().unwrap().to_string()
+        })
+        .collect();
+    tokens.sort();
+    assert_eq!(tokens, ["lapsed", "live"]);
+    assert!(
+        rows(&state).await.is_empty(),
+        "registrations go with the space"
+    );
+
+    // The detached attempt clears each row once its delivery lands.
+    loop {
+        let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM space_syncer_notice_retries")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        if queued == 0 {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "rows left queued");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}

@@ -14,10 +14,6 @@ use common::{ApiError, ErrorCode};
 use custos_core::auth::oauth_scopes::{RepoAction, SpaceOp};
 use custos_core::lexicon::LexiconInput;
 
-/// Most syncers one deletion notifies. The same bound the write fan-out carries; past it a
-/// space's syncers are better served by the `SpaceDeleted` renewal error than by delivery.
-const NOTIFY_DELETED_FANOUT_MAX: i64 = 100;
-
 #[derive(Deserialize)]
 pub struct DeleteSpaceInput {
     space: String,
@@ -27,10 +23,11 @@ pub struct DeleteSpaceInput {
 ///
 /// The `spaces` row survives as a tombstone (so `authorizeSpaceSync` keeps answering
 /// `SpaceDeleted`) with its policy cleared; the member list, notify registrations and the
-/// authority's own repo (and the writer set) go with it, and every syncer that was registered
-/// is told to drop its copies. Other members' repos are left where they are — their records are
-/// theirs — and simply stop being readable or writable (spec deletion semantics); their hosts
-/// are deliberately not notified.
+/// authority's own repo (and the writer set) go with it, and every syncer that was registered,
+/// lapsed or not, is owed a `spaceDeleted` notice: queued in the same transaction and retried
+/// for 72 h (`space_notify_retry`), with no cap on how many. Other members' repos are left where
+/// they are — their records are theirs — and simply stop being readable or writable (spec
+/// deletion semantics); their hosts are deliberately not notified.
 /// Idempotent: a space already deleted answers 200; one that never existed, `SpaceNotFound`.
 pub async fn space_delete_space(
     State(state): State<CoreState>,
@@ -62,23 +59,15 @@ pub async fn space_delete_space(
         return Ok((StatusCode::OK, axum::Json(serde_json::json!({}))));
     }
 
-    // Captured before the transaction drops the registrations: the recipients of the
-    // `spaceDeleted` notice are exactly who was registered at the moment of deletion, lapsed
-    // registrations included.
-    let registrations = crate::db::space_notify::registrations_for_space(
-        &state.db,
-        &space.uri,
-        false,
-        NOTIFY_DELETED_FANOUT_MAX,
-    )
-    .await
-    .map_err(internal)?;
-
     let mut tx = state.db.begin().await.map_err(internal)?;
     mark_space_deleted(&mut *tx, &space.uri)
         .await
         .map_err(internal)?;
     delete_members(&mut *tx, &space.uri)
+        .await
+        .map_err(internal)?;
+    // Before the registrations it reads are dropped.
+    crate::space_notify_retry::queue_space_deleted(&mut tx, &space.uri)
         .await
         .map_err(internal)?;
     delete_notify_registrations(&mut *tx, &space.uri)
@@ -92,10 +81,10 @@ pub async fn space_delete_space(
         .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
 
-    // Best-effort, post-commit: tell the syncers to drop their copies. A syncer that misses this
-    // still learns durably — its next credential renewal answers `SpaceDeleted` off the tombstone
-    // this transaction just wrote.
-    crate::space_notify::fan_out_space_deleted(&state, &space, registrations);
+    // The first attempt, post-commit. A crash before it loses nothing: the sweep finds the rows.
+    drop(crate::space_notify_retry::deliver_untried(
+        &state, &space.uri,
+    ));
 
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }

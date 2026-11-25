@@ -133,6 +133,10 @@ struct SweepStates {
     /// The permissioned-repo oplog compaction sweep's last completed pass (`swept` = ops
     /// pruned past the 7-day retention window); `null` while `[spaces] enabled` is off.
     space_oplog_sweep: Option<SweepState>,
+    /// The space notification retry sweep's last completed pass (`swept` = syncer notices
+    /// attempted plus long-lapsed registrations pruned; `errors` = attempts that failed on the
+    /// database); `null` while `[spaces] enabled` is off.
+    space_notify_retry_sweep: Option<SweepState>,
     /// The labeler watcher's last completed poll pass (`swept` = label rows changed);
     /// `null` while labeler watching is off, like an idle sweep.
     labeler_watch: Option<SweepState>,
@@ -257,6 +261,9 @@ pub async fn admin_health(
             admin_nonce_sweep: sweeps.get(names::ADMIN_NONCE_SWEEP).map(SweepState::from),
             space_jti_sweep: sweeps.get(names::SPACE_JTI_SWEEP).map(SweepState::from),
             space_oplog_sweep: sweeps.get(names::SPACE_OPLOG_SWEEP).map(SweepState::from),
+            space_notify_retry_sweep: sweeps
+                .get(names::SPACE_NOTIFY_RETRY_SWEEP)
+                .map(SweepState::from),
             labeler_watch: sweeps.get(names::LABELER_WATCH).map(SweepState::from),
         },
         notify_queue_depth: state.notify_sender.as_ref().map(|s| s.depth()),
@@ -522,6 +529,7 @@ mod tests {
             ("space_jti_sweep", 9),
             ("space_oplog_sweep", 10),
             ("labeler_watch", 11),
+            ("space_notify_retry_sweep", 12),
         ];
         for (name, swept) in slots {
             state.sweeps.record(
@@ -550,6 +558,7 @@ mod tests {
                 "spaceJtiSweep": entry(9, 9),
                 "spaceOplogSweep": entry(10, 10),
                 "labelerWatch": entry(11, 11),
+                "spaceNotifyRetrySweep": entry(12, 12),
             })
         );
     }
