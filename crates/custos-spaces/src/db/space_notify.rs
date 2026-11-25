@@ -51,23 +51,64 @@ pub async fn count_active_registrations(
     .await
 }
 
+/// How long a lapsed registration that was never sent its expiry notice is kept. Within it, the
+/// next update still owes the syncer that notice; past it, the row is pruned (the same 72 h the
+/// syncer-notice retries run for).
+const UNNOTIFIED_LAPSE_RETENTION: &str = "-72 hours";
+
+/// Delete a space's registrations that lapsed more than 72 h ago without their expiry notice
+/// being claimed. A claimed one is removed when its notice is delivered or abandoned, never here.
+/// Run before each new registration, so a space's dead rows stay bounded by the 72 h window.
+pub async fn prune_lapsed_registrations(
+    pool: &SqlitePool,
+    space_uri: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM space_notify_registrations \
+         WHERE space_uri = ? AND expiry_notified = 0 AND expires_at <= datetime('now', ?)",
+    )
+    .bind(space_uri)
+    .bind(UNNOTIFIED_LAPSE_RETENTION)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// What [`put_registration`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PutRegistration {
+    /// Recorded, or renewed.
+    Written,
+    /// A new registration, refused: the space already holds `cap` active ones.
+    Full,
+    /// Nothing written: the space is unknown or deleted.
+    SpaceGone,
+}
+
 /// Record or renew a registration, expiring at `expires_at` (unix seconds). Renewal clears
 /// `expiry_notified`, so a later lapse is owed its own notice.
 ///
-/// Checked against the space in the same statement: returns `false`, writing nothing, when the
-/// space is unknown or deleted, so a registration can't outlive a concurrent deletion.
+/// One statement, so its checks are atomic with the write: the space must exist undeleted (a
+/// registration can't outlive a concurrent deletion), and a *new* registration is written only
+/// while the space holds fewer than `cap` active ones. Renewing a held registration always
+/// succeeds. A caller's earlier count is only a cheap pre-check; this is the cap.
 pub async fn put_registration(
     pool: &SqlitePool,
     space_uri: &str,
     registration: &Registration,
     expires_at: u64,
-) -> Result<bool, sqlx::Error> {
+    cap: i64,
+) -> Result<PutRegistration, sqlx::Error> {
     let expires_at = i64::try_from(expires_at).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
     let written = sqlx::query(
         "INSERT INTO space_notify_registrations \
          (space_uri, endpoint, token, expires_at, expiry_notified) \
-         SELECT uri, ?, ?, datetime(?, 'unixepoch'), 0 FROM spaces \
-         WHERE uri = ? AND deleted_at IS NULL \
+         SELECT uri, ?1, ?2, datetime(?3, 'unixepoch'), 0 FROM spaces \
+         WHERE uri = ?4 AND deleted_at IS NULL AND ( \
+             EXISTS (SELECT 1 FROM space_notify_registrations \
+                     WHERE space_uri = ?4 AND endpoint = ?1 AND token = ?2) \
+             OR (SELECT COUNT(*) FROM space_notify_registrations \
+                 WHERE space_uri = ?4 AND expires_at > datetime('now')) < ?5) \
          ON CONFLICT (space_uri, endpoint, token) \
          DO UPDATE SET expires_at = excluded.expires_at, expiry_notified = 0",
     )
@@ -75,9 +116,23 @@ pub async fn put_registration(
     .bind(&registration.token)
     .bind(expires_at)
     .bind(space_uri)
+    .bind(cap)
     .execute(pool)
     .await?;
-    Ok(written.rows_affected() > 0)
+    if written.rows_affected() > 0 {
+        return Ok(PutRegistration::Written);
+    }
+    let live: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM spaces WHERE uri = ? AND deleted_at IS NULL)",
+    )
+    .bind(space_uri)
+    .fetch_one(pool)
+    .await?;
+    Ok(if live {
+        PutRegistration::Full
+    } else {
+        PutRegistration::SpaceGone
+    })
 }
 
 /// Withdraw a registration. Idempotent.

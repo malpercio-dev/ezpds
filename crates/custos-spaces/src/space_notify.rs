@@ -525,11 +525,16 @@ mod tests {
 
     /// Register `(endpoint, token)` until `expires_at`.
     async fn register(state: &CoreState, endpoint: &str, token: &str, expires_at: u64) {
-        let written =
-            put_registration(&state.db, SPACE, &registration(endpoint, token), expires_at)
-                .await
-                .unwrap();
-        assert!(written);
+        let written = put_registration(
+            &state.db,
+            SPACE,
+            &registration(endpoint, token),
+            expires_at,
+            MAX_REGISTRATIONS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(written, crate::db::space_notify::PutRegistration::Written);
     }
 
     fn notify_ok(lxm: &str) -> Mock {

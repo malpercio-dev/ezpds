@@ -187,8 +187,18 @@ pub async fn authorize_space_sync(
     }
 
     // Only a new registration is confirmed, and only one that fits under the cap. A known one,
-    // lapsed or not, is renewed as it stands.
+    // lapsed or not, is renewed as it stands. The count here only spares a full space the
+    // outbound call; the cap itself is enforced atomically by `put_registration`.
+    let too_many = || {
+        ApiError::new(
+            ErrorCode::TooManyRegistrations,
+            "this space holds its maximum of notification registrations",
+        )
+    };
     if let Some(registration) = &registration {
+        crate::db::space_notify::prune_lapsed_registrations(&state.db, &space.uri)
+            .await
+            .map_err(internal)?;
         let known =
             crate::db::space_notify::registration_exists(&state.db, &space.uri, registration)
                 .await
@@ -198,10 +208,7 @@ pub async fn authorize_space_sync(
                 .await
                 .map_err(internal)?;
             if active >= crate::space_notify::MAX_REGISTRATIONS {
-                return Err(ApiError::new(
-                    ErrorCode::TooManyRegistrations,
-                    "this space holds its maximum of notification registrations",
-                ));
+                return Err(too_many());
             }
             crate::space_notify::confirm_registration(&state, &space, registration).await?;
         }
@@ -232,19 +239,25 @@ pub async fn authorize_space_sync(
     let mut space_rev = row.last_space_rev;
     if let Some(registration) = &registration {
         // Renewed by each authorization, and lapsing with this credential, no grace period.
-        let written = crate::db::space_notify::put_registration(
+        use crate::db::space_notify::PutRegistration;
+        match crate::db::space_notify::put_registration(
             &state.db,
             &space.uri,
             registration,
             now + SPACE_CREDENTIAL_TTL_SECS,
+            crate::space_notify::MAX_REGISTRATIONS,
         )
         .await
-        .map_err(internal)?;
-        if !written {
-            return Err(ApiError::new(
-                ErrorCode::SpaceDeleted,
-                "this space has been deleted",
-            ));
+        .map_err(internal)?
+        {
+            PutRegistration::Written => {}
+            PutRegistration::Full => return Err(too_many()),
+            PutRegistration::SpaceGone => {
+                return Err(ApiError::new(
+                    ErrorCode::SpaceDeleted,
+                    "this space has been deleted",
+                ))
+            }
         }
         // Read after registering, so any update past this revision is notified.
         space_rev = crate::db::spaces::get_space(&state.db, &space.uri)

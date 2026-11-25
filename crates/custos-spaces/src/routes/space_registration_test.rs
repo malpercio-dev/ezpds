@@ -15,7 +15,10 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::auth::space::unix_now;
-use crate::db::space_notify::{put_registration, registrations_for_space, Registration};
+use crate::db::space_notify::{
+    put_registration, registrations_for_space, PutRegistration, Registration,
+};
+use crate::space_notify::MAX_REGISTRATIONS;
 use crate::space_record_write::{
     apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
 };
@@ -229,14 +232,8 @@ async fn the_cap_refuses_a_new_registration_but_not_a_renewal() {
     let server = syncer().await;
     let endpoint = endpoint(&server);
     let exp = unix_now().unwrap() + 600;
-    for i in 0..crate::space_notify::MAX_REGISTRATIONS {
-        let registration = Registration {
-            endpoint: endpoint.clone(),
-            token: format!("held-{i}"),
-        };
-        assert!(put_registration(&state.db, SPACE, &registration, exp)
-            .await
-            .unwrap());
+    for i in 0..MAX_REGISTRATIONS {
+        hold(&state, &endpoint, &format!("held-{i}"), exp).await;
     }
 
     let (status, body) = send(&state, authorize(&endpoint, "new")).await;
@@ -248,6 +245,89 @@ async fn the_cap_refuses_a_new_registration_but_not_a_renewal() {
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
+/// The cap holds under concurrency. At one below it, several new registrations all pass the
+/// pre-check while their confirmations are in flight, and exactly one is written.
+#[tokio::test]
+async fn concurrent_registrations_at_the_last_slot_admit_exactly_one() {
+    let state = setup(true).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CONFIRM))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "challenge": body["challenge"] }))
+                .set_delay(Duration::from_millis(200))
+        })
+        .mount(&server)
+        .await;
+    let endpoint = endpoint(&server);
+    let exp = unix_now().unwrap() + 600;
+    for i in 0..MAX_REGISTRATIONS - 1 {
+        hold(&state, &endpoint, &format!("held-{i}"), exp).await;
+    }
+
+    let attempts = (0..8).map(|i| send(&state, authorize(&endpoint, &format!("racer-{i}"))));
+    let outcomes = futures_util::future::join_all(attempts).await;
+
+    assert!(
+        calls(&server, CONFIRM).await.len() > 1,
+        "the race was run: more than one request reached the confirmation"
+    );
+    let admitted = outcomes
+        .iter()
+        .filter(|(status, _)| *status == StatusCode::OK)
+        .count();
+    assert_eq!(admitted, 1, "{outcomes:?}");
+    for (status, body) in outcomes.iter().filter(|(s, _)| *s != StatusCode::OK) {
+        assert_eq!(*status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "TooManyRegistrations", "{body}");
+    }
+    let active = crate::db::space_notify::count_active_registrations(&state.db, SPACE)
+        .await
+        .unwrap();
+    assert_eq!(active, MAX_REGISTRATIONS);
+}
+
+/// Lapsed rows don't pile up. A new registration first prunes those that lapsed more than 72 h
+/// ago without their expiry notice being claimed. A more recent lapse is still owed that notice,
+/// and a claimed one is removed with its notice, so both stay.
+#[tokio::test]
+async fn a_registration_prunes_long_lapsed_rows() {
+    let state = setup(true).await;
+    let server = syncer().await;
+    let endpoint = endpoint(&server);
+    let now = unix_now().unwrap();
+    let long_ago = now - 73 * 60 * 60;
+    hold(&state, &endpoint, "stale", long_ago).await;
+    hold(&state, &endpoint, "stale-claimed", long_ago).await;
+    hold(&state, &endpoint, "recent", now - 60 * 60).await;
+    sqlx::query("UPDATE space_notify_registrations SET expiry_notified = 1 WHERE token = ?")
+        .bind("stale-claimed")
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    let (status, body) = send(&state, authorize(&endpoint, "new")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let mut tokens: Vec<String> = rows(&state).await.into_iter().map(|r| r.token).collect();
+    tokens.sort();
+    assert_eq!(tokens, ["new", "recent", "stale-claimed"]);
+}
+
+/// Hold `(endpoint, token)` until `exp`, as a past authorization would have.
+async fn hold(state: &CoreState, endpoint: &str, token: &str, exp: u64) {
+    let registration = Registration {
+        endpoint: endpoint.to_string(),
+        token: token.to_string(),
+    };
+    let written = put_registration(&state.db, SPACE, &registration, exp, MAX_REGISTRATIONS)
+        .await
+        .unwrap();
+    assert_eq!(written, PutRegistration::Written);
+}
+
 /// A refused authorization withdraws the registration it carries, so a syncer that has lost
 /// access stops being notified.
 #[tokio::test]
@@ -255,13 +335,7 @@ async fn a_refusal_withdraws_the_registration() {
     let state = setup(false).await;
     let server = syncer().await;
     let endpoint = endpoint(&server);
-    let registration = Registration {
-        endpoint: endpoint.clone(),
-        token: "t".to_string(),
-    };
-    put_registration(&state.db, SPACE, &registration, unix_now().unwrap() + 600)
-        .await
-        .unwrap();
+    hold(&state, &endpoint, "t", unix_now().unwrap() + 600).await;
 
     // No delegation token, and the space isn't public.
     let (status, body) = send(&state, authorize(&endpoint, "t")).await;
