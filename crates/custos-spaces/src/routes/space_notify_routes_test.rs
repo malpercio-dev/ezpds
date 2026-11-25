@@ -1,18 +1,16 @@
 // pattern: Imperative Shell
 //
-// End-to-end coverage of the space-host notification surface (listRepos, registerNotify,
-// unregisterNotify, notifyWrite) plus the two effects that hang off the write path: the writer
-// set a local commit records, and the *absence* of any registration when a write lands in a
-// foreign authority's space (the repo host reports it directly; see `space_notify`'s tests).
-// Driven through the real router, so the lexicon layer, the space auth seam and the store are
-// all in the path — cross-route journeys live here because routes may not import one another
-// (the `space_routes_test.rs` convention).
+// End-to-end coverage of the space-host notification surface (listRepos, notifyRepoUpdate,
+// notifyCredentialsRevoked) plus the two effects that hang off the write path: the writer set a
+// local commit records, and the *absence* of any registration when a write lands in a foreign
+// authority's space (the repo host reports it directly; see `space_notify`'s tests). Driven
+// through the real router, so the lexicon layer, the space auth seam and the store are all in
+// the path — cross-route journeys live here because routes may not import one another (the
+// `space_routes_test.rs` convention). Registration through `authorizeSpaceSync` is tested with
+// that route.
 //
 // Delivery itself is never exercised, and cannot be by accident: `seed_undeliverable` seeds a
-// DID document with no service endpoint at all, and the one seed that does carry an endpoint
-// points it at a `.invalid` host (RFC 2606 — guaranteed never to resolve). A test that starts
-// writing while a subscriber is registered therefore still leaves no packet, rather than
-// depending on a convention someone has to remember.
+// DID document with no service endpoint at all, and no test here registers a syncer.
 
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
@@ -230,85 +228,6 @@ async fn list_repos_resumes_from_a_space_rev_cursor() {
     );
 }
 
-// ── registerNotify / unregisterNotify ───────────────────────────────────────
-
-/// A syncer subscribes, gets an expiry, is fanned out to on the next write, and can withdraw.
-#[tokio::test]
-async fn register_and_unregister_notify_round_trip() {
-    let state = setup().await;
-    let alice = access_jwt(&state.jwt_secret, ALICE);
-    let kp = crypto::generate_p256_keypair().unwrap();
-    seed_syncer_document(&state, &kp).await;
-    let service = format!("{SYNCER}#atproto_space_syncer");
-
-    let (status, body) = send(
-        &state,
-        post(
-            "com.atproto.space.registerNotify",
-            &alice,
-            serde_json::json!({ "space": SPACE, "service": service }),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let expires_at = body["expiresAt"].as_str().expect("expiresAt");
-    assert!(
-        expires_at.ends_with('Z') && expires_at.contains('T'),
-        "{body}"
-    );
-
-    let subscribers = crate::db::space_notify::subscribers_for_space(&state.db, SPACE, 10)
-        .await
-        .unwrap();
-    assert_eq!(subscribers, vec![service.clone()]);
-
-    // Withdrawal, and its idempotent repeat.
-    for _ in 0..2 {
-        let (status, body) = send(
-            &state,
-            post(
-                "com.atproto.space.unregisterNotify",
-                &alice,
-                serde_json::json!({ "space": SPACE, "service": service }),
-            ),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-    }
-    let subscribers = crate::db::space_notify::subscribers_for_space(&state.db, SPACE, 10)
-        .await
-        .unwrap();
-    assert!(subscribers.is_empty());
-}
-
-/// A service identifier that resolves to no delivery endpoint is refused at registration, rather
-/// than becoming a subscription that silently never delivers.
-#[tokio::test]
-async fn register_notify_refuses_an_unresolvable_service() {
-    let state = setup().await;
-    let alice = access_jwt(&state.jwt_secret, ALICE);
-    let kp = crypto::generate_p256_keypair().unwrap();
-    seed_undeliverable(&state, SYNCER, &kp).await;
-
-    let (status, body) = send(
-        &state,
-        post(
-            "com.atproto.space.registerNotify",
-            &alice,
-            serde_json::json!({ "space": SPACE, "service": SYNCER }),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["error"], "ServiceNotResolvable");
-    assert!(
-        crate::db::space_notify::subscribers_for_space(&state.db, SPACE, 10)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-}
-
 /// Every space-host method is answerable only by the space's authority. A holder of a perfectly
 /// valid credential for a *foreign* authority's space — the one caller the auth seam does admit,
 /// since a credential says nothing about who hosts the repos — gets `SpaceNotFound`: the same
@@ -336,34 +255,13 @@ async fn space_host_methods_refuse_a_foreign_authoritys_space() {
         unix_now().unwrap(),
     );
 
-    for (method, request) in [
-        (
-            "com.atproto.space.listRepos",
-            signed_get(&list_repos_query(FOREIGN_SPACE), &credential, &key),
-        ),
-        (
-            "com.atproto.space.registerNotify",
-            signed_post(
-                "com.atproto.space.registerNotify",
-                &credential,
-                &key,
-                serde_json::json!({ "space": FOREIGN_SPACE, "service": SYNCER }),
-            ),
-        ),
-        (
-            "com.atproto.space.unregisterNotify",
-            signed_post(
-                "com.atproto.space.unregisterNotify",
-                &credential,
-                &key,
-                serde_json::json!({ "space": FOREIGN_SPACE, "service": SYNCER }),
-            ),
-        ),
-    ] {
-        let (status, body) = send(&state, request).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{method}: {body}");
-        assert_eq!(body["error"], "SpaceNotFound", "{method}");
-    }
+    let (status, body) = send(
+        &state,
+        signed_get(&list_repos_query(FOREIGN_SPACE), &credential, &key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "SpaceNotFound");
 }
 
 /// A credential-authed GET, addressed to the space's authority as every space-host method is.
@@ -375,44 +273,6 @@ fn signed_get(method_and_query: &str, credential: &str, key: &SpaceSigKey) -> Re
         .unwrap()
         .extend(key.credential_headers(credential, FOREIGN));
     b.body(Body::empty()).unwrap()
-}
-
-/// A credential-authed POST, addressed like [`signed_get`].
-fn signed_post(
-    method: &str,
-    credential: &str,
-    key: &SpaceSigKey,
-    body: serde_json::Value,
-) -> Request<Body> {
-    let mut b = Request::builder()
-        .method(http::Method::POST)
-        .uri(format!("/xrpc/{method}"))
-        .header("Content-Type", "application/json");
-    b.headers_mut()
-        .unwrap()
-        .extend(key.credential_headers(credential, FOREIGN));
-    b.body(Body::from(body.to_string())).unwrap()
-}
-
-/// A syncer DID document that *does* carry a service endpoint, so `registerNotify`'s
-/// resolvability check passes — pointed at an RFC 2606 `.invalid` host, which by definition has
-/// no DNS answer, so a fan-out that reached delivery would still never leave the machine.
-async fn seed_syncer_document(state: &CoreState, kp: &crypto::P256Keypair) {
-    let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
-    seed_did_document(
-        &state.db,
-        SYNCER,
-        serde_json::json!({
-            "id": SYNCER,
-            "verificationMethod": [
-                { "id": format!("{SYNCER}#atproto"), "type": "Multikey", "controller": SYNCER, "publicKeyMultibase": multibase },
-            ],
-            "service": [
-                { "id": format!("{SYNCER}#atproto_space_syncer"), "type": "AtprotoSpaceService", "serviceEndpoint": "https://syncer.invalid" },
-            ],
-        }),
-    )
-    .await;
 }
 
 // ── repo-host reporting ─────────────────────────────────────────────────────
@@ -441,20 +301,20 @@ async fn a_write_into_a_foreign_space_registers_nothing() {
     );
 }
 
-// ── notifyWrite ─────────────────────────────────────────────────────────────
+// ── notifyRepoUpdate ─────────────────────────────────────────────────────────────
 
 /// A repo host reports its user's write; the authority records it in the writer set, so a repo
 /// that lives nowhere near this host still shows up in `listRepos`.
 #[tokio::test]
-async fn notify_write_records_a_foreign_repo_in_the_writer_set() {
+async fn notify_repo_update_records_a_foreign_repo_in_the_writer_set() {
     let state = setup().await;
     let alice = access_jwt(&state.jwt_secret, ALICE);
-    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
+    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyRepoUpdate").await;
 
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.space.notifyWrite",
+            "com.atproto.space.notifyRepoUpdate",
             &token,
             notify_body(SPACE, &carol, "3kabcdefghij2"),
         ),
@@ -470,7 +330,7 @@ async fn notify_write_records_a_foreign_repo_in_the_writer_set() {
 /// Without `publicWrite`, a non-member's report is acknowledged but never tracked; granting the
 /// member's `write` bit is what admits it.
 #[tokio::test]
-async fn notify_write_from_a_non_member_is_ignored_without_public_write() {
+async fn notify_repo_update_from_a_non_member_is_ignored_without_public_write() {
     let state = setup().await;
     let alice = access_jwt(&state.jwt_secret, ALICE);
     let (status, body) = send(
@@ -486,10 +346,10 @@ async fn notify_write_from_a_non_member_is_ignored_without_public_write() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
+    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyRepoUpdate").await;
     let notify = || {
         post(
-            "com.atproto.space.notifyWrite",
+            "com.atproto.space.notifyRepoUpdate",
             &token,
             notify_body(SPACE, &carol, "3kabcdefghij2"),
         )
@@ -522,12 +382,12 @@ async fn notify_write_from_a_non_member_is_ignored_without_public_write() {
 /// A report that does not advance the repo's stored `repoRev` is acknowledged and ignored: the
 /// writer row keeps the newer rev and the space revision does not move.
 #[tokio::test]
-async fn notify_write_ignores_a_non_increasing_rev() {
+async fn notify_repo_update_ignores_a_non_increasing_rev() {
     let state = setup().await;
-    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
+    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyRepoUpdate").await;
     let report = |rev: &'static str| {
         post(
-            "com.atproto.space.notifyWrite",
+            "com.atproto.space.notifyRepoUpdate",
             &token,
             notify_body(SPACE, &carol, rev),
         )
@@ -560,9 +420,9 @@ async fn notify_write_ignores_a_non_increasing_rev() {
 /// A taken-down space stops acting as space host: a report about it is acknowledged and not
 /// recorded.
 #[tokio::test]
-async fn notify_write_records_nothing_for_a_taken_down_space() {
+async fn notify_repo_update_records_nothing_for_a_taken_down_space() {
     let state = setup().await;
-    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
+    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyRepoUpdate").await;
     crate::db::spaces::set_space_takedown(&state.db, SPACE, true)
         .await
         .unwrap();
@@ -570,7 +430,7 @@ async fn notify_write_records_nothing_for_a_taken_down_space() {
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.space.notifyWrite",
+            "com.atproto.space.notifyRepoUpdate",
             &token,
             notify_body(SPACE, &carol, "3kabcdefghij2"),
         ),
@@ -588,15 +448,15 @@ async fn notify_write_records_nothing_for_a_taken_down_space() {
 /// A `repoRev` ahead of the permitted clock skew is refused rather than pinned into the writer
 /// set, where it would sort ahead of every honest update.
 #[tokio::test]
-async fn notify_write_refuses_a_future_rev() {
+async fn notify_repo_update_refuses_a_future_rev() {
     let state = setup().await;
-    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
+    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyRepoUpdate").await;
     let future = "j222222222222".to_string();
 
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.space.notifyWrite",
+            "com.atproto.space.notifyRepoUpdate",
             &token,
             notify_body(SPACE, &carol, &future),
         ),
@@ -606,26 +466,28 @@ async fn notify_write_refuses_a_future_rev() {
     assert_eq!(body["error"], "FutureRev");
 }
 
-/// The token must be issued by one of the two parties entitled to speak about the write: the
-/// repo whose head moved, or the space's authority forwarding it. A third party is refused even
-/// with a perfectly valid service-auth token.
+/// The token must be issued by the repo whose head moved. Anyone else is refused even with a
+/// perfectly valid service-auth token, the space's own authority included: syncers hear from it
+/// through `notifySpaceUpdate`, never through this method.
 #[tokio::test]
-async fn notify_write_refuses_an_unrelated_issuer() {
+async fn notify_repo_update_refuses_an_issuer_other_than_the_repo() {
     let state = setup().await;
-    let (carol, _) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
-    // Bob's token is valid, but the write it reports is Carol's.
-    let bob = service_auth_for(&state, BOB, "com.atproto.space.notifyWrite").await;
+    let (carol, _) = foreign_repo_token(&state, "com.atproto.space.notifyRepoUpdate").await;
 
-    let (status, body) = send(
-        &state,
-        post(
-            "com.atproto.space.notifyWrite",
-            &bob,
-            notify_body(SPACE, &carol, "3kabcdefghij2"),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    // Each token is valid, but the write it reports is Carol's.
+    for issuer in [BOB, ALICE] {
+        let token = service_auth_for(&state, issuer, "com.atproto.space.notifyRepoUpdate").await;
+        let (status, body) = send(
+            &state,
+            post(
+                "com.atproto.space.notifyRepoUpdate",
+                &token,
+                notify_body(SPACE, &carol, "3kabcdefghij2"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{issuer}: {body}");
+    }
     assert!(
         crate::db::space_notify::list_writers(&state.db, SPACE, None, 10)
             .await
@@ -640,7 +502,7 @@ fn notify_body(space: &str, repo: &str, rev: &str) -> serde_json::Value {
         "space": space,
         "repo": repo,
         "repoRev": rev,
-        "hash": { "$bytes": base64::engine::general_purpose::STANDARD.encode([7u8; 32]) },
+        "data": { "$bytes": base64::engine::general_purpose::STANDARD.encode([7u8; 32]) },
     })
 }
 
@@ -718,7 +580,7 @@ async fn deleting_a_space_drops_its_writer_set() {
     assert_eq!(body["error"], "SpaceNotFound");
 }
 
-// ── notifyCredentialRevoked ─────────────────────────────────────────────────
+// ── notifyCredentialsRevoked ─────────────────────────────────────────────────
 
 /// A foreign authority with a resolvable key, a space of its own Alice has written into (so the
 /// space is known here), and a credential it issued for that space.
@@ -756,7 +618,7 @@ fn revoke_token(signer: &repo_engine::CommitSigner, iss: &str, aud: &str) -> Str
         |b| signer.sign(b),
         iss,
         aud,
-        Some("com.atproto.space.notifyCredentialRevoked"),
+        Some("com.atproto.space.notifyCredentialsRevoked"),
         now,
         now + 60,
     )
@@ -789,7 +651,7 @@ async fn a_revoked_credential_is_refused_on_read() {
         let (status, resp) = send(
             &state,
             post(
-                "com.atproto.space.notifyCredentialRevoked",
+                "com.atproto.space.notifyCredentialsRevoked",
                 &token,
                 body.clone(),
             ),
@@ -815,7 +677,7 @@ async fn a_revoked_credential_is_refused_on_read() {
 
 /// Only the space's authority may revoke its credentials.
 #[tokio::test]
-async fn notify_credential_revoked_refuses_a_non_authority_issuer() {
+async fn notify_credentials_revoked_refuses_a_non_authority_issuer() {
     let state = setup().await;
     let (_, key, credential) = foreign_space_credential(&state).await;
     let bob_kp = crypto::generate_p256_keypair().unwrap();
@@ -825,7 +687,7 @@ async fn notify_credential_revoked_refuses_a_non_authority_issuer() {
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.space.notifyCredentialRevoked",
+            "com.atproto.space.notifyCredentialsRevoked",
             &revoke_token(&bob, BOB, ALICE),
             serde_json::json!({ "space": FOREIGN_SPACE, "credentials": [credential_jti(&credential)] }),
         ),
@@ -839,13 +701,13 @@ async fn notify_credential_revoked_refuses_a_non_authority_issuer() {
 /// The audience must be this server or an account it hosts; a token addressed elsewhere is
 /// refused before any key is resolved.
 #[tokio::test]
-async fn notify_credential_revoked_refuses_a_foreign_audience() {
+async fn notify_credentials_revoked_refuses_a_foreign_audience() {
     let state = setup().await;
     let (signer, _, credential) = foreign_space_credential(&state).await;
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.space.notifyCredentialRevoked",
+            "com.atproto.space.notifyCredentialsRevoked",
             &revoke_token(&signer, FOREIGN, SYNCER),
             serde_json::json!({ "space": FOREIGN_SPACE, "credentials": [credential_jti(&credential)] }),
         ),
@@ -856,7 +718,7 @@ async fn notify_credential_revoked_refuses_a_foreign_audience() {
 
 /// A revocation for a space this host holds nothing of is acknowledged and stores nothing.
 #[tokio::test]
-async fn notify_credential_revoked_for_an_unknown_space_stores_nothing() {
+async fn notify_credentials_revoked_for_an_unknown_space_stores_nothing() {
     let state = setup().await;
     let foreign_kp = crypto::generate_p256_keypair().unwrap();
     seed_undeliverable(&state, FOREIGN, &foreign_kp).await;
@@ -865,7 +727,7 @@ async fn notify_credential_revoked_for_an_unknown_space_stores_nothing() {
     let (status, body) = send(
         &state,
         post(
-            "com.atproto.space.notifyCredentialRevoked",
+            "com.atproto.space.notifyCredentialsRevoked",
             &revoke_token(&signer, FOREIGN, &state.config.resolve_server_did()),
             serde_json::json!({ "space": FOREIGN_SPACE, "credentials": ["anything"] }),
         ),

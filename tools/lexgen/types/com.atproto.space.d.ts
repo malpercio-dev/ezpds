@@ -297,12 +297,6 @@ export type ListWritersOutput = {
   repos: Array<DefsRepoWrite | DefsRepoRemoved | { $type: string }>;
   cursor?: string;
 };
-export type NotifyCredentialRevokedParams = undefined;
-export type NotifyCredentialRevokedInput = {
-  space: string;
-  credentials: Array<string>;
-};
-export type NotifyCredentialRevokedOutput = undefined;
 export type NotifyCredentialsRevokedParams = undefined;
 export type NotifyCredentialsRevokedInput = {
   space: string;
@@ -317,11 +311,6 @@ export type NotifyRepoUpdateInput = {
   data: { $bytes: string };
 };
 export type NotifyRepoUpdateOutput = undefined;
-export type NotifySpaceDeletedParams = undefined;
-export type NotifySpaceDeletedInput = {
-  space: string;
-};
-export type NotifySpaceDeletedOutput = undefined;
 export type NotifySpaceUpdateParams = undefined;
 export type NotifySpaceUpdateInput = {
   space: string;
@@ -336,16 +325,6 @@ export type NotifySpaceUpdateRegistrationExpired = {
   $type?: "com.atproto.space.notifySpaceUpdate#registrationExpired";
   spaceRev: string;
 };
-export type NotifyWriteParams = undefined;
-export type NotifyWriteInput = {
-  space: string;
-  repo: string;
-  repoRev: string;
-  hash: { $bytes: string };
-  spaceRev?: string;
-  prevSpaceRev?: string;
-};
-export type NotifyWriteOutput = undefined;
 export type Policy = {
   $type: "com.atproto.space.policy";
   policy: com_atproto_personalspace.Policy | com_atproto_memberspace.Policy | com_atproto_managedspace.Policy | { $type: string };
@@ -364,26 +343,12 @@ export type PutRecordOutput = {
   cid: string;
   validationStatus?: "valid" | "unknown" | (string & {});
 };
-export type RegisterNotifyParams = undefined;
-export type RegisterNotifyInput = {
-  space: string;
-  service: string;
-};
-export type RegisterNotifyOutput = {
-  expiresAt: string;
-};
 export type RemoveWriterParams = undefined;
 export type RemoveWriterInput = {
   space: string;
   repo: string;
 };
 export type RemoveWriterOutput = undefined;
-export type UnregisterNotifyParams = undefined;
-export type UnregisterNotifyInput = {
-  space: string;
-  service: string;
-};
-export type UnregisterNotifyOutput = undefined;
 export type UpdateSpaceParams = undefined;
 export type UpdateSpaceInput = {
   space: string;

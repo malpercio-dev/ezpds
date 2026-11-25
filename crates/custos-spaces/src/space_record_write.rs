@@ -88,9 +88,10 @@ pub struct SpaceWriteResult {
 pub struct SpaceCommitOutcome {
     /// The repo's rev after this commit.
     ///
-    /// `rev` and `hash` together are what `notifyWrite` carries on the wire, but the fan-out is
-    /// spawned from inside this module off the local values, before this struct exists — so the
-    /// wire does not read them from here. Both are read only by tests.
+    /// `rev` and `hash` together are what `notifyRepoUpdate` carries on the wire (as `repoRev`
+    /// and `data`), but the fan-out is spawned from inside this module off the local values,
+    /// before this struct exists — so the wire does not read them from here. Both are read only
+    /// by tests.
     #[allow(dead_code)]
     pub rev: String,
     /// sha256 of the repo's LtHash state — the commit `hash` the wire carries. Read only by the

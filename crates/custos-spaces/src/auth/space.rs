@@ -27,7 +27,7 @@
 //! * **The read seam** — [`authenticate_space_read`] accepts a covering OAuth grant on the
 //!   caller's *own* repo *or* a signature-bound space credential for any repo in the space,
 //!   never a bearer credential. [`authenticate_space_access`] is the same pair of arms for a
-//!   space-host method that names a space but no repo (`listRepos`, `registerNotify`), and
+//!   space-host method that names a space but no repo (`listRepos`), and
 //!   [`authenticate_space_authority`] is the OAuth-only arm every space management method *on
 //!   an existing space* takes (`updateSpace`, `getSpace`, the memberspace methods): grant check,
 //!   then "the caller *is* the authority" (`NotAuthorized`). `createSpace` is the exception — a
@@ -104,7 +104,7 @@ pub const SPACE_CREDENTIAL_MAX_TTL_SECS: u64 = 60 * 60;
 /// Clock skew tolerated on an inbound credential's `iat` (the reference's).
 const CLOCK_SKEW_SECS: u64 = 5;
 
-/// How long a `notifyCredentialRevoked` revocation is kept: past the last instant any credential
+/// How long a `notifyCredentialsRevoked` revocation is kept: past the last instant any credential
 /// carrying the jti could verify (issued up to the skew ahead, living at most the maximum TTL).
 pub const CREDENTIAL_REVOCATION_RETENTION_SECS: u64 =
     SPACE_CREDENTIAL_MAX_TTL_SECS + CLOCK_SKEW_SECS;
@@ -243,8 +243,8 @@ pub async fn authenticate_space_read(
     Ok(SpaceReader::Credential(credential))
 }
 
-/// Authenticate access to a space *itself* on the space host (no repo named — `listRepos`,
-/// `registerNotify`, `unregisterNotify`).
+/// Authenticate access to a space *itself* on the space host (no repo named — `listRepos` is
+/// so far the only one).
 ///
 /// The same two arms as [`authenticate_space_read`]: an account credential must carry a
 /// `read_self` grant for the space *and* belong to the space's authority (the reference's
@@ -707,7 +707,7 @@ pub struct VerifiedCredential {
 /// mismatch — a foreign authority may be ES256K, which the shared core accepts); `sub` a space
 /// anchored on `iss`; `exp` in the future, `iat` not, and `exp − iat` within
 /// [`SPACE_CREDENTIAL_MAX_TTL_SECS`]; a `cnf.kid`; and a `jti` its authority has not revoked
-/// through `notifyCredentialRevoked`.
+/// through `notifyCredentialsRevoked`.
 ///
 /// Only [`authenticate_space_credential`] may call this — the proof-of-possession check that
 /// makes a verified credential usable lives there; this function is private to hold that.

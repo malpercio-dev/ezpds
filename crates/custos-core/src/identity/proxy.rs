@@ -304,6 +304,31 @@ pub async fn validate_proxy_endpoint(endpoint: &str, allow_loopback: bool) -> Re
     }
 }
 
+/// Validate the notification endpoint a syncer hands `authorizeSpaceSync`, once, at registration.
+///
+/// Stricter than [`validate_proxy_endpoint`], as the reference fetches it (`allowIpHost: false`):
+/// `https` only (`http` too under the test-only `allow_loopback`), no userinfo, query or fragment,
+/// and a **domain** host. An IP literal is refused whatever its address, so every address the
+/// endpoint reaches is one [`SsrfResolver`] applied [`ip_allowed`] to at connect time.
+pub fn validate_notify_endpoint(endpoint: &str, allow_loopback: bool) -> Result<(), ApiError> {
+    let bad = || {
+        ApiError::new(
+            ErrorCode::InvalidRequest,
+            "notify endpoint must be an https URL with a domain host",
+        )
+    };
+    let url = reqwest::Url::parse(endpoint).map_err(|_| bad())?;
+    let scheme_ok = url.scheme() == "https" || (allow_loopback && url.scheme() == "http");
+    let shape_ok = url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none();
+    match url.host() {
+        Some(url::Host::Domain(_)) if scheme_ok && shape_ok => Ok(()),
+        _ => Err(bad()),
+    }
+}
+
 /// Whether `ip` may be connected to for a caller-influenced target: a public, routable address, or
 /// loopback when the test-only relaxation is in effect. Shared by [`validate_proxy_endpoint`]'s
 /// IP-literal branch, [`SsrfResolver`]'s connect-time domain check, and
@@ -414,9 +439,42 @@ fn is_global_ipv6(ip: std::net::Ipv6Addr) -> bool {
 mod tests {
     use std::str::FromStr;
 
-    use super::{ip_allowed, resolve_atproto_proxy_target, validate_proxy_endpoint, SsrfResolver};
+    use super::{
+        ip_allowed, resolve_atproto_proxy_target, validate_notify_endpoint,
+        validate_proxy_endpoint, SsrfResolver,
+    };
     use crate::test_support::seed_did_document;
     use crate::test_support::test_state;
+
+    /// A notify endpoint is an https base URL on a domain host. Unlike a proxy target, an IP
+    /// literal is refused even when it is public, and `http` only passes the test relaxation.
+    #[test]
+    fn notify_endpoints_are_https_domains() {
+        for ok in [
+            "https://syncer.example.com",
+            "https://syncer.example.com:8443/base/",
+        ] {
+            assert!(validate_notify_endpoint(ok, false).is_ok(), "{ok}");
+        }
+        assert!(validate_notify_endpoint("http://localhost:1234", true).is_ok());
+        for bad in [
+            "http://syncer.example.com",
+            "https://1.2.3.4",
+            "https://[2606:4700::1]",
+            "https://user:pw@syncer.example.com",
+            "https://syncer.example.com/?q=1",
+            "https://syncer.example.com/#f",
+            "ftp://syncer.example.com",
+            "not a url",
+        ] {
+            let error = validate_notify_endpoint(bad, false).unwrap_err();
+            assert_eq!(error.status_code(), 400, "{bad}");
+        }
+        assert!(
+            validate_notify_endpoint("http://127.0.0.1:1234", true).is_err(),
+            "the test relaxation admits http, never an IP literal"
+        );
+    }
 
     // IP literals (not domain names) throughout: they exercise the exact same validation as a
     // resolved domain without depending on live DNS, keeping these tests hermetic and fast.

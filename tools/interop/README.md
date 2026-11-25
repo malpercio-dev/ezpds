@@ -261,7 +261,7 @@ and so stay manual:
 | Surface | Why it needs a host |
 |---|---|
 | client attestation (the positive `allowedApps` case, managedspace policies) | the authority resolves the caller's `client_id` **URL** to fetch its JWKS |
-| `registerNotify` → receive `notifyWrite` (acting as a syncer) | the space host POSTs to the syncer's endpoint |
+| `authorizeSpaceSync` with `notify` → `confirmRegistration`, then receive `notifySpaceUpdate` (acting as a syncer) | the space host POSTs to the syncer's https endpoint |
 | the alpha `@atproto` TS SDK as a client; the bulletin sample app | ship on atproto's `permissioned-data` branch and move weekly |
 
 `spaces-allowlist` covers the reachable half of the app perimeter: an `allowedApps` space

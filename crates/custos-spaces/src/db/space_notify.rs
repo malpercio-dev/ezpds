@@ -1,91 +1,174 @@
 // pattern: Imperative Shell
 
-//! The space-host notification tables: write-notification registrations
-//! (`space_notify_registrations`, V065) and the writer set (`space_writers`, V067).
+//! The space-host notification tables: notification registrations
+//! (`space_notify_registrations`, V081) and the writer set (`space_writers`, V067).
 //!
-//! Registrations are whole-space syncer subscriptions a space host stores for `registerNotify`
-//! (`repo_did = ''`, the sentinel the V065 primary key is built around). A repo host keeps no
-//! registration: it pushes `notifyWrite` straight to the authority (V074 removed the old
-//! per-repo auto-registration rows).
+//! A registration is a syncer's `(endpoint, token)` for one space, made through
+//! `authorizeSpaceSync` and expiring with the credential it came with. A repo host keeps no
+//! registration: it pushes `notifyRepoUpdate` straight to the authority.
 //!
-//! `subscriber_did` holds the full **service identifier** the wire carries — a DID with an
-//! optional `#fragment` naming the DID-document entry to deliver to. The bare DID (the service
-//! auth `aud`) is the part before the fragment.
-//!
-//! Expiry is enforced by the read query, not by a sweep: re-registering refreshes the existing
-//! row through the primary key, so the table grows with the *distinct subscriber* count — its
-//! live set — rather than accumulating dead rows.
+//! Expiry is enforced by the read query. Re-registering refreshes the row through its primary
+//! key. The token is stored as given, because every notice carries it; it is never logged.
 
 use sqlx::{Sqlite, SqlitePool};
 
-/// The `repo_did` every registration carries: the whole space. Empty rather than NULL because the
-/// column is part of the V065 primary key, and NULLs never compare equal, so a NULL would admit
-/// duplicate rows.
-const WHOLE_SPACE: &str = "";
+/// One syncer's registration for a space: where to deliver, and the token to present there.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Registration {
+    pub endpoint: String,
+    pub token: String,
+}
 
-/// Record (or renew) a whole-space registration, returning its new expiry. Re-registering an
-/// existing `(space, service)` extends the expiry, which is what `registerNotify` promises.
-pub async fn upsert_registration<'e, E>(
-    executor: E,
+/// Whether `(endpoint, token)` is registered for the space, lapsed or not. A known registration
+/// is renewed without being confirmed again.
+pub async fn registration_exists(
+    pool: &SqlitePool,
     space_uri: &str,
-    service: &str,
-    ttl_secs: i64,
-) -> Result<String, sqlx::Error>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
+    registration: &Registration,
+) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
-        "INSERT INTO space_notify_registrations \
-         (space_uri, subscriber_did, repo_did, created_at, expires_at) \
-         VALUES (?, ?, ?, datetime('now'), datetime('now', '+' || ? || ' seconds')) \
-         ON CONFLICT (space_uri, subscriber_did, repo_did) \
-         DO UPDATE SET expires_at = excluded.expires_at \
-         RETURNING expires_at",
+        "SELECT EXISTS (SELECT 1 FROM space_notify_registrations \
+         WHERE space_uri = ? AND endpoint = ? AND token = ?)",
     )
     .bind(space_uri)
-    .bind(service)
-    .bind(WHOLE_SPACE)
-    .bind(ttl_secs)
-    .fetch_one(executor)
+    .bind(&registration.endpoint)
+    .bind(&registration.token)
+    .fetch_one(pool)
     .await
 }
 
-/// Withdraw a whole-space registration. Idempotent — `unregisterNotify` succeeds either way.
-pub async fn delete_registration<'e, E>(
-    executor: E,
+/// How many of a space's registrations are still active.
+pub async fn count_active_registrations(
+    pool: &SqlitePool,
     space_uri: &str,
-    service: &str,
-) -> Result<(), sqlx::Error>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
-    sqlx::query(
-        "DELETE FROM space_notify_registrations \
-         WHERE space_uri = ? AND subscriber_did = ? AND repo_did = ?",
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM space_notify_registrations \
+         WHERE space_uri = ? AND expires_at > datetime('now')",
     )
     .bind(space_uri)
-    .bind(service)
-    .bind(WHOLE_SPACE)
-    .execute(executor)
+    .fetch_one(pool)
+    .await
+}
+
+/// How long a lapsed registration that was never sent its expiry notice is kept. Within it, the
+/// next update still owes the syncer that notice; past it, the row is pruned (the same 72 h the
+/// syncer-notice retries run for).
+const UNNOTIFIED_LAPSE_RETENTION: &str = "-72 hours";
+
+/// Delete a space's registrations that lapsed more than 72 h ago without their expiry notice
+/// being claimed. A claimed one is removed when its notice is delivered or abandoned, never here.
+/// Run before each new registration, so a space's dead rows stay bounded by the 72 h window.
+pub async fn prune_lapsed_registrations(
+    pool: &SqlitePool,
+    space_uri: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM space_notify_registrations \
+         WHERE space_uri = ? AND expiry_notified = 0 AND expires_at <= datetime('now', ?)",
+    )
+    .bind(space_uri)
+    .bind(UNNOTIFIED_LAPSE_RETENTION)
+    .execute(pool)
     .await?;
     Ok(())
 }
 
-/// Every unexpired subscriber to a space — the recipients of a forwarded `notifyWrite` and of
-/// `notifySpaceDeleted`. Ordered so a fan-out is deterministic; capped by `limit` so one space can
-/// never spawn an unbounded delivery burst.
-pub async fn subscribers_for_space(
+/// What [`put_registration`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PutRegistration {
+    /// Recorded, or renewed.
+    Written,
+    /// A new registration, refused: the space already holds `cap` active ones.
+    Full,
+    /// Nothing written: the space is unknown or deleted.
+    SpaceGone,
+}
+
+/// Record or renew a registration, expiring at `expires_at` (unix seconds). Renewal clears
+/// `expiry_notified`, so a later lapse is owed its own notice.
+///
+/// One statement, so its checks are atomic with the write: the space must exist undeleted (a
+/// registration can't outlive a concurrent deletion), and a *new* registration is written only
+/// while the space holds fewer than `cap` active ones. Renewing a held registration always
+/// succeeds. A caller's earlier count is only a cheap pre-check; this is the cap.
+pub async fn put_registration(
     pool: &SqlitePool,
     space_uri: &str,
-    limit: i64,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT subscriber_did FROM space_notify_registrations \
-         WHERE space_uri = ? AND repo_did = ? AND expires_at > datetime('now') \
-         ORDER BY subscriber_did LIMIT ?",
+    registration: &Registration,
+    expires_at: u64,
+    cap: i64,
+) -> Result<PutRegistration, sqlx::Error> {
+    let expires_at = i64::try_from(expires_at).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+    let written = sqlx::query(
+        "INSERT INTO space_notify_registrations \
+         (space_uri, endpoint, token, expires_at, expiry_notified) \
+         SELECT uri, ?1, ?2, datetime(?3, 'unixepoch'), 0 FROM spaces \
+         WHERE uri = ?4 AND deleted_at IS NULL AND ( \
+             EXISTS (SELECT 1 FROM space_notify_registrations \
+                     WHERE space_uri = ?4 AND endpoint = ?1 AND token = ?2) \
+             OR (SELECT COUNT(*) FROM space_notify_registrations \
+                 WHERE space_uri = ?4 AND expires_at > datetime('now')) < ?5) \
+         ON CONFLICT (space_uri, endpoint, token) \
+         DO UPDATE SET expires_at = excluded.expires_at, expiry_notified = 0",
+    )
+    .bind(&registration.endpoint)
+    .bind(&registration.token)
+    .bind(expires_at)
+    .bind(space_uri)
+    .bind(cap)
+    .execute(pool)
+    .await?;
+    if written.rows_affected() > 0 {
+        return Ok(PutRegistration::Written);
+    }
+    let live: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM spaces WHERE uri = ? AND deleted_at IS NULL)",
     )
     .bind(space_uri)
-    .bind(WHOLE_SPACE)
+    .fetch_one(pool)
+    .await?;
+    Ok(if live {
+        PutRegistration::Full
+    } else {
+        PutRegistration::SpaceGone
+    })
+}
+
+/// Withdraw a registration. Idempotent.
+pub async fn remove_registration(
+    pool: &SqlitePool,
+    space_uri: &str,
+    registration: &Registration,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM space_notify_registrations \
+         WHERE space_uri = ? AND endpoint = ? AND token = ?",
+    )
+    .bind(space_uri)
+    .bind(&registration.endpoint)
+    .bind(&registration.token)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// A space's registrations, the recipients of a write fan-out (`active`) or of a deletion notice
+/// (every one, lapsed included: a lapsed syncer is still told its space is gone). Ordered so a
+/// fan-out is deterministic, freshest first, and capped by `limit`.
+pub async fn registrations_for_space(
+    pool: &SqlitePool,
+    space_uri: &str,
+    active: bool,
+    limit: i64,
+) -> Result<Vec<Registration>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT endpoint, token FROM space_notify_registrations \
+         WHERE space_uri = ? AND (NOT ? OR expires_at > datetime('now')) \
+         ORDER BY expires_at DESC, endpoint, token LIMIT ?",
+    )
+    .bind(space_uri)
+    .bind(active)
     .bind(limit)
     .fetch_all(pool)
     .await

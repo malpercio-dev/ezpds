@@ -1,12 +1,14 @@
 // pattern: Imperative Shell
 //
-// Gathers: JSON body (space, credentialKey, delegationToken?, clientAttestation?), DB pool +
-//          master key
-// Processes: space-ref parse → credentialKey is a P-256 did:key → authority is an active local
-//            account → space row (not deleted, not taken down, ours) → delegation token verify
-//            + jti spend (when present) → client attestation verify + jti spend (when present)
-//            → issuance policy (app perimeter, then account) → load the authority's signer →
-//            mint the credential bound to credentialKey
+// Gathers: JSON body (space, credentialKey, delegationToken?, clientAttestation?, notify?), DB
+//          pool + master key
+// Processes: space-ref parse → credentialKey is a P-256 did:key → notify endpoint shape →
+//            authority is an active local account → space row (not deleted, not taken down,
+//            ours) → delegation token verify + jti spend (when present) → client attestation
+//            verify + jti spend (when present) → issuance policy (app perimeter, then account;
+//            a refusal withdraws the registration) → a new registration: the per-space cap, then
+//            confirmRegistration → load the authority's signer → mint the credential bound to
+//            credentialKey → register until the credential's exp → read spaceRev
 // Returns: JSON { credential, spaceRev? } on success; ApiError on failure
 //
 // Implements: POST /xrpc/com.atproto.space.authorizeSpaceSync
@@ -21,10 +23,12 @@ use crate::auth::client_attestation::verify_client_attestation;
 use crate::auth::space::{
     authorize_credential_request, mint_space_credential, require_active_space_host,
     require_space_servable, space_host_aud, unix_now, verify_delegation_token,
+    SPACE_CREDENTIAL_TTL_SECS,
 };
+use crate::db::space_notify::Registration;
+use crate::policy::SpacePolicy;
 use custos_core::lexicon::LexiconInput;
 
-// `notify` (in the lexicon) is not read: this server does not register syncers through it yet.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorizeSpaceSyncInput {
@@ -40,6 +44,14 @@ pub struct AuthorizeSpaceSyncInput {
     /// whenever present — an app that names itself is held to that name even where the space
     /// would have admitted it anonymously.
     client_attestation: Option<String>,
+    /// Register `endpoint` for `notifySpaceUpdate` until the minted credential expires.
+    notify: Option<NotifyInput>,
+}
+
+#[derive(Deserialize)]
+pub struct NotifyInput {
+    endpoint: String,
+    token: String,
 }
 
 #[derive(Serialize)]
@@ -57,6 +69,12 @@ pub struct AuthorizeSpaceSyncResponse {
 /// Spaces credential flow — and report the space's current revision. Takes no request
 /// authorization: the delegation token and client attestation ride the body. This server
 /// answers only for spaces anchored on an account it hosts.
+///
+/// With `notify`, the call also registers the syncer's endpoint for `notifySpaceUpdate` until the
+/// credential expires. The endpoint must be an https URL on a domain host, checked before
+/// anything is sent to it. A new `(endpoint, token)` is confirmed first, outside any database
+/// transaction, and refused past [`MAX_REGISTRATIONS`](crate::space_notify::MAX_REGISTRATIONS)
+/// active ones per space (`TooManyRegistrations`, Custos's own bound).
 pub async fn authorize_space_sync(
     State(state): State<CoreState>,
     LexiconInput(input): LexiconInput<AuthorizeSpaceSyncInput>,
@@ -71,6 +89,16 @@ pub async fn authorize_space_sync(
             ErrorCode::InvalidRequest,
             "credentialKey must be a P-256 did:key",
         ));
+    }
+    let registration = input.notify.map(|notify| Registration {
+        endpoint: notify.endpoint,
+        token: notify.token,
+    });
+    if let Some(registration) = &registration {
+        custos_core::identity::proxy::validate_notify_endpoint(
+            &registration.endpoint,
+            state.allow_loopback_proxy_targets,
+        )?;
     }
 
     // The authority's status comes first, as the reference orders it: a suspended or
@@ -127,14 +155,64 @@ pub async fn authorize_space_sync(
         None => None,
     };
 
-    authorize_credential_request(
+    let internal = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space.uri, "failed to update notify registration");
+        ApiError::new(ErrorCode::InternalError, "internal server error")
+    };
+
+    if let Err(refusal) = authorize_credential_request(
         &state,
         &row,
         &policy,
         account.as_ref().map(common::Did::as_str),
         client_id.as_deref(),
     )
-    .await?;
+    .await
+    {
+        // A refusal withdraws the registration it carries, so a syncer that has lost access stops
+        // being notified. A failure to decide leaves it in place. Custos answers an unreachable
+        // managing app with the same `AccountNotAuthorized` as a refusing one, so under a
+        // managedspace only the app perimeter is a definite refusal.
+        let definite = match refusal.code() {
+            ErrorCode::AppNotAuthorized => true,
+            ErrorCode::AccountNotAuthorized => !matches!(policy, SpacePolicy::Managed(_)),
+            _ => false,
+        };
+        if let (true, Some(registration)) = (definite, &registration) {
+            crate::db::space_notify::remove_registration(&state.db, &space.uri, registration)
+                .await
+                .map_err(internal)?;
+        }
+        return Err(refusal);
+    }
+
+    // Only a new registration is confirmed, and only one that fits under the cap. A known one,
+    // lapsed or not, is renewed as it stands. The count here only spares a full space the
+    // outbound call; the cap itself is enforced atomically by `put_registration`.
+    let too_many = || {
+        ApiError::new(
+            ErrorCode::TooManyRegistrations,
+            "this space holds its maximum of notification registrations",
+        )
+    };
+    if let Some(registration) = &registration {
+        crate::db::space_notify::prune_lapsed_registrations(&state.db, &space.uri)
+            .await
+            .map_err(internal)?;
+        let known =
+            crate::db::space_notify::registration_exists(&state.db, &space.uri, registration)
+                .await
+                .map_err(internal)?;
+        if !known {
+            let active = crate::db::space_notify::count_active_registrations(&state.db, &space.uri)
+                .await
+                .map_err(internal)?;
+            if active >= crate::space_notify::MAX_REGISTRATIONS {
+                return Err(too_many());
+            }
+            crate::space_notify::confirm_registration(&state, &space, registration).await?;
+        }
+    }
 
     let master_key: &[u8; 32] = state
         .config
@@ -158,9 +236,39 @@ pub async fn authorize_space_sync(
         now,
     );
 
+    let mut space_rev = row.last_space_rev;
+    if let Some(registration) = &registration {
+        // Renewed by each authorization, and lapsing with this credential, no grace period.
+        use crate::db::space_notify::PutRegistration;
+        match crate::db::space_notify::put_registration(
+            &state.db,
+            &space.uri,
+            registration,
+            now + SPACE_CREDENTIAL_TTL_SECS,
+            crate::space_notify::MAX_REGISTRATIONS,
+        )
+        .await
+        .map_err(internal)?
+        {
+            PutRegistration::Written => {}
+            PutRegistration::Full => return Err(too_many()),
+            PutRegistration::SpaceGone => {
+                return Err(ApiError::new(
+                    ErrorCode::SpaceDeleted,
+                    "this space has been deleted",
+                ))
+            }
+        }
+        // Read after registering, so any update past this revision is notified.
+        space_rev = crate::db::spaces::get_space(&state.db, &space.uri)
+            .await
+            .map_err(internal)?
+            .and_then(|row| row.last_space_rev);
+    }
+
     Ok(Json(AuthorizeSpaceSyncResponse {
         credential,
-        space_rev: row.last_space_rev,
+        space_rev,
     }))
 }
 
