@@ -134,6 +134,11 @@ export type BlobLoss = {
   direction: BlobTransferDirection;
   /** The last error text (server-supplied when available). */
   reason: string;
+  /**
+   * The space-ref when the blob belongs to a space repo; absent for the public repo. A space
+   * blob names no record, so `recordUri` then repeats the space-ref.
+   */
+  space?: string;
 };
 
 /**
@@ -166,6 +171,13 @@ export type MigrationError =
   // advanced. `losses` is the manifest — the screen offers an informed "continue without them"
   // (re-invoke transferBlobs with acceptLoss=true) instead of abandoning the run.
   | { code: 'BLOB_DRAIN_INCOMPLETE'; losses: BlobLoss[] }
+  // The source holds spaces the destination can't hold. Raised before anything is imported and
+  // the phase is NOT advanced: the user stops here, or re-invokes transferSpaces with
+  // acceptLoss=true to leave these spaces behind.
+  | { code: 'SPACES_UNSUPPORTED'; spaces: string[] }
+  | { code: 'SPACE_TRANSFER_FAILED'; message: string }
+  // verifyImport: these source spaces don't match (or aren't on) the destination.
+  | { code: 'SPACE_VERIFICATION_FAILED'; spaces: string[] }
   | { code: 'PREFERENCES_TRANSFER_FAILED'; message: string }
   | { code: 'VERIFICATION_INCOMPLETE'; imported: number; expected: number }
   | { code: 'ACTIVATION_FAILED'; message: string }
@@ -241,6 +253,17 @@ export const transferRepo = (did: string): Promise<void> => invoke('transfer_rep
  */
 export const transferBlobs = (did: string, acceptLoss = false): Promise<void> =>
   invoke('transfer_blobs', { did, acceptLoss });
+
+/**
+ * Space transfer: carry every space the source lists to the destination (the authority's space
+ * state, then each space repo and its blobs).
+ *
+ * Rejects with `SPACES_UNSUPPORTED` before importing anything when the destination can't hold
+ * spaces, and with `BLOB_DRAIN_INCOMPLETE` (entries carry `space`) when some space blobs
+ * couldn't be moved. Re-invoke with `acceptLoss = true` to accept either loss and advance.
+ */
+export const transferSpaces = (did: string, acceptLoss = false): Promise<void> =>
+  invoke('transfer_spaces', { did, acceptLoss });
 
 /** Copy the source account preferences to the destination. */
 export const transferPreferences = (did: string): Promise<void> =>

@@ -124,6 +124,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `transfer_blobs` | App command |
 | `transfer_preferences` | App command |
 | `transfer_repo` | App command |
+| `transfer_spaces` | App command |
 | `unlock_identity_with_password` | App command |
 | `verify_import` | App command |
 | `verify_recovery_shares` | App command |

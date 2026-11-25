@@ -3,6 +3,7 @@
     createDestinationAccount,
     transferRepo,
     transferBlobs,
+    transferSpaces,
     transferPreferences,
     verifyImport,
     isCodedError,
@@ -21,21 +22,25 @@
     inviteCode,
     onnext,
     onerror,
+    oncancel,
   }: {
     did: string;
     email: string;
     inviteCode?: string;
     onnext: (status: AccountStatus) => void;
     onerror: (err: MigrationError) => void;
+    /** Leave the move: offered when the new server can't hold the user's spaces. */
+    oncancel?: () => void;
   } = $props();
 
-  type LegId = 'account' | 'repo' | 'blobs' | 'preferences' | 'verify';
+  type LegId = 'account' | 'repo' | 'blobs' | 'spaces' | 'preferences' | 'verify';
   type LegState = 'pending' | 'active' | 'done' | 'failed';
 
   const LEGS: { id: LegId; label: string }[] = [
     { id: 'account', label: 'Create destination account' },
     { id: 'repo', label: 'Transfer repository' },
     { id: 'blobs', label: 'Transfer blobs' },
+    { id: 'spaces', label: 'Transfer spaces' },
     { id: 'preferences', label: 'Transfer preferences' },
     { id: 'verify', label: 'Verify destination' },
   ];
@@ -44,6 +49,7 @@
     account: 'pending',
     repo: 'pending',
     blobs: 'pending',
+    spaces: 'pending',
     preferences: 'pending',
     verify: 'pending',
   });
@@ -61,6 +67,14 @@
   // Set once the user chooses to proceed past a loss manifest: re-runs the blobs leg with
   // acceptLoss=true so the orchestrator records the skip and advances (verify then tolerates it).
   let acceptBlobLoss = $state(false);
+  // Which leg raised the manifest on screen: the blob drain, or the space transfer (whose
+  // entries carry `space`). Accepting it re-runs only that leg with acceptLoss=true.
+  let lossLeg = $state<'blobs' | 'spaces'>('blobs');
+  // The SPACES_UNSUPPORTED list: the new server can't hold these spaces. Non-null renders the
+  // choice between stopping the move and continuing without them. Nothing has been imported.
+  let unsupportedSpaces = $state<string[] | null>(null);
+  // Set once the user accepts a space loss (unsupported spaces or a space blob manifest).
+  let acceptSpaceLoss = $state(false);
 
   function statusGlyph(state: LegState): string {
     switch (state) {
@@ -110,6 +124,12 @@
           return "Couldn't transfer one or more blobs.";
         case 'BLOB_DRAIN_INCOMPLETE':
           return "Some media couldn't be transferred.";
+        case 'SPACE_TRANSFER_FAILED':
+          return "Couldn't transfer your spaces.";
+        case 'SPACE_VERIFICATION_FAILED':
+          return err.spaces.length === 1
+            ? "One space on your new server doesn't match your old server."
+            : `${err.spaces.length} spaces on your new server don't match your old server.`;
         case 'PREFERENCES_TRANSFER_FAILED':
           return "Couldn't transfer preferences.";
         case 'VERIFICATION_INCOMPLETE':
@@ -160,12 +180,14 @@
     failure = null;
     failureDetail = null;
     lossManifest = null;
+    unsupportedSpaces = null;
     try {
       await runLeg('account', () => createDestinationAccount(did, email, inviteCode));
       await runLeg('repo', () => transferRepo(did));
       // acceptBlobLoss stays false on a normal run and each Retry, so a dead blob surfaces the
       // manifest; "Continue without them" flips it true and re-runs so the leg advances anyway.
       await runLeg('blobs', () => transferBlobs(did, acceptBlobLoss));
+      await runLeg('spaces', () => transferSpaces(did, acceptSpaceLoss));
       await runLeg('preferences', () => transferPreferences(did));
 
       legStates.verify = 'active';
@@ -184,17 +206,32 @@
 
       // A drain that only partially failed isn't a dead end: render the loss manifest and let the
       // user make an informed choice, rather than the generic single-error box.
-      if (isCodedError(raw) && (raw as MigrationError).code === 'BLOB_DRAIN_INCOMPLETE') {
-        lossManifest = (raw as Extract<MigrationError, { code: 'BLOB_DRAIN_INCOMPLETE' }>).losses;
+      const coded = isCodedError(raw) ? (raw as MigrationError) : null;
+      if (coded?.code === 'BLOB_DRAIN_INCOMPLETE') {
+        lossLeg = legStates.spaces === 'failed' ? 'spaces' : 'blobs';
+        lossManifest = coded.losses;
+      } else if (coded?.code === 'SPACES_UNSUPPORTED') {
+        unsupportedSpaces = coded.spaces;
       } else {
         failure = describeError(raw);
         failureDetail = describeErrorDetail(raw);
       }
+      rerunSpaces = coded?.code === 'SPACE_VERIFICATION_FAILED';
       onerror(toMigrationError(raw));
     }
   }
 
+  // A space that doesn't match after verify won't match on a second look: Retry then runs the
+  // space transfer again (its imports replace what the new server holds). Re-running it re-opens
+  // the steps after it, so preferences runs again too.
+  let rerunSpaces = false;
+
   function retry() {
+    if (rerunSpaces) {
+      legStates.spaces = 'pending';
+      legStates.preferences = 'pending';
+      rerunSpaces = false;
+    }
     for (const leg of LEGS) {
       if (legStates[leg.id] === 'failed') legStates[leg.id] = 'pending';
     }
@@ -205,8 +242,20 @@
   // blobs leg with acceptLoss=true (the orchestrator records the skip and advances; verify then
   // subtracts the accepted loss), then carries on through preferences + verify.
   function continueWithLoss() {
-    acceptBlobLoss = true;
+    if (lossLeg === 'spaces') acceptSpaceLoss = true;
+    else acceptBlobLoss = true;
     lossManifest = null;
+    for (const leg of LEGS) {
+      if (legStates[leg.id] === 'failed') legStates[leg.id] = 'pending';
+    }
+    runMigration();
+  }
+
+  // Accept leaving the spaces behind on the old server: re-runs the space transfer with
+  // acceptLoss=true, which advances without importing them (verify then skips their digests).
+  function continueWithoutSpaces() {
+    acceptSpaceLoss = true;
+    unsupportedSpaces = null;
     for (const leg of LEGS) {
       if (legStates[leg.id] === 'failed') legStates[leg.id] = 'pending';
     }
@@ -235,21 +284,53 @@
     {/each}
   </ul>
 
-  {#if lossManifest}
+  {#if unsupportedSpaces}
+    <div class="loss-box" role="alert">
+      <p class="loss-title">Your new server can't hold spaces</p>
+      <p class="loss-lede">
+        {unsupportedSpaces.length === 1
+          ? 'You have a space on your old server.'
+          : `You have ${unsupportedSpaces.length} spaces on your old server.`}
+        Your new server doesn't support spaces, so none of them have been moved. If you continue,
+        your spaces stay on your old server and won't be part of your new account.
+      </p>
+      <ul class="loss-list">
+        {#each unsupportedSpaces as space (space)}
+          <li class="loss-item">
+            <span class="loss-cid">{space}</span>
+          </li>
+        {/each}
+      </ul>
+      <div class="loss-actions u-stack-sm">
+        {#if oncancel}
+          <Button onclick={oncancel}>Stop the move</Button>
+        {/if}
+        <Button variant="secondary" onclick={continueWithoutSpaces}>Continue without spaces</Button>
+      </div>
+    </div>
+  {:else if lossManifest}
     <div class="loss-box" role="alert">
       <p class="loss-title">
         {lossManifest.length}
         {lossManifest.length === 1 ? 'file' : 'files'} couldn't be transferred
       </p>
       <p class="loss-lede">
-        These media files couldn't be moved and won't appear on your new account. Posts that use
-        them will show a broken image. You can continue without them or try the transfer again.
+        {#if lossLeg === 'spaces'}
+          These files couldn't be moved with your spaces and won't be on your new account. Records
+          in those spaces that use them will be missing them. You can continue without them or try
+          the space transfer again.
+        {:else}
+          These media files couldn't be moved and won't appear on your new account. Posts that use
+          them will show a broken image. You can continue without them or try the transfer again.
+        {/if}
       </p>
       <ul class="loss-list">
         {#each lossManifest as loss (loss.cid)}
           <li class="loss-item">
             <span class="loss-detail">{describeBlobLoss(loss)}</span>
-            <span class="loss-record">Used by {loss.recordUri}</span>
+            <span class="loss-record">
+              {loss.space ? `In space ${loss.space}` : `Used by ${loss.recordUri}`}
+            </span>
             <span class="loss-cid">{loss.cid}</span>
           </li>
         {/each}

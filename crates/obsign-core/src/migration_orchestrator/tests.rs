@@ -14,6 +14,7 @@ fn test_ensure_phase_did_phase_too_low() {
         dest_client: None,
         phase: MigrationPhase::SourceAuthed,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -37,6 +38,7 @@ fn test_ensure_phase_did_did_mismatch() {
         dest_client: None,
         phase: MigrationPhase::Resolved,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -70,6 +72,7 @@ fn test_ensure_phase_did_success() {
         dest_client: None,
         phase: MigrationPhase::RepoTransferred,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -113,12 +116,14 @@ fn test_migration_error_serialization_blob_drain_incomplete() {
                 record_uri: "at://did:plc:abc/app.bsky.feed.post/1".into(),
                 direction: BlobTransferDirection::Source,
                 reason: "server error (500)".into(),
+                space: None,
             },
             BlobLoss {
                 cid: "bafyupload".into(),
                 record_uri: "at://did:plc:abc/app.bsky.feed.post/2".into(),
                 direction: BlobTransferDirection::Destination,
                 reason: "rejected".into(),
+                space: None,
             },
         ],
     };
@@ -182,6 +187,7 @@ fn test_authenticate_migration_source_did_mismatch_gate() {
         dest_client: None,
         phase: MigrationPhase::Resolved,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -489,6 +495,7 @@ fn test_create_destination_account_phase_gate() {
         dest_client: None,
         phase: MigrationPhase::Resolved, // Too early!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -574,6 +581,7 @@ fn test_transfer_repo_phase_gate() {
         dest_client: None,
         phase: MigrationPhase::SourceAuthed, // Too early!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -597,6 +605,7 @@ fn test_transfer_repo_phase_too_low() {
         dest_client: None,
         phase: MigrationPhase::SourceAuthed, // Too early!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -622,6 +631,7 @@ fn test_transfer_blobs_phase_too_low() {
         dest_client: None,
         phase: MigrationPhase::DestCreated, // Too early for transfer_blobs!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -633,7 +643,7 @@ fn test_transfer_blobs_phase_too_low() {
 }
 
 // Build a Bearer dest client (future-exp so no proactive refresh fires) at `base_url`.
-fn bearer_client_at(base_url: String) -> OAuthClient {
+pub(super) fn bearer_client_at(base_url: String) -> OAuthClient {
     OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), base_url).unwrap()
 }
 
@@ -1248,7 +1258,8 @@ async fn test_drain_missing_blobs_list_failure_is_hard_error() {
 
 // ── Task 3 tests: transfer_preferences ─────────────────────────────────
 
-// Pure gate test: transfer_preferences before BlobsTransferred phase fails
+// Pure gate test: transfer_preferences before SpacesTransferred fails, so the space transfer
+// can never be skipped by running the next leg
 #[test]
 fn test_transfer_preferences_phase_too_low() {
     let state = Some(OutboundMigrationState {
@@ -1259,12 +1270,13 @@ fn test_transfer_preferences_phase_too_low() {
         handle: "alice.test".into(),
         source_client: None,
         dest_client: None,
-        phase: MigrationPhase::RepoTransferred, // Too early for transfer_preferences!
+        phase: MigrationPhase::BlobsTransferred, // Spaces not transferred yet
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
-    let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::BlobsTransferred);
+    let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::SpacesTransferred);
     assert!(matches!(
         result,
         Err(MigrationError::MigrationNotReady { .. })
@@ -1567,6 +1579,7 @@ fn test_arm_identity_leg_phase_gate_too_low() {
         dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
         phase: MigrationPhase::PreferencesTransferred, // Too early!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -1589,6 +1602,7 @@ fn verified_state(did: &str) -> OutboundMigrationState {
         dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
         phase: MigrationPhase::Verified,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     }
 }
@@ -1703,6 +1717,7 @@ fn test_finalize_migration_phase_gate_too_low() {
         dest_client: None,
         phase: MigrationPhase::Verified, // Too early for finalize!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -2665,6 +2680,7 @@ async fn test_full_migration_pipeline_happy_path() {
         dest_client: Some(dest_client),
         phase: MigrationPhase::IdentityArmed,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     }));
     let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted
@@ -2835,6 +2851,7 @@ async fn test_finalize_migration_uses_bearer_on_a_non_custos_destination() {
         dest_client: Some(dest_client),
         phase: MigrationPhase::IdentityArmed,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     }));
     let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted

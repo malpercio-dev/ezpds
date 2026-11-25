@@ -34,6 +34,9 @@ export type ScenarioName =
   | 'alert-expired'
   | 'alert-multi'
   | 'migration-in-flight'
+  | 'migration-spaces'
+  | 'migration-spaces-unsupported'
+  | 'migration-space-blob-loss'
   | 'agent-connected'
   | 'agent-accounts-unprovisioned'
   | 'agent-child-mint'
@@ -246,10 +249,41 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
       destinationCreated: true,
       repoTransferred: false,
       blobsTransferred: false,
+      spacesTransferred: false,
       preferencesTransferred: false,
       verified: false,
       armed: false,
     };
+    return state;
+  },
+
+  /**
+   * An account with two spaces, one it is the authority of and one it only writes in, moving
+   * to a destination that holds spaces: the space transfer leg runs clean and the move verifies.
+   * Start the move from the identity screen.
+   */
+  'migration-spaces': () => spacesMigrationState(),
+
+  /**
+   * The same two spaces, moving to a destination that doesn't implement spaces. The space
+   * transfer leg stops before anything moves and offers "Stop the move" or "Continue without
+   * spaces"; the only scenario that reaches that choice.
+   */
+  'migration-spaces-unsupported': () => {
+    const state = spacesMigrationState();
+    state.spaceTransfer.destinationSupportsSpaces = false;
+    return state;
+  },
+
+  /**
+   * The same two spaces, with one blob in the authority's space the source can't serve: the
+   * space transfer leg shows the loss manifest, its entry naming the space.
+   */
+  'migration-space-blob-loss': () => {
+    const state = spacesMigrationState();
+    state.spaceTransfer.lostBlobs = [
+      { space: state.spaceTransfer.sourceSpaces[0], cid: 'bafyharnessspaceblob' },
+    ];
     return state;
   },
 
@@ -663,5 +697,21 @@ function scopesState(): WalletState {
   ];
   identity.childIndex = identity.children.length;
   upsertIdentity(state, identity);
+  return state;
+}
+
+/**
+ * An account holding two spaces: one under its own DID (it is the authority) and one under
+ * another account's DID (it only writes there).
+ */
+function spacesMigrationState(): WalletState {
+  const state = emptyWalletState();
+  state.pdsUrl = DEFAULT_PDS_URL;
+  const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+  upsertIdentity(state, identity);
+  state.spaceTransfer.sourceSpaces = [
+    `at://${identity.did}/space/app.example.group/book-club`,
+    `at://${fakePlcDid('org.harness.pds.local')}/space/app.example.group/team`,
+  ];
   return state;
 }

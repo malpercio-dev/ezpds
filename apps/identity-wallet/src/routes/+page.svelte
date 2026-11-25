@@ -1455,6 +1455,7 @@
       email={migrationEmail}
       inviteCode={migrationInviteCode}
       onnext={() => goTo('migration_review')}
+      oncancel={() => goTo('identity_detail')}
       onerror={() => {
         // Stay on the progress screen — it surfaces the error inline and offers Retry itself,
         // rather than rewinding. The parent has nothing to do on a per-leg failure.

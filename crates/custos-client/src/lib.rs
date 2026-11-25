@@ -17,6 +17,8 @@
 //!   as `custos_client::identity::…` etc.). No method name collides across the 17 exported
 //!   today, but grouping by concern means a future `get_preferences`-shaped name landing in
 //!   two groups needs no rename — the module path already disambiguates it.
+//! - [`spaces`]: typed XRPC methods for the `com.atproto.space.*` calls a space transfer makes
+//!   during account migration (listing, the STAR exports and imports, per-space blobs).
 //! - [`agents`]: typed methods for auth.md's own agent-consent/child-lifecycle endpoints
 //!   (not `com.atproto.*` XRPC, so they classify responses into their own [`agents::AgentError`]
 //!   rather than [`error::PdsClientError`]). Minting a child account and post-recovery
@@ -41,6 +43,7 @@ pub mod migration;
 pub mod oauth_client;
 pub mod pds_client;
 pub mod sovereign_session;
+pub mod spaces;
 #[cfg(test)]
 mod test_support;
 

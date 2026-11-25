@@ -28,8 +28,15 @@
 //!   substitutes the local blob mirror's copy (`blob_backup::mirror_fallback_blob`)
 //!   when one is CID-verified, recording the loss only when it is not. Only a hard
 //!   enumerate failure aborts, as `BlobTransferFailed`.
+//! - `transfer_spaces` — the space transfer (`spaces.rs`): page the source's `listSpaces`,
+//!   then a meta pass (`exportSpaceMeta` → `importSpaceMeta` for every space the account is
+//!   authority of) and a repo pass (`getRepo` → `importRepo`, then `listBlobs` → `getBlob` →
+//!   `uploadBlob`, per space). A source without spaces counts as zero spaces; a destination
+//!   without them is `SpacesUnsupported` before anything is imported, which the user accepts
+//!   as a loss or stops on. Space blob failures join the `BlobLoss` manifest with their space.
 //! - `transfer_preferences` (get→put); `verify_import` (`checkAccountStatus`
-//!   completeness gate, returns `AccountStatus`); `arm_identity_leg` (populate
+//!   completeness gate plus each source space's `data` digest against the destination's,
+//!   returns `AccountStatus`); `arm_identity_leg` (populate
 //!   `migrate::MigrationState.dest_oauth_client`, then run
 //!   `migrate::build_migration_op_cmd` / `submit_migration_op_cmd`).
 //! - `finalize_migration` — the safe cutover: activate dest → durably persist the
@@ -52,7 +59,7 @@
 //! serves outbound migration and sovereign disaster recovery, which share this
 //! command.
 //!
-//! Pure cores are split out for testability: `ensure_phase_did`,
+//! Pure cores are split out for testability: `ensure_phase_did`, `digest_mismatches`,
 //! `create_destination_account_impl`, `drain_missing_blobs`, `transfer_repo_impl`,
 //! `transfer_preferences_impl`, `import_reconciles`, the
 //! `activate_destination_account` / `deactivate_source_account` cutover halves,
@@ -80,6 +87,7 @@
 //! TWO_FACTOR_REQUIRED, ACCOUNT_MISMATCH, INSECURE_SOURCE_URL, RATE_LIMITED,
 //! SERVER_REJECTED, SERVICE_AUTH_FAILED, ACCOUNT_CREATION_FAILED, DESTINATION_CONFLICT,
 //! REPO_TRANSFER_FAILED, BLOB_TRANSFER_FAILED, BLOB_DRAIN_INCOMPLETE,
+//! SPACES_UNSUPPORTED, SPACE_TRANSFER_FAILED, SPACE_VERIFICATION_FAILED,
 //! BACKUP_UNAVAILABLE — recovery-specific — PREFERENCES_TRANSFER_FAILED,
 //! VERIFICATION_INCOMPLETE, ACTIVATION_FAILED, SOVEREIGN_LOGIN_FAILED,
 //! SESSION_PERSIST_FAILED, DEACTIVATION_FAILED, NETWORK_ERROR) serializes as
@@ -102,6 +110,7 @@ pub enum MigrationPhase {
     DestCreated,
     RepoTransferred,
     BlobsTransferred,
+    SpacesTransferred,
     PreferencesTransferred,
     Verified,
     IdentityArmed,
@@ -142,6 +151,8 @@ pub struct OutboundMigrationState {
     /// `verify_import` subtracts this count from `expected_blobs` so a degraded-but-accepted
     /// migration still reconciles.
     pub accepted_blob_loss: Vec<BlobLoss>,
+    /// What the space transfer keeps between commands (`spaces.rs`).
+    pub spaces: SpaceTransferState,
     /// True when this session is a sovereign disaster recovery (`disaster_recovery.rs`):
     /// the source PDS is presumed dead, so there is no source client, the blob drain
     /// goes straight to the iCloud mirror, the preferences leg is skipped (nothing to
@@ -192,6 +203,10 @@ pub struct BlobLoss {
     pub direction: BlobTransferDirection,
     /// The last error text (server-supplied when available), shown as subordinate detail.
     pub reason: String,
+    /// The space-ref when the blob belongs to a space repo (`listBlobs` names no record, so
+    /// `record_uri` then repeats the space-ref). Absent for the account's public repo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 // ── Error types ────────────────────────────────────────────────────────────
@@ -261,6 +276,18 @@ pub enum MigrationError {
     /// (re-invoke `transfer_blobs` with `accept_loss = true`) instead of abandoning the run.
     #[error("blob drain incomplete: {} blob(s) could not be transferred", losses.len())]
     BlobDrainIncomplete { losses: Vec<BlobLoss> },
+    /// The source holds spaces and the destination doesn't implement them. Raised before
+    /// anything is imported; the phase is NOT advanced. The user stops here, or re-invokes
+    /// `transfer_spaces(did, acceptLoss=true)` to leave these spaces behind.
+    #[error("destination can't hold {} space(s)", spaces.len())]
+    SpacesUnsupported { spaces: Vec<String> },
+    /// A space's listing, export, or import failed outright (`message` names the space).
+    #[error("space transfer failed: {message}")]
+    SpaceTransferFailed { message: String },
+    /// `verify_import` found source spaces whose `data` digest the destination doesn't match
+    /// (or doesn't list at all). Phase unchanged.
+    #[error("{} space(s) don't match on the destination", spaces.len())]
+    SpaceVerificationFailed { spaces: Vec<String> },
     /// Preferences transfer failed
     #[error("preferences transfer failed: {message}")]
     PreferencesTransferFailed { message: String },
@@ -390,11 +417,15 @@ impl ceremony_journal::JournalStore<MigrationPhase> for MigrationJournal<'_> {
 
 mod cutover;
 mod prepare;
+mod spaces;
 mod transfer;
 
 pub use cutover::*;
 pub use prepare::*;
+pub use spaces::*;
 pub use transfer::*;
 
+#[cfg(test)]
+mod spaces_tests;
 #[cfg(test)]
 mod tests;
