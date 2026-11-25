@@ -335,7 +335,7 @@ async fn delete_record_is_idempotent_without_burning_a_revision() {
         ))
         .await
         .unwrap();
-    // A second record keeps the repo alive once `aaa` is gone: an emptied repo is deleted.
+    // A second record, so the repo still holds one once `aaa` is gone.
     crate::test_support::test_app(state.clone())
         .oneshot(post(
             "com.atproto.space.createRecord",
@@ -650,4 +650,105 @@ async fn space_writes_wait_for_a_published_kem_key() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+fn clear_body(repo: &str) -> serde_json::Value {
+    serde_json::json!({ "space": SPACE, "repo": repo })
+}
+
+/// `clearRecords` empties the caller's repo in one commit: every record goes, the oplog is
+/// cleared, and the repo stays at the empty-set digest at a new rev. It needs a `delete` grant on
+/// each collection the repo holds, works only on the caller's own repo, and with nothing to
+/// delete commits nothing.
+#[tokio::test]
+async fn clear_records_empties_the_callers_repo() {
+    let state = setup().await;
+    let token = scoped_access_jwt(&state.jwt_secret, DID, GRANT);
+    let send = |request| crate::test_support::send(&state, request);
+
+    // No repo yet: nothing to clear, and nothing is created.
+    let (status, body) = send(post(
+        "com.atproto.space.clearRecords",
+        &token,
+        clear_body(DID),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(crate::db::space_repos::get_repo(&state.db, SPACE, DID)
+        .await
+        .unwrap()
+        .is_none());
+
+    for rkey in ["aaa", "bbb"] {
+        let (status, body) = send(post(
+            "com.atproto.space.createRecord",
+            &token,
+            create_body(rkey, "x"),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let before = crate::db::space_repos::get_repo(&state.db, SPACE, DID)
+        .await
+        .unwrap()
+        .unwrap()
+        .rev;
+
+    // Someone else's repo, and a grant without `delete`, are refused.
+    let (status, body) = send(post(
+        "com.atproto.space.clearRecords",
+        &token,
+        clear_body("did:plc:someoneelseaaaaaaaaaaaa"),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let no_delete = GRANT.replace("&action=delete", "");
+    let (status, body) = send(post(
+        "com.atproto.space.clearRecords",
+        &scoped_access_jwt(&state.jwt_secret, DID, &no_delete),
+        clear_body(DID),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "InsufficientScope");
+
+    let (status, body) = send(post(
+        "com.atproto.space.clearRecords",
+        &token,
+        clear_body(DID),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, serde_json::json!({}));
+    let repo = crate::db::space_repos::get_repo(&state.db, SPACE, DID)
+        .await
+        .unwrap()
+        .expect("the repo stays, empty");
+    assert!(repo.rev > before);
+    let lthash = crypto::LtHash::from_state(&repo.lthash_state).unwrap();
+    assert_eq!(lthash.digest(), crypto::LtHash::new().digest());
+    let left: i64 = sqlx::query_scalar(
+        "SELECT (SELECT COUNT(*) FROM space_records WHERE account_did = ?1) \
+              + (SELECT COUNT(*) FROM space_repo_ops WHERE account_did = ?1)",
+    )
+    .bind(DID)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(left, 0, "records and oplog are both cleared");
+
+    // Already empty: no new commit.
+    let (status, body) = send(post(
+        "com.atproto.space.clearRecords",
+        &token,
+        clear_body(DID),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = crate::db::space_repos::get_repo(&state.db, SPACE, DID)
+        .await
+        .unwrap()
+        .unwrap()
+        .rev;
+    assert_eq!(after, repo.rev);
 }

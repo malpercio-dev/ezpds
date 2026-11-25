@@ -207,7 +207,7 @@ host on:
    (`space.getSpaceCredential`, Bearer delegation + an RFC 9421 `atproto-space` signature
    naming the key, which becomes the credential's `cnf.kid`);
 4. that credential drives reads on **both** hosts — `space.getRecord`/`listRepoOps`/`getRepo`
-   on the repo host, `space.listRepos` on the authority — each under
+   on the repo host, `space.listWriters` on the authority — each under
    `Authorization: Atproto-Space`, signed together with the request's audience (the repo
    owner's DID on the repo host, the authority's DID on the space host);
 5. it also asserts the credential is **refused** when presented without its signature. A host that

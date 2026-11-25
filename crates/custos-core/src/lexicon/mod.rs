@@ -154,9 +154,13 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/space/listBlobs.json"),
     include_str!("../../lexicons/com/atproto/space/listRecords.json"),
     include_str!("../../lexicons/com/atproto/space/listRepoOps.json"),
-    include_str!("../../lexicons/com/atproto/space/listRepos.json"),
     include_str!("../../lexicons/com/atproto/space/listSpaces.json"),
     include_str!("../../lexicons/com/atproto/space/putRecord.json"),
+    // The writer-set lifecycle: the space host's listing and the authority's removal, and the
+    // repo owner's clear.
+    include_str!("../../lexicons/com/atproto/space/clearRecords.json"),
+    include_str!("../../lexicons/com/atproto/space/listWriters.json"),
+    include_str!("../../lexicons/com/atproto/space/removeWriter.json"),
     // The notification surface at the frozen pin. `notifySpaceUpdate` and `confirmRegistration`
     // are vendored but not registered: this server only sends them; a syncer serves them.
     include_str!("../../lexicons/com/atproto/space/notifyCredentialsRevoked.json"),

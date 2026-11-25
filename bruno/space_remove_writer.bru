@@ -1,0 +1,32 @@
+meta {
+  name: Space Remove Writer
+  type: http
+  seq: 179
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.removeWriter
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main",
+    "repo": "did:plc:memberaaaaaaaaaaaaaaaaaa"
+  }
+}
+
+docs {
+  Remove an account from a space's writer set (as listWriters returns it). The removal takes a
+  new spaceRev and goes to every registered syncer as a "com.atproto.space.defs#repoRemoved". Does
+  nothing if the account is not in the writer set. The account is not barred: its next authorized
+  write adds it back.
+
+  "space:…?manage=update", authority only, under every policy. Errors: 400 SpaceNotFound,
+  400 NotAuthorized, 403 InsufficientScope.
+}

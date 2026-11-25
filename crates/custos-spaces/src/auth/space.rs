@@ -27,7 +27,7 @@
 //! * **The read seam** — [`authenticate_space_read`] accepts a covering OAuth grant on the
 //!   caller's *own* repo *or* a signature-bound space credential for any repo in the space,
 //!   never a bearer credential. [`authenticate_space_access`] is the same pair of arms for a
-//!   space-host method that names a space but no repo (`listRepos`), and
+//!   space-host method that names a space but no repo (`listWriters`), and
 //!   [`authenticate_space_authority`] is the OAuth-only arm every space management method *on
 //!   an existing space* takes (`updateSpace`, `getSpace`, the memberspace methods): grant check,
 //!   then "the caller *is* the authority" (`NotAuthorized`). `createSpace` is the exception — a
@@ -56,7 +56,7 @@
 //!   that answers yes without one) admits.
 //! * **Account status** — a repo read by anyone but its owner answers `RepoTakendown` /
 //!   `RepoDeactivated` for a writer that is not active ([`require_available_repo`]), and the
-//!   authority's own status gates only `authorizeSpaceSync` and `listRepos`
+//!   authority's own status gates only `authorizeSpaceSync` and `listWriters`
 //!   ([`require_active_space_host`]): a credential already issued keeps reading the other
 //!   writers' repos until it expires. A taken-down caller's own credential answers
 //!   `AccountTakedown`.
@@ -243,7 +243,7 @@ pub async fn authenticate_space_read(
     Ok(SpaceReader::Credential(credential))
 }
 
-/// Authenticate access to a space *itself* on the space host (no repo named — `listRepos` is
+/// Authenticate access to a space *itself* on the space host (no repo named — `listWriters` is
 /// so far the only one).
 ///
 /// The same two arms as [`authenticate_space_read`]: an account credential must carry a
@@ -253,7 +253,7 @@ pub async fn authenticate_space_read(
 /// accepted when its signature is addressed to the authority.
 ///
 /// The authority's account status is not checked here: it gates only `authorizeSpaceSync` and
-/// `listRepos`, each of which applies [`require_active_space_host`] itself.
+/// `listWriters`, each of which applies [`require_active_space_host`] itself.
 pub async fn authenticate_space_access(
     state: &CoreState,
     headers: &HeaderMap,
@@ -303,7 +303,7 @@ pub async fn require_space_servable(state: &CoreState, space: &SpaceRef) -> Resu
 }
 
 /// Refuse to act as space host for an authority that is not an active local account: the
-/// reference's `assertActiveSpaceHost`, applied by `authorizeSpaceSync` and `listRepos` alone.
+/// reference's `assertActiveSpaceHost`, applied by `authorizeSpaceSync` and `listWriters` alone.
 ///
 /// No local account is `SpaceNotFound`. A taken-down (or suspended) authority is
 /// `RepoTakendown` and a deactivated one `RepoDeactivated` — never `SpaceDeleted`, the spec's

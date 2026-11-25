@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// End-to-end coverage of the space-host notification surface (listRepos, notifyRepoUpdate,
+// End-to-end coverage of the space-host notification surface (listWriters, notifyRepoUpdate,
 // notifyCredentialsRevoked) plus the two effects that hang off the write path: the writer set a
 // local commit records, and the *absence* of any registration when a write lands in a foreign
 // authority's space (the repo host reports it directly; see `space_notify`'s tests). Driven
@@ -101,40 +101,42 @@ fn registrations(body: &serde_json::Value) -> Vec<String> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|r| r["did"].as_str().unwrap().to_string())
+        .map(|r| r["repo"].as_str().unwrap().to_string())
         .collect()
 }
 
-// ── listRepos ───────────────────────────────────────────────────────────────
+// ── listWriters ───────────────────────────────────────────────────────────────
 
 /// A local write into a space this host is the authority for lands in the writer set, and
-/// `listRepos` reports it with the commit's rev and hash.
+/// `listWriters` reports it with the commit's rev and hash.
 #[tokio::test]
-async fn list_repos_reports_the_writers_of_a_locally_hosted_space() {
+async fn list_writers_reports_the_writers_of_a_locally_hosted_space() {
     let state = setup().await;
     let alice = access_jwt(&state.jwt_secret, ALICE);
 
     // Nobody has written yet.
-    let (status, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
+    let (status, body) = send(&state, get(&list_writers_query(SPACE), &alice)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(registrations(&body).is_empty(), "{body}");
 
     let rev = write_one(&state, SPACE, ALICE, "one").await;
     write_one(&state, SPACE, BOB, "two").await;
 
-    let (status, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
+    let (status, body) = send(&state, get(&list_writers_query(SPACE), &alice)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(registrations(&body), vec![ALICE, BOB], "{body}");
     let alice_row = &body["repos"][0];
+    assert_eq!(alice_row["$type"], "com.atproto.space.defs#repoWrite");
     assert_eq!(alice_row["repoRev"], rev);
+    assert!(alice_row.get("prevSpaceRev").is_none(), "{body}");
     assert!(
-        alice_row["hash"]["$bytes"].is_string(),
-        "hash is lex-JSON bytes: {body}"
+        alice_row["data"]["$bytes"].is_string(),
+        "data is lex-JSON bytes: {body}"
     );
 
     // A second write advances the same row rather than adding one — the set is per repo.
     let rev2 = write_one(&state, SPACE, ALICE, "three").await;
-    let (_, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
+    let (_, body) = send(&state, get(&list_writers_query(SPACE), &alice)).await;
     assert_eq!(
         registrations(&body),
         vec![BOB, ALICE],
@@ -150,7 +152,7 @@ async fn list_repos_reports_the_writers_of_a_locally_hosted_space() {
 /// The cursor is a `spaceRev`: a page opens strictly after it, and a short page still carries
 /// one so a syncer can resume later and see only what changed.
 #[tokio::test]
-async fn list_repos_pages_on_the_space_rev() {
+async fn list_writers_pages_on_the_space_rev() {
     let state = setup().await;
     let alice = access_jwt(&state.jwt_secret, ALICE);
     write_one(&state, SPACE, ALICE, "one").await;
@@ -158,7 +160,7 @@ async fn list_repos_pages_on_the_space_rev() {
 
     let (_, body) = send(
         &state,
-        get(&format!("{}&limit=1", list_repos_query(SPACE)), &alice),
+        get(&format!("{}&limit=1", list_writers_query(SPACE)), &alice),
     )
     .await;
     assert_eq!(registrations(&body), vec![ALICE], "{body}");
@@ -167,7 +169,7 @@ async fn list_repos_pages_on_the_space_rev() {
     let (_, body) = send(
         &state,
         get(
-            &format!("{}&limit=1&cursor={cursor}", list_repos_query(SPACE)),
+            &format!("{}&limit=1&cursor={cursor}", list_writers_query(SPACE)),
             &alice,
         ),
     )
@@ -181,7 +183,7 @@ async fn list_repos_pages_on_the_space_rev() {
     let (_, body) = send(
         &state,
         get(
-            &format!("{}&cursor={cursor}", list_repos_query(SPACE)),
+            &format!("{}&cursor={cursor}", list_writers_query(SPACE)),
             &alice,
         ),
     )
@@ -190,21 +192,21 @@ async fn list_repos_pages_on_the_space_rev() {
     assert!(body.get("cursor").is_none(), "{body}");
 }
 
-fn list_repos_query(space: &str) -> String {
-    format!("com.atproto.space.listRepos?space={space}")
+fn list_writers_query(space: &str) -> String {
+    format!("com.atproto.space.listWriters?space={space}")
 }
 
 /// A syncer pages the writer set with the `spaceRev` cursor and later resumes from the last one
 /// it saw, getting only what changed since.
 #[tokio::test]
-async fn list_repos_resumes_from_a_space_rev_cursor() {
+async fn list_writers_resumes_from_a_space_rev_cursor() {
     let state = setup().await;
     let alice = access_jwt(&state.jwt_secret, ALICE);
     write_one(&state, SPACE, ALICE, "one").await;
     write_one(&state, SPACE, BOB, "two").await;
 
     let page = |cursor: Option<String>| {
-        let mut query = format!("{}&limit=1", list_repos_query(SPACE));
+        let mut query = format!("{}&limit=1", list_writers_query(SPACE));
         if let Some(cursor) = cursor {
             query.push_str(&format!("&cursor={cursor}"));
         }
@@ -226,6 +228,147 @@ async fn list_repos_resumes_from_a_space_rev_cursor() {
         vec![ALICE.to_string()],
         "{resumed}"
     );
+}
+
+/// The writer-set entry for `did`, as `listWriters` reports it.
+async fn writer_entry(state: &CoreState, did: &str) -> serde_json::Value {
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    let (status, body) = send(state, get(&list_writers_query(SPACE), &alice)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["repo"] == did)
+        .cloned()
+        .unwrap_or_else(|| panic!("{did} missing from {body}"))
+}
+
+fn remove_writer(token: &str, repo: &str) -> Request<Body> {
+    post(
+        "com.atproto.space.removeWriter",
+        token,
+        serde_json::json!({ "space": SPACE, "repo": repo }),
+    )
+}
+
+/// `removeWriter` turns the entry into a `repoRemoved` at a new `spaceRev`, does nothing the
+/// second time, and the writer's next write (admitted here by `publicWrite`) brings it back.
+#[tokio::test]
+async fn a_removed_writer_is_listed_as_removed_until_it_writes_again() {
+    let state = setup().await;
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    write_one(&state, SPACE, ALICE, "one").await;
+    write_one(&state, SPACE, BOB, "two").await;
+    let before = writer_entry(&state, BOB).await;
+
+    let (status, body) = send(&state, remove_writer(&alice, BOB)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let removed = writer_entry(&state, BOB).await;
+    assert_eq!(
+        removed,
+        serde_json::json!({
+            "$type": "com.atproto.space.defs#repoRemoved",
+            "repo": BOB,
+            "spaceRev": removed["spaceRev"],
+        }),
+        "a removal carries no repoRev, data or prevSpaceRev"
+    );
+    assert!(removed["spaceRev"].as_str() > before["spaceRev"].as_str());
+    assert_eq!(
+        writer_entry(&state, ALICE).await["$type"],
+        "com.atproto.space.defs#repoWrite"
+    );
+
+    // Already removed, and never a writer: both do nothing.
+    for repo in [BOB, "did:plc:neverwroteaaaaaaaaaaaaa"] {
+        let (status, body) = send(&state, remove_writer(&alice, repo)).await;
+        assert_eq!(status, StatusCode::OK, "{repo}: {body}");
+    }
+    assert_eq!(writer_entry(&state, BOB).await, removed);
+
+    let rev = write_one(&state, SPACE, BOB, "three").await;
+    let rejoined = writer_entry(&state, BOB).await;
+    assert_eq!(rejoined["$type"], "com.atproto.space.defs#repoWrite");
+    assert_eq!(rejoined["repoRev"], rev);
+    assert!(rejoined["spaceRev"].as_str() > removed["spaceRev"].as_str());
+}
+
+/// Only the authority removes writers.
+#[tokio::test]
+async fn remove_writer_is_the_authoritys_alone() {
+    let state = setup().await;
+    write_one(&state, SPACE, ALICE, "one").await;
+    let bob = access_jwt(&state.jwt_secret, BOB);
+    let (status, body) = send(&state, remove_writer(&bob, ALICE)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "NotAuthorized");
+    assert_eq!(
+        writer_entry(&state, ALICE).await["$type"],
+        "com.atproto.space.defs#repoWrite"
+    );
+}
+
+/// `putMembers` with `write: false` and `removeMembers` each take the member out of the writer
+/// set; changing the policy's `$type` doesn't.
+#[tokio::test]
+async fn member_changes_remove_writers_but_a_type_change_does_not() {
+    let state = setup().await;
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    let put_bob = |write: bool| {
+        post(
+            "com.atproto.memberspace.putMembers",
+            &alice,
+            serde_json::json!({
+                "space": SPACE,
+                "members": [{ "did": BOB, "read": true, "write": write }],
+            }),
+        )
+    };
+    let kind = |entry: serde_json::Value| entry["$type"].as_str().unwrap().to_string();
+    const WRITE: &str = "com.atproto.space.defs#repoWrite";
+    const REMOVED: &str = "com.atproto.space.defs#repoRemoved";
+
+    let (status, body) = send(&state, put_bob(true)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    write_one(&state, SPACE, BOB, "one").await;
+    assert_eq!(kind(writer_entry(&state, BOB).await), WRITE);
+
+    let (status, body) = send(&state, put_bob(false)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(kind(writer_entry(&state, BOB).await), REMOVED);
+
+    let (status, body) = send(&state, put_bob(true)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    write_one(&state, SPACE, BOB, "two").await;
+    assert_eq!(kind(writer_entry(&state, BOB).await), WRITE);
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.memberspace.removeMembers",
+            &alice,
+            serde_json::json!({ "space": SPACE, "dids": [BOB] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(kind(writer_entry(&state, BOB).await), REMOVED);
+
+    write_one(&state, SPACE, BOB, "three").await;
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.space.updateSpace",
+            &alice,
+            serde_json::json!({
+                "space": SPACE,
+                "policy": { "$type": "com.atproto.personalspace.policy" },
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(kind(writer_entry(&state, BOB).await), WRITE);
 }
 
 /// Every space-host method is answerable only by the space's authority. A holder of a perfectly
@@ -257,7 +400,7 @@ async fn space_host_methods_refuse_a_foreign_authoritys_space() {
 
     let (status, body) = send(
         &state,
-        signed_get(&list_repos_query(FOREIGN_SPACE), &credential, &key),
+        signed_get(&list_writers_query(FOREIGN_SPACE), &credential, &key),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -279,7 +422,7 @@ fn signed_get(method_and_query: &str, credential: &str, key: &SpaceSigKey) -> Re
 
 /// A write into a space whose authority lives elsewhere leaves no registration row and no
 /// writer-set claim here: the repo host reports straight to the authority, and this host does not
-/// answer `listRepos` for a space it is not the authority of.
+/// answer `listWriters` for a space it is not the authority of.
 #[tokio::test]
 async fn a_write_into_a_foreign_space_registers_nothing() {
     let state = setup().await;
@@ -304,7 +447,7 @@ async fn a_write_into_a_foreign_space_registers_nothing() {
 // ── notifyRepoUpdate ─────────────────────────────────────────────────────────────
 
 /// A repo host reports its user's write; the authority records it in the writer set, so a repo
-/// that lives nowhere near this host still shows up in `listRepos`.
+/// that lives nowhere near this host still shows up in `listWriters`.
 #[tokio::test]
 async fn notify_repo_update_records_a_foreign_repo_in_the_writer_set() {
     let state = setup().await;
@@ -322,7 +465,7 @@ async fn notify_repo_update_records_a_foreign_repo_in_the_writer_set() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let (_, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
+    let (_, body) = send(&state, get(&list_writers_query(SPACE), &alice)).await;
     assert_eq!(registrations(&body), vec![carol.clone()], "{body}");
     assert_eq!(body["repos"][0]["repoRev"], "3kabcdefghij2");
 }
@@ -357,7 +500,7 @@ async fn notify_repo_update_from_a_non_member_is_ignored_without_public_write() 
 
     let (status, body) = send(&state, notify()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (_, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
+    let (_, body) = send(&state, get(&list_writers_query(SPACE), &alice)).await;
     assert!(registrations(&body).is_empty(), "{body}");
 
     let (status, body) = send(
@@ -375,7 +518,7 @@ async fn notify_repo_update_from_a_non_member_is_ignored_without_public_write() 
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = send(&state, notify()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (_, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
+    let (_, body) = send(&state, get(&list_writers_query(SPACE), &alice)).await;
     assert_eq!(registrations(&body), vec![carol], "{body}");
 }
 
@@ -543,7 +686,7 @@ async fn service_auth_for(state: &CoreState, did: &str, lxm: &str) -> String {
 
 // ── deletion ────────────────────────────────────────────────────────────────
 
-/// Deleting a space drops its writer set with everything else, so `listRepos` stops answering
+/// Deleting a space drops its writer set with everything else, so `listWriters` stops answering
 /// for it entirely (via the tombstone) rather than reporting a stale set.
 #[tokio::test]
 async fn deleting_a_space_drops_its_writer_set() {
@@ -575,7 +718,7 @@ async fn deleting_a_space_drops_its_writer_set() {
             .is_empty()
     );
 
-    let (status, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
+    let (status, body) = send(&state, get(&list_writers_query(SPACE), &alice)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "SpaceNotFound");
 }

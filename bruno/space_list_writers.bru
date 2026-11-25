@@ -1,0 +1,39 @@
+meta {
+  name: Space List Writers
+  type: http
+  seq: 159
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.listWriters?space=at://{{did}}/space/org.example.bucket/main&limit=100
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://{{did}}/space/org.example.bucket/main
+  limit: 100
+  ~cursor:
+}
+
+docs {
+  The space host's writer set: every repo that has written into the space, each as its latest
+  update. A "com.atproto.space.defs#repoWrite" carries the repoRev and data (commit digest) last
+  reported for the repo and the spaceRev at which it last changed; a
+  "com.atproto.space.defs#repoRemoved" carries only the spaceRev of its removal. This is the sync
+  boundary, not an access-control list — it enumerates writers, never readers, and a member who
+  has only ever read is absent. Taken-down writers are listed like any other.
+
+  For a repo hosted elsewhere the repoRev/data come from that host's notifyRepoUpdate and may lag;
+  the repo's own host is the source of truth. Syncers use this to heal anything the best-effort
+  notifications missed: entries are in ascending spaceRev order, prevSpaceRev is never set, and
+  the cursor is a spaceRev (exclusive), so resume from the last one seen.
+
+  Answered only by the space's authority. A space this server merely keeps repos in reads as
+  400 SpaceNotFound — ask its authority instead. A taken-down or deactivated authority answers
+  400 RepoTakendown / RepoDeactivated. Auth: a space credential, or the authority's own session.
+}

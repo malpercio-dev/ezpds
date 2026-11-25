@@ -379,19 +379,42 @@ pub async fn list_repo_ops(
 
 /// Every record path and CID in one repo — the raw material for `getRepo`'s DRISL index. The
 /// route re-sorts into canonical DAG-CBOR key order (length-first), which SQL cannot express;
-/// unordered here, and unpaged because the index must be materialized whole anyway.
-pub async fn list_record_index(
-    pool: &SqlitePool,
+/// unordered here, and unpaged because the index must be materialized whole anyway. Also what
+/// `clearRecords` refolds the kept records' set hash from.
+pub async fn list_record_index<'e, E>(
+    executor: E,
     space_uri: &str,
     account_did: &str,
-) -> Result<Vec<(String, String, String)>, sqlx::Error> {
+) -> Result<Vec<(String, String, String)>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query_as(
         "SELECT collection, rkey, cid FROM space_records \
          WHERE space_uri = ? AND account_did = ?",
     )
     .bind(space_uri)
     .bind(account_did)
-    .fetch_all(pool)
+    .fetch_all(executor)
+    .await
+}
+
+/// The distinct collections one repo holds records in, for `clearRecords`' grant check.
+pub async fn list_collections<'e, E>(
+    executor: E,
+    space_uri: &str,
+    account_did: &str,
+) -> Result<Vec<String>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT DISTINCT collection FROM space_records \
+         WHERE space_uri = ? AND account_did = ? ORDER BY collection",
+    )
+    .bind(space_uri)
+    .bind(account_did)
+    .fetch_all(executor)
     .await
 }
 
@@ -441,28 +464,36 @@ pub async fn sweep_old_repo_ops(pool: &SqlitePool, max_age_secs: u64) -> Result<
     Ok(result.rows_affected())
 }
 
-/// Whether one account's repo in a space holds any record.
-pub async fn repo_has_records<'e, E>(
-    executor: E,
+/// Delete one repo's whole oplog and every record outside the `keep` collections, leaving the
+/// head for the caller to advance (`clearRecords`). Two statements, so it takes a connection.
+pub async fn clear_records(
+    conn: &mut sqlx::SqliteConnection,
     space_uri: &str,
     account_did: &str,
-) -> Result<bool, sqlx::Error>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
-    sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM space_records WHERE space_uri = ? AND account_did = ?)",
-    )
-    .bind(space_uri)
-    .bind(account_did)
-    .fetch_one(executor)
-    .await
+    keep: &[&str],
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM space_repo_ops WHERE space_uri = ? AND account_did = ?")
+        .bind(space_uri)
+        .bind(account_did)
+        .execute(&mut *conn)
+        .await?;
+    let kept = vec!["?"; keep.len()].join(", ");
+    let sql = format!(
+        "DELETE FROM space_records WHERE space_uri = ? AND account_did = ? \
+         AND collection NOT IN ({kept})"
+    );
+    let mut query = sqlx::query(&sql).bind(space_uri).bind(account_did);
+    for collection in keep {
+        query = query.bind(*collection);
+    }
+    query.execute(&mut *conn).await?;
+    Ok(())
 }
 
 /// Delete one account's repo in a space outright — oplog, records, then the head (FK order).
-/// Two callers: the write path when a commit empties the repo (an empty repo *is* a nonexistent
-/// one), and `deleteSpace`, which takes the authority's own repo with its space. Takes a
-/// connection rather than a generic executor because it is three statements.
+/// Two callers: the migration import, which replaces the repo, and `deleteSpace`, which takes the
+/// authority's own repo with its space. Takes a connection rather than a generic executor because
+/// it is three statements.
 pub async fn delete_repo(
     conn: &mut sqlx::SqliteConnection,
     space_uri: &str,

@@ -28,7 +28,7 @@
 //!   triggered from here rather than from each record route because a write
 //!   path that forgot to notify would look correct and silently strand every
 //!   syncer. What stays inside the transaction is the writer-set row
-//!   `listRepos` answers — our own durable claim about our own repo, not a
+//!   `listWriters` answers — our own durable claim about our own repo, not a
 //!   network effect.
 //!
 //! Authentication and `space:` scope enforcement happen above this layer (the
@@ -104,8 +104,8 @@ pub struct SpaceCommitOutcome {
 
 /// Apply a batch of record writes to one space repo as a single atomic commit.
 ///
-/// The repo is created on first write (fresh TID rev, empty LtHash state) and deleted by the
-/// commit that empties it. A foreign authority's space row is recorded on first write too, so a
+/// The repo is created on first write (fresh TID rev, empty LtHash state), and a commit that
+/// empties it leaves it in place at the empty-set digest. A foreign authority's space row is recorded on first write too, so a
 /// member can join it without this host having been told in advance; a space anchored on `did`
 /// itself must already exist ([`ErrorCode::SpaceNotFound`] otherwise).
 /// Returns [`ErrorCode::Conflict`] when the rev CAS loses to a concurrent
@@ -243,31 +243,9 @@ async fn commit_ops(
 ) -> Result<PendingSpaceCommit, ApiError> {
     let space_uri = space.uri.as_str();
 
-    // A deactivated, suspended, or taken-down account is read-only, exactly as
-    // on the public write path (the migration import is [`import_space_repo`]'s
-    // own path). Checked *inside* the transaction: the public
-    // path folds this guard into its root CAS, but the space head's CAS is on
-    // `space_repos`, not `accounts`, so a pre-transaction check would leave a
-    // window for a concurrent deactivation to land between check and commit.
-    use custos_db::accounts::AccountLifecycle;
-    match custos_db::accounts::account_lifecycle(&mut **tx, did).await? {
-        Some(AccountLifecycle::Active) => {}
-        Some(AccountLifecycle::Deactivated) => {
-            return Err(ApiError::new(
-                ErrorCode::AccountDeactivated,
-                "account is deactivated",
-            ));
-        }
-        Some(AccountLifecycle::TakenDown | AccountLifecycle::Suspended) => {
-            return Err(ApiError::new(
-                ErrorCode::AccountTakedown,
-                "account has been taken down",
-            ));
-        }
-        None => {
-            return Err(ApiError::new(ErrorCode::NotFound, "account not found"));
-        }
-    }
+    // A deactivated, suspended, or taken-down account is read-only, exactly as on the public
+    // write path.
+    require_writable_account(tx, did).await?;
 
     admit_space(tx, space, did).await?;
 
@@ -481,31 +459,26 @@ async fn commit_ops(
             );
         })?;
 
-    // An empty repo and a nonexistent one are the same thing (spec "Repo lifecycle"): a commit
-    // that removes the last record deletes the repo — head, records and oplog — so every read
-    // keyed on the head answers `RepoNotFound` and the next write starts a fresh repo. The
-    // commit itself is still announced below with the empty-set hash, which is how the authority
-    // and its syncers learn the repo is gone.
-    let emptied = !crate::db::space_repos::repo_has_records(&mut **tx, space_uri, did)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to count space records");
-            internal_error()
-        })?;
-    if emptied {
-        crate::db::space_repos::delete_repo(tx, space_uri, did)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, space = %space_uri, did = %did, "failed to delete emptied space repo");
-                internal_error()
-            })?;
-    }
+    // A commit that removes the last record leaves an empty repo, not a missing one: the head
+    // stays at the empty-set digest, its rev keeps advancing, and reads answer as for any empty
+    // repo. Nothing collects it.
+    finish_commit(tx, space, did, new_rev, &lthash, results).await
+}
 
-    // Finalize the folded LtHash state. The rev was already advanced (and
-    // CAS-guarded) before the fold; inside the same transaction this update
-    // trivially matches its own rev.
-    let finalized = emptied
-        || crate::db::space_repos::advance_repo_rev(
+/// Store the folded LtHash state on the head the commit already advanced to `new_rev`, and
+/// record the commit in the writer set, inside the commit's transaction.
+async fn finish_commit(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space: &SpaceRef,
+    did: &str,
+    new_rev: String,
+    lthash: &LtHash,
+    results: Vec<SpaceWriteResult>,
+) -> Result<PendingSpaceCommit, ApiError> {
+    let space_uri = space.uri.as_str();
+    // The rev was already advanced (and CAS-guarded) before the fold; inside the same
+    // transaction this update trivially matches its own rev.
+    let finalized = crate::db::space_repos::advance_repo_rev(
         &mut **tx,
         space_uri,
         did,
@@ -523,7 +496,7 @@ async fn commit_ops(
         return Err(internal_error());
     }
 
-    // The writer set `listRepos` answers, kept durable with the commit rather than derived
+    // The writer set `listWriters` answers, kept durable with the commit rather than derived
     // afterwards: for a space this host is the authority for, our own account's write is one of
     // the facts the authority reports. The query no-ops for a space whose authority is
     // elsewhere.
@@ -547,6 +520,131 @@ async fn commit_ops(
     })
 }
 
+/// Delete every record in `did`'s repo in `space` except those in `keep`, as one commit:
+/// `clearRecords`. The repo takes a new rev with the kept records' set hash, its oplog is cleared
+/// (kept records' entries too, as the reference clears it), and the commit is announced like any
+/// other. `None`, with nothing changed, when the repo doesn't exist or holds nothing to delete.
+///
+/// `granted` is the set of collections the caller's grant was checked against before the
+/// transaction. A collection that appeared since then answers `Conflict`, so a concurrent write
+/// can't slip a collection past the check; the client retries. One delete's write cost is charged,
+/// not one per record, so a repo too large for the write budget can still be cleared.
+pub async fn clear_space_records(
+    state: &CoreState,
+    space: &SpaceRef,
+    did: &str,
+    keep: &[&str],
+    granted: &[String],
+) -> Result<Option<SpaceCommitOutcome>, ApiError> {
+    let space_uri = space.uri.as_str();
+    let db_error = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space_uri, did = %did, "failed to clear space records");
+        internal_error()
+    };
+    let mut tx = state.db.begin().await.map_err(db_error)?;
+    require_writable_account(&mut tx, did).await?;
+    let Some(repo) = crate::db::space_repos::get_repo(&mut *tx, space_uri, did)
+        .await
+        .map_err(db_error)?
+    else {
+        return Ok(None);
+    };
+    // The repo exists, so its space row does too; this applies the write path's refusals
+    // (deleted, taken down) without recording anything.
+    admit_space(&mut tx, space, did).await?;
+
+    let records = crate::db::space_repos::list_record_index(&mut *tx, space_uri, did)
+        .await
+        .map_err(db_error)?;
+    if let Some((collection, _, _)) = records.iter().find(|(collection, _, _)| {
+        !keep.contains(&collection.as_str()) && !granted.contains(collection)
+    }) {
+        tracing::debug!(space = %space_uri, did = %did, %collection, "clearRecords raced a new collection");
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "space repo was modified concurrently; retry",
+        ));
+    }
+    let mut lthash = LtHash::new();
+    let mut cleared = false;
+    for (collection, rkey, cid) in &records {
+        if keep.contains(&collection.as_str()) {
+            lthash.add(&format_set_hash_element(collection, rkey, cid));
+        } else {
+            cleared = true;
+        }
+    }
+    if !cleared {
+        return Ok(None);
+    }
+
+    let new_rev = repo_engine::next_record_rev(&repo.rev).map_err(|e| {
+        tracing::error!(error = %e, space = %space_uri, did = %did, "failed to derive commit rev");
+        internal_error()
+    })?;
+    if !crate::db::space_repos::advance_repo_rev(
+        &mut *tx,
+        space_uri,
+        did,
+        &new_rev,
+        &repo.lthash_state,
+        &repo.rev,
+    )
+    .await
+    .map_err(db_error)?
+    {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "space repo was modified concurrently; retry against the current head",
+        ));
+    }
+    crate::db::space_repos::clear_records(&mut tx, space_uri, did, keep)
+        .await
+        .map_err(db_error)?;
+
+    state
+        .rate_limiter
+        .check_write_points(did, custos_core::rate_limit::WRITE_COST_DELETE)
+        .inspect_err(|_| {
+            state.metrics.rate_limit_rejections.add(
+                1,
+                &[custos_core::metrics::label(
+                    custos_core::metrics::names::LABEL_LIMITER,
+                    "account_writes",
+                )],
+            );
+        })?;
+
+    let pending = finish_commit(&mut tx, space, did, new_rev, &lthash, Vec::new()).await?;
+    tx.commit().await.map_err(db_error)?;
+    Ok(Some(pending.announce(state)))
+}
+
+/// Refuse a commit by an account that isn't active: deactivated, suspended, taken down or gone.
+///
+/// Read inside the commit's transaction: the public path folds this guard into its root CAS, but
+/// the space head's CAS is on `space_repos`, not `accounts`, so a pre-transaction check would
+/// leave a window for a concurrent deactivation to land between check and commit. The migration
+/// import is [`import_space_repo`]'s own path.
+async fn require_writable_account(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    did: &str,
+) -> Result<(), ApiError> {
+    use custos_db::accounts::AccountLifecycle;
+    match custos_db::accounts::account_lifecycle(&mut **tx, did).await? {
+        Some(AccountLifecycle::Active) => Ok(()),
+        Some(AccountLifecycle::Deactivated) => Err(ApiError::new(
+            ErrorCode::AccountDeactivated,
+            "account is deactivated",
+        )),
+        Some(AccountLifecycle::TakenDown | AccountLifecycle::Suspended) => Err(ApiError::new(
+            ErrorCode::AccountTakedown,
+            "account has been taken down",
+        )),
+        None => Err(ApiError::new(ErrorCode::NotFound, "account not found")),
+    }
+}
+
 /// Replace `did`'s repo in `archive.space` with the archive's records: the migration import
 /// (`crate::space_migration`). `did` must be a deactivated account.
 ///
@@ -555,7 +653,7 @@ async fn commit_ops(
 /// writer-set row moves, as in the reference. A syncer still holding the old host's `since` finds
 /// its set hash no longer matches and heals with `getRepo`. Write points are not charged: the
 /// records are the account's own, arriving in one bulk transfer. An archive with no records
-/// leaves no repo, since an empty repo is a nonexistent one.
+/// leaves an empty repo, as the reference's import does.
 ///
 /// The space is admitted as any commit's is, so the authority's own space has to be imported
 /// with `importSpaceMeta` first (`SpaceNotFound` otherwise).
@@ -588,30 +686,22 @@ pub(crate) async fn import_space_repo(
     crate::db::space_repos::delete_repo(&mut tx, space_uri, did)
         .await
         .map_err(db_error)?;
-    if !archive.records.is_empty() {
-        crate::db::space_repos::insert_repo(
+    crate::db::space_repos::insert_repo(&mut *tx, space_uri, did, &rev, &archive.lthash.state())
+        .await
+        .map_err(db_error)?;
+    for record in &archive.records {
+        crate::db::space_repos::upsert_record(
             &mut *tx,
             space_uri,
             did,
+            &record.collection,
+            &record.rkey,
+            &record.cid,
+            &record.bytes,
             &rev,
-            &archive.lthash.state(),
         )
         .await
         .map_err(db_error)?;
-        for record in &archive.records {
-            crate::db::space_repos::upsert_record(
-                &mut *tx,
-                space_uri,
-                did,
-                &record.collection,
-                &record.rkey,
-                &record.cid,
-                &record.bytes,
-                &rev,
-            )
-            .await
-            .map_err(db_error)?;
-        }
     }
     tx.commit().await.map_err(db_error)?;
     Ok(rev)

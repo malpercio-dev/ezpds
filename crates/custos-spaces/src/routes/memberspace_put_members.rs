@@ -35,7 +35,8 @@ struct MemberInput {
 ///
 /// A space-level `manage=update` operation, authority only, on a memberspace only
 /// (`PolicyMismatch` otherwise). A DID listed twice takes its last entry. Published member
-/// records follow in the same transaction. The member is not notified (their PDS materializes a
+/// records follow in the same transaction, and so does each `write: false` member's removal from
+/// the writer set, which then goes to the registered syncers as a `repoRemoved`. The member is not notified (their PDS materializes a
 /// repo on first write). Idempotent.
 pub async fn memberspace_put_members(
     State(state): State<CoreState>,
@@ -76,6 +77,7 @@ pub async fn memberspace_put_members(
     let (_, policy) = crate::views::load_active_space(&mut *tx, &space).await?;
     policy.require_memberspace()?;
     let mut ops = Vec::new();
+    let mut removed_writers = Vec::new();
     for (did, access) in members {
         crate::db::spaces::put_member(
             &mut *tx,
@@ -86,11 +88,28 @@ pub async fn memberspace_put_members(
         )
         .await
         .map_err(internal)?;
+        if !access.write {
+            if let Some(revs) =
+                crate::db::space_notify::remove_writer(&mut tx, &space.uri, did.as_str())
+                    .await
+                    .map_err(internal)?
+            {
+                removed_writers.push((did.clone(), revs));
+            }
+        }
         ops.extend(
             crate::policy::member_record_ops(&mut tx, &space, &policy, did.as_str(), Some(access))
                 .await?,
         );
     }
     crate::policy::commit_with_published(&state, tx, &space, &ops).await?;
+    for (did, revs) in removed_writers {
+        drop(crate::space_notify::forward_removed(
+            &state,
+            &space,
+            did.as_str(),
+            revs,
+        ));
+    }
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }

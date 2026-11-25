@@ -196,13 +196,12 @@ pub enum WriterUpdate {
 /// Record (or advance) a repo in a space's writer set, assigning the update the next space
 /// revision. Only the space's authority (`spaces.policy IS NOT NULL`) keeps a writer set, and only
 /// a `rev` that advances the stored one is recorded: a replayed or reordered report must not move
-/// a writer backwards or use up a space revision.
+/// a writer backwards or use up a space revision. That holds for a removed writer too (V083): its
+/// row keeps the last `rev`, so only a newer write puts it back in the set, by clearing
+/// `removed_at`.
 ///
-/// The space revision is a TID strictly after the space's `last_space_rev` (V074), a per-space
-/// high-water mark rather than the maximum over writer rows, because account purge deletes rows
-/// and the maximum would then step backwards. Monotonic revisions are what make `spaceRev` a
-/// usable `listRepos` cursor and let a syncer spot a missed notification from a `prevSpaceRev`
-/// that is not the one it last saw.
+/// An emptied repo is recorded like any other: its entry stays a `repoWrite` whose hash is the
+/// empty-set digest.
 ///
 /// The reads and the writes share the caller's connection; inside a transaction they are atomic,
 /// and outside one the single-connection pool serializes them.
@@ -213,13 +212,7 @@ pub async fn upsert_writer(
     rev: &str,
     hash: &[u8],
 ) -> Result<WriterUpdate, sqlx::Error> {
-    let Some(prev) = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT last_space_rev FROM spaces WHERE uri = ? AND policy IS NOT NULL",
-    )
-    .bind(space_uri)
-    .fetch_optional(&mut *conn)
-    .await?
-    else {
+    let Some(prev) = authority_space_rev(conn, space_uri).await? else {
         return Ok(WriterUpdate::NotAuthority);
     };
     let stored: Option<String> =
@@ -232,57 +225,111 @@ pub async fn upsert_writer(
     if stored.is_some_and(|stored| rev <= stored.as_str()) {
         return Ok(WriterUpdate::Stale);
     }
+    let revs = next_space_rev(conn, space_uri, prev).await?;
+    sqlx::query(
+        "INSERT INTO space_writers (space_uri, repo_did, rev, hash, space_rev, updated_at) \
+         VALUES (?, ?, ?, ?, ?, datetime('now')) \
+         ON CONFLICT (space_uri, repo_did) \
+         DO UPDATE SET rev = excluded.rev, hash = excluded.hash, \
+                       space_rev = excluded.space_rev, updated_at = excluded.updated_at, \
+                       removed_at = NULL",
+    )
+    .bind(space_uri)
+    .bind(repo_did)
+    .bind(rev)
+    .bind(hash)
+    .bind(&revs.space_rev)
+    .execute(&mut *conn)
+    .await?;
+    Ok(WriterUpdate::Accepted(revs))
+}
+
+/// Take a repo out of a space's writer set, assigning the removal the next space revision. The
+/// row stays, marked removed, so `listWriters` reports the removal and a stale report can't
+/// re-add the repo. `None`, with nothing changed, when the repo isn't in the set (never wrote, or
+/// already removed) or this host isn't the space's authority.
+///
+/// Runs on the caller's connection, inside the member change's transaction when there is one.
+pub async fn remove_writer(
+    conn: &mut sqlx::SqliteConnection,
+    space_uri: &str,
+    repo_did: &str,
+) -> Result<Option<WriterRevs>, sqlx::Error> {
+    let Some(prev) = authority_space_rev(conn, space_uri).await? else {
+        return Ok(None);
+    };
+    let present: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM space_writers \
+         WHERE space_uri = ? AND repo_did = ? AND removed_at IS NULL)",
+    )
+    .bind(space_uri)
+    .bind(repo_did)
+    .fetch_one(&mut *conn)
+    .await?;
+    if !present {
+        return Ok(None);
+    }
+    let revs = next_space_rev(conn, space_uri, prev).await?;
+    sqlx::query(
+        "UPDATE space_writers SET space_rev = ?, removed_at = datetime('now'), \
+         updated_at = datetime('now') WHERE space_uri = ? AND repo_did = ?",
+    )
+    .bind(&revs.space_rev)
+    .bind(space_uri)
+    .bind(repo_did)
+    .execute(&mut *conn)
+    .await?;
+    Ok(Some(revs))
+}
+
+/// The space's `last_space_rev` when this host is its authority (the outer `Option`); the inner
+/// one is `None` before its first update.
+async fn authority_space_rev(
+    conn: &mut sqlx::SqliteConnection,
+    space_uri: &str,
+) -> Result<Option<Option<String>>, sqlx::Error> {
+    sqlx::query_scalar("SELECT last_space_rev FROM spaces WHERE uri = ? AND policy IS NOT NULL")
+        .bind(space_uri)
+        .fetch_optional(&mut *conn)
+        .await
+}
+
+/// Assign the space's next revision, a TID strictly after `prev`, and store it as the space's
+/// `last_space_rev` (V074). A per-space high-water mark rather than the maximum over writer rows,
+/// because account purge deletes rows and the maximum would then step backwards. Monotonic
+/// revisions are what make `spaceRev` a usable `listWriters` cursor and let a syncer spot a missed
+/// notification from a `prevSpaceRev` that is not the one it last saw.
+async fn next_space_rev(
+    conn: &mut sqlx::SqliteConnection,
+    space_uri: &str,
+    prev: Option<String>,
+) -> Result<WriterRevs, sqlx::Error> {
     let space_rev = repo_engine::next_record_rev(prev.as_deref().unwrap_or(""))
         .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-    // An empty repo is a nonexistent one, so a report carrying the empty-set hash takes the repo
-    // out of the writer set. It still uses up a space revision and is forwarded, which is how
-    // syncers learn the repo is gone.
-    // ponytail: once the row is gone, a reordered older report for the same repo re-adds it;
-    // keep a tombstone rev per repo if that window matters.
-    if hash == crypto::LtHash::new().digest() {
-        sqlx::query("DELETE FROM space_writers WHERE space_uri = ? AND repo_did = ?")
-            .bind(space_uri)
-            .bind(repo_did)
-            .execute(&mut *conn)
-            .await?;
-    } else {
-        sqlx::query(
-            "INSERT INTO space_writers (space_uri, repo_did, rev, hash, space_rev, updated_at) \
-             VALUES (?, ?, ?, ?, ?, datetime('now')) \
-             ON CONFLICT (space_uri, repo_did) \
-             DO UPDATE SET rev = excluded.rev, hash = excluded.hash, \
-                           space_rev = excluded.space_rev, updated_at = excluded.updated_at",
-        )
-        .bind(space_uri)
-        .bind(repo_did)
-        .bind(rev)
-        .bind(hash)
-        .bind(&space_rev)
-        .execute(&mut *conn)
-        .await?;
-    }
     sqlx::query("UPDATE spaces SET last_space_rev = ? WHERE uri = ?")
         .bind(&space_rev)
         .bind(space_uri)
         .execute(&mut *conn)
         .await?;
-    Ok(WriterUpdate::Accepted(WriterRevs {
+    Ok(WriterRevs {
         space_rev,
         prev_space_rev: prev,
-    }))
+    })
 }
 
-/// One writer-set row, as `listRepos` reports it.
+/// One writer-set row, as `listWriters` reports it.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SpaceWriterRow {
     pub repo_did: String,
     pub rev: String,
     pub hash: Vec<u8>,
     pub space_rev: String,
+    /// Removed from the writer set (a `repoRemoved`); `rev`/`hash` are the last ones before it.
+    pub removed: bool,
 }
 
 /// One page of the writer set in ascending space-revision order, after `after_space_rev`
-/// (exclusive) when given.
+/// (exclusive) when given. Removed writers are included.
 pub async fn list_writers(
     pool: &SqlitePool,
     space_uri: &str,
@@ -290,7 +337,8 @@ pub async fn list_writers(
     limit: i64,
 ) -> Result<Vec<SpaceWriterRow>, sqlx::Error> {
     sqlx::query_as::<_, SpaceWriterRow>(
-        "SELECT repo_did, rev, hash, space_rev FROM space_writers \
+        "SELECT repo_did, rev, hash, space_rev, removed_at IS NOT NULL AS removed \
+         FROM space_writers \
          WHERE space_uri = ? AND (? IS NULL OR space_rev > ?) \
          ORDER BY space_rev ASC, repo_did ASC LIMIT ?",
     )
@@ -368,6 +416,72 @@ mod tests {
             record(&state.db, ALICE, "3kaaaaaaaaaa3").await,
             WriterUpdate::Stale
         );
+    }
+
+    /// A removal keeps the row and takes a space revision; an older or equal report can't re-add
+    /// the writer, and a newer one does.
+    #[tokio::test]
+    async fn a_removed_writer_rejoins_only_on_a_newer_rev() {
+        let state = test_state().await;
+        crate::test_support::seed_authority_space(
+            &state.db,
+            SPACE,
+            &crate::test_support::memberspace_policy(true),
+        )
+        .await;
+        let wrote = accepted(record(&state.db, ALICE, "3kaaaaaaaaaa3").await);
+
+        let mut conn = state.db.acquire().await.unwrap();
+        let removed = remove_writer(&mut conn, SPACE, ALICE)
+            .await
+            .unwrap()
+            .expect("alice is in the set");
+        assert_eq!(removed.prev_space_rev.as_ref(), Some(&wrote.space_rev));
+        assert_eq!(remove_writer(&mut conn, SPACE, ALICE).await.unwrap(), None);
+        assert_eq!(remove_writer(&mut conn, SPACE, BOB).await.unwrap(), None);
+        drop(conn);
+
+        let rows = list_writers(&state.db, SPACE, None, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].removed);
+        assert_eq!(rows[0].space_rev, removed.space_rev);
+
+        assert_eq!(
+            record(&state.db, ALICE, "3kaaaaaaaaaa3").await,
+            WriterUpdate::Stale
+        );
+        assert_eq!(
+            record(&state.db, ALICE, "3kaaaaaaaaaa2").await,
+            WriterUpdate::Stale
+        );
+        let rejoined = accepted(record(&state.db, ALICE, "3kaaaaaaaaaa4").await);
+        assert_eq!(rejoined.prev_space_rev.as_ref(), Some(&removed.space_rev));
+        let rows = list_writers(&state.db, SPACE, None, 10).await.unwrap();
+        assert!(!rows[0].removed);
+        assert_eq!(rows[0].rev, "3kaaaaaaaaaa4");
+    }
+
+    /// An emptied repo keeps its entry, at the empty-set digest.
+    #[tokio::test]
+    async fn an_empty_set_hash_is_an_ordinary_write() {
+        let state = test_state().await;
+        crate::test_support::seed_authority_space(
+            &state.db,
+            SPACE,
+            &crate::test_support::memberspace_policy(true),
+        )
+        .await;
+        let empty = crypto::LtHash::new().digest();
+        let mut conn = state.db.acquire().await.unwrap();
+        let update = upsert_writer(&mut conn, SPACE, ALICE, "3kaaaaaaaaaa2", &empty)
+            .await
+            .unwrap();
+        drop(conn);
+        accepted(update);
+        let rows = list_writers(&state.db, SPACE, None, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].removed);
+        assert_eq!(rows[0].hash, empty);
     }
 
     #[tokio::test]

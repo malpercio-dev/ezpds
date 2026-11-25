@@ -15,7 +15,9 @@ pub struct MetaWriterRow {
     pub space_rev: String,
 }
 
-/// A space's whole writer set, by DID ascending.
+/// A space's whole writer set, by DID ascending. Removed writers are left out, as the reference
+/// leaves them: the archive carries the set itself, so a removal no syncer has seen yet is
+/// dropped, as garbage collection would drop it.
 pub async fn all_writers<'e, E>(
     executor: E,
     space_uri: &str,
@@ -25,7 +27,7 @@ where
 {
     sqlx::query_as::<_, MetaWriterRow>(
         "SELECT repo_did, rev, hash, space_rev FROM space_writers \
-         WHERE space_uri = ? ORDER BY repo_did ASC",
+         WHERE space_uri = ? AND removed_at IS NULL ORDER BY repo_did ASC",
     )
     .bind(space_uri)
     .fetch_all(executor)

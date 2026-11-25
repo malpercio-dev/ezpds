@@ -4,7 +4,7 @@
 //!
 //! * **Repo host → space host.** A user's write into a space whose authority lives elsewhere is
 //!   pushed as one `notifyRepoUpdate` to the authority's `#atproto_pds`, under service auth signed
-//!   by the repo's own key, so the authority can keep the writer set `listRepos` answers. The
+//!   by the repo's own key, so the authority can keep the writer set `listWriters` answers. The
 //!   endpoint comes from the authority's DID document and is checked by `validate_proxy_endpoint`.
 //!   Network failures and transient statuses (5xx, 408, 429) are retried with backoff.
 //! * **Space host → registered syncers.** A write to any repo in a space we are the authority for
@@ -17,7 +17,7 @@
 //!
 //! **Best-effort.** Nothing here blocks a commit: the write has landed before the task is spawned.
 //! Each syncer gets one attempt, and a failure is logged and nothing more. It never unregisters
-//! the syncer, which heals from the `prevSpaceRev` gap with `listRepos`. A registration lapses
+//! the syncer, which heals from the `prevSpaceRev` gap with `listWriters`. A registration lapses
 //! only at its own expiry.
 //!
 //! **Bounded, twice.** A space holds at most [`MAX_REGISTRATIONS`] active registrations, and one
@@ -65,7 +65,7 @@ const MAX_CONCURRENT_FANOUTS: usize = 8;
 ///
 /// Tasks *wait* for a permit rather than shedding when none is free: a suspended task costs
 /// bytes, while dropping the notification costs a syncer its liveness until it next pages
-/// `listRepos`. Waiting bounds the expensive half without losing the cheap half.
+/// `listWriters`. Waiting bounds the expensive half without losing the cheap half.
 // ponytail: unbounded wait queue — an mpsc-fed worker with a bounded channel if a write burst
 // ever outpaces delivery for long enough that queued tasks, not connections, are the problem.
 fn fanout_permits() -> &'static Semaphore {
@@ -138,15 +138,44 @@ pub fn forward_write(
     hash: &[u8],
     revs: WriterRevs,
 ) -> tokio::task::JoinHandle<()> {
-    let state = state.clone();
-    let space = space.clone();
-    let mut update = serde_json::json!({
+    let update = serde_json::json!({
         "$type": "com.atproto.space.defs#repoWrite",
         "repo": repo_did,
         "repoRev": repo_rev,
         "data": crate::views::lex_bytes(hash),
-        "spaceRev": revs.space_rev,
     });
+    forward_update(state, space, update, revs)
+}
+
+/// Space host: send a writer's removal from the writer set to every active registration, as a
+/// `repoRemoved` with the `spaceRev`/`prevSpaceRev` it was assigned. The removed account's own
+/// repo host is not told.
+///
+/// Returns like [`report_write`].
+pub fn forward_removed(
+    state: &CoreState,
+    space: &SpaceRef,
+    repo_did: &str,
+    revs: WriterRevs,
+) -> tokio::task::JoinHandle<()> {
+    let update = serde_json::json!({
+        "$type": "com.atproto.space.defs#repoRemoved",
+        "repo": repo_did,
+    });
+    forward_update(state, space, update, revs)
+}
+
+/// The shared fan-out behind [`forward_write`] and [`forward_removed`]: `update` stamped with its
+/// space revisions, one attempt to each active registration.
+fn forward_update(
+    state: &CoreState,
+    space: &SpaceRef,
+    mut update: Value,
+    revs: WriterRevs,
+) -> tokio::task::JoinHandle<()> {
+    let state = state.clone();
+    let space = space.clone();
+    update["spaceRev"] = revs.space_rev.into();
     if let Some(prev) = revs.prev_space_rev {
         update["prevSpaceRev"] = prev.into();
     }

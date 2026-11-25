@@ -340,3 +340,57 @@ async fn a_refusal_withdraws_the_registration() {
     assert_eq!(body["error"], "AccountNotAuthorized");
     assert!(rows(&state).await.is_empty());
 }
+
+/// Waits for the `n`th `notifySpaceUpdate` to reach the syncer and returns its body.
+async fn nth_update(server: &MockServer, n: usize) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(notice) = calls(server, UPDATE).await.get(n - 1) {
+            return serde_json::from_slice(&notice.body).unwrap();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no notice {n} arrived"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// A writer's removal reaches the syncer as a `repoRemoved`, sequenced after the write before it,
+/// on the same one-attempt fan-out a write takes.
+#[tokio::test]
+async fn a_removal_reaches_the_syncer_as_repo_removed() {
+    let state = setup(true).await;
+    let server = syncer().await;
+    let (status, body) = send(&state, authorize(&endpoint(&server), "sync-token")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    write(&state, "one").await;
+    let wrote = nth_update(&server, 1).await;
+    assert_eq!(wrote["update"]["$type"], "com.atproto.space.defs#repoWrite");
+
+    let token = crate::test_support::access_jwt(&state.jwt_secret, AUTHORITY);
+    let (status, body) = send(
+        &state,
+        crate::test_support::xrpc_post(
+            "com.atproto.space.removeWriter",
+            &token,
+            serde_json::json!({ "space": SPACE, "repo": AUTHORITY }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let removed = nth_update(&server, 2).await;
+    assert_eq!(removed["token"], "sync-token");
+    assert_eq!(
+        removed["update"],
+        serde_json::json!({
+            "$type": "com.atproto.space.defs#repoRemoved",
+            "repo": AUTHORITY,
+            "spaceRev": removed["update"]["spaceRev"],
+            "prevSpaceRev": wrote["update"]["spaceRev"],
+        })
+    );
+    assert!(removed["update"]["spaceRev"].as_str() > wrote["update"]["spaceRev"].as_str());
+}

@@ -911,3 +911,79 @@ async fn publishing_waits_for_a_published_kem_key() {
     )
     .await;
 }
+
+/// `clearRecords` in the authority's own repo deletes the account's records but keeps the
+/// published policy and member records, and the writer set takes the kept records' digest.
+#[tokio::test]
+async fn clear_records_spares_the_authoritys_published_records() {
+    let state = setup().await;
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    let publishing = json!({ "$type": MEMBERSPACE, "publishPolicy": true, "publishMembers": true });
+    ok(
+        &state,
+        post("space.createSpace", &alice, create_body(publishing)),
+    )
+    .await;
+    ok(
+        &state,
+        post(
+            "memberspace.putMembers",
+            &alice,
+            put_members(json!([{ "did": BOB, "read": true, "write": true }])),
+        ),
+    )
+    .await;
+    ok(
+        &state,
+        post(
+            "space.createRecord",
+            &alice,
+            crate::test_support::space_record_body(SPACE, ALICE, "org.example.note", "n", "x"),
+        ),
+    )
+    .await;
+
+    ok(
+        &state,
+        post(
+            "space.clearRecords",
+            &alice,
+            json!({ "space": SPACE, "repo": ALICE }),
+        ),
+    )
+    .await;
+    assert!(published(&state, "org.example.note", "n").await.is_none());
+    assert!(published(&state, POLICY_COLLECTION, "self").await.is_some());
+    assert!(published(&state, MEMBER_COLLECTION, BOB).await.is_some());
+
+    let repo = crate::db::space_repos::get_repo(&state.db, SPACE, ALICE)
+        .await
+        .unwrap()
+        .unwrap();
+    let digest = crypto::LtHash::from_state(&repo.lthash_state)
+        .unwrap()
+        .digest();
+    assert_ne!(digest, crypto::LtHash::new().digest());
+    let writers = crate::db::space_notify::list_writers(&state.db, SPACE, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(writers.len(), 1);
+    assert_eq!(writers[0].rev, repo.rev);
+    assert_eq!(writers[0].hash, digest);
+
+    // Only published records left: nothing to clear, so no new commit.
+    ok(
+        &state,
+        post(
+            "space.clearRecords",
+            &alice,
+            json!({ "space": SPACE, "repo": ALICE }),
+        ),
+    )
+    .await;
+    let after = crate::db::space_repos::get_repo(&state.db, SPACE, ALICE)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.rev, repo.rev);
+}

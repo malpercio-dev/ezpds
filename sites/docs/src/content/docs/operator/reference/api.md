@@ -147,6 +147,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/xrpc/com.atproto.server.updateEmail` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.applyWrites` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.authorizeSpaceSync` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.clearRecords` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.createRecord` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.createSpace` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.deleteRecord` | AT Protocol XRPC |
@@ -163,11 +164,12 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/xrpc/com.atproto.space.listBlobs` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.listRecords` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.listRepoOps` | AT Protocol XRPC |
-| `/xrpc/com.atproto.space.listRepos` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.listSpaces` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.listWriters` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.notifyCredentialsRevoked` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.notifyRepoUpdate` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.putRecord` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.removeWriter` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.updateSpace` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getBlob` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getBlocks` | AT Protocol XRPC |

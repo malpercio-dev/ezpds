@@ -70,7 +70,7 @@ where
 /// `spaces` rows deliberately survive even when the account is the authority: members' records are
 /// their own, and an unanswerable space is exactly the spec's deletion semantics. `space_writers`
 /// has no FK to `accounts` (most writers are foreign repos), so nothing removes those rows
-/// implicitly, and a purged account left in `listRepos` advertises a repo every reader then gets
+/// implicitly, and a purged account left in `listWriters` advertises a repo every reader then gets
 /// `RepoNotFound` for.
 pub const PURGE_ACCOUNT_SQL: &[&str] = &[
     "DELETE FROM space_repo_ops WHERE account_did = ?",
@@ -111,7 +111,7 @@ mod purge_tests {
     }
 
     /// The purge takes the account's own space repo, its membership, and its row
-    /// in a locally-hosted space's writer set (`listRepos` must stop advertising it), while the
+    /// in a locally-hosted space's writer set (`listWriters` must stop advertising it), while the
     /// `spaces` row it is authority for survives as the tombstone that makes the space
     /// unanswerable (members' own records are theirs; the space simply stops answering).
     #[tokio::test]
