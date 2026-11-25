@@ -168,16 +168,15 @@ async fn list_records_pages_and_can_omit_values() {
     );
 }
 
-/// `getLatestCommit` mints a commit rather than serving a stored one: two calls over an
-/// unchanged repo return different `ikm`/`sig`/`mac` and the same `hash`, and each one verifies
-/// against the account's published signing key.
+/// `getLatestCommit` serves the repo's unsigned commit: `{ver, repo, space, rev, data}`, with
+/// `data` the digest of the records' set hash. An owner reading without `Accept-Signature` gets
+/// no MAC headers, and the response varies on that header either way.
 #[tokio::test]
-async fn get_latest_commit_mints_a_fresh_deniable_commit_each_time() {
-    let state = state_with_master_key().await;
-    let keypair = seed_account_with_repo(&state.db, DID).await;
+async fn get_latest_commit_serves_the_unsigned_commit() {
+    let state = setup().await;
     let token = access_jwt(&state.jwt_secret, DID);
 
-    crate::test_support::test_app(state.clone())
+    let response = crate::test_support::test_app(state.clone())
         .oneshot(post(
             "com.atproto.space.createRecord",
             &token,
@@ -185,69 +184,40 @@ async fn get_latest_commit_mints_a_fresh_deniable_commit_each_time() {
         ))
         .await
         .unwrap();
+    let cid = body_json(response).await["cid"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let fetch = || {
-        let state = state.clone();
-        let token = token.clone();
-        async move {
-            let response = crate::test_support::test_app(state)
-                .oneshot(get(
-                    &format!("com.atproto.space.getLatestCommit?space={SPACE}&repo={DID}"),
-                    &token,
-                ))
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            body_json(response).await["commit"].clone()
-        }
-    };
-    let first = fetch().await;
-    let second = fetch().await;
+    let response = crate::test_support::test_app(state)
+        .oneshot(get(
+            &format!("com.atproto.space.getLatestCommit?space={SPACE}&repo={DID}"),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["vary"], "Accept-Signature");
+    for name in ["atproto-space-commit", "signature-input", "signature"] {
+        assert!(
+            response.headers().get(name).is_none(),
+            "{name} without a request"
+        );
+    }
+    let commit = body_json(response).await["commit"].clone();
 
-    assert_eq!(first["ver"], 1);
-    assert_eq!(first["rev"], second["rev"], "the repo did not move");
-    assert_eq!(first["hash"], second["hash"], "nor did its contents");
-    assert_ne!(
-        first["ikm"], second["ikm"],
-        "a fresh ikm per serving is what makes the commit deniable"
+    let mut set = crypto::LtHash::new();
+    set.add(&crypto::format_set_hash_element(COLLECTION, "aaa", &cid));
+    assert_eq!(commit["ver"], 1);
+    assert_eq!(commit["repo"], DID);
+    assert_eq!(commit["space"], SPACE);
+    assert!(commit["rev"].is_string());
+    assert_eq!(commit["data"], crate::views::lex_bytes(&set.digest()));
+    assert_eq!(
+        commit.as_object().unwrap().len(),
+        5,
+        "nothing but the five commit fields: {commit}"
     );
-    assert_ne!(first["sig"], second["sig"]);
-    assert_ne!(first["mac"], second["mac"]);
-
-    // Each minted commit must actually verify — signature over the ctx, MAC over the hash.
-    let commit = crypto::SignedSpaceCommit {
-        ver: first["ver"].as_u64().unwrap() as u8,
-        hash: lex_bytes(&first["hash"]),
-        ikm: lex_bytes(&first["ikm"]),
-        sig: lex_bytes64(&first["sig"]),
-        mac: lex_bytes(&first["mac"]),
-        rev: first["rev"].as_str().unwrap().to_string(),
-    };
-    crypto::verify_space_commit(
-        &commit,
-        &crypto::SpaceCommitCtx {
-            space: SPACE,
-            author: DID,
-            rev: first["rev"].as_str().unwrap(),
-        },
-        &keypair.key_id,
-    )
-    .expect("a served commit must verify against the account's signing key");
-}
-
-fn decode_lex_bytes(value: &serde_json::Value) -> Vec<u8> {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD
-        .decode(value["$bytes"].as_str().expect("lex-JSON byte string"))
-        .expect("valid base64")
-}
-
-fn lex_bytes(value: &serde_json::Value) -> [u8; 32] {
-    decode_lex_bytes(value).try_into().expect("32 bytes")
-}
-
-fn lex_bytes64(value: &serde_json::Value) -> [u8; 64] {
-    decode_lex_bytes(value).try_into().expect("64 bytes")
 }
 
 /// A batch commits or it does not: an `#update` naming a record that does not exist fails the

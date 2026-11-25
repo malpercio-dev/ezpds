@@ -118,7 +118,7 @@ pub fn lex_bytes(bytes: &[u8]) -> serde_json::Value {
     serde_json::json!({ "$bytes": base64::engine::general_purpose::STANDARD.encode(bytes) })
 }
 
-// ── repo head + signed commit ────────────────────────────────────────────────
+// ── repo head + commit ───────────────────────────────────────────────────────
 
 /// Load the repo head, or the shared `RepoNotFound` when the account holds no repo in the
 /// space. That does not distinguish a member who has never written from a non-member: a repo
@@ -139,65 +139,59 @@ pub async fn load_repo(
         .ok_or_else(|| crate::auth::space::repo_not_found(did))
 }
 
-/// Mint a signed commit over a repo's current state.
+/// A space repo's current commit, the lexicon's `com.atproto.space.defs#commit`:
+/// `{ver, repo, space, rev, data}`, where `data` is the digest of the repo's LtHash state.
 ///
-/// A commit is produced **per serving**, never stored: fresh `ikm`, a fresh signature over the
-/// `(space, author, rev, ikm)` context, and a fresh MAC binding the repo hash to that context.
-/// The signature deliberately does not cover the hash — that deniability is the whole point,
-/// and it is why this cannot be a cached artifact.
-pub async fn sign_current_commit(
-    state: &CoreState,
-    space: &SpaceRef,
-    did: &str,
-    repo: &crate::db::space_repos::SpaceRepoRow,
-) -> Result<crypto::SignedSpaceCommit, ApiError> {
-    let hash = crypto::LtHash::from_state(&repo.lthash_state)
-        .map_err(|e| {
-            {
-                tracing::error!(error = %e, space = %space.uri, did = %did, "stored LtHash state is malformed");
-                ApiError::new(ErrorCode::InternalError, "failed to read space commit")
-            }
-        })?
-        .digest();
-
-    let master_key: &[u8; 32] = state
-        .config
-        .signing_key_master_key
-        .as_ref()
-        .map(|s| &*s.0)
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::ServiceUnavailable,
-                "signing key master key not configured",
-            )
-        })?;
-    let signing_key =
-        custos_core::auth::signing_key::load_repo_signing_key(&state.db, did, master_key).await?;
-
-    crypto::sign_space_commit(
-        &crypto::SpaceCommitCtx {
-            space: &space.uri,
-            author: did,
-            rev: &repo.rev,
-        },
-        hash,
-        &signing_key,
-    )
-    .map_err(|e| {
-        tracing::error!(error = %e, space = %space.uri, did = %did, "failed to sign space commit");
-        ApiError::new(ErrorCode::InternalError, "failed to sign space commit")
-    })
+/// It is not signed. A syncer authenticates it with the MAC a read answers its
+/// `Accept-Signature` with (`space_mac`), which only it and this host can compute.
+pub struct SpaceCommit {
+    pub repo: common::Did,
+    pub space: String,
+    pub rev: String,
+    pub data: [u8; 32],
 }
 
-/// The lexicon `com.atproto.space.defs#signedCommit` JSON shape.
-pub fn commit_json(commit: &crypto::SignedSpaceCommit) -> serde_json::Value {
-    serde_json::json!({
-        "ver": commit.ver,
-        "hash": lex_bytes(&commit.hash),
-        "ikm": lex_bytes(&commit.ikm),
-        "sig": lex_bytes(&commit.sig),
-        "mac": lex_bytes(&commit.mac),
-        "rev": commit.rev,
+impl SpaceCommit {
+    /// The fields an `Atproto-Space-Commit` header carries.
+    pub fn mac_fields(&self) -> crypto::http_signature::CommitMacFields<'_> {
+        crypto::http_signature::CommitMacFields {
+            ver: i64::from(crypto::SPACE_COMMIT_VERSION),
+            repo: &self.repo,
+            space: &self.space,
+            rev: &self.rev,
+            data: &self.data,
+        }
+    }
+
+    /// The lexicon JSON shape.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ver": crypto::SPACE_COMMIT_VERSION,
+            "repo": self.repo.as_str(),
+            "space": self.space,
+            "rev": self.rev,
+            "data": lex_bytes(&self.data),
+        })
+    }
+}
+
+/// The commit over `repo_did`'s repo head in `space`.
+pub fn current_commit(
+    space: &SpaceRef,
+    repo_did: &common::Did,
+    repo: &crate::db::space_repos::SpaceRepoRow,
+) -> Result<SpaceCommit, ApiError> {
+    let data = crypto::LtHash::from_state(&repo.lthash_state)
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space.uri, did = %repo_did, "stored LtHash state is malformed");
+            ApiError::new(ErrorCode::InternalError, "failed to read space commit")
+        })?
+        .digest();
+    Ok(SpaceCommit {
+        repo: repo_did.clone(),
+        space: space.uri.clone(),
+        rev: repo.rev.clone(),
+        data,
     })
 }
 

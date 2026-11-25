@@ -1,26 +1,19 @@
 // Spaces (permissioned data) crypto primitives: the LtHash multiset hash that
-// digests a permissioned repo's contents, and the deniable commit signature
-// over it. Pinned to the reference golden vectors from the atproto
-// `permissioned-data` branch (`packages/space/tests/`).
+// digests a permissioned repo's contents. Pinned to the reference golden
+// vectors from the atproto `permissioned-data` branch (`packages/space/tests/`).
+// A space commit is not signed: the repo host authenticates it to a syncer with
+// a MAC (`crate::http_signature`).
 
-use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
-use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
 use crate::error::CryptoError;
-use crate::keys::DidKeyUri;
-use crate::plc::verify_did_key_signature;
 
 const LANES: usize = 1024;
 /// Size of a persisted [`LtHash`] state: 1024 little-endian u16 lanes.
 pub const LTHASH_STATE_BYTES: usize = LANES * 2;
 
-/// Commit format version carried in [`SignedSpaceCommit::ver`].
+/// Commit format version: a space commit's `ver`.
 pub const SPACE_COMMIT_VERSION: u8 = 1;
-
-const CTX_DOMAIN: &[u8; 16] = b"atproto-space-v1";
 
 /// A homomorphic multiset hash over repo elements.
 ///
@@ -118,138 +111,9 @@ pub fn format_set_hash_element(collection: &str, rkey: &str, cid: &str) -> Strin
     format!("{collection}/{rkey}/{cid}")
 }
 
-/// The identity a deniable commit binds: which repo, whose, at what revision.
-#[derive(Debug, Clone, Copy)]
-pub struct SpaceCommitCtx<'a> {
-    /// Space URI (`at://…`).
-    pub space: &'a str,
-    /// Author DID.
-    pub author: &'a str,
-    /// Revision TID.
-    pub rev: &'a str,
-}
-
-/// A deniable commit over a repo digest.
-///
-/// `sig` covers only the ctx (space, author, rev, `ikm`) — never `hash` — so a
-/// leaked commit proves nothing about content: anyone holding `ikm` can forge
-/// a matching `mac` for any hash. A fresh `ikm`/`sig`/`mac` triple is produced
-/// per serving.
-#[derive(Debug, Clone)]
-pub struct SignedSpaceCommit {
-    pub ver: u8,
-    /// [`LtHash::digest`] of the repo contents.
-    pub hash: [u8; 32],
-    /// Fresh random PRK for the MAC key derivation.
-    pub ikm: [u8; 32],
-    /// Raw 64-byte low-S ECDSA signature over the encoded ctx.
-    pub sig: [u8; 64],
-    /// `HMAC-SHA256(HKDF-Expand(ikm, ctx, 32), hash)`.
-    pub mac: [u8; 32],
-    /// Copy of the ctx rev, so a commit is self-describing.
-    pub rev: String,
-}
-
-/// TLS-vector ctx encoding:
-/// `"atproto-space-v1" || u16be-len-prefixed(space, author, rev, ikm)`.
-pub fn encode_space_commit_ctx(
-    ctx: &SpaceCommitCtx<'_>,
-    ikm: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
-    let fields: [&[u8]; 4] = [
-        ctx.space.as_bytes(),
-        ctx.author.as_bytes(),
-        ctx.rev.as_bytes(),
-        ikm,
-    ];
-    let mut out =
-        Vec::with_capacity(CTX_DOMAIN.len() + fields.iter().map(|f| 2 + f.len()).sum::<usize>());
-    out.extend_from_slice(CTX_DOMAIN);
-    for field in fields {
-        let len = u16::try_from(field.len()).map_err(|_| {
-            CryptoError::Space("commit ctx field exceeds u16 length prefix".to_string())
-        })?;
-        out.extend_from_slice(&len.to_be_bytes());
-        out.extend_from_slice(field);
-    }
-    Ok(out)
-}
-
-// RFC 5869 §2.3 expand only — `ikm` is the PRK, ctx the info.
-#[allow(
-    clippy::expect_used,
-    reason = "a 32-byte PRK, 32-byte output and an HMAC key of any length are all within RFC 5869/2104 bounds"
-)]
-fn commit_mac(ikm: &[u8; 32], ctx_bytes: &[u8], hash: &[u8; 32]) -> [u8; 32] {
-    let hk = Hkdf::<Sha256>::from_prk(ikm).expect("32-byte PRK is a valid HKDF-SHA256 PRK");
-    let mut okm = [0u8; 32];
-    hk.expand(ctx_bytes, &mut okm)
-        .expect("32 bytes is within HKDF-SHA256 output bounds");
-    let mut mac = Hmac::<Sha256>::new_from_slice(&okm).expect("HMAC-SHA256 accepts any key length");
-    mac.update(hash);
-    mac.finalize().into_bytes().into()
-}
-
-/// Sign a deniable commit over `hash` with the author's P-256 signing key,
-/// drawing a fresh `ikm`.
-pub fn sign_space_commit(
-    ctx: &SpaceCommitCtx<'_>,
-    hash: [u8; 32],
-    signing_private_key: &[u8; 32],
-) -> Result<SignedSpaceCommit, CryptoError> {
-    let sk = SigningKey::from_bytes(&(*signing_private_key).into())
-        .map_err(|e| CryptoError::Space(format!("invalid signing key: {e}")))?;
-    let mut ikm = [0u8; 32];
-    OsRng.fill_bytes(&mut ikm);
-    let ctx_bytes = encode_space_commit_ctx(ctx, &ikm)?;
-    let sig: Signature = Signer::sign(&sk, &ctx_bytes);
-    let sig = sig.normalize_s();
-    Ok(SignedSpaceCommit {
-        ver: SPACE_COMMIT_VERSION,
-        hash,
-        mac: commit_mac(&ikm, &ctx_bytes, &hash),
-        ikm,
-        sig: sig.to_bytes().into(),
-        rev: ctx.rev.to_string(),
-    })
-}
-
-/// Verify a commit's MAC (integrity) and signature (authenticity). Once this
-/// passes, `hash` is trusted as the author's claim about their repo.
-///
-/// Accepts both signing curves (P-256 and secp256k1) via the author's
-/// `did:key`, since foreign authors may sign ES256K.
-pub fn verify_space_commit(
-    commit: &SignedSpaceCommit,
-    ctx: &SpaceCommitCtx<'_>,
-    author_key: &DidKeyUri,
-) -> Result<(), CryptoError> {
-    if commit.ver != SPACE_COMMIT_VERSION {
-        return Err(CryptoError::Space(format!(
-            "unsupported commit version: {}",
-            commit.ver
-        )));
-    }
-    if commit.rev != ctx.rev {
-        return Err(CryptoError::Space(
-            "commit rev disagrees with ctx rev".to_string(),
-        ));
-    }
-    let ctx_bytes = encode_space_commit_ctx(ctx, &commit.ikm)?;
-    let expected = commit_mac(&commit.ikm, &ctx_bytes, &commit.hash);
-    // Constant-time compare via HMAC re-verification is unnecessary here: the
-    // MAC key derives from `ikm`, which the verifier already holds, so there is
-    // no secret to leak through timing.
-    if expected != commit.mac {
-        return Err(CryptoError::Space("commit mac mismatch".to_string()));
-    }
-    verify_did_key_signature(author_key, &ctx_bytes, &commit.sig)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::generate_p256_keypair;
 
     // cids of `{ text: 'hello' }` and `{ text: 'world' }`, from the reference suite.
     const CID_A: &str = "bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244";
@@ -385,169 +249,5 @@ mod tests {
         let mut other_cid = LtHash::new();
         other_cid.add(&format_set_hash_element("c.a", "1", CID_B));
         assert_ne!(same_cid_a, other_cid);
-    }
-
-    // ── Ctx encoding ────────────────────────────────────────────────────────
-
-    fn test_ctx() -> SpaceCommitCtx<'static> {
-        SpaceCommitCtx {
-            space: "at://did:example:space/space/app.bsky.group/test",
-            author: "did:example:alice",
-            rev: "3kbcq3p7ad400",
-        }
-    }
-
-    #[test]
-    fn ctx_is_length_prefixed_and_domain_separated() {
-        let ctx = test_ctx();
-        let encoded = encode_space_commit_ctx(&ctx, &[7u8; 32]).unwrap();
-        assert_eq!(&encoded[..16], b"atproto-space-v1");
-        let space_len = usize::from(encoded[16]) << 8 | usize::from(encoded[17]);
-        assert_eq!(space_len, ctx.space.len());
-    }
-
-    #[test]
-    fn ctx_is_unambiguous_across_field_boundaries() {
-        // Without length prefixes these two would encode identically.
-        let ikm = [7u8; 32];
-        let a = encode_space_commit_ctx(
-            &SpaceCommitCtx {
-                space: "ab",
-                author: "c",
-                rev: "d",
-            },
-            &ikm,
-        )
-        .unwrap();
-        let b = encode_space_commit_ctx(
-            &SpaceCommitCtx {
-                space: "a",
-                author: "bc",
-                rev: "d",
-            },
-            &ikm,
-        )
-        .unwrap();
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn ctx_is_deterministic() {
-        let ikm = [7u8; 32];
-        assert_eq!(
-            encode_space_commit_ctx(&test_ctx(), &ikm).unwrap(),
-            encode_space_commit_ctx(&test_ctx(), &ikm).unwrap()
-        );
-    }
-
-    #[test]
-    fn ctx_rejects_oversized_field() {
-        let long = "x".repeat(0x10000);
-        let ctx = SpaceCommitCtx {
-            space: &long,
-            author: "a",
-            rev: "r",
-        };
-        assert!(encode_space_commit_ctx(&ctx, &[0u8; 32]).is_err());
-    }
-
-    // ── Sign / verify ───────────────────────────────────────────────────────
-
-    fn test_repo_hash() -> [u8; 32] {
-        let mut h = LtHash::new();
-        h.add(&format_set_hash_element("app.bsky.feed.post", "1", CID_A));
-        h.digest()
-    }
-
-    #[test]
-    fn produces_a_well_formed_commit() {
-        let kp = generate_p256_keypair().unwrap();
-        let commit =
-            sign_space_commit(&test_ctx(), test_repo_hash(), &kp.private_key_bytes).unwrap();
-        assert_eq!(commit.ver, SPACE_COMMIT_VERSION);
-        assert_eq!(commit.rev, test_ctx().rev);
-        assert_eq!(commit.hash, test_repo_hash());
-    }
-
-    #[test]
-    fn verifies_own_commit() {
-        let kp = generate_p256_keypair().unwrap();
-        let commit =
-            sign_space_commit(&test_ctx(), test_repo_hash(), &kp.private_key_bytes).unwrap();
-        verify_space_commit(&commit, &test_ctx(), &kp.key_id).unwrap();
-    }
-
-    #[test]
-    fn fresh_ikm_per_commit_for_deniability() {
-        let kp = generate_p256_keypair().unwrap();
-        let a = sign_space_commit(&test_ctx(), test_repo_hash(), &kp.private_key_bytes).unwrap();
-        let b = sign_space_commit(&test_ctx(), test_repo_hash(), &kp.private_key_bytes).unwrap();
-        assert_ne!(a.ikm, b.ikm);
-        assert_ne!(a.mac, b.mac);
-        assert_ne!(a.sig, b.sig);
-        assert_eq!(a.hash, b.hash);
-    }
-
-    #[test]
-    fn rejects_signature_from_a_different_key() {
-        let kp = generate_p256_keypair().unwrap();
-        let other = generate_p256_keypair().unwrap();
-        let commit =
-            sign_space_commit(&test_ctx(), test_repo_hash(), &kp.private_key_bytes).unwrap();
-        assert!(verify_space_commit(&commit, &test_ctx(), &other.key_id).is_err());
-    }
-
-    #[test]
-    fn does_not_verify_under_a_different_ctx() {
-        let kp = generate_p256_keypair().unwrap();
-        let commit =
-            sign_space_commit(&test_ctx(), test_repo_hash(), &kp.private_key_bytes).unwrap();
-        let base = test_ctx();
-        let variants = [
-            SpaceCommitCtx {
-                space: "at://did:example:space/space/app.bsky.group/other",
-                ..base
-            },
-            SpaceCommitCtx {
-                author: "did:example:bob",
-                ..base
-            },
-            SpaceCommitCtx {
-                rev: "3kbcq3p7ad999",
-                ..base
-            },
-        ];
-        for other_ctx in variants {
-            assert!(verify_space_commit(&commit, &other_ctx, &kp.key_id).is_err());
-        }
-    }
-
-    #[test]
-    fn does_not_verify_a_tampered_hash() {
-        let kp = generate_p256_keypair().unwrap();
-        let mut commit =
-            sign_space_commit(&test_ctx(), test_repo_hash(), &kp.private_key_bytes).unwrap();
-        // The signature never covered the hash — the MAC is what catches this,
-        // and what a leaked commit can't prove.
-        commit.hash = LtHash::new().digest();
-        assert!(verify_space_commit(&commit, &test_ctx(), &kp.key_id).is_err());
-    }
-
-    #[test]
-    fn rejects_rev_disagreeing_with_ctx() {
-        let kp = generate_p256_keypair().unwrap();
-        let mut commit =
-            sign_space_commit(&test_ctx(), test_repo_hash(), &kp.private_key_bytes).unwrap();
-        commit.rev = "3kbcq3p7ad999".to_string();
-        assert!(verify_space_commit(&commit, &test_ctx(), &kp.key_id).is_err());
-    }
-
-    #[test]
-    fn rejects_unknown_commit_version() {
-        let kp = generate_p256_keypair().unwrap();
-        let mut commit =
-            sign_space_commit(&test_ctx(), test_repo_hash(), &kp.private_key_bytes).unwrap();
-        commit.ver = 2;
-        assert!(verify_space_commit(&commit, &test_ctx(), &kp.key_id).is_err());
     }
 }

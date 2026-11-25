@@ -287,10 +287,10 @@ idle sweep).
 required. The switch is off by default while the protocol is pre-launch alpha:
 enable it with `[spaces] enabled = true` (`EZPDS_SPACES_ENABLED`) to serve the
 routes. The master key is what makes an enabled surface *whole*: space writes
-succeed without one, but every sync serving — `getLatestCommit`,
-`listRepoOps`, `getRepo` — mints a fresh signed commit from the account's repo
-signing key, which is stored encrypted under the master key; without
-`EZPDS_SIGNING_KEY_MASTER_KEY` those routes answer `ServiceUnavailable` and a
+succeed without one, but a syncer's read — `getRecord`, `getLatestCommit`,
+`listRepoOps`, `getRepo` — carries a MAC keyed through the account's Spaces KEM
+key, which is stored encrypted under the master key; without
+`EZPDS_SIGNING_KEY_MASTER_KEY` those reads answer `ServiceUnavailable` and a
 syncer cannot follow the repo. A deployment nobody can sync a space from does
 not advertise spaces: with the switch on and a master key configured (as any
 real deployment should have), the capability appears.

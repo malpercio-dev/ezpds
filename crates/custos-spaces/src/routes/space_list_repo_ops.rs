@@ -10,11 +10,12 @@
 
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use custos_core::CoreState;
 use serde::Deserialize;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, Did, ErrorCode};
+use crypto::http_signature::MacProfile;
 use custos_core::lexicon::LexiconParams;
 
 const DEFAULT_LIMIT: i64 = 100;
@@ -23,12 +24,12 @@ const MAX_LIMIT: i64 = 1000;
 #[derive(Deserialize)]
 pub struct SpaceListRepoOpsParams {
     space: String,
-    repo: String,
+    repo: Did,
     /// The caller's own sync position: only ops strictly after this rev.
     since: Option<String>,
     limit: Option<i64>,
     /// Opaque continuation from a previous page; takes precedence over `since` when both are
-    /// supplied (per the lexicon — the cursor is itself a position).
+    /// supplied (the cursor is itself a position).
     cursor: Option<String>,
     #[serde(default, rename = "excludeValues")]
     exclude_values: bool,
@@ -36,9 +37,9 @@ pub struct SpaceListRepoOpsParams {
 
 /// GET /xrpc/com.atproto.space.listRepoOps
 ///
-/// A response that reaches the head of the oplog (a short page) carries the current signed
-/// commit and no cursor; a full page carries a cursor and no commit. A full page that happens
-/// to end exactly on the last op costs the client one extra round trip, as in the reference.
+/// Every page carries the repo's current commit, and a requested MAC over it (`space_mac`); a
+/// full page also carries a cursor. A full page that happens to end exactly on the last op
+/// costs the client one extra round trip, as in the reference.
 /// Values are the record's *current* block, inlined for creates/updates unless `excludeValues`
 /// is set or a later op superseded the record (the join in `db/space_repos.rs` misses then).
 pub async fn space_list_repo_ops(
@@ -47,9 +48,9 @@ pub async fn space_list_repo_ops(
     uri: Uri,
     headers: HeaderMap,
     LexiconParams(params): LexiconParams<SpaceListRepoOpsParams>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Response, ApiError> {
     let space = crate::views::parse_space(&params.space)?;
-    crate::auth::space::authenticate_space_read(
+    let reader = crate::auth::space::authenticate_space_read(
         &state,
         &headers,
         &method,
@@ -58,12 +59,15 @@ pub async fn space_list_repo_ops(
         &params.repo,
     )
     .await?;
+    let mac =
+        crate::space_mac::mac_grant(&state, &headers, &reader, &params.repo, MacProfile::Commit)
+            .await?;
     let repo = crate::views::load_repo(&state, &space.uri, &params.repo).await?;
 
     // The lexicon already rejects a `limit` outside [1, 1000]; this only applies the default.
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cursor = params.cursor.as_deref().map(parse_cursor).transpose()?;
-    // The lexicon gives the cursor precedence over `since` when both arrive — the cursor IS a
+    // The cursor takes precedence over `since` when both arrive — the cursor IS a
     // position, so conjoining a later `since` would silently skip the ops between them.
     let since = if cursor.is_some() {
         None
@@ -86,8 +90,7 @@ pub async fn space_list_repo_ops(
         ApiError::new(ErrorCode::InternalError, "failed to list space repo ops")
     })?;
 
-    let at_head = (rows.len() as i64) < limit;
-    let next = (!at_head)
+    let next = ((rows.len() as i64) == limit)
         .then(|| rows.last().map(|row| format!("{}/{}", row.rev, row.idx)))
         .flatten();
 
@@ -110,15 +113,13 @@ pub async fn space_list_repo_ops(
         })
         .collect::<Result<_, ApiError>>()?;
 
-    let mut body = serde_json::json!({ "ops": ops });
-    if at_head {
-        let commit = crate::views::sign_current_commit(&state, &space, &params.repo, &repo).await?;
-        body["commit"] = crate::views::commit_json(&commit);
-    }
+    let commit = crate::views::current_commit(&space, &params.repo, &repo)?;
+    let mut body = serde_json::json!({ "ops": ops, "commit": commit.to_json() });
     if let Some(cursor) = next {
         body["cursor"] = serde_json::Value::String(cursor);
     }
-    Ok((StatusCode::OK, axum::Json(body)))
+    let response = (StatusCode::OK, axum::Json(body)).into_response();
+    crate::space_mac::with_commit_mac(response, &commit, mac.as_ref())
 }
 
 /// A cursor is the last op's `rev/idx`. Opaque to clients, but it must round-trip into the
