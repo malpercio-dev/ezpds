@@ -155,11 +155,11 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/space/listRepoOps.json"),
     include_str!("../../lexicons/com/atproto/space/listRepos.json"),
     include_str!("../../lexicons/com/atproto/space/listSpaces.json"),
-    include_str!("../../lexicons/com/atproto/space/notifyCredentialRevoked.json"),
-    include_str!("../../lexicons/com/atproto/space/notifyWrite.json"),
     include_str!("../../lexicons/com/atproto/space/putRecord.json"),
-    include_str!("../../lexicons/com/atproto/space/registerNotify.json"),
-    include_str!("../../lexicons/com/atproto/space/unregisterNotify.json"),
+    // The notification surface at the frozen pin. `notifySpaceUpdate` and `confirmRegistration`
+    // are vendored but not registered: this server only sends them; a syncer serves them.
+    include_str!("../../lexicons/com/atproto/space/notifyCredentialsRevoked.json"),
+    include_str!("../../lexicons/com/atproto/space/notifyRepoUpdate.json"),
     // Space management and the three baseline policies its `policy` union reaches, at the
     // frozen pin. `managedspace.checkAccess` is vendored but not registered: this server only
     // calls it; a managing app serves it.

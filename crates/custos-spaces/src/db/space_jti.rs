@@ -12,7 +12,7 @@
 //! once no token carrying its jti could still be accepted.
 //!
 //! The same module owns `space_revoked_credentials` (V075): credential `jti`s an authority revoked
-//! through `notifyCredentialRevoked`, keyed `(space_uri, jti)` so one authority can never revoke
+//! through `notifyCredentialsRevoked`, keyed `(space_uri, jti)` so one authority can never revoke
 //! another space's credential. Each row is retained past the longest life any credential carrying
 //! it could have, then reclaimed by the same sweep.
 

@@ -15,7 +15,8 @@ body:json {
     "space": "at://did:plc:exampleauthority/space/org.example.bucket/self",
     "credentialKey": "{{credentialKey}}",
     "delegationToken": "{{delegationToken}}",
-    "clientAttestation": "{{clientAttestation}}"
+    "clientAttestation": "{{clientAttestation}}",
+    "notify": { "endpoint": "{{notifyEndpoint}}", "token": "{{notifyToken}}" }
   }
 }
 
@@ -24,6 +25,8 @@ vars:pre-request {
   credentialKey: <the client's P-256 did:key (did:key:zDn…) — becomes the credential's cnf.kid>
   delegationToken: <token from getDelegationToken on the user's PDS — omit the field for a publicRead memberspace>
   clientAttestation: <ES256 atproto-client-attestation+jwt signed by a key in the client's metadata JWKS: iss = sub = client_id, aud {authorityDid}#atproto_pds, fresh iat/exp, single-use jti — omit the field unless the space gates on the app>
+  notifyEndpoint: <the syncer's https base URL on a domain host (no IP literal) — omit `notify` to sync without notifications>
+  notifyToken: <an opaque secret of up to 512 chars, kept the same across authorizations>
 }
 
 docs {
@@ -40,14 +43,25 @@ docs {
   `client_id` (its `iss`/`sub`) is resolved to its client-metadata document and the JWKS that
   document publishes, and the `jti` is spent single-use. The attested client_id is what
   memberspace's `allowedApps` is matched against, and what is forwarded to a managing app's
-  `checkAccess`. The lexicon's `notify` is not read yet.
+  `checkAccess`.
 
-  Errors (lexicon names, all HTTP 400): InvalidRequest (credentialKey not a P-256 did:key),
+  `notify` registers the syncer for `notifySpaceUpdate` until the credential expires (no grace
+  period); authorizing again renews it. A new `(endpoint, token)` is first confirmed: this
+  server POSTs `{space, token, challenge}` to `{endpoint}/xrpc/com.atproto.space.confirmRegistration`
+  (10 s timeout) and the endpoint must echo the challenge. A refused authorization withdraws the
+  registration it carries. Each notice is POSTed to
+  `{endpoint}/xrpc/com.atproto.space.notifySpaceUpdate` as `{space, token, update}` with no
+  Authorization header: the token is the authentication.
+
+  Errors (lexicon names, all HTTP 400): InvalidRequest (credentialKey not a P-256 did:key, or
+  a notify endpoint that is not https on a domain host),
   SpaceNotFound (unknown, or not anchored on an account here), RepoTakendown / RepoDeactivated
   (the authority's account), SpaceDeleted, InvalidDelegationToken (bad
   signature/typ/kid/sub/aud/exp, or already used), InvalidClientAttestation (malformed,
   unresolvable client_id, wrong signature/aud, expired, or replayed), AppNotAuthorized (no
   attestation, or a client_id not on `allowedApps`), AccountNotAuthorized (refused on the
   account: not a reading member, no delegation token on a space that is not publicRead, or a
-  managing app that answered no or could not be reached).
+  managing app that answered no or could not be reached), RegistrationNotConfirmed (the notify
+  endpoint did not echo the challenge). Custos also answers TooManyRegistrations, not a lexicon
+  error, for a new registration on a space already holding 100 active ones.
 }

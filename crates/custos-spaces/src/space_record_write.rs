@@ -105,8 +105,9 @@ pub enum SpaceWriteAdmission {
 pub struct SpaceCommitOutcome {
     /// The repo's rev after this commit.
     ///
-    /// `rev` and `hash` together are what `notifyWrite` carries on the wire, but the fan-out is
-    /// spawned from inside this module off the local values, before this struct exists — so the
+    /// `rev` and `hash` together are what `notifyRepoUpdate` carries on the wire (as `repoRev`
+    /// and `data`), but the fan-out is spawned from inside this module off the local values,
+    /// before this struct exists — so the
     /// wire does not read them from here. `rev` is read by the import route's response; `hash`
     /// only by tests.
     pub rev: String,

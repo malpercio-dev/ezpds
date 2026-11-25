@@ -43,10 +43,10 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     is much smaller than the full `app.bsky` graph.
   - **Atproto Spaces (`com.atproto.space.*`):** the record CRUD, read, and sync documents behind
     the permissioned-data surface (the sync group: `listRepoOps`, `getRepo`, `getBlob`,
-    `listBlobs`), the notification group (`listRepos`, `registerNotify`,
-    `unregisterNotify`, `notifyWrite`, `notifyCredentialRevoked`; `notifySpaceDeleted`, which
-    this server only ever *sends*, is vendored but, like `managedspace.checkAccess`, not registered as a
-    validation root), plus the `defs`
+    `listBlobs`), the notification group (`listRepos`, `notifyRepoUpdate`,
+    `notifyCredentialsRevoked`; `notifySpaceUpdate` and `confirmRegistration`, which this server
+    only ever *sends*, are vendored but, like `managedspace.checkAccess`, not registered as
+    validation roots), plus the `defs`
     document the `getLatestCommit`/`listRepoOps` outputs reach,
     and the two token-flow documents behind `custos-spaces`' `auth/space.rs` (`getDelegationToken`,
     `authorizeSpaceSync`; both use the `space-ref` string format `space_uri.rs` validates), and
@@ -76,9 +76,10 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
       `com.atproto.space.{listSpaces,getDelegationToken}`, re-vendored with their routes. Each is
       registered in `LEXICON_SOURCES` by the change that adds its route; registered so far:
       `listSpaces`, `getDelegationToken`, `authorizeSpaceSync`, `server.reserveKemKey`,
-      `space.{createSpace,updateSpace,deleteSpace,getSpace}`, `memberspace.{defs,putMembers,
-      removeMembers,listMembers}`, and the three `*space.policy` documents.
-      `notifyRepoUpdate` refs `com.atproto.space.defs#repoWrite`/`#repoRemoved`, which exist
+      `space.{createSpace,updateSpace,deleteSpace,getSpace,notifyRepoUpdate,
+      notifyCredentialsRevoked}`, `memberspace.{defs,putMembers,removeMembers,listMembers}`, and
+      the three `*space.policy` documents.
+      `notifySpaceUpdate` refs `com.atproto.space.defs#repoWrite`/`#repoRemoved`, which exist
       only in the `047d603` `defs`; until `defs` moves, lexgen types them as `unknown`.
 
     The frozen pin is final: an upstream change after it is new work, never a silent SHA bump.

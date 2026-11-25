@@ -310,11 +310,6 @@ export type XrpcMethods = {
     input: com_atproto_space.ListWritersInput;
     output: com_atproto_space.ListWritersOutput;
   };
-  "com.atproto.space.notifyCredentialRevoked": {
-    params: com_atproto_space.NotifyCredentialRevokedParams;
-    input: com_atproto_space.NotifyCredentialRevokedInput;
-    output: com_atproto_space.NotifyCredentialRevokedOutput;
-  };
   "com.atproto.space.notifyCredentialsRevoked": {
     params: com_atproto_space.NotifyCredentialsRevokedParams;
     input: com_atproto_space.NotifyCredentialsRevokedInput;
@@ -325,40 +320,20 @@ export type XrpcMethods = {
     input: com_atproto_space.NotifyRepoUpdateInput;
     output: com_atproto_space.NotifyRepoUpdateOutput;
   };
-  "com.atproto.space.notifySpaceDeleted": {
-    params: com_atproto_space.NotifySpaceDeletedParams;
-    input: com_atproto_space.NotifySpaceDeletedInput;
-    output: com_atproto_space.NotifySpaceDeletedOutput;
-  };
   "com.atproto.space.notifySpaceUpdate": {
     params: com_atproto_space.NotifySpaceUpdateParams;
     input: com_atproto_space.NotifySpaceUpdateInput;
     output: com_atproto_space.NotifySpaceUpdateOutput;
-  };
-  "com.atproto.space.notifyWrite": {
-    params: com_atproto_space.NotifyWriteParams;
-    input: com_atproto_space.NotifyWriteInput;
-    output: com_atproto_space.NotifyWriteOutput;
   };
   "com.atproto.space.putRecord": {
     params: com_atproto_space.PutRecordParams;
     input: com_atproto_space.PutRecordInput;
     output: com_atproto_space.PutRecordOutput;
   };
-  "com.atproto.space.registerNotify": {
-    params: com_atproto_space.RegisterNotifyParams;
-    input: com_atproto_space.RegisterNotifyInput;
-    output: com_atproto_space.RegisterNotifyOutput;
-  };
   "com.atproto.space.removeWriter": {
     params: com_atproto_space.RemoveWriterParams;
     input: com_atproto_space.RemoveWriterInput;
     output: com_atproto_space.RemoveWriterOutput;
-  };
-  "com.atproto.space.unregisterNotify": {
-    params: com_atproto_space.UnregisterNotifyParams;
-    input: com_atproto_space.UnregisterNotifyInput;
-    output: com_atproto_space.UnregisterNotifyOutput;
   };
   "com.atproto.space.updateSpace": {
     params: com_atproto_space.UpdateSpaceParams;

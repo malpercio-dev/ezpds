@@ -104,7 +104,7 @@ pub enum ErrorCode {
     #[serde(rename = "KemKeyNotPublished")]
     KemKeyNotPublished,
     /// A space write notification carried a repo revision further ahead of this host's clock than
-    /// the permitted skew. Declared by `com.atproto.space.notifyWrite`.
+    /// the permitted skew. Declared by `com.atproto.space.notifyRepoUpdate`.
     #[serde(rename = "FutureRev")]
     FutureRev,
     /// The named account holds no permissioned repo in the space.
@@ -171,10 +171,14 @@ pub enum ErrorCode {
     /// A memberspace method on a space governed by another policy.
     #[serde(rename = "PolicyMismatch")]
     PolicyMismatch,
-    /// `registerNotify`'s subscriber identifier did not resolve to a DID document with a
-    /// matching service endpoint, so a registration for it could never deliver.
-    #[serde(rename = "ServiceNotResolvable")]
-    ServiceNotResolvable,
+    /// The notify endpoint passed to `authorizeSpaceSync` did not echo the
+    /// `confirmRegistration` challenge. Declared by `com.atproto.space.authorizeSpaceSync`.
+    #[serde(rename = "RegistrationNotConfirmed")]
+    RegistrationNotConfirmed,
+    /// The space already holds its maximum of active notification registrations. Custos's own
+    /// bound, not a lexicon error.
+    #[serde(rename = "TooManyRegistrations")]
+    TooManyRegistrations,
     // Codes for endpoints/designs not yet shipped (tiers, did:web self-service, device
     // leases, Shamir recovery, etc.) are catalogued in docs/provisioning-api-spec.md's
     // status-code appendix; add them here as those designs actually land.
@@ -253,7 +257,8 @@ impl ErrorCode {
             ErrorCode::SpaceAlreadyExists => "SpaceAlreadyExists",
             ErrorCode::UnsupportedPolicy => "UnsupportedPolicy",
             ErrorCode::PolicyMismatch => "PolicyMismatch",
-            ErrorCode::ServiceNotResolvable => "ServiceNotResolvable",
+            ErrorCode::RegistrationNotConfirmed => "RegistrationNotConfirmed",
+            ErrorCode::TooManyRegistrations => "TooManyRegistrations",
         }
     }
 
@@ -320,7 +325,8 @@ impl ErrorCode {
             ErrorCode::SpaceAlreadyExists => 400,
             ErrorCode::UnsupportedPolicy => 400,
             ErrorCode::PolicyMismatch => 400,
-            ErrorCode::ServiceNotResolvable => 400,
+            ErrorCode::RegistrationNotConfirmed => 400,
+            ErrorCode::TooManyRegistrations => 400,
         }
     }
 }

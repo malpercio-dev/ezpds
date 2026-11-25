@@ -75,7 +75,6 @@ pub const PURGE_ACCOUNT_SQL: &[&str] = &[
     "DELETE FROM space_records WHERE account_did = ?",
     "DELETE FROM space_repos WHERE account_did = ?",
     "DELETE FROM space_members WHERE member_did = ?",
-    "DELETE FROM space_notify_registrations WHERE subscriber_did = ?",
     "DELETE FROM space_writers WHERE repo_did = ?",
 ];
 
@@ -111,7 +110,7 @@ mod purge_tests {
         assert!(checked >= 1, "sanity: found {checked} space account FKs");
     }
 
-    /// The purge takes the account's own space repo, its membership and notify rows, and its row
+    /// The purge takes the account's own space repo, its membership, and its row
     /// in a locally-hosted space's writer set (`listRepos` must stop advertising it), while the
     /// `spaces` row it is authority for survives as the tombstone that makes the space
     /// unanswerable (members' own records are theirs; the space simply stops answering).
@@ -136,20 +135,15 @@ mod purge_tests {
         )
         .await
         .unwrap();
-        for sql in [
+        sqlx::query(
             "INSERT INTO space_members (space_uri, member_did, added_at) \
              VALUES (?, ?, datetime('now'))",
-            "INSERT INTO space_notify_registrations \
-             (space_uri, subscriber_did, repo_did, created_at, expires_at) \
-             VALUES (?, ?, '', datetime('now'), datetime('now', '+1 hour'))",
-        ] {
-            sqlx::query(sql)
-                .bind(space)
-                .bind(did)
-                .execute(&state.db)
-                .await
-                .unwrap();
-        }
+        )
+        .bind(space)
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
 
         let mut tx = state.db.begin().await.unwrap();
         purge_account_rows(&mut tx, did).await.unwrap();
@@ -160,7 +154,6 @@ mod purge_tests {
             ("space_records", "account_did"),
             ("space_repos", "account_did"),
             ("space_members", "member_did"),
-            ("space_notify_registrations", "subscriber_did"),
             ("space_writers", "repo_did"),
         ] {
             let n: i64 =

@@ -70,23 +70,15 @@ where
         .route("/xrpc/com.atproto.space.listRepos", get(space_list_repos))
         .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
         .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
-        // The notification surface: syncers subscribe here, repo hosts report here, and authorities
-        // revoke credentials here.
+        // The notification surface: repo hosts report here, and authorities revoke credentials
+        // here. Syncers register through `authorizeSpaceSync`.
         .route(
-            "/xrpc/com.atproto.space.notifyCredentialRevoked",
-            post(space_notify_credential_revoked),
+            "/xrpc/com.atproto.space.notifyCredentialsRevoked",
+            post(space_notify_credentials_revoked),
         )
         .route(
-            "/xrpc/com.atproto.space.notifyWrite",
-            post(space_notify_write),
-        )
-        .route(
-            "/xrpc/com.atproto.space.registerNotify",
-            post(space_register_notify),
-        )
-        .route(
-            "/xrpc/com.atproto.space.unregisterNotify",
-            post(space_unregister_notify),
+            "/xrpc/com.atproto.space.notifyRepoUpdate",
+            post(space_notify_repo_update),
         )
         // Space management: spaces anchored on a local account's own DID, managed by that
         // account under `manage=` grants, and the memberspace policy's member list.
