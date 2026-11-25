@@ -17,17 +17,15 @@ auth:bearer {
 params:query {
   space: at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main
   repo: {{did}}
-  ~excludeValues: false
 }
 
 docs {
-  Download a permissioned repo as a CAR file for full-state recovery. The CAR declares two
-  roots in order — the signed commit, then a DRISL (DAG-CBOR) index mapping
-  "{collection}/{rkey}" to record CID in canonical DAG-CBOR key order (length-first, then
-  bytewise) — followed by the record blocks in the index's order, so it verifies while
-  streaming. Blobs are not included (fetch via space.getBlob).
+  Download a space repo as an "atproto-space-repo" STAR archive
+  (application/vnd.dasl.star). The metadata is the commit { ver, repo, space, rev, data }, then
+  one "{collection}/{rkey}" → record pair per record, in strict bytewise key order. A syncer
+  folds each path and record CID into a set hash and compares it with the commit's data. The
+  MAC over the commit rides the response headers (Accept-Signature), not the body. Blobs are
+  not included (fetch via space.getBlob).
 
-  "excludeValues=true" writes only the two roots; the index still authenticates against the
-  commit (the set hash folds from index entries), so a syncer can diff it against a local copy
-  and fetch just the records it lacks.
+  The archive is what com.atproto.space.importRepo takes on the destination host.
 }

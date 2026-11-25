@@ -12,9 +12,7 @@ use axum::http::StatusCode;
 use custos_core::CoreState;
 use tower::ServiceExt;
 
-use crate::space_record_write::{
-    apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
-};
+use crate::space_record_write::{apply_space_writes, SpaceWriteAction, SpaceWriteOp};
 use crate::test_support::xrpc_get as get;
 use crate::test_support::{access_jwt, body_json, seed_account_with_repo, state_with_master_key};
 
@@ -45,7 +43,6 @@ async fn write_one(state: &CoreState, action: SpaceWriteAction, rkey: &str, text
             rkey: rkey.to_string(),
             value,
         }],
-        SpaceWriteAdmission::Active,
     )
     .await
     .unwrap()
@@ -240,83 +237,18 @@ async fn list_repo_ops_unknown_repo_is_repo_not_found() {
 
 // ── getRepo ─────────────────────────────────────────────────────────────────
 
-/// A parsed CARv1: declared roots plus the blocks in file order.
-struct ParsedCar {
-    roots: Vec<repo_engine::Cid>,
-    blocks: Vec<(repo_engine::Cid, Vec<u8>)>,
-}
-
-/// Hand-parse a CARv1 byte stream. Deliberately not a CarStore: block *order* is part of the
-/// format under test (blocks must follow the index's canonical order), and a store API
-/// deduplicates that away.
-fn parse_car(bytes: &[u8]) -> ParsedCar {
-    fn read_uvarint(bytes: &[u8], at: &mut usize) -> u64 {
-        let mut out = 0u64;
-        let mut shift = 0;
-        loop {
-            let b = bytes[*at];
-            *at += 1;
-            out |= u64::from(b & 0x7f) << shift;
-            if b & 0x80 == 0 {
-                return out;
-            }
-            shift += 7;
-        }
-    }
-
-    #[derive(serde::Deserialize)]
-    struct Header {
-        #[allow(dead_code)]
-        version: u64,
-        roots: Vec<repo_engine::Cid>,
-    }
-
-    let mut at = 0usize;
-    let header_len = read_uvarint(bytes, &mut at) as usize;
-    let header: Header = serde_ipld_dagcbor::from_slice(&bytes[at..at + header_len]).unwrap();
-    at += header_len;
-
-    let mut blocks = Vec::new();
-    while at < bytes.len() {
-        let frame_len = read_uvarint(bytes, &mut at) as usize;
-        let frame = &bytes[at..at + frame_len];
-        at += frame_len;
-        let mut cursor = std::io::Cursor::new(frame);
-        let cid = repo_engine::Cid::read_bytes(&mut cursor).unwrap();
-        let data = frame[cursor.position() as usize..].to_vec();
-        blocks.push((cid, data));
-    }
-    ParsedCar {
-        roots: header.roots,
-        blocks,
-    }
-}
-
-/// The decoded commit root block.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CommitBlock {
-    ver: u8,
-    repo: String,
-    space: String,
-    rev: String,
-    #[serde(with = "serde_bytes")]
-    data: Vec<u8>,
-}
-
-/// The full streaming-verification journey a syncer takes: two roots in order (commit,
-/// index), the commit describes this repo head, the index folds to an LtHash digest equal to
-/// the commit's `data`, and the record blocks follow in the index's canonical order with bytes
-/// that hash to the CIDs the index promised. (The MAC over the commit is `space_mac_test`'s.)
+/// The full streaming-verification journey a syncer takes: an `atproto-space-repo` STAR whose
+/// metadata is this repo's commit, records in strict bytewise path order, each value hashing to
+/// a CID that, folded with its path into an LtHash, reproduces the commit's `data`. (The MAC
+/// over the commit is `space_mac_test`'s.)
 #[tokio::test]
-async fn get_repo_car_verifies_end_to_end() {
+async fn get_repo_star_verifies_end_to_end() {
     let (state, _kp) = setup().await;
     let token = access_jwt(&state.jwt_secret, DID);
 
-    // rkeys chosen so canonical (length-first) order differs from plain lexicographic:
-    // "zz" (shorter) must sort ahead of "aaa" (longer).
-    write_one(&state, SpaceWriteAction::Create, "aaa", "long-key").await;
-    let head_rev = write_one(&state, SpaceWriteAction::Create, "zz", "short-key").await;
+    // Written out of order, and with "zz" longer-key-last: bytewise order is "aaa" then "zz".
+    write_one(&state, SpaceWriteAction::Create, "zz", "short-key").await;
+    let head_rev = write_one(&state, SpaceWriteAction::Create, "aaa", "long-key").await;
 
     let response = crate::test_support::test_app(state.clone())
         .oneshot(get(
@@ -328,108 +260,47 @@ async fn get_repo_car_verifies_end_to_end() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers()["content-type"],
-        "application/vnd.ipld.car"
+        "application/vnd.dasl.star"
     );
     assert_eq!(
         response.headers()["cache-control"],
         "private",
         "a permissioned repo export is never publicly cacheable"
     );
-    let car = parse_car(&body_bytes(response).await);
+    let bytes = body_bytes(response).await;
 
-    // Two roots, in order; the file carries commit, index, then the record blocks.
-    assert_eq!(car.roots.len(), 2);
-    assert_eq!(car.blocks.len(), 4);
-    assert_eq!(car.blocks[0].0, car.roots[0], "commit block first");
-    assert_eq!(car.blocks[1].0, car.roots[1], "index block second");
-
-    // The commit block is this repo's head, and nothing else.
-    let commit: CommitBlock = serde_ipld_dagcbor::from_slice(&car.blocks[0].1).unwrap();
-    assert_eq!(commit.ver, 1);
-    assert_eq!(commit.repo, DID);
-    assert_eq!(commit.space, SPACE);
-    assert_eq!(commit.rev, head_rev);
-
-    // The index decodes as a path → CID-link map in canonical key order, and folding its
-    // entries into an LtHash reproduces the commit's `data` — the syncer's integrity check.
-    let index: Vec<(String, ipld_core::ipld::Ipld)> = {
-        let decoded: std::collections::BTreeMap<String, ipld_core::ipld::Ipld> =
-            serde_ipld_dagcbor::from_slice(&car.blocks[1].1).unwrap();
-        // BTreeMap loses wire order; recover it from the raw bytes by key position.
-        let mut entries: Vec<_> = decoded.into_iter().collect();
-        entries.sort_by_key(|(path, _)| {
-            let mut needle = Vec::new();
-            // Paths here are < 24 bytes, so the text header is a single byte.
-            needle.push(0x60 + path.len() as u8);
-            needle.extend_from_slice(path.as_bytes());
-            car.blocks[1]
-                .1
-                .windows(needle.len())
-                .position(|w| w == needle.as_slice())
-                .unwrap()
-        });
-        entries
+    // The profile reader checks the `$type`, the frame limits and the key order.
+    let star =
+        repo_engine::SpaceStarReader::new(repo_engine::StarProfile::SpaceRepo, &bytes[..]).unwrap();
+    let meta = star.meta().clone();
+    use ipld_core::ipld::Ipld;
+    assert_eq!(meta["ver"], Ipld::Integer(1));
+    assert_eq!(meta["repo"], Ipld::String(DID.to_string()));
+    assert_eq!(meta["space"], Ipld::String(SPACE.to_string()));
+    assert_eq!(meta["rev"], Ipld::String(head_rev));
+    let Ipld::Bytes(data) = &meta["data"] else {
+        panic!("commit data must be bytes");
     };
-    let paths: Vec<&str> = index.iter().map(|(p, _)| p.as_str()).collect();
+
+    let pairs: Vec<_> = star.collect::<Result<_, _>>().unwrap();
+    let paths: Vec<String> = pairs
+        .iter()
+        .map(|p| String::from_utf8(p.key.clone()).unwrap())
+        .collect();
     assert_eq!(
         paths,
-        vec![
-            format!("{COLLECTION}/zz").as_str(),
-            format!("{COLLECTION}/aaa").as_str()
-        ],
-        "index keys in canonical order: shorter path first"
+        vec![format!("{COLLECTION}/aaa"), format!("{COLLECTION}/zz")]
     );
-
     let mut fold = crypto::LtHash::new();
-    for (path, cid) in &index {
-        let ipld_core::ipld::Ipld::Link(cid) = cid else {
-            panic!("index value must be a CID link");
-        };
+    for (path, pair) in paths.iter().zip(&pairs) {
+        let cid = repo_engine::dag_cbor_block_cid(&pair.value).unwrap();
         fold.add(&format!("{path}/{cid}"));
     }
     assert_eq!(
         fold.digest().as_slice(),
-        commit.data.as_slice(),
-        "index entries must fold to the commit's data"
+        data.as_slice(),
+        "records must fold to the commit's data"
     );
-
-    // Record blocks follow in index order, each hashing to the CID the index promised.
-    for (i, (path, cid)) in index.iter().enumerate() {
-        let ipld_core::ipld::Ipld::Link(cid) = cid else {
-            unreachable!()
-        };
-        let (block_cid, block_bytes) = &car.blocks[2 + i];
-        assert_eq!(
-            block_cid, cid,
-            "block order must match index order ({path})"
-        );
-        assert_eq!(
-            &repo_engine::dag_cbor_block_cid(block_bytes).unwrap(),
-            cid,
-            "block bytes must hash to the index's CID"
-        );
-    }
-}
-
-/// `excludeValues` writes only the two roots; the index still folds to the commit hash, so a
-/// syncer can diff against a local copy without the blocks.
-#[tokio::test]
-async fn get_repo_exclude_values_carries_only_roots() {
-    let (state, _kp) = setup().await;
-    let token = access_jwt(&state.jwt_secret, DID);
-    write_one(&state, SpaceWriteAction::Create, "aaa", "one").await;
-
-    let response = crate::test_support::test_app(state.clone())
-        .oneshot(get(
-            &format!("com.atproto.space.getRepo?space={SPACE}&repo={DID}&excludeValues=true"),
-            &token,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let car = parse_car(&body_bytes(response).await);
-    assert_eq!(car.roots.len(), 2);
-    assert_eq!(car.blocks.len(), 2, "no record blocks under excludeValues");
 }
 
 /// An empty repo (never written) is RepoNotFound — there is no commit.
@@ -495,7 +366,6 @@ async fn write_blob_record(state: &CoreState, rkey: &str, blob_cid: &str) -> Str
             rkey: rkey.to_string(),
             value: Some(blob_record(blob_cid)),
         }],
-        SpaceWriteAdmission::Active,
     )
     .await
     .unwrap()

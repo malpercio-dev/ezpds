@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 
 //! The Atproto Spaces feature: the `com.atproto.space.*` and `com.atproto.memberspace.*` routes,
-//! `/v1/space/import-repo` and the operator's `/v1/admin/spaces` pair, the space authorization
+//! the operator's `/v1/admin/spaces` pair, the space authorization
 //! seam, the space query modules, both space sweeps, and the `spaces` capability entry.
 //!
 //! `pds` is the composition root and consumes only what this file exports: [`router`] / [`internal_router`],
@@ -23,6 +23,7 @@ mod router;
 mod routes;
 mod space_jti_sweep;
 mod space_mac;
+mod space_migration;
 mod space_notify;
 mod space_oplog_sweep;
 pub mod space_record_write;
@@ -91,9 +92,7 @@ pub async fn purge_account_rows(tx: &mut SqliteConnection, did: &str) -> Result<
 #[cfg(test)]
 mod purge_tests {
     use super::*;
-    use crate::space_record_write::{
-        apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
-    };
+    use crate::space_record_write::{apply_space_writes, SpaceWriteAction, SpaceWriteOp};
     use crate::test_support::{
         memberspace_policy, seed_account_with_repo, seed_authority_space, state_with_master_key,
     };
@@ -133,7 +132,6 @@ mod purge_tests {
                 rkey: "one".to_string(),
                 value: Some(serde_json::json!({"text": "purge me"})),
             }],
-            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();

@@ -135,14 +135,8 @@ pub async fn space_apply_writes(
         ));
     }
 
-    let outcome = crate::space_record_write::apply_space_writes(
-        &state,
-        &space,
-        &user.did,
-        &ops,
-        crate::space_record_write::SpaceWriteAdmission::Active,
-    )
-    .await?;
+    let outcome =
+        crate::space_record_write::apply_space_writes(&state, &space, &user.did, &ops).await?;
 
     // Results are positional and preserve request order: with every action carrying a
     // precondition, an op either lands or the whole batch fails, so the store returns exactly

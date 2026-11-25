@@ -19,9 +19,7 @@ use axum::http::{self, Request, StatusCode};
 use custos_core::CoreState;
 
 use crate::auth::space::{mint_space_credential, unix_now};
-use crate::space_record_write::{
-    apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
-};
+use crate::space_record_write::{apply_space_writes, SpaceWriteAction, SpaceWriteOp};
 use crate::test_support::{access_jwt, seed_account_with_repo, state_with_master_key, SpaceSigKey};
 use crate::test_support::{send, xrpc_get as get, xrpc_post as post};
 use custos_core::space_uri::parse_space_ref;
@@ -94,7 +92,6 @@ async fn write_one(state: &CoreState, space_uri: &str, did: &str, rkey: &str) ->
             rkey: rkey.to_string(),
             value: Some(serde_json::json!({ "text": rkey })),
         }],
-        SpaceWriteAdmission::Active,
     )
     .await
     .unwrap();

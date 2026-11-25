@@ -467,7 +467,6 @@ mod tests {
         // An XRPC space method falls into the catch-all: the same MethodNotImplemented a
         // PDS that never implemented spaces gives, not an auth error.
         let response = app
-            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/xrpc/com.atproto.space.listSpaces")
@@ -477,19 +476,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-
-        // The Custos-native import leg is plain 404 — `/v1/*` has no catch-all.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/space/import-repo")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

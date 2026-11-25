@@ -88,7 +88,6 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/repo-keys/rotation/complete` | Custos HTTP |
 | `/v1/repo-signing-key` | Custos HTTP |
 | `/v1/sessions/sovereign` | Custos HTTP |
-| `/v1/space/import-repo` | Custos HTTP |
 | `/v1/transfer/accept` | Custos HTTP |
 | `/v1/transfer/complete` | Custos HTTP |
 | `/v1/transfer/initiate` | Custos HTTP |
@@ -152,12 +151,15 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/xrpc/com.atproto.space.createSpace` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.deleteRecord` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.deleteSpace` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.exportSpaceMeta` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.getBlob` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.getDelegationToken` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.getLatestCommit` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.getRecord` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.getRepo` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.getSpace` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.importRepo` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.importSpaceMeta` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.listBlobs` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.listRecords` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.listRepoOps` | AT Protocol XRPC |

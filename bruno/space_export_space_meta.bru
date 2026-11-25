@@ -1,0 +1,29 @@
+meta {
+  name: Space Export Space Meta
+  type: http
+  seq: 177
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.exportSpaceMeta?space=at://{{did}}/space/org.example.bucket/main
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://{{did}}/space/org.example.bucket/main
+}
+
+docs {
+  Export a space's host-side state as an "atproto-space-meta" STAR archive
+  (application/vnd.dasl.star), for migrating its authority's account: "policy", then the policy
+  state (a memberspace's member list), then one "writer/{did}" → { repoRev, data, spaceRev }
+  entry per repo in the writer set. OAuth with a "space:…?action=read_self" grant, authority
+  only.
+
+  Errors: 400 SpaceNotFound (also for a space the operator took down), 400 NotAuthorized.
+}

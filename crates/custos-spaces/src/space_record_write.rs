@@ -7,7 +7,8 @@
 //! the policy module's published records, [`apply_space_writes_in_tx`] on the
 //! caller's transaction): validate → CAS rev → update LtHash state → append
 //! oplog — all inside one SQLite transaction, so a space commit is atomic by
-//! construction. That is
+//! construction. The one exception is the migration import,
+//! [`import_space_repo`], which replaces a repo outright. That is
 //! the structural difference from the public path: the public repo's write
 //! spans a non-transactional block store and needs per-DID locks plus a
 //! post-commit GC; here the record rows, the oplog, and the repo head commit
@@ -82,24 +83,6 @@ pub struct SpaceWriteResult {
     pub prev: Option<String>,
 }
 
-/// Which account states a space commit may land on, and whether it is charged.
-///
-/// The split exists because migration has to write into a repo the account cannot otherwise
-/// write to: `com.atproto.repo.importRepo` lands the public repo on a *deactivated* account,
-/// and the permissioned repos have to arrive through the same window or they cannot follow
-/// their account to a new host at all. Moderation states are refused either way — a takedown
-/// is not a migration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpaceWriteAdmission {
-    /// Ordinary writes: the account must be fully active, and the commit is charged against
-    /// its write budget.
-    Active,
-    /// The migration import leg: a self-service-deactivated account may land a commit, and no
-    /// write points are charged — an import is one bulk transfer of records the account
-    /// already owns, not new authorship.
-    Import,
-}
-
 /// A committed space write: the repo's new head and per-op results.
 #[derive(Debug, Clone)]
 pub struct SpaceCommitOutcome {
@@ -107,8 +90,8 @@ pub struct SpaceCommitOutcome {
     ///
     /// `rev` and `hash` together are what `notifyWrite` carries on the wire, but the fan-out is
     /// spawned from inside this module off the local values, before this struct exists — so the
-    /// wire does not read them from here. `rev` is read by the import route's response; `hash`
-    /// only by tests.
+    /// wire does not read them from here. Both are read only by tests.
+    #[allow(dead_code)]
     pub rev: String,
     /// sha256 of the repo's LtHash state — the commit `hash` the wire carries. Read only by the
     /// tests below, which recompute the LtHash digest and check the commit agrees.
@@ -129,35 +112,32 @@ pub struct SpaceCommitOutcome {
 ///
 /// The published policy and member collections (`crate::policy::PUBLISHED_COLLECTIONS`) are
 /// refused here in any repo: only the policy module writes them, through
-/// [`apply_space_writes_in_tx`], from the space's configuration. The import leg accepts them as
-/// they arrive, as the reference's import does.
+/// [`apply_space_writes_in_tx`], from the space's configuration. [`import_space_repo`] accepts
+/// them as they arrive, as the reference's import does.
 pub async fn apply_space_writes(
     state: &CoreState,
     space: &SpaceRef,
     did: &str,
     ops: &[SpaceWriteOp],
-    admission: SpaceWriteAdmission,
 ) -> Result<SpaceCommitOutcome, ApiError> {
     validate_ops(ops)?;
-    if admission == SpaceWriteAdmission::Active {
-        if let Some(op) = ops
-            .iter()
-            .find(|op| crate::policy::PUBLISHED_COLLECTIONS.contains(&op.collection.as_str()))
-        {
-            return Err(ApiError::new(
-                ErrorCode::InvalidRequest,
-                format!(
-                    "{} records are published by the PDS from a space's configuration and cannot be written directly",
-                    op.collection
-                ),
-            ));
-        }
+    if let Some(op) = ops
+        .iter()
+        .find(|op| crate::policy::PUBLISHED_COLLECTIONS.contains(&op.collection.as_str()))
+    {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "{} records are published by the PDS from a space's configuration and cannot be written directly",
+                op.collection
+            ),
+        ));
     }
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to open space write transaction");
         internal_error()
     })?;
-    let commit = commit_ops(state, &mut tx, space, did, ops, admission).await?;
+    let commit = commit_ops(state, &mut tx, space, did, ops).await?;
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, space = %space.uri, did = %did, "failed to commit space write transaction");
         internal_error()
@@ -182,9 +162,7 @@ pub(crate) async fn apply_space_writes_in_tx(
         return Ok(None);
     }
     validate_ops(ops)?;
-    commit_ops(state, tx, space, did, ops, SpaceWriteAdmission::Active)
-        .await
-        .map(Some)
+    commit_ops(state, tx, space, did, ops).await.map(Some)
 }
 
 /// A space commit written inside a transaction that has not committed yet.
@@ -261,21 +239,18 @@ async fn commit_ops(
     space: &SpaceRef,
     did: &str,
     ops: &[SpaceWriteOp],
-    admission: SpaceWriteAdmission,
 ) -> Result<PendingSpaceCommit, ApiError> {
     let space_uri = space.uri.as_str();
 
     // A deactivated, suspended, or taken-down account is read-only, exactly as
-    // on the public write path — except on the import leg, which admits the
-    // deactivated state the migration window runs in (see
-    // [`SpaceWriteAdmission`]). Checked *inside* the transaction: the public
+    // on the public write path (the migration import is [`import_space_repo`]'s
+    // own path). Checked *inside* the transaction: the public
     // path folds this guard into its root CAS, but the space head's CAS is on
     // `space_repos`, not `accounts`, so a pre-transaction check would leave a
     // window for a concurrent deactivation to land between check and commit.
     use custos_db::accounts::AccountLifecycle;
     match custos_db::accounts::account_lifecycle(&mut **tx, did).await? {
         Some(AccountLifecycle::Active) => {}
-        Some(AccountLifecycle::Deactivated) if admission == SpaceWriteAdmission::Import => {}
         Some(AccountLifecycle::Deactivated) => {
             return Err(ApiError::new(
                 ErrorCode::AccountDeactivated,
@@ -293,63 +268,7 @@ async fn commit_ops(
         }
     }
 
-    // Record a foreign authority's space if this host has not seen it before. The reference does
-    // the same on every space write, and it is what makes a foreign authority's space usable:
-    // nothing else in the protocol tells a repo host that its user has joined one. The row
-    // carries no policy — that belongs to the authority.
-    //
-    // A space anchored on the writer's own DID is never recorded here: the spec requires it to
-    // exist already, so it must have been made by `createSpace` (which is what writes the policy).
-    //
-    // Divergence from the reference, which additionally *clears* `deleted_at` here: a tombstone
-    // is only ever written for a space this host is the authority for, and resurrecting one on a
-    // member's write would undo the deletion the operator performed. So a deleted space refuses
-    // writes instead — its members' existing records stay put (spec deletion semantics), they
-    // just stop changing.
-    let own_space = space.authority == did;
-    if !own_space {
-        crate::db::spaces::insert_space(
-            &mut **tx,
-            &crate::db::spaces::NewSpace {
-                uri: space_uri,
-                authority_did: &space.authority,
-                space_type: &space.space_type,
-                skey: &space.skey,
-            },
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space_uri, "failed to record space");
-            internal_error()
-        })?;
-    }
-    let row = crate::db::spaces::get_space(&mut **tx, space_uri)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space_uri, "failed to load space");
-            internal_error()
-        })?;
-    // All three refusals are read here rather than at the auth seam because the head CAS is on
-    // `space_repos`, not `spaces`: outside this transaction a concurrent deleteSpace or
-    // operator takedown could land between check and commit. `SpaceNotFound` for the
-    // takedown, never `SpaceDeleted` — see `auth::space::require_space_servable`.
-    if row.as_ref().is_some_and(|row| row.deleted_at.is_some()) {
-        return Err(ApiError::new(
-            ErrorCode::SpaceNotFound,
-            "space has been deleted",
-        ));
-    }
-    // An own space that was never created (no row, or a policy-less row recorded before this
-    // rule) is refused rather than silently made.
-    if row
-        .as_ref()
-        .is_none_or(|row| own_space && row.policy.is_none())
-    {
-        return Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"));
-    }
-    if row.is_some_and(|row| row.takendown_at.is_some()) {
-        return Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"));
-    }
+    admit_space(tx, space, did).await?;
 
     // Load the repo head, or start a fresh one on first write.
     let existing_repo = crate::db::space_repos::get_repo(&mut **tx, space_uri, did)
@@ -547,23 +466,19 @@ async fn commit_ops(
     }
 
     // Charge the commit against the account's write budget (same costs as the
-    // public path, keyed by the already-authenticated DID). An import is not
-    // charged: it moves records the account already owns, and a repo large
-    // enough to be worth migrating would exhaust any sane budget on arrival.
-    if admission == SpaceWriteAdmission::Active {
-        state
-            .rate_limiter
-            .check_write_points(did, write_cost)
-            .inspect_err(|_| {
-                state.metrics.rate_limit_rejections.add(
-                    1,
-                    &[custos_core::metrics::label(
-                        custos_core::metrics::names::LABEL_LIMITER,
-                        "account_writes",
-                    )],
-                );
-            })?;
-    }
+    // public path, keyed by the already-authenticated DID).
+    state
+        .rate_limiter
+        .check_write_points(did, write_cost)
+        .inspect_err(|_| {
+            state.metrics.rate_limit_rejections.add(
+                1,
+                &[custos_core::metrics::label(
+                    custos_core::metrics::names::LABEL_LIMITER,
+                    "account_writes",
+                )],
+            );
+        })?;
 
     // An empty repo and a nonexistent one are the same thing (spec "Repo lifecycle"): a commit
     // that removes the last record deletes the repo — head, records and oplog — so every read
@@ -631,6 +546,144 @@ async fn commit_ops(
     })
 }
 
+/// Replace `did`'s repo in `archive.space` with the archive's records: the migration import
+/// (`crate::space_migration`). `did` must be a deactivated account.
+///
+/// Not a commit of ops: the records and oplog are replaced outright, the repo takes a fresh rev
+/// after whatever this host held for it with an empty oplog, and no notification fires and no
+/// writer-set row moves, as in the reference. A syncer still holding the old host's `since` finds
+/// its set hash no longer matches and heals with `getRepo`. Write points are not charged: the
+/// records are the account's own, arriving in one bulk transfer. An archive with no records
+/// leaves no repo, since an empty repo is a nonexistent one.
+///
+/// The space is admitted as any commit's is, so the authority's own space has to be imported
+/// with `importSpaceMeta` first (`SpaceNotFound` otherwise).
+pub(crate) async fn import_space_repo(
+    state: &CoreState,
+    did: &common::Did,
+    archive: &crate::space_migration::RepoArchive,
+) -> Result<String, ApiError> {
+    let space = &archive.space;
+    let space_uri = space.uri.as_str();
+    let db_error = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space_uri, did = %did, "space repo import failed");
+        internal_error()
+    };
+    let mut tx = state.db.begin().await.map_err(db_error)?;
+    // Inside the transaction, against a concurrent `activateAccount`.
+    crate::space_migration::require_deactivated(&mut *tx, did).await?;
+    admit_space(&mut tx, space, did).await?;
+
+    let rev = match crate::db::space_repos::get_repo(&mut *tx, space_uri, did)
+        .await
+        .map_err(db_error)?
+    {
+        Some(repo) => repo_engine::next_record_rev(&repo.rev).map_err(|e| {
+            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to derive import rev");
+            internal_error()
+        })?,
+        None => repo_engine::generate_tid(),
+    };
+    crate::db::space_repos::delete_repo(&mut tx, space_uri, did)
+        .await
+        .map_err(db_error)?;
+    if !archive.records.is_empty() {
+        crate::db::space_repos::insert_repo(
+            &mut *tx,
+            space_uri,
+            did,
+            &rev,
+            &archive.lthash.state(),
+        )
+        .await
+        .map_err(db_error)?;
+        for record in &archive.records {
+            crate::db::space_repos::upsert_record(
+                &mut *tx,
+                space_uri,
+                did,
+                &record.collection,
+                &record.rkey,
+                &record.cid,
+                &record.bytes,
+                &rev,
+            )
+            .await
+            .map_err(db_error)?;
+        }
+    }
+    tx.commit().await.map_err(db_error)?;
+    Ok(rev)
+}
+
+/// Admit a commit to `space`, inside its transaction: record a foreign authority's space on
+/// first sight, and refuse a deleted, uncreated or taken-down one.
+async fn admit_space(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space: &SpaceRef,
+    did: &str,
+) -> Result<(), ApiError> {
+    let space_uri = space.uri.as_str();
+    // Record a foreign authority's space if this host has not seen it before. The reference does
+    // the same on every space write, and it is what makes a foreign authority's space usable:
+    // nothing else in the protocol tells a repo host that its user has joined one. The row
+    // carries no policy — that belongs to the authority.
+    //
+    // A space anchored on the writer's own DID is never recorded here: the spec requires it to
+    // exist already, so it must have been made by `createSpace` (which is what writes the policy).
+    //
+    // Divergence from the reference, which additionally *clears* `deleted_at` here: a tombstone
+    // is only ever written for a space this host is the authority for, and resurrecting one on a
+    // member's write would undo the deletion the operator performed. So a deleted space refuses
+    // writes instead — its members' existing records stay put (spec deletion semantics), they
+    // just stop changing.
+    let own_space = space.authority == did;
+    if !own_space {
+        crate::db::spaces::insert_space(
+            &mut **tx,
+            &crate::db::spaces::NewSpace {
+                uri: space_uri,
+                authority_did: &space.authority,
+                space_type: &space.space_type,
+                skey: &space.skey,
+            },
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space_uri, "failed to record space");
+            internal_error()
+        })?;
+    }
+    let row = crate::db::spaces::get_space(&mut **tx, space_uri)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space_uri, "failed to load space");
+            internal_error()
+        })?;
+    // All three refusals are read here rather than at the auth seam because the head CAS is on
+    // `space_repos`, not `spaces`: outside this transaction a concurrent deleteSpace or
+    // operator takedown could land between check and commit. `SpaceNotFound` for the
+    // takedown, never `SpaceDeleted` — see `auth::space::require_space_servable`.
+    if row.as_ref().is_some_and(|row| row.deleted_at.is_some()) {
+        return Err(ApiError::new(
+            ErrorCode::SpaceNotFound,
+            "space has been deleted",
+        ));
+    }
+    // An own space that was never created (no row, or a policy-less row recorded before this
+    // rule) is refused rather than silently made.
+    if row
+        .as_ref()
+        .is_none_or(|row| own_space && row.policy.is_none())
+    {
+        return Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"));
+    }
+    if row.is_some_and(|row| row.takendown_at.is_some()) {
+        return Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"));
+    }
+    Ok(())
+}
+
 fn internal_error() -> ApiError {
     ApiError::new(ErrorCode::InternalError, "failed to write space record")
 }
@@ -687,7 +740,6 @@ mod tests {
                 put("org.example.note", "aaa", "one"),
                 put("org.example.note", "bbb", "two"),
             ],
-            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -708,7 +760,6 @@ mod tests {
                     value: None,
                 },
             ],
-            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -765,7 +816,6 @@ mod tests {
             &space(),
             DID,
             &[put("org.example.note", "aaa", "one")],
-            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -776,15 +826,9 @@ mod tests {
             rkey: "aaa".to_string(),
             value: Some(serde_json::json!({"text": "clobber"})),
         };
-        let err = apply_space_writes(
-            &state,
-            &space(),
-            DID,
-            &[create],
-            SpaceWriteAdmission::Active,
-        )
-        .await
-        .unwrap_err();
+        let err = apply_space_writes(&state, &space(), DID, &[create])
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), &ErrorCode::RecordAlreadyExists);
 
         // The failed batch must not have advanced the head or left oplog rows.
@@ -819,7 +863,6 @@ mod tests {
             &space(),
             DID,
             &[put("org.example.note", "aaa", "x")],
-            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -838,7 +881,7 @@ mod tests {
                 value: Some(serde_json::json!({"text": "revised"})),
             },
         ] {
-            let err = apply_space_writes(&state, &space(), DID, &[op], SpaceWriteAdmission::Active)
+            let err = apply_space_writes(&state, &space(), DID, &[op])
                 .await
                 .unwrap_err();
             assert_eq!(err.code(), &ErrorCode::RecordNotFound);
@@ -855,7 +898,6 @@ mod tests {
                 rkey: "aaa".to_string(),
                 value: Some(serde_json::json!({"text": "revised"})),
             }],
-            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -889,7 +931,6 @@ mod tests {
             &unknown,
             DID,
             &[put("org.example.note", "aaa", "x")],
-            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -922,7 +963,6 @@ mod tests {
             &space(),
             DID,
             &[put("org.example.note", "seed", "x")],
-            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -931,15 +971,9 @@ mod tests {
             .execute(&state.db)
             .await
             .unwrap();
-        let err = apply_space_writes(
-            &state,
-            &space(),
-            DID,
-            &[put("org.example.note", "a", "x")],
-            SpaceWriteAdmission::Active,
-        )
-        .await
-        .unwrap_err();
+        let err = apply_space_writes(&state, &space(), DID, &[put("org.example.note", "a", "x")])
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), &ErrorCode::SpaceNotFound);
         let still_deleted: Option<String> =
             sqlx::query_scalar("SELECT deleted_at FROM spaces WHERE uri = ?")
@@ -962,15 +996,9 @@ mod tests {
             .execute(&state.db)
             .await
             .unwrap();
-        let err = apply_space_writes(
-            &state,
-            &space(),
-            DID,
-            &[put("org.example.note", "a", "x")],
-            SpaceWriteAdmission::Active,
-        )
-        .await
-        .unwrap_err();
+        let err = apply_space_writes(&state, &space(), DID, &[put("org.example.note", "a", "x")])
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), &ErrorCode::AccountDeactivated);
 
         // A moderation state is `AccountTakedown` here too, should one land between the route's
@@ -983,15 +1011,9 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-        let err = apply_space_writes(
-            &state,
-            &space(),
-            DID,
-            &[put("org.example.note", "a", "x")],
-            SpaceWriteAdmission::Active,
-        )
-        .await
-        .unwrap_err();
+        let err = apply_space_writes(&state, &space(), DID, &[put("org.example.note", "a", "x")])
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), &ErrorCode::AccountTakedown);
     }
 }

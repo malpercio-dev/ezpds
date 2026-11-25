@@ -1,36 +1,30 @@
 // pattern: Imperative Shell
 
-//! com.atproto.space.getRepo — export a permissioned repo as a two-root CAR, for full-state
-//! recovery.
+//! com.atproto.space.getRepo — export a space repo as an `atproto-space-repo` STAR archive
+//! (`crate::space_migration`), for full-state recovery and migration.
 //!
-//! The CAR declares two roots in order: the commit, then a DRISL index mapping
-//! `{collection}/{rkey}` to record CID in canonical DAG-CBOR map key order (shortest key
-//! first, then bytewise). Record blocks follow in the index's order, so a consumer can verify
-//! as it streams: check the response's MAC over the commit (`space_mac`), fold the index into a
-//! running LtHash and compare against the commit's `data`, then check each block against the
-//! CID the index promised. `excludeValues`
-//! writes only the two roots — the index still authenticates against the commit, since the set
-//! hash folds from index entries rather than blocks. Blobs are never included (`getBlob`).
+//! The archive's metadata is the commit, and the MAC over it rides the response headers
+//! (`space_mac`), not the body. Records follow in strict bytewise path order, each read as its
+//! turn comes, so memory bounds to one record. A consumer verifies as it streams: check the MAC
+//! over the commit, fold each record's path and CID into a running set hash, and compare it with
+//! the commit's `data` once the archive ends. Blobs are never included (`getBlob`).
 
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use custos_core::CoreState;
-use serde::ser::SerializeMap;
 use serde::Deserialize;
 
 use common::{ApiError, Did, ErrorCode};
 use crypto::http_signature::MacProfile;
 use custos_core::lexicon::LexiconParams;
-use repo_engine::Cid;
+use repo_engine::SpaceStarWriter;
 
 #[derive(Deserialize)]
 pub struct SpaceGetRepoParams {
     space: String,
     repo: Did,
-    #[serde(default, rename = "excludeValues")]
-    exclude_values: bool,
 }
 
 /// GET /xrpc/com.atproto.space.getRepo
@@ -55,34 +49,26 @@ pub async fn space_get_repo(
         crate::space_mac::mac_grant(&state, &headers, &reader, &params.repo, MacProfile::Commit)
             .await?;
     let repo = crate::views::load_repo(&state, &space.uri, &params.repo).await?;
+    let export_error = |e: &dyn std::fmt::Display| {
+        tracing::error!(error = %e, space = %space.uri, "failed to export space repo");
+        ApiError::new(ErrorCode::InternalError, "failed to export space repo")
+    };
 
-    // The index has to precede the blocks it describes, so paths are collected up front; only
-    // the record blocks themselves stream lazily.
-    let mut entries =
+    // The paths are collected up front so the head can be re-read around them; only the record
+    // values stream lazily. SQL orders `(collection, rkey)`, which is not the archive's bytewise
+    // order of `collection/rkey` (`a.b.c/x` sorts before `a.b/x`), so they are sorted here.
+    let mut entries: Vec<(String, String)> =
         crate::db::space_repos::list_record_index(&state.db, &space.uri, &params.repo)
             .await
-            .map_err(|e| {
-                {
-                    tracing::error!(error = %e, space = %space.uri, "failed to read space record index");
-                    ApiError::new(ErrorCode::InternalError, "failed to export space repo")
-                }
-            })?
+            .map_err(|e| export_error(&e))?
             .into_iter()
-            .map(|(collection, rkey, cid)| {
-                let cid = Cid::try_from(cid.as_str()).map_err(|e| {
-                    tracing::error!(error = %e, space = %space.uri, cid = %cid, "stored record cid is malformed");
-                    ApiError::new(ErrorCode::InternalError, "failed to export space repo")
-                })?;
-                Ok((format!("{collection}/{rkey}"), cid))
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?;
-    // A consumer walks the index as the cbor encoder ordered its keys, so blocks follow the
-    // same canonical order.
-    entries.sort_unstable_by(|(a, _), (b, _)| canonical_key_order(a, b));
+            .map(|(collection, rkey, cid)| (format!("{collection}/{rkey}"), cid))
+            .collect();
+    entries.sort_unstable();
 
-    // The index and the commit must describe the same head: a write landing between the head
-    // read and the index read would yield a 200 CAR whose index cannot fold to the commit's
-    // hash. The rev is monotonic, so an unchanged rev on a second read brackets the index read
+    // The records and the commit must describe the same head: a write landing between the head
+    // read and the path read would yield an archive whose records cannot fold to the commit's
+    // data. The rev is monotonic, so an unchanged rev on a second read brackets the path read
     // between two identical-head observations.
     let head = crate::views::load_repo(&state, &space.uri, &params.repo).await?;
     if head.rev != repo.rev {
@@ -93,248 +79,118 @@ pub async fn space_get_repo(
     }
 
     let commit = crate::views::current_commit(&space, &params.repo, &repo)?;
-    let commit_bytes = encode_commit_block(&commit);
-    let index_bytes = encode_index_block(&entries);
-    let (commit_cid, index_cid) = match (
-        repo_engine::dag_cbor_block_cid(&commit_bytes),
-        repo_engine::dag_cbor_block_cid(&index_bytes),
-    ) {
-        (Ok(c), Ok(i)) => (c, i),
-        (Err(e), _) | (_, Err(e)) => {
-            return Err({
-                tracing::error!(error = %e, space = %space.uri, "failed to hash space CAR root block");
-                ApiError::new(ErrorCode::InternalError, "failed to export space repo")
-            });
-        }
-    };
-
-    let mut head = repo_engine::car_v1_header_roots(vec![commit_cid, index_cid]);
-    head.extend_from_slice(&repo_engine::car_v1_block_frame(commit_cid, &commit_bytes));
-    head.extend_from_slice(&repo_engine::car_v1_block_frame(index_cid, &index_bytes));
-
-    let response = stream_car(
+    let (writer, header) = crate::space_migration::repo_star_writer(&commit)?;
+    let response = stream_star(
         state,
         space.uri.clone(),
-        params.repo.to_string(),
-        head,
-        if params.exclude_values {
-            Vec::new()
-        } else {
-            entries
-        },
+        params.repo.clone(),
+        writer,
+        header,
+        entries,
     );
     crate::space_mac::with_commit_mac(response, &commit, mac.as_ref())
 }
 
-/// Canonical DAG-CBOR map key order: shortest first, then bytewise.
-fn canonical_key_order(a: &str, b: &str) -> std::cmp::Ordering {
-    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
-}
-
-/// The commit root block, `{ver, repo, space, rev, data}`, encoded as canonical DAG-CBOR.
+/// Stream the archive: the header, then one pair per record, each fetched as its turn comes,
+/// then the end byte.
 ///
-/// serde_ipld_dagcbor writes struct fields in declaration order, so this struct declares them
-/// in canonical map key order — length first, then bytewise: rev, ver, data, repo, space. A
-/// unit test pins the byte-level ordering against a decoder.
-#[allow(
-    clippy::expect_used,
-    reason = "DAG-CBOR encoding of a fixed-shape map cannot fail"
-)]
-fn encode_commit_block(commit: &crate::views::SpaceCommit) -> Vec<u8> {
-    #[derive(serde::Serialize)]
-    struct CommitBlock<'a> {
-        rev: &'a str,
-        ver: u8,
-        #[serde(with = "serde_bytes")]
-        data: &'a [u8],
-        repo: &'a str,
-        space: &'a str,
-    }
-    // A tiny fixed-shape map; DAG-CBOR encoding cannot fail.
-    serde_ipld_dagcbor::to_vec(&CommitBlock {
-        rev: &commit.rev,
-        ver: crypto::SPACE_COMMIT_VERSION,
-        data: &commit.data,
-        repo: &commit.repo,
-        space: &commit.space,
-    })
-    .expect("encode space commit block")
-}
-
-/// The DRISL index root block: `{collection}/{rkey}` → record CID link, entries already in
-/// canonical order (the caller sorted them; serde_ipld_dagcbor writes map entries as fed).
-#[allow(
-    clippy::expect_used,
-    reason = "DAG-CBOR encoding of a fixed-shape value cannot fail"
-)]
-fn encode_index_block(entries: &[(String, Cid)]) -> Vec<u8> {
-    struct IndexBlock<'a>(&'a [(String, Cid)]);
-    impl serde::Serialize for IndexBlock<'_> {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            let mut map = serializer.serialize_map(Some(self.0.len()))?;
-            for (path, cid) in self.0 {
-                map.serialize_entry(path, cid)?;
-            }
-            map.end()
-        }
-    }
-    serde_ipld_dagcbor::to_vec(&IndexBlock(entries)).expect("encode space repo index")
-}
-
-/// Stream the CAR: the pre-built header + two root frames, then one frame per index entry,
-/// each record block fetched as its turn comes (memory bounds to one block).
-///
-/// A block whose current CID no longer matches the index — a concurrent write landed
-/// mid-stream — ends the stream with an error rather than emitting a CAR whose blocks
-/// contradict its own commit; the client retries against the new head.
-fn stream_car(
+/// A record whose current CID no longer matches the one listed (a concurrent write landed
+/// mid-stream), or that the profile refuses, ends the stream with an error rather than an
+/// archive that contradicts its own commit; the client retries against the new head.
+fn stream_star(
     state: CoreState,
     space_uri: String,
-    did: String,
-    head: Vec<u8>,
-    entries: Vec<(String, Cid)>,
+    repo: Did,
+    writer: SpaceStarWriter,
+    header: Vec<u8>,
+    entries: Vec<(String, String)>,
 ) -> Response {
-    struct CarStream {
+    struct StarStream {
         state: CoreState,
         space_uri: String,
-        did: String,
-        head: Option<Vec<u8>>,
-        entries: Vec<(String, Cid)>,
-        next: usize,
+        repo: Did,
+        writer: Option<SpaceStarWriter>,
+        header: Option<Vec<u8>>,
+        entries: std::vec::IntoIter<(String, String)>,
     }
 
-    let init = CarStream {
+    let init = StarStream {
         state,
         space_uri,
-        did,
-        head: Some(head),
-        entries,
-        next: 0,
+        repo,
+        writer: Some(writer),
+        header: Some(header),
+        entries: entries.into_iter(),
     };
 
     let stream = futures_util::stream::unfold(init, |mut st| async move {
-        if let Some(head) = st.head.take() {
-            return Some((Ok::<Bytes, std::io::Error>(Bytes::from(head)), st));
+        if let Some(header) = st.header.take() {
+            return Some((Ok::<Bytes, std::io::Error>(Bytes::from(header)), st));
         }
-        if st.next >= st.entries.len() {
-            return None;
-        }
-        let (path, cid) = st.entries[st.next].clone();
-        st.next += 1;
-        #[allow(
-            clippy::expect_used,
-            reason = "index paths are written as collection/rkey"
-        )]
-        let (collection, rkey) = path.split_once('/').expect("index path shape");
+        let writer = st.writer.as_mut()?;
+        let Some((path, cid)) = st.entries.next() else {
+            let end = st.writer.take()?.end();
+            return Some((Ok(Bytes::from(vec![end])), st));
+        };
+        let frame = match next_frame(&st.state, &st.space_uri, &st.repo, writer, &path, &cid).await
+        {
+            Ok(frame) => Ok(Bytes::from(frame)),
+            Err(e) => {
+                st.writer = None; // stop after this error
+                Err(e)
+            }
+        };
+        Some((frame, st))
+    });
+
+    async fn next_frame(
+        state: &CoreState,
+        space_uri: &str,
+        repo: &Did,
+        writer: &mut SpaceStarWriter,
+        path: &str,
+        cid: &str,
+    ) -> Result<Vec<u8>, std::io::Error> {
+        let Some((collection, rkey)) = path.split_once('/') else {
+            return Err(std::io::Error::other("stored record path is malformed"));
+        };
         match crate::db::space_repos::get_record(
-            &st.state.db,
-            &st.space_uri,
-            &st.did,
+            &state.db,
+            space_uri,
+            repo,
             collection,
             rkey,
         )
         .await
         {
-            Ok(Some(row)) if row.cid == cid.to_string() => {
-                let frame = repo_engine::car_v1_block_frame(cid, &row.value);
-                Some((Ok(Bytes::from(frame)), st))
+            Ok(Some(row)) if row.cid == cid => {
+                writer.pair(path.as_bytes(), &row.value).map_err(|e| {
+                    tracing::error!(error = %e, space = %space_uri, did = %repo, %path, "space record does not fit the repo archive");
+                    std::io::Error::other("space record does not fit the repo archive")
+                })
             }
             Ok(_) => {
-                tracing::warn!(space = %st.space_uri, did = %st.did, %path, "space record changed mid-export");
-                st.next = st.entries.len(); // stop after this error frame
-                let err = std::io::Error::new(
+                tracing::warn!(space = %space_uri, did = %repo, %path, "space record changed mid-export");
+                Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "record changed during space repo export",
-                );
-                Some((Err(err), st))
+                ))
             }
             Err(e) => {
-                tracing::error!(error = %e, space = %st.space_uri, did = %st.did, %path, "failed to read record during export");
-                st.next = st.entries.len();
-                let err = std::io::Error::other("failed to read space record");
-                Some((Err(err), st))
+                tracing::error!(error = %e, space = %space_uri, did = %repo, %path, "failed to read record during export");
+                Err(std::io::Error::other("failed to read space record"))
             }
         }
-    });
+    }
 
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, "application/vnd.ipld.car"),
+            (header::CONTENT_TYPE, "application/vnd.dasl.star"),
             // Same posture as space.getBlob: permissioned bytes, never publicly cacheable.
             (header::CACHE_CONTROL, "private"),
         ],
         Body::from_stream(stream),
     )
         .into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_commit() -> crate::views::SpaceCommit {
-        crate::views::SpaceCommit {
-            repo: Did::parse("did:example:alice").unwrap(),
-            space: "at://did:example:alice/space/org.example.bucket/main".to_string(),
-            rev: "3lztsjenmq22a".to_string(),
-            data: [1; 32],
-        }
-    }
-
-    /// The commit block's map keys must come out in canonical DAG-CBOR order (length first,
-    /// then bytewise) — the ordering the reference's canonical encoder produces, and what the
-    /// spec pins for the CAR. Decoding into an order-preserving probe would need a custom
-    /// Deserialize; scanning for the key byte-patterns in the tiny encoded map is enough.
-    #[test]
-    fn commit_block_keys_are_canonically_ordered() {
-        let bytes = encode_commit_block(&test_commit());
-        let positions: Vec<usize> = ["rev", "ver", "data", "repo", "space"]
-            .iter()
-            .map(|key| {
-                // A text-string key of length n < 24 is encoded as 0x60+n followed by the
-                // UTF-8 bytes; search for that exact pattern.
-                let mut needle = vec![0x60 + key.len() as u8];
-                needle.extend_from_slice(key.as_bytes());
-                bytes
-                    .windows(needle.len())
-                    .position(|w| w == needle.as_slice())
-                    .unwrap_or_else(|| panic!("key {key} not found in commit block"))
-            })
-            .collect();
-        assert!(
-            positions.windows(2).all(|w| w[0] < w[1]),
-            "commit block keys must appear in canonical order rev, ver, data, repo, space; got positions {positions:?}"
-        );
-    }
-
-    /// The index block round-trips as a DAG-CBOR map whose values are CID links, with entries
-    /// in exactly the order fed in.
-    #[test]
-    fn index_block_encodes_paths_to_cid_links() {
-        let cid_a = repo_engine::dag_cbor_block_cid(b"a").unwrap();
-        let cid_b = repo_engine::dag_cbor_block_cid(b"b").unwrap();
-        let entries = vec![
-            ("a.b.c/one".to_string(), cid_a),
-            ("a.b.c/three".to_string(), cid_b),
-        ];
-        let bytes = encode_index_block(&entries);
-
-        let decoded: std::collections::BTreeMap<String, ipld_core::ipld::Ipld> =
-            serde_ipld_dagcbor::from_slice(&bytes).unwrap();
-        assert_eq!(decoded.len(), 2);
-        match &decoded["a.b.c/one"] {
-            ipld_core::ipld::Ipld::Link(link) => assert_eq!(*link, cid_a),
-            other => panic!("index value must be a CID link, got {other:?}"),
-        }
-    }
-
-    /// Canonical order sorts by length before bytes: a shorter path sorts first even when it
-    /// is lexicographically greater.
-    #[test]
-    fn canonical_order_is_length_first() {
-        let mut paths = vec!["a.b.c/zz", "a.b.c/aaa", "z.z.z/a"];
-        paths.sort_unstable_by(|a, b| canonical_key_order(a, b));
-        assert_eq!(paths, vec!["z.z.z/a", "a.b.c/zz", "a.b.c/aaa"]);
-    }
 }

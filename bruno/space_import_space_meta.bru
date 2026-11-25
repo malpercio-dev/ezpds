@@ -1,0 +1,39 @@
+meta {
+  name: Space Import Space Meta
+  type: http
+  seq: 178
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.importSpaceMeta
+  body: binary
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+headers {
+  Content-Type: application/vnd.dasl.star
+}
+
+body:binary {
+  @file: {{spaceMetaStarFilePath}}
+}
+
+vars:pre-request {
+  spaceMetaStarFilePath: ./space-meta.star
+}
+
+docs {
+  Import a space from the archive com.atproto.space.exportSpaceMeta produced on the old host,
+  before the authority's own repo follows with space.importRepo. Creates the space (or
+  replaces the policy of one this host already holds), then replaces its member list and
+  writer set. Publishes nothing: the published policy and member records arrive with the
+  authority's repo. The account must be deactivated and be the space's authority, with
+  manage=create and manage=update grants.
+
+  Errors: 400 InvalidSpaceMeta (malformed, an invalid policy, or policy state the policy does
+  not define), 400 UnsupportedPolicy, 400 NotAuthorized, 403 when the account is active.
+}

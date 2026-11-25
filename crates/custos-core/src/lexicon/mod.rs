@@ -55,6 +55,7 @@ use schema::{LexDef, LexObject, LexRecord, LexSchema, LexXrpcBody};
 
 pub use extractor::{validate_procedure_body, LexiconInput};
 pub(crate) use formats::is_valid_record_key;
+pub use formats::is_valid_tid;
 #[cfg(any(test, feature = "test-support"))]
 pub use output::validate_xrpc_output;
 pub use params::{parse_raw_query, validate_params_map, LexiconParams};
@@ -167,6 +168,10 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/space/deleteSpace.json"),
     include_str!("../../lexicons/com/atproto/space/getSpace.json"),
     include_str!("../../lexicons/com/atproto/space/updateSpace.json"),
+    // The space migration methods: an authority's space meta archive and a repo's STAR archive.
+    include_str!("../../lexicons/com/atproto/space/exportSpaceMeta.json"),
+    include_str!("../../lexicons/com/atproto/space/importRepo.json"),
+    include_str!("../../lexicons/com/atproto/space/importSpaceMeta.json"),
     include_str!("../../lexicons/com/atproto/personalspace/policy.json"),
     include_str!("../../lexicons/com/atproto/memberspace/policy.json"),
     include_str!("../../lexicons/com/atproto/managedspace/policy.json"),
@@ -388,6 +393,16 @@ impl Registry {
             Some(schema) => validate::validate(self, "Input", schema, body),
             None => Ok(()),
         }
+    }
+
+    /// Assert `value` conforms to the definition at `lex_uri` (`lex:<nsid>#<def>`, or
+    /// `lex:<nsid>` for its `main`): a lexicon-typed value that arrives inside something other
+    /// than an XRPC body or a record, such as the policy in a space meta archive.
+    pub fn validate_def(&self, lex_uri: &str, value: &Value) -> Result<(), ValidationError> {
+        let schema = self.resolve(lex_uri).ok_or_else(|| {
+            ValidationError::Lexicon(format!("no lexicon definition is vendored for {lex_uri}"))
+        })?;
+        validate::validate(self, "Value", schema, value)
     }
 
     /// The declared `parameters` of a registered query (or a procedure that declares them), if

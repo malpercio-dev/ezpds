@@ -43,7 +43,6 @@ async fn gc_pins_blob_referenced_only_from_a_space_record() {
             rkey: "withblob".to_string(),
             value: Some(blob_record(&referenced)),
         }],
-        custos_spaces::space_record_write::SpaceWriteAdmission::Active,
     )
     .await
     .unwrap();

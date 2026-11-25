@@ -223,8 +223,32 @@ fn is_did_service_ref(value: &str) -> bool {
 
 /// A member's DID as a record key. A record key cannot contain `%`, so a localhost did:web's
 /// percent-encoded port is left unencoded (the reference's `didToRecordKey`).
-fn did_record_key(did: &str) -> String {
+pub(crate) fn did_record_key(did: &str) -> String {
     did.replace("%3A", ":")
+}
+
+/// The inverse of [`did_record_key`]: re-encode a localhost did:web's port (the reference's
+/// `recordKeyToDid`). Unambiguous, since atproto supports no did:web path.
+pub(crate) fn record_key_did(rkey: &str) -> String {
+    let port = rkey
+        .strip_prefix("did:web:")
+        .and_then(|rest| rest.split_once(':'))
+        .filter(|(host, port)| {
+            !host.is_empty() && !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+        });
+    match port {
+        Some((host, port)) => format!("did:web:{host}%3A{port}"),
+        None => rkey.to_string(),
+    }
+}
+
+/// A member's published record, and its entry in a space meta archive.
+pub(crate) fn member_record(access: Access) -> Value {
+    json!({
+        "$type": MEMBER_COLLECTION,
+        "read": access.read,
+        "write": access.write,
+    })
 }
 
 /// Publish, update, or withdraw the policy record to match `policy`.
@@ -256,12 +280,7 @@ pub async fn member_record_ops(
     let rkey = did_record_key(did);
     match access {
         Some(access) if policy.members_published() => {
-            let record = json!({
-                "$type": MEMBER_COLLECTION,
-                "read": access.read,
-                "write": access.write,
-            });
-            Ok(vec![put(MEMBER_COLLECTION, rkey, record)])
+            Ok(vec![put(MEMBER_COLLECTION, rkey, member_record(access))])
         }
         _ => delete_if_exists(tx, space, MEMBER_COLLECTION, rkey).await,
     }
@@ -446,5 +465,12 @@ mod tests {
             "did:web:localhost:2583"
         );
         assert_eq!(did_record_key("did:plc:abc"), "did:plc:abc");
+        for did in [
+            "did:web:localhost%3A2583",
+            "did:plc:abc",
+            "did:web:example.com",
+        ] {
+            assert_eq!(record_key_did(&did_record_key(did)), did);
+        }
     }
 }
