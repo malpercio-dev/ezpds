@@ -30,6 +30,9 @@
 //! * **Both imports require a deactivated account**, as `com.atproto.repo.importRepo` does here.
 //!   The reference requires only full access. Every migration lands on a destination account
 //!   that `createAccount` left deactivated, so an import is never mistaken for a live write.
+//! * **Both imports refuse agent-derived tokens** (`require_not_agent`). The reference has no
+//!   concept of agents. An import replaces a whole repo or a whole space, which is an account
+//!   operation, never something an agent does on the owner's behalf.
 //! * **Both imports skip the KEM-published check** every other space write takes (`kem_gate`).
 //!   Until the identity leg of the migration, the DID document still names the old host's key.
 //!   The deactivated precondition keeps this from being a way around the gate.
