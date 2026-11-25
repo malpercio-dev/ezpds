@@ -31,6 +31,18 @@
 //!   `listWriters` answers — our own durable claim about our own repo, not a
 //!   network effect.
 //!
+//! **The writer set is gated on the space's write policy; the write is not.** In a space this
+//! host governs, a commit joins (or rejoins) the writer set only when the policy admits the
+//! writer, the same check an inbound `notifyRepoUpdate` gets
+//! (`auth::space::authorize_write_notification`: member `write` bit, `publicWrite`, a
+//! managedspace's `checkAccess`). The record itself always commits, since the repo is the
+//! writer's own, as in the reference, where a local write reaches its own authority through
+//! `notifyRepoUpdate` too. A refused write records no writer row and fans nothing out. The
+//! decision is made *before* the transaction ([`writer_may_join`]), because `checkAccess` is a
+//! network call and the single SQLite connection must not wait on it. It fails closed: no
+//! answer from a managing app means no join. A space governed elsewhere is unchanged: its
+//! authority checks the policy on our outbound `notifyRepoUpdate`.
+//!
 //! Authentication and `space:` scope enforcement happen above this layer (the
 //! space auth seam); callers pass an already-authorized `(space, did)`.
 
@@ -134,11 +146,12 @@ pub async fn apply_space_writes(
             ),
         ));
     }
+    let join = writer_may_join(state, space, did).await?;
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to open space write transaction");
         internal_error()
     })?;
-    let commit = commit_ops(state, &mut tx, space, did, ops).await?;
+    let commit = commit_ops(state, &mut tx, space, did, ops, join).await?;
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, space = %space.uri, did = %did, "failed to commit space write transaction");
         internal_error()
@@ -152,6 +165,9 @@ pub async fn apply_space_writes(
 ///
 /// `None` when there is nothing to write. Otherwise the caller commits its transaction and then
 /// calls [`PendingSpaceCommit::announce`], which fires the post-commit notification fan-out.
+///
+/// The only writer here is the space's authority, whom every policy admits, so the commit always
+/// joins the writer set.
 pub(crate) async fn apply_space_writes_in_tx(
     state: &CoreState,
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -163,14 +179,42 @@ pub(crate) async fn apply_space_writes_in_tx(
         return Ok(None);
     }
     validate_ops(ops)?;
-    commit_ops(state, tx, space, did, ops).await.map(Some)
+    let join = did == space.authority;
+    commit_ops(state, tx, space, did, ops, join).await.map(Some)
+}
+
+/// Whether a commit by `did` into `space` may join the writer set, decided before the commit's
+/// transaction (see the module doc). `true` for the authority and for a space this host doesn't
+/// govern (there the writer-set query records nothing and the commit is reported to the
+/// authority, which decides); otherwise the space's write policy, failing closed.
+async fn writer_may_join(state: &CoreState, space: &SpaceRef, did: &str) -> Result<bool, ApiError> {
+    if space.authority == did {
+        return Ok(true);
+    }
+    let row = crate::db::spaces::get_space(&state.db, &space.uri)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space.uri, "failed to load space");
+            internal_error()
+        })?;
+    let Some(row) = row else {
+        return Ok(true);
+    };
+    let Some(policy) = row.space_policy()? else {
+        return Ok(true);
+    };
+    // ponytail: decided before the transaction, so a member change that lands between this check
+    // and the commit is not seen by it; re-check inside the transaction for the local policies if
+    // that window matters.
+    crate::auth::space::authorize_write_notification(state, &row, &policy, did).await
 }
 
 /// A space commit written inside a transaction that has not committed yet.
 pub(crate) struct PendingSpaceCommit {
     space: SpaceRef,
     did: String,
-    update: crate::db::space_notify::WriterUpdate,
+    /// `None` when the write policy kept the commit out of the writer set: nothing is announced.
+    update: Option<crate::db::space_notify::WriterUpdate>,
     outcome: SpaceCommitOutcome,
 }
 
@@ -181,7 +225,10 @@ impl PendingSpaceCommit {
     pub(crate) fn announce(self, state: &CoreState) -> SpaceCommitOutcome {
         use crate::db::space_notify::WriterUpdate;
         let (space, did, outcome) = (&self.space, self.did.as_str(), &self.outcome);
-        match self.update {
+        let Some(update) = self.update else {
+            return self.outcome;
+        };
+        match update {
             WriterUpdate::Accepted(revs) => drop(crate::space_notify::forward_write(
                 state,
                 space,
@@ -233,13 +280,14 @@ fn validate_ops(ops: &[SpaceWriteOp]) -> Result<(), ApiError> {
 }
 
 /// The commit itself, on the caller's transaction. Any error leaves the transaction to be
-/// dropped, which rolls it back.
+/// dropped, which rolls it back. `join` is [`writer_may_join`]'s decision.
 async fn commit_ops(
     state: &CoreState,
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     space: &SpaceRef,
     did: &str,
     ops: &[SpaceWriteOp],
+    join: bool,
 ) -> Result<PendingSpaceCommit, ApiError> {
     let space_uri = space.uri.as_str();
 
@@ -462,11 +510,11 @@ async fn commit_ops(
     // A commit that removes the last record leaves an empty repo, not a missing one: the head
     // stays at the empty-set digest, its rev keeps advancing, and reads answer as for any empty
     // repo. Nothing collects it.
-    finish_commit(tx, space, did, new_rev, &lthash, results).await
+    finish_commit(tx, space, did, new_rev, &lthash, results, join).await
 }
 
-/// Store the folded LtHash state on the head the commit already advanced to `new_rev`, and
-/// record the commit in the writer set, inside the commit's transaction.
+/// Store the folded LtHash state on the head the commit already advanced to `new_rev`, and,
+/// when `join` allows, record the commit in the writer set, inside the commit's transaction.
 async fn finish_commit(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     space: &SpaceRef,
@@ -474,6 +522,7 @@ async fn finish_commit(
     new_rev: String,
     lthash: &LtHash,
     results: Vec<SpaceWriteResult>,
+    join: bool,
 ) -> Result<PendingSpaceCommit, ApiError> {
     let space_uri = space.uri.as_str();
     // The rev was already advanced (and CAS-guarded) before the fold; inside the same
@@ -499,14 +548,20 @@ async fn finish_commit(
     // The writer set `listWriters` answers, kept durable with the commit rather than derived
     // afterwards: for a space this host is the authority for, our own account's write is one of
     // the facts the authority reports. The query no-ops for a space whose authority is
-    // elsewhere.
+    // elsewhere. Skipped entirely when the write policy refused the writer (`join`).
     let hash = lthash.digest();
-    let update = crate::db::space_notify::upsert_writer(tx, space_uri, did, &new_rev, &hash)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to record space writer");
-            internal_error()
-        })?;
+    let update = if join {
+        Some(
+            crate::db::space_notify::upsert_writer(tx, space_uri, did, &new_rev, &hash)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, space = %space_uri, did = %did, "failed to record space writer");
+                    internal_error()
+                })?,
+        )
+    } else {
+        None
+    };
 
     Ok(PendingSpaceCommit {
         space: space.clone(),
@@ -541,6 +596,7 @@ pub async fn clear_space_records(
         tracing::error!(error = %e, space = %space_uri, did = %did, "failed to clear space records");
         internal_error()
     };
+    let join = writer_may_join(state, space, did).await?;
     let mut tx = state.db.begin().await.map_err(db_error)?;
     require_writable_account(&mut tx, did).await?;
     let Some(repo) = crate::db::space_repos::get_repo(&mut *tx, space_uri, did)
@@ -615,7 +671,7 @@ pub async fn clear_space_records(
             );
         })?;
 
-    let pending = finish_commit(&mut tx, space, did, new_rev, &lthash, Vec::new()).await?;
+    let pending = finish_commit(&mut tx, space, did, new_rev, &lthash, Vec::new(), join).await?;
     tx.commit().await.map_err(db_error)?;
     Ok(Some(pending.announce(state)))
 }

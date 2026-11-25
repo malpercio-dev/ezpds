@@ -371,6 +371,152 @@ async fn member_changes_remove_writers_but_a_type_change_does_not() {
     assert_eq!(kind(writer_entry(&state, BOB).await), WRITE);
 }
 
+/// Alice's space reconfigured to `policy` (lexicon JSON).
+async fn set_policy(state: &CoreState, policy: serde_json::Value) {
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    let (status, body) = send(
+        state,
+        post(
+            "com.atproto.space.updateSpace",
+            &alice,
+            serde_json::json!({ "space": SPACE, "policy": policy }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+async fn put_member(state: &CoreState, did: &str, write: bool) {
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    let (status, body) = send(
+        state,
+        post(
+            "com.atproto.memberspace.putMembers",
+            &alice,
+            serde_json::json!({
+                "space": SPACE,
+                "members": [{ "did": did, "read": true, "write": write }],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// `did`'s writer-set row, if it has one: `(rev, removed)`.
+async fn writer_row(state: &CoreState, did: &str) -> Option<(String, bool)> {
+    crate::db::space_notify::list_writers(&state.db, SPACE, None, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|w| w.repo_did == did)
+        .map(|w| (w.rev, w.removed))
+}
+
+/// A local write the space's write policy refuses still commits to the writer's own repo, but
+/// joins nothing; a removed member's write doesn't rejoin; an authorized write joins and rejoins.
+#[tokio::test]
+async fn the_write_policy_gates_joining_the_writer_set_not_the_write() {
+    let state = setup().await;
+    set_policy(
+        &state,
+        serde_json::json!({ "$type": "com.atproto.memberspace.policy", "publicRead": true }),
+    )
+    .await;
+
+    // A member without `write`: the record lands, the writer set doesn't move.
+    put_member(&state, BOB, false).await;
+    let rev = write_one(&state, SPACE, BOB, "one").await;
+    let repo = crate::db::space_repos::get_repo(&state.db, SPACE, BOB)
+        .await
+        .unwrap()
+        .expect("the write committed");
+    assert_eq!(repo.rev, rev);
+    assert_eq!(writer_row(&state, BOB).await, None);
+
+    // Granted `write`, the next write joins.
+    put_member(&state, BOB, true).await;
+    let rev = write_one(&state, SPACE, BOB, "two").await;
+    assert_eq!(writer_row(&state, BOB).await, Some((rev.clone(), false)));
+
+    // Removed from the members, Bob leaves the set, and his next write doesn't rejoin it.
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.memberspace.removeMembers",
+            &alice,
+            serde_json::json!({ "space": SPACE, "dids": [BOB] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    write_one(&state, SPACE, BOB, "three").await;
+    assert_eq!(writer_row(&state, BOB).await, Some((rev, true)));
+
+    // Admitted again, his next write rejoins.
+    put_member(&state, BOB, true).await;
+    let rev = write_one(&state, SPACE, BOB, "four").await;
+    assert_eq!(writer_row(&state, BOB).await, Some((rev, false)));
+}
+
+/// Under a managedspace the managing app's `checkAccess` decides the join, and no answer means
+/// no join.
+#[tokio::test]
+async fn a_managing_app_decides_the_join_and_fails_closed() {
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let state = setup().await;
+    const APP: &str = "did:web:managing.example";
+    let server = MockServer::start().await;
+    let answer = |write: bool| {
+        Mock::given(method("GET"))
+            .and(path("/xrpc/com.atproto.managedspace.checkAccess"))
+            .and(query_param("repo", BOB))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "read": true, "write": write })),
+            )
+    };
+    seed_did_document(
+        &state.db,
+        APP,
+        serde_json::json!({
+            "id": APP,
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": server.uri(),
+            }],
+        }),
+    )
+    .await;
+    set_policy(
+        &state,
+        serde_json::json!({
+            "$type": "com.atproto.managedspace.policy",
+            "managingApp": format!("{APP}#atproto_pds"),
+        }),
+    )
+    .await;
+
+    answer(true).mount(&server).await;
+    let rev = write_one(&state, SPACE, BOB, "one").await;
+    assert_eq!(writer_row(&state, BOB).await, Some((rev.clone(), false)));
+
+    // The app refuses: the write commits, the entry stays where it was.
+    server.reset().await;
+    answer(false).mount(&server).await;
+    write_one(&state, SPACE, BOB, "two").await;
+    assert_eq!(writer_row(&state, BOB).await, Some((rev.clone(), false)));
+
+    // The app answers nothing usable: denied, as no answer always is.
+    server.reset().await;
+    write_one(&state, SPACE, BOB, "three").await;
+    assert_eq!(writer_row(&state, BOB).await, Some((rev, false)));
+}
+
 /// Every space-host method is answerable only by the space's authority. A holder of a perfectly
 /// valid credential for a *foreign* authority's space — the one caller the auth seam does admit,
 /// since a credential says nothing about who hosts the repos — gets `SpaceNotFound`: the same

@@ -356,6 +356,61 @@ async fn nth_update(server: &MockServer, n: usize) -> serde_json::Value {
     }
 }
 
+/// A write the space's write policy refuses commits to the writer's own repo, but is neither
+/// recorded in the writer set nor sent to the syncer.
+#[tokio::test]
+async fn a_refused_write_is_not_fanned_out() {
+    const OUTSIDER: &str = "did:plc:outsiderregistrationaaa";
+    let state = state_with_master_key().await;
+    seed_account_with_repo(&state.db, AUTHORITY).await;
+    seed_account_with_repo(&state.db, OUTSIDER).await;
+    let read_only = serde_json::json!({
+        "$type": crate::policy::MEMBERSPACE,
+        "publicRead": true,
+        "publicWrite": false,
+        "publishPolicy": false,
+        "publishMembers": false,
+    });
+    seed_authority_space(&state.db, SPACE, &read_only.to_string()).await;
+    let server = syncer().await;
+    let (status, body) = send(&state, authorize(&endpoint(&server), "sync-token")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    apply_space_writes(
+        &state,
+        &parse_space_ref(SPACE).unwrap(),
+        OUTSIDER,
+        &[SpaceWriteOp {
+            action: SpaceWriteAction::Put,
+            collection: "org.example.note".to_string(),
+            rkey: "mine".to_string(),
+            value: Some(serde_json::json!({ "text": "mine" })),
+        }],
+    )
+    .await
+    .expect("the write itself commits");
+    write(&state, "one").await;
+
+    let first = nth_update(&server, 1).await;
+    assert_eq!(first["update"]["repo"], AUTHORITY);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        calls(&server, UPDATE).await.len(),
+        1,
+        "the refused write was sent"
+    );
+    let writers = crate::db::space_notify::list_writers(&state.db, SPACE, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        writers
+            .iter()
+            .map(|w| w.repo_did.as_str())
+            .collect::<Vec<_>>(),
+        vec![AUTHORITY]
+    );
+}
+
 /// A writer's removal reaches the syncer as a `repoRemoved`, sequenced after the write before it,
 /// on the same one-attempt fan-out a write takes.
 #[tokio::test]
