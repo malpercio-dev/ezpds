@@ -26,6 +26,7 @@ import type {
   SweepRecord,
   SignedRecoveryOp,
   SignedRotationOp,
+  KemKeyPlan,
   RecoveryTarget,
   CollectedShare,
   EscrowReleaseStatus,
@@ -218,6 +219,9 @@ export type CommandName =
   // rotation.ts
   | 'build_repo_key_rotation_cmd'
   | 'submit_repo_key_rotation_cmd'
+  // kem.ts
+  | 'prepare_kem_key_publish_cmd'
+  | 'complete_kem_key_publish_cmd'
   // rekey.ts
   | 'build_rekey_cmd'
   | 'submit_rekey_cmd'
@@ -1077,6 +1081,50 @@ export function buildRegistry(state: WalletState): Registry {
         identity.rotationKeys = [identity.rotationKeys[0], 'did:key:zharnessRotatedRepoKey'];
       }
       return identity ? claimResult(identity) : { updatedDidDoc: {} };
+    },
+
+    // ── update identity for Spaces (publish the KEM key) ────────────────────
+    // Mirrors the real ceremony's shape: prepare stages a fresh key every time; a did:plc
+    // gets a signed-op review, a did:web the updated did.json; complete publishes it.
+    prepare_kem_key_publish_cmd: (args): KemKeyPlan => {
+      const did = didArg(args);
+      const identity = findIdentity(state, did);
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND' };
+      const staged = fakeDeviceKeyId(`${did}:kem:${identity.kemKeyId ?? 'first'}`);
+      identity.stagedKemKeyId = staged;
+      const diff = {
+        kemKey: staged,
+        replacedKemKey: identity.kemKeyId,
+        removedSpaceKey: null,
+        removedSpaceHost: null,
+      };
+      if (!isDidWeb(did)) return { kind: 'plcOperation', diff };
+      const domain = did.slice('did:web:'.length);
+      const multibase = (key: string) => key.replace(/^did:key:/, '');
+      const document = {
+        '@context': ['https://www.w3.org/ns/did/v1'],
+        id: did,
+        alsoKnownAs: [`at://${identity.handle}`],
+        verificationMethod: [
+          { id: '#device', type: 'Multikey', controller: did, publicKeyMultibase: multibase(identity.deviceKeyId) },
+          { id: '#atproto', type: 'Multikey', controller: did, publicKeyMultibase: multibase(identity.rotationKeys[1] ?? identity.deviceKeyId) },
+          { id: '#atproto_kem', type: 'Multikey', controller: did, publicKeyMultibase: multibase(staged) },
+        ],
+        service: [{ id: '#atproto_pds', type: 'AtprotoPersonalDataServer', serviceEndpoint: identity.pdsUrl }],
+      };
+      return {
+        kind: 'didWebDocument',
+        diff,
+        documentText: `${JSON.stringify(document, null, 2)}\n`,
+        documentUrl: `https://${domain}/.well-known/did.json`,
+      };
+    },
+    complete_kem_key_publish_cmd: (args): ClaimResult => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity?.stagedKemKeyId) throw { code: 'NO_PENDING_KEM_KEY' };
+      identity.kemKeyId = identity.stagedKemKeyId;
+      identity.stagedKemKeyId = null;
+      return claimResult(identity);
     },
 
     // ── re-key (old-model upgrade, MM-411) ───────────────────────────────────

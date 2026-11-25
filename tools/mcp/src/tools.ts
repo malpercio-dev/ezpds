@@ -78,6 +78,17 @@ function relayError(err: unknown, session: SessionLike): ToolResult {
           `[agent_auth] granted_scopes and the owner to re-confirm a claim ceremony.`,
       );
     }
+    if (err.errorCode === 'KemKeyNotPublished') {
+      // The account's identity doesn't list its server's Spaces key yet (ADR-0043). Only the
+      // owner can fix that, in Obsign; the link opens the update for this DID.
+      const did = session.did();
+      return fail(
+        `The PDS refused this space write (KemKeyNotPublished): the account's identity ` +
+          `doesn't list its server's Spaces key yet. The account owner can fix this in ` +
+          `Obsign under Advanced → "Update identity for Spaces"` +
+          `${did ? `, or by opening obsign:/spaces?did=${encodeURIComponent(did)} on their phone` : ''}.`,
+      );
+    }
     return fail(
       `The PDS rejected the request (HTTP ${err.status}` +
         `${err.errorCode ? `, ${err.errorCode}` : ''}): ` +

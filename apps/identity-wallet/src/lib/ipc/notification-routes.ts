@@ -9,7 +9,10 @@ import { invoke } from '@tauri-apps/api/core';
 
 /** Where a tapped, NSE-verified notification wants the app to go. */
 export type PendingNotificationRoute = {
-  /** The payload type, e.g. `login-approval`. Unknown kinds are ignored by the router. */
+  /**
+   * The payload type: `login-approval`, or `update-for-spaces` (the `obsign:/spaces?did=…`
+   * link). Unknown kinds are ignored by the router.
+   */
   kind: string;
   /** A pending OAuth consent request id (`login-approval`). */
   requestId: string | null;

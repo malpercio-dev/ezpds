@@ -41,6 +41,7 @@ export default defineConfig({
             { label: '2-of-3 Shamir backup', slug: 'user/backup' },
             { label: 'Backing up your content', slug: 'user/media-backup' },
             { label: 'Migrating your identity', slug: 'user/migration' },
+            { label: 'How Spaces proves a record came from you', slug: 'user/spaces' },
           ],
         },
         {

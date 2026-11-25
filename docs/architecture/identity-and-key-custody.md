@@ -142,6 +142,13 @@ facts rather than PDS policy promises:
    which submits it to plc.directory and cuts its commit signer over atomically
    under the account's repo write lock; see
    [ADR-0025](decisions/0025-wallet-driven-repo-key-rotation.md).
+5. **Spaces KEM-key publication.** The device key authorizes adding the
+   PDS-held Spaces KEM key to the document as `verificationMethods.atproto_kem`
+   (and dropping the retired `atproto_space*` entries). Same shape as the
+   rotation: the PDS stages the key at `/v1/kem-key`, the wallet signs a guarded
+   op (`publish_kem_key.rs`), and the PDS submits it and promotes the key. A
+   self-hosted did:web publishes an updated `did.json` instead; see
+   [ADR-0043](decisions/0043-dedicated-per-account-kem-key.md).
 
 ## Import ("claim") of an existing identity
 

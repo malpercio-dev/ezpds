@@ -12,7 +12,7 @@
 //! first-launch config, compile-time default otherwise); `pds_client` (eager — cheap and
 //! stateless; exposed via [`Core::pds_client`] for the claim-flow commands); and the per-flow
 //! `tokio::sync::Mutex<Option<_>>` slots (`claim_state`, `recovery_state`, `rotation_state`,
-//! `migration_state`, `orchestration_state`, `share_recovery_state`) — tokio mutexes because
+//! `kem_key_state`, `migration_state`, `orchestration_state`, `share_recovery_state`) — tokio mutexes because
 //! those commands hold the lock across `.await` points. Neither source login (claim, outbound
 //! migration) parks OAuth state here: both are password `createSession`
 //! (`claim::authenticate_source_pds`, `migration_orchestrator::authenticate_migration_source`),
@@ -66,6 +66,9 @@ pub struct Core {
     /// success) by `submit_repo_key_rotation_cmd`.
     /// Uses tokio::sync::Mutex because rotation commands hold the lock across .await points.
     pub rotation_state: tokio::sync::Mutex<Option<crate::rotate_repo_key::RotationState>>,
+    /// The prepared Spaces KEM-key update, held between `prepare_kem_key_publish_cmd` and
+    /// `complete_kem_key_publish_cmd` (cleared on success).
+    pub kem_key_state: tokio::sync::Mutex<Option<crate::publish_kem_key::KemKeyState>>,
     /// Migration state persisted between build and submit of the self-signed identity leg.
     /// The authenticated destination-PDS client is populated by the migration orchestrator;
     /// `build_migration_op_cmd` reads it, `submit_migration_op_cmd` consumes the signed op.
@@ -95,6 +98,7 @@ impl Core {
             claim_state: tokio::sync::Mutex::new(None),
             recovery_state: tokio::sync::Mutex::new(None),
             rotation_state: tokio::sync::Mutex::new(None),
+            kem_key_state: tokio::sync::Mutex::new(None),
             migration_state: tokio::sync::Mutex::new(None),
             orchestration_state: tokio::sync::Mutex::new(None),
             share_recovery_state: tokio::sync::Mutex::new(None),

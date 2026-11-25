@@ -24,6 +24,7 @@
  * `SESSION_LOCKED` at app open becomes repairable.
  */
 import {
+  ensureIdentitySession,
   getIdentityUnlockRoute,
   registerForNotifications,
   sovereignLogin,
@@ -100,6 +101,28 @@ export const unlockIdentity = async (did: string, route?: UnlockRoute): Promise<
   }
   await prompt({ did, pdsUrl: resolved.pdsUrl, handle: resolved.handle });
   registerAfterUnlock(did);
+};
+
+/**
+ * Run `fn` against `did`'s session, unlocking once if it is locked: a pre-flight before the
+ * call, and one retry if the token lapses between the pre-flight and the command.
+ */
+export const withUnlockedSession = async <T>(did: string, fn: () => Promise<T>): Promise<T> => {
+  const locked = (e: unknown) =>
+    typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'SESSION_LOCKED';
+  try {
+    await ensureIdentitySession(did);
+  } catch (e) {
+    if (!locked(e)) throw e;
+    await unlockIdentity(did);
+  }
+  try {
+    return await fn();
+  } catch (e) {
+    if (!locked(e)) throw e;
+    await unlockIdentity(did);
+    return await fn();
+  }
 };
 
 /**

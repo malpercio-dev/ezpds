@@ -102,6 +102,8 @@ commands! {
     [async state] build_recovery_override_cmd = crate::recovery::build_recovery_override_cmd(did: String, operation_cid: String) -> Result<crate::recovery::SignedRecoveryOp, crate::recovery::RecoveryError>;
     [async state] build_repo_key_rotation_cmd = crate::rotate_repo_key::build_repo_key_rotation_cmd(did: String) -> Result<crate::rotate_repo_key::SignedRotationOp, crate::rotate_repo_key::RotationError>;
     [async state] submit_repo_key_rotation_cmd = crate::rotate_repo_key::submit_repo_key_rotation_cmd(did: String) -> Result<crate::claim::ClaimResult, crate::rotate_repo_key::RotationError>;
+    [async state] prepare_kem_key_publish_cmd = crate::publish_kem_key::prepare_kem_key_publish_cmd(did: String) -> Result<crate::publish_kem_key::KemKeyPlan, crate::publish_kem_key::KemKeyError>;
+    [async state] complete_kem_key_publish_cmd = crate::publish_kem_key::complete_kem_key_publish_cmd(did: String) -> Result<crate::claim::ClaimResult, crate::publish_kem_key::KemKeyError>;
     [async state] build_rekey_cmd = crate::rekey::build_rekey_cmd(did: String) -> Result<crate::rekey::RekeyPreview, crate::rekey::RekeyError>;
     [async state] submit_rekey_cmd = crate::rekey::submit_rekey_cmd(did: String) -> Result<crate::rekey::RekeyResult, crate::rekey::RekeyError>;
     [sync state] confirm_rekey_cmd = crate::rekey::confirm_rekey_cmd(did: String) -> Result<(), crate::rekey::RekeyError>;

@@ -208,6 +208,13 @@ export interface FakeIdentity {
    * `children.length` is what puts the recovery epilogue in play.
    */
   childIndex: number;
+  /**
+   * The Spaces KEM key the DID document publishes as `atproto_kem`, or null for an account
+   * created before KEM keys existed (the "Update identity for Spaces" starting state).
+   */
+  kemKeyId: string | null;
+  /** The KEM key `prepare_kem_key_publish_cmd` staged, until `complete` publishes it. */
+  stagedKemKeyId: string | null;
 }
 
 /** Transient state for the multi-step import (claim) flow. */
@@ -497,6 +504,7 @@ export function makeDidDoc(identity: FakeIdentity): Record<string, unknown> {
     rotationKeys: identity.rotationKeys,
     verificationMethods: {
       atproto: identity.rotationKeys[0] ?? identity.deviceKeyId,
+      ...(identity.kemKeyId ? { atproto_kem: identity.kemKeyId } : {}),
     },
     services: {
       atproto_pds: {
@@ -562,6 +570,8 @@ export function seedIdentity(
     agentAccountsProvisioned: opts.agentAccountsProvisioned ?? true,
     childIndex: opts.childIndex ?? 0,
     children: [],
+    kemKeyId: null,
+    stagedKemKeyId: null,
   };
 }
 

@@ -107,10 +107,10 @@ user's sentence, but a screen may carry it in a visually subordinate, explicitly
 detail slot (the MigrationProgressScreen pattern). Only declared server-quoted text may
 render behind server attribution, and then only length-bounded.
 
-**Seven strict pre-sign guards** protect every wallet-signed PLC op; each guard's full
+**Eight strict pre-sign guards** protect every wallet-signed PLC op; each guard's full
 allowlist lives in its module's doc — `claim.rs` (the 4-point claim verification),
 `migrate.rs`, `handle_change.rs`, `rotate_repo_key.rs`, `disaster_recovery.rs`,
-`endpoint_repair.rs`, `self_held_kit.rs`.
+`endpoint_repair.rs`, `self_held_kit.rs`, `publish_kem_key.rs`.
 
 `src-tauri` is the shell: the Tauri wiring (`lib.rs`, `commands.rs`), the app's Keychain names (`keychain.rs`), and the APNs bridge (`apns.rs`), which patches the Tauri app delegate. `run()`'s `setup` builds the managed `Core` from the iOS implementations of the core's platform traits in `crates/obsign-platform-ios` (Keychain, Secure Enclave, iCloud, BGTaskScheduler); `lib.rs` also owns the `BGTaskScheduler` identifiers (background backup, background PLC sweep), which must match `Info.ios.plist`. Everything else — the identity store, every ceremony including the create flow, the network clients, `Core` — is `crates/obsign-core`; the command table names the core's modules directly, and the modules that moved earlier are also re-exported by `lib.rs` under their old names so `crate::claim::…` still resolves here. Those modules' rows are in that crate's AGENTS.md.
 
