@@ -112,17 +112,22 @@ async fn a_moderation_state_closes_the_account_credential_space_surface() {
 
         set_lifecycle(&state, DID, column).await;
 
+        let response = crate::test_support::test_app(state.clone())
+            .oneshot(post(
+                "com.atproto.space.createRecord",
+                &token,
+                create_body("b", "y"),
+            ))
+            .await
+            .unwrap();
         assert_eq!(
-            send(
-                &state,
-                post(
-                    "com.atproto.space.createRecord",
-                    &token,
-                    create_body("b", "y")
-                )
-            )
-            .await,
+            response.status(),
             StatusCode::UNAUTHORIZED,
+            "{column}: write"
+        );
+        assert_eq!(
+            body_json(response).await["error"],
+            "AccountTakedown",
             "{column}: write"
         );
         assert_eq!(
@@ -204,17 +209,16 @@ async fn deactivation_keeps_reads_open_and_closes_ordinary_writes() {
             )
         )
         .await,
-        StatusCode::FORBIDDEN,
-        "but an ordinary write must still be refused"
+        StatusCode::UNAUTHORIZED,
+        "but an ordinary write must still be refused (AccountDeactivated)"
     );
 }
 
-/// The space-host arm is one notch stricter than the owner's own: a syncer holding a valid,
-/// correctly-proofed credential stops being served the moment the space's authority is no
-/// longer an active account. `SpaceNotFound`, never `SpaceDeleted` — the deletion signal is
-/// durable and a suspension is not.
+/// The writer listing is gated on its authority's status: a syncer holding a valid,
+/// correctly-proofed credential is answered `RepoTakendown` once the authority is taken down —
+/// never `SpaceDeleted`, since the deletion signal is durable and a takedown is not.
 #[tokio::test]
-async fn a_credential_stops_being_served_when_the_authority_is_not_active() {
+async fn the_writer_listing_answers_the_authoritys_status() {
     let state = state_with_master_key().await;
     let kp = seed_account_with_repo(&state.db, DID).await;
     let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
@@ -225,7 +229,6 @@ async fn a_credential_stops_being_served_when_the_authority_is_not_active() {
             "id": DID,
             "verificationMethod": [
                 { "id": format!("{DID}#atproto"), "type": "Multikey", "controller": DID, "publicKeyMultibase": multibase },
-                { "id": format!("{DID}#atproto_space"), "type": "Multikey", "controller": DID, "publicKeyMultibase": multibase },
             ],
         }),
     )
@@ -257,7 +260,7 @@ async fn a_credential_stops_being_served_when_the_authority_is_not_active() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(body_json(response).await["error"], "SpaceNotFound");
+    assert_eq!(body_json(response).await["error"], "RepoTakendown");
 }
 
 /// Credential-authed requests draw from a per-holder budget keyed by the credential's *verified*
@@ -281,7 +284,6 @@ async fn credential_requests_are_rate_limited_per_bound_key() {
             "id": DID,
             "verificationMethod": [
                 { "id": format!("{DID}#atproto"), "type": "Multikey", "controller": DID, "publicKeyMultibase": multibase },
-                { "id": format!("{DID}#atproto_space"), "type": "Multikey", "controller": DID, "publicKeyMultibase": multibase },
             ],
         }),
     )

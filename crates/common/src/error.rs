@@ -114,6 +114,20 @@ pub enum ErrorCode {
     /// that space is entitled to learn, so "not yours" and "not there" are one reply.
     #[serde(rename = "RepoNotFound")]
     RepoNotFound,
+    /// A space read named a repo whose account is taken down or suspended, or the space
+    /// authority itself is (on `authorizeSpaceSync` and `listRepos`). The reference's
+    /// `assertRepoAvailability` / `assertActiveSpaceHost` reply.
+    #[serde(rename = "RepoTakendown")]
+    RepoTakendown,
+    /// The deactivated counterpart of [`RepoTakendown`](ErrorCode::RepoTakendown).
+    #[serde(rename = "RepoDeactivated")]
+    RepoDeactivated,
+    /// A space write by an account that is taken down or suspended.
+    #[serde(rename = "AccountTakedown")]
+    AccountTakedown,
+    /// A space write by a deactivated account outside the migration import leg.
+    #[serde(rename = "AccountDeactivated")]
+    AccountDeactivated,
     /// No record exists at the requested path in a permissioned repo — either read
     /// (`com.atproto.space.getRecord`) or as an `applyWrites` update/delete precondition.
     #[serde(rename = "RecordNotFound")]
@@ -132,16 +146,16 @@ pub enum ErrorCode {
     /// when it tries to renew a space credential (Spaces proposal, "Space deletion").
     #[serde(rename = "SpaceDeleted")]
     SpaceDeleted,
-    /// The space authority refused a credential on the basis of the requesting user.
-    #[serde(rename = "UserNotAuthorized")]
-    UserNotAuthorized,
+    /// The space authority refused a credential on the basis of the requesting account.
+    #[serde(rename = "AccountNotAuthorized")]
+    AccountNotAuthorized,
     /// The space authority refused a credential on the basis of the requesting app.
     #[serde(rename = "AppNotAuthorized")]
     AppNotAuthorized,
-    /// The delegation token presented to `getSpaceCredential` failed verification.
+    /// The delegation token presented to `authorizeSpaceSync` failed verification.
     #[serde(rename = "InvalidDelegationToken")]
     InvalidDelegationToken,
-    /// The client attestation presented to `getSpaceCredential` failed verification — malformed,
+    /// The client attestation presented to `authorizeSpaceSync` failed verification — malformed,
     /// unresolvable client, wrong signature, wrong audience, expired, or replayed.
     #[serde(rename = "InvalidClientAttestation")]
     InvalidClientAttestation,
@@ -223,11 +237,15 @@ impl ErrorCode {
             ErrorCode::KemKeyNotPublished => "KemKeyNotPublished",
             ErrorCode::FutureRev => "FutureRev",
             ErrorCode::RepoNotFound => "RepoNotFound",
+            ErrorCode::RepoTakendown => "RepoTakendown",
+            ErrorCode::RepoDeactivated => "RepoDeactivated",
+            ErrorCode::AccountTakedown => "AccountTakedown",
+            ErrorCode::AccountDeactivated => "AccountDeactivated",
             ErrorCode::RecordNotFound => "RecordNotFound",
             ErrorCode::BlobNotFound => "BlobNotFound",
             ErrorCode::RecordAlreadyExists => "RecordAlreadyExists",
             ErrorCode::SpaceDeleted => "SpaceDeleted",
-            ErrorCode::UserNotAuthorized => "UserNotAuthorized",
+            ErrorCode::AccountNotAuthorized => "AccountNotAuthorized",
             ErrorCode::AppNotAuthorized => "AppNotAuthorized",
             ErrorCode::InvalidDelegationToken => "InvalidDelegationToken",
             ErrorCode::InvalidClientAttestation => "InvalidClientAttestation",
@@ -273,24 +291,27 @@ impl ErrorCode {
             ErrorCode::InvalidRequest => 400,
             ErrorCode::HandleResolutionFailed => 400,
             ErrorCode::BlockNotFound => 400,
-            // The reference raises all four as `InvalidRequestError` with a named `error`, which
+            // The reference raises these as `InvalidRequestError` with a named `error`, which
             // is HTTP 400 — clients dispatch on the name, not the status.
             ErrorCode::SpaceNotFound => 400,
             ErrorCode::KemKeyNotPublished => 400,
             ErrorCode::FutureRev => 400,
             ErrorCode::RepoNotFound => 400,
+            ErrorCode::RepoTakendown => 400,
+            ErrorCode::RepoDeactivated => 400,
+            // The reference raises both from its auth verifier (`AuthRequiredError`).
+            ErrorCode::AccountTakedown => 401,
+            ErrorCode::AccountDeactivated => 401,
             ErrorCode::RecordNotFound => 400,
             ErrorCode::BlobNotFound => 400,
             ErrorCode::RecordAlreadyExists => 400,
             ErrorCode::SpaceDeleted => 400,
-            ErrorCode::UserNotAuthorized => 403,
-            ErrorCode::AppNotAuthorized => 403,
-            // The delegation token is the request's authorization credential, so a bad one is an
-            // authentication failure, like InvalidToken.
-            ErrorCode::InvalidDelegationToken => 401,
-            // 400, not 401: the delegation token is the request's authorization and its failure is
-            // a 401, but the attestation is a body parameter naming the app, and the reference
-            // answers a bad one as an invalid request.
+            // `authorizeSpaceSync` takes no request authorization: the delegation token and the
+            // client attestation are body parameters, and the reference answers every refusal of
+            // the request as `InvalidRequestError`.
+            ErrorCode::AccountNotAuthorized => 400,
+            ErrorCode::AppNotAuthorized => 400,
+            ErrorCode::InvalidDelegationToken => 400,
             ErrorCode::InvalidClientAttestation => 400,
             // The reference raises the space management errors as `InvalidRequestError` too —
             // including NotAuthorized, which is an authority precondition, not an auth failure

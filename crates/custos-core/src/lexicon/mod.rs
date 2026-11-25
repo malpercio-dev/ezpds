@@ -111,10 +111,10 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/server/resetPassword.json"),
     include_str!("../../lexicons/com/atproto/server/revokeAppPassword.json"),
     include_str!("../../lexicons/com/atproto/server/updateEmail.json"),
-    // Atproto Spaces (proposal 0016) token-flow documents: `getSpaceCredential` (JSON-input
+    // Atproto Spaces (proposal 0016) token-flow documents: `authorizeSpaceSync` (JSON-input
     // procedure) and `getDelegationToken` (query) — from the `permissioned-data` branch, like
     // the record documents below (see the README's "Atproto Spaces" note).
-    include_str!("../../lexicons/com/atproto/space/getSpaceCredential.json"),
+    include_str!("../../lexicons/com/atproto/space/authorizeSpaceSync.json"),
     include_str!("../../lexicons/com/atproto/space/getDelegationToken.json"),
     // Query (`type: "query"`, GET) documents, vendored so natively-handled queries run
     // `LexiconParams` validation with `assertValidXrpcParams` parity.

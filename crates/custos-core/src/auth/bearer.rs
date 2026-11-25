@@ -59,11 +59,15 @@ pub fn extract_access_token(
     ))
 }
 
-/// The space credential in `Authorization: Atproto-Space <credential>`, or `None` when the
-/// header is absent or carries another scheme. The Atproto Spaces scheme is its own: a
-/// credential is bound by an RFC 9421 signature (`custos_spaces` `auth/http_signature.rs`), never by DPoP.
+/// The space credential in `Authorization: Atproto-Space-Credential <credential>` (scheme matched
+/// case-insensitively), or `None` when the header is absent or carries another scheme. The
+/// Atproto Spaces scheme is its own: a credential is bound by an RFC 9421 signature
+/// (`custos_spaces` `auth/http_signature.rs`), never by DPoP.
 pub fn extract_space_credential(headers: &axum::http::HeaderMap) -> Option<&str> {
-    strip_scheme(authorization_header_value(headers).ok()?, "Atproto-Space ")
+    strip_scheme(
+        authorization_header_value(headers).ok()?,
+        "Atproto-Space-Credential ",
+    )
 }
 
 fn authorization_header_value(headers: &axum::http::HeaderMap) -> Result<&str, ApiError> {
@@ -138,5 +142,27 @@ mod tests {
         // session/refresh/device tokens, which are never DPoP-bound.
         let headers = headers_with_auth("DPoP tok123");
         assert!(extract_bearer_token(&headers).is_err());
+    }
+
+    #[test]
+    fn extract_space_credential_matches_its_scheme_case_insensitively() {
+        for value in [
+            "Atproto-Space-Credential cred",
+            "atproto-space-credential cred",
+            "ATPROTO-SPACE-CREDENTIAL cred",
+        ] {
+            assert_eq!(
+                extract_space_credential(&headers_with_auth(value)),
+                Some("cred"),
+                "{value:?}"
+            );
+        }
+        for value in ["Atproto-Space cred", "Bearer cred", "DPoP cred"] {
+            assert_eq!(
+                extract_space_credential(&headers_with_auth(value)),
+                None,
+                "{value:?}"
+            );
+        }
     }
 }

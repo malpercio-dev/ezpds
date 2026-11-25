@@ -1,35 +1,41 @@
 // pattern: Imperative Shell
 //
-// Gathers: headers (delegation token in Authorization, RFC 9421 Signature-Input/Signature),
-//          JSON body (space, clientAttestation), DB pool + master key
-// Processes: space-ref parse → space row (local authority, not deleted) → `atproto-space`
-//            signature over Authorization → delegation token verify + jti spend → client
-//            attestation verify + jti spend → issuance policy (app perimeter, then user)
-//            → load the authority's signer → mint the credential bound to the signature's key
-// Returns: JSON { credential } on success; ApiError on failure
+// Gathers: JSON body (space, credentialKey, delegationToken?, clientAttestation?), DB pool +
+//          master key
+// Processes: space-ref parse → credentialKey is a P-256 did:key → authority is an active local
+//            account → space row (not deleted, not taken down, ours) → delegation token verify
+//            + jti spend (when present) → client attestation verify + jti spend (when present)
+//            → issuance policy (app perimeter, then account) → load the authority's signer →
+//            mint the credential bound to credentialKey
+// Returns: JSON { credential, spaceRev? } on success; ApiError on failure
 //
-// Implements: POST /xrpc/com.atproto.space.getSpaceCredential
+// Implements: POST /xrpc/com.atproto.space.authorizeSpaceSync
 
-use axum::{extract::State, http::HeaderMap, response::Json};
+use axum::{extract::State, response::Json};
 use custos_core::CoreState;
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
 use crate::auth::client_attestation::verify_client_attestation;
-use crate::auth::http_signature::verify_delegation_signature;
 use crate::auth::space::{
-    authorize_credential_request, mint_space_credential, space_host_aud, unix_now,
-    verify_delegation_token,
+    authorize_credential_request, mint_space_credential, require_active_space_host,
+    require_space_servable, space_host_aud, unix_now, verify_delegation_token,
 };
-use custos_core::auth::extract_bearer_token;
 use custos_core::lexicon::LexiconInput;
 
+// `notify` (in the lexicon) is not read: this server does not register syncers through it yet.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetSpaceCredentialInput {
-    /// The space to read (`space-ref`).
+pub struct AuthorizeSpaceSyncInput {
+    /// The space to sync (`space-ref`).
     space: String,
+    /// The P-256 `did:key` the credential is bound to (`cnf.kid`). Possession is proven on each
+    /// use of the credential, not here.
+    credential_key: String,
+    /// From the account's `getDelegationToken`, required unless the policy admits a request
+    /// that names no account.
+    delegation_token: Option<String>,
     /// Client attestation JWT, required only when the space gates on app identity. Verified
     /// whenever present — an app that names itself is held to that name even where the space
     /// would have admitted it anonymously.
@@ -37,21 +43,39 @@ pub struct GetSpaceCredentialInput {
 }
 
 #[derive(Serialize)]
-pub struct GetSpaceCredentialResponse {
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizeSpaceSyncResponse {
     credential: String,
+    /// Omitted before the space's first update.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    space_rev: Option<String>,
 }
 
-/// POST /xrpc/com.atproto.space.getSpaceCredential
+/// POST /xrpc/com.atproto.space.authorizeSpaceSync
 ///
-/// Exchange a delegation token (the request's `Authorization` token) plus an `atproto-space`
-/// HTTP message signature over it for a space credential bound to the signing key (`cnf.kid`)
-/// — the space-authority side of the Atproto Spaces credential flow. This server answers only for spaces anchored on an account it hosts.
-pub async fn get_space_credential(
+/// Mint a space credential bound to `credentialKey` — the space-authority side of the Atproto
+/// Spaces credential flow — and report the space's current revision. Takes no request
+/// authorization: the delegation token and client attestation ride the body. This server
+/// answers only for spaces anchored on an account it hosts.
+pub async fn authorize_space_sync(
     State(state): State<CoreState>,
-    headers: HeaderMap,
-    LexiconInput(input): LexiconInput<GetSpaceCredentialInput>,
-) -> Result<Json<GetSpaceCredentialResponse>, ApiError> {
+    LexiconInput(input): LexiconInput<AuthorizeSpaceSyncInput>,
+) -> Result<Json<AuthorizeSpaceSyncResponse>, ApiError> {
     let space = crate::views::parse_space(&input.space)?;
+
+    if !matches!(
+        crypto::did_key_curve(&crypto::DidKeyUri(input.credential_key.clone())),
+        Ok(crypto::DidKeyCurve::P256)
+    ) {
+        return Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "credentialKey must be a P-256 did:key",
+        ));
+    }
+
+    // The authority's status comes first, as the reference orders it: a suspended or
+    // deactivated authority answers with its status even for a space it has deleted.
+    require_active_space_host(&state, &space).await?;
 
     let row = crate::db::spaces::get_space(&state.db, &space.uri)
         .await
@@ -60,17 +84,19 @@ pub async fn get_space_credential(
             ApiError::new(ErrorCode::InternalError, "internal server error")
         })?
         .ok_or_else(|| ApiError::new(ErrorCode::SpaceNotFound, "space not found"))?;
+    // `SpaceDeleted` is answered whatever the request carries: it is how a syncer that missed
+    // the deletion notice finds out, and a public space's syncer may hold no delegation token.
     if row.deleted_at.is_some() {
         return Err(ApiError::new(
             ErrorCode::SpaceDeleted,
             "this space has been deleted",
         ));
     }
-    // Ordered after the tombstone check for the same reason `require_serviceable_authority` is:
-    // `SpaceDeleted` is the one durable renewal signal, and a takedown is reversible, so it must
-    // not overwrite it. Refusing here stops a syncer renewing its way past a takedown — the read
-    // seam would refuse it anyway, but a credential should not outlive the operator's action.
-    crate::auth::space::require_space_servable(&state, &space).await?;
+    // After the tombstone check: `SpaceDeleted` is the one durable renewal signal, and a takedown
+    // is reversible, so it must not overwrite it. Refusing here stops a syncer renewing its way
+    // past a takedown — the read seam would refuse it anyway, but a credential should not outlive
+    // the operator's action.
+    require_space_servable(&state, &space).await?;
     // A row with no policy is a space this PDS only hosts repos for; its authority lives
     // elsewhere and is the one to ask.
     let Some(policy) = row.space_policy()? else {
@@ -79,23 +105,21 @@ pub async fn get_space_credential(
             "this server is not the authority for this space",
         ));
     };
-    // Ordered after the tombstone check on purpose: `SpaceDeleted` is the spec's one durable
-    // renewal signal, so a deleted space must keep reporting it even once its authority stops
-    // being an active account.
-    crate::auth::space::require_serviceable_authority(&state, &space).await?;
 
-    // Stateless checks first, so a bad signature doesn't burn the single-use delegation token.
-    // The signature covers the whole Authorization field, so it binds this key to this token.
-    let key_id = verify_delegation_signature(&headers)?;
     let now = unix_now()?;
-    // The delegation token rides the Authorization header as a Bearer token (it is the grant
-    // being exchanged, not the credential being minted).
-    let delegation_token = extract_bearer_token(&headers)?;
-    let delegation = verify_delegation_token(&state, delegation_token, &space, now).await?;
+    let account = match &input.delegation_token {
+        Some(token) => Some(
+            verify_delegation_token(&state, token, &space, now)
+                .await?
+                .user_did,
+        ),
+        None => None,
+    };
 
-    // After the delegation token, deliberately: verifying an attestation resolves a
-    // caller-named client_id over the network, and gating that behind a valid single-use grant
-    // keeps an unauthenticated caller from driving outbound fetches.
+    // After the delegation token when there is one, so a request carrying a bad grant cannot
+    // drive the attestation's outbound client_id resolution. A request with no grant can — a
+    // `publicRead` space's `allowedApps` needs the attestation — which is the exposure PAR's
+    // client-metadata fetch already has, through the same SSRF-hardened client.
     let client_id = match &input.client_attestation {
         Some(attestation) => Some(
             verify_client_attestation(&state, attestation, &space_host_aud(&space), now).await?,
@@ -107,13 +131,11 @@ pub async fn get_space_credential(
         &state,
         &row,
         &policy,
-        &delegation.user_did,
+        account.as_ref().map(common::Did::as_str),
         client_id.as_deref(),
     )
     .await?;
 
-    // Signed with the authority account's repo key — the key this server publishes as the
-    // authority's `#atproto_space` (and `#atproto`).
     let master_key: &[u8; 32] = state
         .config
         .signing_key_master_key
@@ -132,11 +154,14 @@ pub async fn get_space_credential(
         |bytes| signer.sign(bytes),
         &row.authority_did,
         &space,
-        &key_id,
+        &input.credential_key,
         now,
     );
 
-    Ok(Json(GetSpaceCredentialResponse { credential }))
+    Ok(Json(AuthorizeSpaceSyncResponse {
+        credential,
+        space_rev: row.last_space_rev,
+    }))
 }
 
 #[cfg(test)]
@@ -150,7 +175,7 @@ mod tests {
     };
     use axum::{
         body::Body,
-        http::{header::AUTHORIZATION, HeaderValue, Method, Request, StatusCode},
+        http::{Method, Request, StatusCode},
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use custos_core::space_uri::parse_space_ref;
@@ -163,7 +188,7 @@ mod tests {
     const ALICE: &str = "did:plc:alice";
     const BOB: &str = "did:plc:bob";
     const SPACE: &str = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/self";
-    const PATH: &str = "/xrpc/com.atproto.space.getSpaceCredential";
+    const PATH: &str = "/xrpc/com.atproto.space.authorizeSpaceSync";
 
     fn did_doc(did: &str, kp: &crypto::P256Keypair) -> serde_json::Value {
         let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
@@ -171,7 +196,6 @@ mod tests {
             "id": did,
             "verificationMethod": [
                 { "id": format!("{did}#atproto"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase },
-                { "id": format!("{did}#atproto_space"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase },
             ],
         })
     }
@@ -204,33 +228,35 @@ mod tests {
         .unwrap();
     }
 
-    /// The exchange request, signed by `key` when given (unsigned otherwise).
-    fn request(delegation: &str, key: Option<&SpaceSigKey>, space: &str) -> Request<Body> {
-        attested_request(delegation, key, space, None)
-    }
-
-    fn attested_request(
-        delegation: &str,
-        key: Option<&SpaceSigKey>,
+    /// The request body: `key`'s did:key as `credentialKey`, plus whichever tokens are given.
+    fn request(
         space: &str,
+        key: &SpaceSigKey,
+        delegation: Option<&str>,
         attestation: Option<&str>,
     ) -> Request<Body> {
-        let mut b = Request::builder()
+        let mut body = serde_json::json!({ "space": space, "credentialKey": key.key_id() });
+        if let Some(delegation) = delegation {
+            body["delegationToken"] = delegation.into();
+        }
+        if let Some(attestation) = attestation {
+            body["clientAttestation"] = attestation.into();
+        }
+        Request::builder()
             .method("POST")
             .uri(PATH)
-            .header("content-type", "application/json");
-        match key {
-            Some(key) => b
-                .headers_mut()
-                .unwrap()
-                .extend(key.delegation_headers(delegation)),
-            None => b = b.header(AUTHORIZATION, format!("Bearer {delegation}")),
-        }
-        let mut body = serde_json::json!({ "space": space });
-        if let Some(attestation) = attestation {
-            body["clientAttestation"] = serde_json::Value::String(attestation.to_string());
-        }
-        b.body(Body::from(body.to_string())).unwrap()
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn error(response: axum::response::Response) -> (StatusCode, String) {
+        let status = response.status();
+        let body = body_json(response).await;
+        (
+            status,
+            body["error"].as_str().unwrap_or_default().to_string(),
+        )
     }
 
     fn segment(token: &str, i: usize) -> serde_json::Value {
@@ -239,7 +265,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exchanges_a_signed_delegation_token_for_a_key_bound_credential() {
+    async fn exchanges_a_delegation_token_for_a_credential_bound_to_the_named_key() {
         let state = state_with_master_key().await;
         seed_identity(&state, AUTHORITY).await;
         let alice = seed_identity(&state, ALICE).await;
@@ -251,18 +277,20 @@ mod tests {
 
         let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
         let response = app(state.clone())
-            .oneshot(request(&delegation, Some(&key), SPACE))
+            .oneshot(request(SPACE, &key, Some(&delegation), None))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let credential = body_json(response).await["credential"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let json = body_json(response).await;
+        assert!(
+            json.get("spaceRev").is_none(),
+            "omitted before the space's first update"
+        );
+        let credential = json["credential"].as_str().unwrap().to_string();
 
         let header = segment(&credential, 0);
         assert_eq!(header["typ"], SPACE_CREDENTIAL_TYP);
-        assert_eq!(header["kid"], "#atproto_space");
+        assert_eq!(header["kid"], "#atproto");
         let claims = segment(&credential, 1);
         assert_eq!(claims["iss"], AUTHORITY);
         assert_eq!(claims["sub"], SPACE);
@@ -288,16 +316,32 @@ mod tests {
         assert!(matches!(reader, SpaceReader::Credential(c) if c.kid == key.key_id()));
 
         // The delegation token was single-use: replaying the exchange fails.
-        let response = app(state)
-            .oneshot(request(&delegation, Some(&key), SPACE))
+        let response = app(state.clone())
+            .oneshot(request(SPACE, &key, Some(&delegation), None))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(body_json(response).await["error"], "InvalidDelegationToken");
+        assert_eq!(
+            error(response).await,
+            (StatusCode::BAD_REQUEST, "InvalidDelegationToken".into())
+        );
+
+        // The space's current revision rides the answer once there is one.
+        sqlx::query("UPDATE spaces SET last_space_rev = '3kabc2zv3ok2a' WHERE uri = ?")
+            .bind(SPACE)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
+        let response = app(state)
+            .oneshot(request(SPACE, &key, Some(&delegation), None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["spaceRev"], "3kabc2zv3ok2a");
     }
 
     #[tokio::test]
-    async fn refuses_unsigned_non_members_unknown_and_deleted_spaces() {
+    async fn refuses_bad_keys_non_members_unknown_and_deleted_spaces() {
         let state = state_with_master_key().await;
         seed_identity(&state, AUTHORITY).await;
         let alice = seed_identity(&state, ALICE).await;
@@ -305,42 +349,38 @@ mod tests {
         let space = parse_space_ref(SPACE).unwrap();
         let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
+        let send = |req: Request<Body>| {
+            let state = state.clone();
+            async move { error(app(state).oneshot(req).await.unwrap()).await }
+        };
 
-        // No signature: refused before the delegation token is spent...
+        // A credentialKey that is not a P-256 did:key is refused before the token is spent...
         let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
-        let response = app(state.clone())
-            .oneshot(request(&delegation, None, SPACE))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        // ...so the same token still exchanges once signed — but alice is not a member, so the
-        // policy refuses her.
-        let response = app(state.clone())
-            .oneshot(request(&delegation, Some(&key), SPACE))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(body_json(response).await["error"], "UserNotAuthorized");
-
-        // A signature over a different delegation token does not carry over to this one, and
-        // the old DPoP shape is refused.
-        let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
-        let mut req = request(&delegation, None, SPACE);
-        req.headers_mut()
-            .extend(key.delegation_headers("some-other-token"));
-        req.headers_mut().insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {delegation}")).unwrap(),
+        for bad in [
+            "did:key:zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme",
+            "not-a-key",
+        ] {
+            let body = serde_json::json!({
+                "space": SPACE, "credentialKey": bad, "delegationToken": delegation,
+            });
+            let req = Request::builder()
+                .method("POST")
+                .uri(PATH)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            assert_eq!(send(req).await.0, StatusCode::BAD_REQUEST, "{bad}");
+        }
+        // ...so the same token still exchanges — but alice is not a member, so the policy refuses
+        // her, as it refuses a request naming no account at all.
+        assert_eq!(
+            send(request(SPACE, &key, Some(&delegation), None)).await,
+            (StatusCode::BAD_REQUEST, "AccountNotAuthorized".into())
         );
-        let response = app(state.clone()).oneshot(req).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let mut req = request(&delegation, None, SPACE);
-        req.headers_mut().insert(
-            "DPoP",
-            HeaderValue::from_static("eyJhbGciOiJFUzI1NiJ9.e30.c2ln"),
+        assert_eq!(
+            send(request(SPACE, &key, None, None)).await,
+            (StatusCode::BAD_REQUEST, "AccountNotAuthorized".into())
         );
-        let response = app(state.clone()).oneshot(req).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         // Unknown space.
         let other = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/nosuch";
@@ -350,26 +390,77 @@ mod tests {
             &parse_space_ref(other).unwrap(),
             now,
         );
-        let response = app(state.clone())
-            .oneshot(request(&delegation, Some(&key), other))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(body_json(response).await["error"], "SpaceNotFound");
+        assert_eq!(
+            send(request(other, &key, Some(&delegation), None)).await,
+            (StatusCode::BAD_REQUEST, "SpaceNotFound".into())
+        );
 
-        // Deleted space.
+        // Deleted space, answered whether or not the request carries a delegation token.
         sqlx::query("UPDATE spaces SET deleted_at = 'now' WHERE uri = ?")
             .bind(SPACE)
             .execute(&state.db)
             .await
             .unwrap();
         let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
-        let response = app(state)
-            .oneshot(request(&delegation, Some(&key), SPACE))
+        for delegation in [Some(delegation.as_str()), None] {
+            assert_eq!(
+                send(request(SPACE, &key, delegation, None)).await,
+                (StatusCode::BAD_REQUEST, "SpaceDeleted".into())
+            );
+        }
+    }
+
+    /// The authority's status gates the mint: `RepoTakendown` / `RepoDeactivated`, as the
+    /// reference's `assertActiveSpaceHost` answers, and `SpaceNotFound` with no local account.
+    #[tokio::test]
+    async fn the_authoritys_status_gates_the_mint() {
+        let state = state_with_master_key().await;
+        let authority = seed_identity(&state, AUTHORITY).await;
+        seed_space(&state, memberspace(true)).await;
+        let space = parse_space_ref(SPACE).unwrap();
+        let key = SpaceSigKey::generate();
+        let now = unix_now().unwrap();
+        let send = || {
+            let state = state.clone();
+            let delegation = mint_delegation_token(|b| authority.sign(b), AUTHORITY, &space, now);
+            let req = request(SPACE, &key, Some(&delegation), None);
+            async move { error(app(state).oneshot(req).await.unwrap()).await }
+        };
+
+        assert_eq!(send().await.0, StatusCode::OK);
+        for (column, code) in [
+            ("taken_down_at", "RepoTakendown"),
+            ("suspended_at", "RepoTakendown"),
+            ("deactivated_at", "RepoDeactivated"),
+        ] {
+            sqlx::query(&format!(
+                "UPDATE accounts SET {column} = 'now' WHERE did = ?"
+            ))
+            .bind(AUTHORITY)
+            .execute(&state.db)
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(body_json(response).await["error"], "SpaceDeleted");
+            assert_eq!(
+                send().await,
+                (StatusCode::BAD_REQUEST, code.into()),
+                "{column}"
+            );
+            sqlx::query(&format!(
+                "UPDATE accounts SET {column} = NULL WHERE did = ?"
+            ))
+            .bind(AUTHORITY)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+
+        // A space whose authority has no account here is not ours to answer for.
+        let foreign = "at://did:plc:elsewhere/space/org.example.bucket/self";
+        let req = request(foreign, &key, None, None);
+        assert_eq!(
+            error(app(state).oneshot(req).await.unwrap()).await,
+            (StatusCode::BAD_REQUEST, "SpaceNotFound".into())
+        );
     }
 
     // ── Client attestation + the app perimeter ───────────────────────────────
@@ -478,21 +569,35 @@ mod tests {
         let space = parse_space_ref(SPACE).unwrap();
         let sig_key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
-        let aud = format!("{AUTHORITY}#atproto_space_host");
+        let aud = format!("{AUTHORITY}#atproto_pds");
         let mint = |attestation: Option<String>| {
             let state = state.clone();
             let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
-            let req = attested_request(&delegation, Some(&sig_key), SPACE, attestation.as_deref());
+            let req = request(SPACE, &sig_key, Some(&delegation), attestation.as_deref());
             async move { app(state).oneshot(req).await.unwrap() }
         };
 
         // No attestation: the space cannot tell which app is asking, so it refuses on the app.
-        let response = mint(None).await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(body_json(response).await["error"], "AppNotAuthorized");
+        assert_eq!(
+            error(mint(None).await).await,
+            (StatusCode::BAD_REQUEST, "AppNotAuthorized".into())
+        );
 
         // An attestation the allow-listed client actually signed mints the credential.
         let response = mint(Some(key.attest(&client_id, &aud, "att-1", now))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // `publicRead` admits a request naming no account, but `allowedApps` still holds.
+        let anonymous = |attestation: Option<String>| {
+            let req = request(SPACE, &sig_key, None, attestation.as_deref());
+            let state = state.clone();
+            async move { app(state).oneshot(req).await.unwrap() }
+        };
+        assert_eq!(
+            error(anonymous(None).await).await,
+            (StatusCode::BAD_REQUEST, "AppNotAuthorized".into())
+        );
+        let response = anonymous(Some(key.attest(&client_id, &aud, "att-anon", now))).await;
         assert_eq!(response.status(), StatusCode::OK);
 
         // Attestations are single-use: the same `jti` again is refused (with a fresh delegation
@@ -505,12 +610,7 @@ mod tests {
         );
 
         // One minted for another authority's space host cannot be replayed here.
-        let elsewhere = key.attest(
-            &client_id,
-            "did:plc:elsewhere#atproto_space_host",
-            "att-2",
-            now,
-        );
+        let elsewhere = key.attest(&client_id, "did:plc:elsewhere#atproto_pds", "att-2", now);
         let response = mint(Some(elsewhere)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
@@ -610,7 +710,7 @@ mod tests {
         let mint = |did: &'static str, signer: &repo_engine::CommitSigner| {
             let state = state.clone();
             let delegation = mint_delegation_token(|b| signer.sign(b), did, &space, now);
-            let req = request(&delegation, Some(&key), SPACE);
+            let req = request(SPACE, &key, Some(&delegation), None);
             async move { app(state).oneshot(req).await.unwrap() }
         };
 
@@ -621,9 +721,10 @@ mod tests {
             "the app authorized alice"
         );
 
-        let response = mint(BOB, &bob).await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(body_json(response).await["error"], "UserNotAuthorized");
+        assert_eq!(
+            error(mint(BOB, &bob).await).await,
+            (StatusCode::BAD_REQUEST, "AccountNotAuthorized".into())
+        );
 
         // A managing app that publishes no endpoint for the named service cannot be asked, and
         // an unaskable app denies rather than being skipped.
@@ -635,9 +736,10 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-        let response = mint(ALICE, &alice).await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(body_json(response).await["error"], "UserNotAuthorized");
+        assert_eq!(
+            error(mint(ALICE, &alice).await).await,
+            (StatusCode::BAD_REQUEST, "AccountNotAuthorized".into())
+        );
     }
 
     #[tokio::test]
@@ -653,10 +755,31 @@ mod tests {
         for (did, signer) in [(ALICE, &alice), (AUTHORITY, &authority)] {
             let delegation = mint_delegation_token(|b| signer.sign(b), did, &space, now);
             let response = app(state.clone())
-                .oneshot(request(&delegation, Some(&key), SPACE))
+                .oneshot(request(SPACE, &key, Some(&delegation), None))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{did}");
         }
+
+        // `publicRead` mints without a delegation token, and the credential reads.
+        let response = app(state.clone())
+            .oneshot(request(SPACE, &key, None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let credential = body_json(response).await["credential"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(authenticate_space_read(
+            &state,
+            &key.credential_headers(&credential, ALICE),
+            &Method::GET,
+            &"/xrpc/com.atproto.space.getRecord".parse().unwrap(),
+            &space,
+            ALICE,
+        )
+        .await
+        .is_ok());
     }
 }

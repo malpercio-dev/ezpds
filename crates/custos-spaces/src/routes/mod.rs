@@ -2,8 +2,8 @@
 //! module; shared support lives outside it (`crate::views`, `crate::auth`, `crate::db`).
 
 mod admin_spaces;
+mod authorize_space_sync;
 mod get_delegation_token;
-mod get_space_credential;
 mod memberspace_list_members;
 mod memberspace_put_members;
 mod memberspace_remove_members;
@@ -45,8 +45,8 @@ mod space_sync_routes_test;
 mod space_takedown_test;
 
 pub(crate) use admin_spaces::{list_hosted_spaces, set_space_takedown};
+pub(crate) use authorize_space_sync::authorize_space_sync;
 pub(crate) use get_delegation_token::get_delegation_token;
-pub(crate) use get_space_credential::get_space_credential;
 pub(crate) use memberspace_list_members::memberspace_list_members;
 pub(crate) use memberspace_put_members::memberspace_put_members;
 pub(crate) use memberspace_remove_members::memberspace_remove_members;

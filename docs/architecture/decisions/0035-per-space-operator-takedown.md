@@ -26,9 +26,9 @@ ergonomics gap.
 
 The `spaces` table already carried `deleted_at`, but that is the *owner's* tombstone: it is
 written by `deleteSpace`, it clears the simplespace config so the URI can be created again,
-and it makes `getSpaceCredential` answer `SpaceDeleted` — the spec's durable "drop your copy"
-signal to syncers. An operator refusal is a different thing: reversible, and never an
-instruction to destroy data.
+and it makes `authorizeSpaceSync` (then `getSpaceCredential`) answer `SpaceDeleted` — the
+spec's durable "drop your copy" signal to syncers. An operator refusal is a different thing:
+reversible, and never an instruction to destroy data.
 
 ## Decision
 
@@ -42,8 +42,10 @@ Specifically:
 - **A column on `spaces`, not a separate refuse-to-serve list.** The row already exists for
   every space this host stores anything in, foreign-authority spaces included.
 - **A refused space answers `SpaceNotFound`, never `SpaceDeleted`.** The same reply an
-  unknown space gets, and the same posture `require_serviceable_authority` already takes for
-  a non-active authority.
+  unknown space gets. A non-active *authority* is a different gate and answers differently:
+  `RepoTakendown` / `RepoDeactivated`, on `authorizeSpaceSync` and `listRepos` only, as the
+  reference's `assertActiveSpaceHost` does (amended 2026-11-23; that gate used to answer
+  `SpaceNotFound` on every space-host credential read).
 - **Reads, writes, credential minting, notification fan-out, and the member-facing
   `listSpaces` all refuse.** A takedown means this host does not act as space or repo host
   for that URI at all.
@@ -84,7 +86,7 @@ truth every seam must consult, and a join on the operator listing) buying nothin
 Rejected as speculative.
 
 **Reusing `deleted_at`.** Simplest possible diff, and wrong twice over: it would make
-`getSpaceCredential` answer `SpaceDeleted`, telling every syncer to durably drop copies of
+`authorizeSpaceSync` answer `SpaceDeleted`, telling every syncer to durably drop copies of
 data the operator may restore within the hour, and it would clear the simplespace config,
 making the takedown unreversible in practice.
 

@@ -273,19 +273,24 @@ async fn commit_ops(
     // `space_repos`, not `accounts`, so a pre-transaction check would leave a
     // window for a concurrent deactivation to land between check and commit.
     use custos_db::accounts::AccountLifecycle;
-    let admitted = match custos_db::accounts::account_lifecycle(&mut **tx, did).await? {
-        Some(AccountLifecycle::Active) => true,
-        Some(AccountLifecycle::Deactivated) => admission == SpaceWriteAdmission::Import,
-        Some(_) => false,
+    match custos_db::accounts::account_lifecycle(&mut **tx, did).await? {
+        Some(AccountLifecycle::Active) => {}
+        Some(AccountLifecycle::Deactivated) if admission == SpaceWriteAdmission::Import => {}
+        Some(AccountLifecycle::Deactivated) => {
+            return Err(ApiError::new(
+                ErrorCode::AccountDeactivated,
+                "account is deactivated",
+            ));
+        }
+        Some(AccountLifecycle::TakenDown | AccountLifecycle::Suspended) => {
+            return Err(ApiError::new(
+                ErrorCode::AccountTakedown,
+                "account has been taken down",
+            ));
+        }
         None => {
             return Err(ApiError::new(ErrorCode::NotFound, "account not found"));
         }
-    };
-    if !admitted {
-        return Err(ApiError::new(
-            ErrorCode::Forbidden,
-            "account is deactivated",
-        ));
     }
 
     // Record a foreign authority's space if this host has not seen it before. The reference does
@@ -966,6 +971,27 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(err.status_code(), 403);
+        assert_eq!(err.code(), &ErrorCode::AccountDeactivated);
+
+        // A moderation state is `AccountTakedown` here too, should one land between the route's
+        // own gate and the commit.
+        sqlx::query(
+            "UPDATE accounts SET deactivated_at = NULL, taken_down_at = datetime('now') \
+             WHERE did = ?",
+        )
+        .bind(DID)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let err = apply_space_writes(
+            &state,
+            &space(),
+            DID,
+            &[put("org.example.note", "a", "x")],
+            SpaceWriteAdmission::Active,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code(), &ErrorCode::AccountTakedown);
     }
 }

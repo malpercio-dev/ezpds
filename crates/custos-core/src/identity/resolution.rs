@@ -21,11 +21,6 @@
 //! A document reaching neither tier is fetched from its authority and recorded in tier 2 unless
 //! it belongs to tier 1.
 //!
-//! The pure DID-document accessors at the bottom (`atproto_verification_key`, `service_endpoint`)
-//! also carry the Atproto Spaces resolution fallbacks: `space_verification_key`
-//! (`#atproto_space` → `#atproto`) and `space_host_endpoint` (`#atproto_space_host` →
-//! `#atproto_pds`).
-//!
 //! The `atproto-proxy` header target guard (SSRF validation + the DNS-pinning hardened client)
 //! lives in the sibling `proxy` module.
 
@@ -682,31 +677,6 @@ pub fn atproto_verification_key(did_doc: &Value) -> Option<crypto::DidKeyUri> {
     verification_key(did_doc, "atproto")
 }
 
-/// The key a space authority signs space credentials with: its `#atproto_space` verification
-/// method, falling back to `#atproto` when the optional dedicated entry is absent (Atproto
-/// Spaces, proposal 0016). Consumed by `custos_spaces`' `auth::space::verify_space_credential`.
-pub fn space_verification_key(did_doc: &Value) -> Option<crypto::DidKeyUri> {
-    dedicated_space_verification_key(did_doc).or_else(|| atproto_verification_key(did_doc))
-}
-
-/// The authority's dedicated `#atproto_space` verification method alone — no `#atproto`
-/// fallback. Lets a credential verifier tell "publishes no space key" from "publishes one", so
-/// an authority that separated its space key from its repo key is never verified against the
-/// repo key.
-pub fn dedicated_space_verification_key(did_doc: &Value) -> Option<crypto::DidKeyUri> {
-    verification_key(did_doc, "atproto_space")
-}
-
-/// The endpoint a space authority is reached at as the space host: its `#atproto_space_host`
-/// service, falling back to `#atproto_pds` when the optional dedicated entry is absent
-/// (Atproto Spaces, proposal 0016). Consumed by the outbound write-notification fan-out
-/// (`space_notify::resolve_service_endpoint`), where the fallback is the interop path: neither
-/// the reference implementation nor the hosted alpha publishes an `#atproto_space_host` entry.
-pub fn space_host_endpoint(did_doc: &Value) -> Option<&str> {
-    service_endpoint(did_doc, "atproto_space_host")
-        .or_else(|| service_endpoint(did_doc, "atproto_pds"))
-}
-
 /// The `did:key:` URI of the `verificationMethod` entry whose `id` ends in `#{fragment}` —
 /// matching both the abbreviated (`#atproto`) and fully-qualified (`did#atproto`) id forms.
 pub(crate) fn verification_key(did_doc: &Value, fragment: &str) -> Option<crypto::DidKeyUri> {
@@ -767,7 +737,7 @@ fn also_known_as_handles(did_doc: &Value) -> Vec<String> {
 mod tests {
     use super::{
         did_web_document_url, fragment_id_matches, refresh_did_document_after_signature_mismatch,
-        safe_body_preview, service_endpoint, space_host_endpoint, space_verification_key,
+        safe_body_preview,
     };
     use common::ErrorCode;
 
@@ -813,58 +783,6 @@ mod tests {
         assert_ne!(*other.code(), ErrorCode::InvalidToken);
     }
 
-    fn doc(methods: &[(&str, &str)], services: &[(&str, &str)]) -> serde_json::Value {
-        serde_json::json!({
-            "id": "did:plc:space",
-            "verificationMethod": methods.iter().map(|(id, key)| serde_json::json!({
-                "id": id, "type": "Multikey", "controller": "did:plc:space", "publicKeyMultibase": key
-            })).collect::<Vec<_>>(),
-            "service": services.iter().map(|(id, endpoint)| serde_json::json!({
-                "id": id, "type": "AtprotoPersonalDataServer", "serviceEndpoint": endpoint
-            })).collect::<Vec<_>>(),
-        })
-    }
-
-    #[test]
-    fn space_entries_win_when_published() {
-        let doc = doc(
-            &[
-                ("did:plc:space#atproto", "zRepo"),
-                ("#atproto_space", "zSpace"),
-            ],
-            &[
-                ("#atproto_pds", "https://pds.example.com"),
-                (
-                    "did:plc:space#atproto_space_host",
-                    "https://space.example.com",
-                ),
-            ],
-        );
-        assert_eq!(space_verification_key(&doc).unwrap().0, "did:key:zSpace");
-        assert_eq!(space_host_endpoint(&doc), Some("https://space.example.com"));
-    }
-
-    #[test]
-    fn space_entries_fall_back_to_atproto_and_pds() {
-        let doc = doc(
-            &[("did:plc:space#atproto", "zRepo")],
-            &[("#atproto_pds", "https://pds.example.com")],
-        );
-        assert_eq!(space_verification_key(&doc).unwrap().0, "did:key:zRepo");
-        assert_eq!(space_host_endpoint(&doc), Some("https://pds.example.com"));
-        // `#atproto_space` must not be mistaken for `#atproto` by a suffix match, and vice versa.
-        let only_space = doc_with_only_space();
-        assert_eq!(
-            space_verification_key(&only_space).unwrap().0,
-            "did:key:zSpace"
-        );
-        assert!(service_endpoint(&only_space, "atproto_pds").is_none());
-        assert_eq!(
-            space_host_endpoint(&only_space),
-            Some("https://space.example.com")
-        );
-    }
-
     #[test]
     fn fragment_id_matches_bare_and_qualified_but_not_foreign() {
         let did = "did:web:alice.example";
@@ -885,20 +803,6 @@ mod tests {
             did,
             "atproto"
         ));
-    }
-
-    fn doc_with_only_space() -> serde_json::Value {
-        doc(
-            &[("#atproto_space", "zSpace")],
-            &[("#atproto_space_host", "https://space.example.com")],
-        )
-    }
-
-    #[test]
-    fn space_helpers_are_none_on_an_empty_document() {
-        let doc = serde_json::json!({ "id": "did:plc:space" });
-        assert!(space_verification_key(&doc).is_none());
-        assert!(space_host_endpoint(&doc).is_none());
     }
 
     #[test]

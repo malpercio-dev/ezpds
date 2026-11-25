@@ -32,8 +32,8 @@ pub struct GetDelegationTokenResponse {
 /// GET /xrpc/com.atproto.space.getDelegationToken
 ///
 /// Mint a delegation token for `space` on behalf of the authenticated account — the user's side
-/// of the Atproto Spaces credential flow. The app presents it (with a DPoP proof) to the space
-/// authority's `getSpaceCredential`. Requires an OAuth (or full-access) session whose grant
+/// of the Atproto Spaces credential flow. The app presents it in the body of the space
+/// authority's `authorizeSpaceSync`. Requires an OAuth (or full-access) session whose grant
 /// covers `read` on the space; the token says nothing about membership, which is the
 /// authority's call. This PDS need not know the space at all.
 pub async fn get_delegation_token(
@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(claims["sub"], SPACE);
         assert_eq!(
             claims["aud"],
-            "did:plc:abc234567abc234567abc234#atproto_space_host"
+            "did:plc:abc234567abc234567abc234#atproto_pds"
         );
         assert_eq!(
             claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap(),

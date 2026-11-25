@@ -5,7 +5,7 @@
 //! Two directions ride one path, because a host is often both at once:
 //!
 //! * **Repo host → space host.** A user's write into a space whose authority lives elsewhere is
-//!   pushed as one `notifyWrite` to the authority's `#atproto_space_host`, signed by the repo's
+//!   pushed as one `notifyWrite` to the authority's `#atproto_pds`, signed by the repo's
 //!   own key, so the authority can maintain the writer set `listRepos` answers. No subscription
 //!   is involved: the authority needs none to hear about a write into its own space.
 //! * **Space host → registered syncers.** A write to any repo in a space we are the authority
@@ -40,9 +40,7 @@ use tokio::sync::Semaphore;
 
 use crate::auth::space::unix_now;
 use crate::db::space_notify::WriterRevs;
-use custos_core::identity::resolution::{
-    resolve_did_document, service_endpoint, space_host_endpoint,
-};
+use custos_core::identity::resolution::{resolve_did_document, service_endpoint};
 use custos_core::space_uri::SpaceRef;
 
 /// How long a write-notification registration lives before it must be renewed. Long enough that
@@ -368,15 +366,10 @@ async fn attempt_delivery(
     }
 }
 
-/// The delivery endpoint in `doc`: its entry named by `fragment`. No fragment, and the
-/// authority's `#atproto_space_host` a repo host reports to, fall back to `#atproto_pds`, which is
-/// where the alpha's own hosts answer (see `identity::resolution::space_host_endpoint`).
+/// The delivery endpoint in `doc`: its entry named by `fragment`, or `#atproto_pds` when there is
+/// none — where a space host (the authority's PDS) answers.
 fn endpoint_in(doc: &Value, fragment: Option<&str>) -> Option<String> {
-    match fragment {
-        None | Some("atproto_space_host") => space_host_endpoint(doc),
-        Some(fragment) => service_endpoint(doc, fragment),
-    }
-    .map(str::to_string)
+    service_endpoint(doc, fragment.unwrap_or("atproto_pds")).map(str::to_string)
 }
 
 /// Whether a subscriber's service identifier resolves to a DID document with a matching service
@@ -465,7 +458,7 @@ mod tests {
                 "id": did,
                 "service": [{
                     "id": format!("#{fragment}"),
-                    "type": "AtprotoSpaceHost",
+                    "type": "AtprotoPersonalDataServer",
                     "serviceEndpoint": endpoint,
                 }],
             }),
@@ -517,8 +510,8 @@ mod tests {
 
         // Both are registered and both resolve — only the origin skip keeps the writer's own
         // host off the wire.
-        seed_host(&state, SYNCER, "atproto_space_host", &server.uri()).await;
-        seed_host(&state, WRITER, "atproto_space_host", &server.uri()).await;
+        seed_host(&state, SYNCER, "atproto_pds", &server.uri()).await;
+        seed_host(&state, WRITER, "atproto_pds", &server.uri()).await;
         register(&state, SYNCER).await;
         register(&state, WRITER).await;
 
@@ -566,8 +559,7 @@ mod tests {
 
     /// The repo-host direction: a write into a space whose authority is elsewhere is one
     /// `notifyWrite` to that authority, signed by the writer, with no registration row left
-    /// behind. The authority publishes only `#atproto_pds`, like the reference implementation and
-    /// the hosted alpha, so this also pins the `#atproto_space_host` → `#atproto_pds` fallback.
+    /// behind, addressed to the authority's `#atproto_pds` — where a space host answers.
     #[tokio::test]
     async fn a_repo_host_reports_once_to_the_authority_without_registering() {
         let state = state_with_master_key().await;
@@ -613,8 +605,8 @@ mod tests {
         let state = authority_state().await;
         let server = MockServer::start().await;
         notify_ok(NOTIFY_WRITE).mount(&server).await;
-        seed_host(&state, SYNCER, "atproto_space_host", &server.uri()).await;
-        seed_host(&state, AUTHORITY, "atproto_space_host", &server.uri()).await;
+        seed_host(&state, SYNCER, "atproto_pds", &server.uri()).await;
+        seed_host(&state, AUTHORITY, "atproto_pds", &server.uri()).await;
         register(&state, SYNCER).await;
 
         let space = parse_space_ref(SPACE).unwrap();
@@ -630,7 +622,7 @@ mod tests {
         let state = authority_state().await;
         let server = MockServer::start().await;
         notify_ok(NOTIFY_SPACE_DELETED).mount(&server).await;
-        seed_host(&state, SYNCER, "atproto_space_host", &server.uri()).await;
+        seed_host(&state, SYNCER, "atproto_pds", &server.uri()).await;
 
         let space = parse_space_ref(SPACE).unwrap();
         fan_out_space_deleted(&state, &space, vec![SYNCER.to_string()]);
@@ -671,7 +663,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(503))
             .mount(&flaky)
             .await;
-        seed_host(&state, SYNCER, "atproto_space_host", &flaky.uri()).await;
+        seed_host(&state, SYNCER, "atproto_pds", &flaky.uri()).await;
         let error = deliver(&state, SYNCER, None, AUTHORITY, NOTIFY_WRITE, &body)
             .await
             .expect_err("every attempt failed");
@@ -685,7 +677,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(status))
                 .mount(&server)
                 .await;
-            seed_host(&state, did, "atproto_space_host", &server.uri()).await;
+            seed_host(&state, did, "atproto_pds", &server.uri()).await;
             deliver(&state, did, None, AUTHORITY, NOTIFY_WRITE, &body)
                 .await
                 .expect_err("every attempt failed");
@@ -701,7 +693,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(400))
             .mount(&rejecting)
             .await;
-        seed_host(&state, WRITER, "atproto_space_host", &rejecting.uri()).await;
+        seed_host(&state, WRITER, "atproto_pds", &rejecting.uri()).await;
         let error = deliver(&state, WRITER, None, AUTHORITY, NOTIFY_WRITE, &body)
             .await
             .expect_err("a rejected argument is a permanent failure");
@@ -725,7 +717,7 @@ mod tests {
         // relaxation off, the mock must receive nothing.
         let internal = MockServer::start().await;
         notify_ok(NOTIFY_WRITE).mount(&internal).await;
-        seed_host(&state, SYNCER, "atproto_space_host", &internal.uri()).await;
+        seed_host(&state, SYNCER, "atproto_pds", &internal.uri()).await;
         let error = deliver(&state, SYNCER, None, AUTHORITY, NOTIFY_WRITE, &body)
             .await
             .expect_err("a loopback endpoint is refused");
@@ -737,7 +729,7 @@ mod tests {
             (THROTTLER, "http://169.254.169.254"),
             (TIMED_OUT, "http://[::ffff:10.0.0.5]"),
         ] {
-            seed_host(&state, did, "atproto_space_host", endpoint).await;
+            seed_host(&state, did, "atproto_pds", endpoint).await;
             let error = deliver(&state, did, None, AUTHORITY, NOTIFY_WRITE, &body)
                 .await
                 .expect_err("a private or link-local endpoint is refused");
@@ -746,12 +738,10 @@ mod tests {
     }
 
     /// Space-host resolution against a *real* foreign document — fetched live from the DID's own
-    /// authority (a stand-in plc.directory), through `resolve_did_document` →
-    /// `space_host_endpoint`, with the `#fragment` split applied to the service identifier.
-    /// The document publishes no `#atproto_space_host`, exactly like the reference
-    /// implementation and the hosted alpha.
+    /// authority (a stand-in plc.directory), through `resolve_did_document`, with the `#fragment`
+    /// split applied to the service identifier.
     #[tokio::test]
-    async fn a_foreign_did_resolves_to_its_space_host_through_the_pds_fallback() {
+    async fn a_foreign_did_resolves_to_its_space_host_at_atproto_pds() {
         let plc = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path_regex(r"^/did:plc:.+"))
@@ -768,17 +758,19 @@ mod tests {
         let state = crate::test_support::test_state_with_plc_url(plc.uri()).await;
 
         assert_eq!(
-            resolve_service_endpoint(&state, SYNCER, Some("atproto_space_host"))
+            resolve_service_endpoint(&state, SYNCER, Some("atproto_pds"))
                 .await
                 .unwrap(),
             "https://syncer.example.com",
-            "the fully-qualified `did#atproto_pds` id form resolves, and covers the missing \
-             #atproto_space_host"
+            "the fully-qualified `did#atproto_pds` id form resolves"
         );
-        assert!(service_is_resolvable(&state, &format!("{SYNCER}#atproto_space_host")).await);
         assert!(
             service_is_resolvable(&state, SYNCER).await,
-            "a bare DID takes the same fallback"
+            "a bare DID is its #atproto_pds"
+        );
+        assert!(
+            !service_is_resolvable(&state, &format!("{SYNCER}#atproto_space_host")).await,
+            "#atproto_space_host is no longer an alias"
         );
         assert!(
             !service_is_resolvable(&state, &format!("{SYNCER}#atproto_labeler")).await,

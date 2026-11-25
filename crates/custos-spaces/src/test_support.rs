@@ -32,11 +32,10 @@ pub fn test_app(state: CoreState) -> Router {
     core::test_app(public, internal, state)
 }
 
-/// A P-256 key a space client binds its credential to, plus the RFC 9421 `atproto-space`
-/// signatures it attaches: [`SpaceSigKey::delegation_headers`] for the `getSpaceCredential`
-/// exchange (whose `keyid` becomes the credential's `cnf.kid`), and
-/// [`SpaceSigKey::credential_headers`] for each credential-authed request. Both return the full
-/// header set, so a request builder takes them with `headers_mut().extend(..)`.
+/// A P-256 key a space client binds its credential to (`authorizeSpaceSync`'s `credentialKey`),
+/// plus the RFC 9421 signature it attaches to each credential-authed request
+/// ([`SpaceSigKey::credential_headers`], the full header set, so a request builder takes it with
+/// `headers_mut().extend(..)`).
 pub struct SpaceSigKey {
     signer: repo_engine::CommitSigner,
     key_id: String,
@@ -56,32 +55,18 @@ impl SpaceSigKey {
         &self.key_id
     }
 
-    fn signed(&self, authorization: &str, audience: Option<&str>) -> axum::http::HeaderMap {
-        use crate::auth::http_signature::{sign_space_request, AUDIENCE_HEADER};
-        let (input, signature) = sign_space_request(
-            |b| self.signer.sign(b),
-            &self.key_id,
-            authorization,
-            audience,
-        );
+    /// `Authorization: Atproto-Space-Credential <credential>` addressed to `audience` and signed.
+    pub fn credential_headers(&self, credential: &str, audience: &str) -> axum::http::HeaderMap {
+        use crate::auth::http_signature::{sign_credential_request, AUDIENCE_HEADER};
+        let authorization = format!("Atproto-Space-Credential {credential}");
+        let (input, signature) =
+            sign_credential_request(|b| self.signer.sign(b), &authorization, audience);
         let mut h = axum::http::HeaderMap::new();
         h.insert("authorization", authorization.parse().unwrap());
         h.insert("signature-input", input.parse().unwrap());
         h.insert("signature", signature.parse().unwrap());
-        if let Some(audience) = audience {
-            h.insert(AUDIENCE_HEADER, audience.parse().unwrap());
-        }
+        h.insert(AUDIENCE_HEADER, audience.parse().unwrap());
         h
-    }
-
-    /// `Authorization: Bearer <delegation token>` signed for the credential exchange.
-    pub fn delegation_headers(&self, delegation_token: &str) -> axum::http::HeaderMap {
-        self.signed(&format!("Bearer {delegation_token}"), None)
-    }
-
-    /// `Authorization: Atproto-Space <credential>` addressed to `audience` and signed.
-    pub fn credential_headers(&self, credential: &str, audience: &str) -> axum::http::HeaderMap {
-        self.signed(&format!("Atproto-Space {credential}"), Some(audience))
     }
 }
 
