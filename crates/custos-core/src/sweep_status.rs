@@ -63,6 +63,7 @@ pub mod names {
     pub const SOVEREIGN_SESSION_NONCE_SWEEP: &str = "sovereign_session_nonce_sweep";
     pub const SPACE_JTI_SWEEP: &str = "space_jti_sweep";
     pub const SPACE_OPLOG_SWEEP: &str = "space_oplog_sweep";
+    pub const SPACE_NOTIFY_RETRY_SWEEP: &str = "space_notify_retry_sweep";
     pub const LABELER_WATCH: &str = "labeler_watch";
 }
 
