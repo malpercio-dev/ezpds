@@ -346,4 +346,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 81,
         sql: include_str!("migrations/V081__space_notify_registrations_by_endpoint.sql"),
     },
+    Migration {
+        version: 82,
+        sql: include_str!("migrations/V082__space_syncer_notice_retries.sql"),
+    },
 ];
