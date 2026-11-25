@@ -883,10 +883,9 @@ async fn policy_admits(
                     tracing::error!(error = %e, space = %space.uri, "failed to read space members");
                     ApiError::new(ErrorCode::InternalError, "internal server error")
                 })?;
-            match (access, member) {
-                (Access::Read, member) => member.is_some_and(|m| m.read),
-                (Access::Write, Some(member)) => member.write,
-                (Access::Write, None) => member_policy.public_write,
+            match access {
+                Access::Read => member.is_some_and(|m| m.read),
+                Access::Write => member_admits_write(member_policy, member),
             }
         }
         SpacePolicy::Managed(managed) => {
@@ -898,6 +897,19 @@ async fn policy_admits(
                 })
         }
     })
+}
+
+/// A memberspace's write rule for a non-authority: a member needs its `write` bit (a member
+/// without it stays excluded even under `publicWrite`), and a non-member needs `publicWrite`.
+/// Shared with the write path's in-transaction writer-set gate, so the two can't drift.
+pub(crate) fn member_admits_write(
+    policy: &crate::policy::MemberPolicy,
+    member: Option<crate::policy::Access>,
+) -> bool {
+    match member {
+        Some(member) => member.write,
+        None => policy.public_write,
+    }
 }
 
 /// The lexicon method a managedspace access check invokes.

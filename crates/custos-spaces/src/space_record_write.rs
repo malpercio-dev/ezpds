@@ -37,11 +37,17 @@
 //! (`auth::space::authorize_write_notification`: member `write` bit, `publicWrite`, a
 //! managedspace's `checkAccess`). The record itself always commits, since the repo is the
 //! writer's own, as in the reference, where a local write reaches its own authority through
-//! `notifyRepoUpdate` too. A refused write records no writer row and fans nothing out. The
-//! decision is made *before* the transaction ([`writer_may_join`]), because `checkAccess` is a
-//! network call and the single SQLite connection must not wait on it. It fails closed: no
-//! answer from a managing app means no join. A space governed elsewhere is unchanged: its
-//! authority checks the policy on our outbound `notifyRepoUpdate`.
+//! `notifyRepoUpdate` too. A refused write records no writer row and fans nothing out.
+//!
+//! The decision is made inside the commit's transaction ([`writer_set_entry`]), from the space
+//! row, policy and membership read on it, so a member change can't slip between check and join.
+//! The one exception is a managedspace's `checkAccess`, a network call the single SQLite
+//! connection must not wait on: it is asked before the transaction ([`managed_verdict`]), and the
+//! answer counts only if the transaction still sees a managedspace with the same managing app.
+//! Every unclear case fails closed: no answer from a managing app, a changed policy, and a
+//! policy-less row whose authority is a local account (a space nobody has created yet) all mean
+//! no join. A row without a policy whose authority is elsewhere is a space governed by another
+//! host; the commit is reported to it as `notifyRepoUpdate`, and its authority checks the policy.
 //!
 //! Authentication and `space:` scope enforcement happen above this layer (the
 //! space auth seam); callers pass an already-authorized `(space, did)`.
@@ -146,12 +152,12 @@ pub async fn apply_space_writes(
             ),
         ));
     }
-    let join = writer_may_join(state, space, did).await?;
+    let managed = managed_verdict(state, space, did).await?;
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to open space write transaction");
         internal_error()
     })?;
-    let commit = commit_ops(state, &mut tx, space, did, ops, join).await?;
+    let commit = commit_ops(state, &mut tx, space, did, ops, managed.as_ref()).await?;
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, space = %space.uri, did = %did, "failed to commit space write transaction");
         internal_error()
@@ -166,8 +172,7 @@ pub async fn apply_space_writes(
 /// `None` when there is nothing to write. Otherwise the caller commits its transaction and then
 /// calls [`PendingSpaceCommit::announce`], which fires the post-commit notification fan-out.
 ///
-/// The only writer here is the space's authority, whom every policy admits, so the commit always
-/// joins the writer set.
+/// The only writer here is the space's authority, so no managing app is asked.
 pub(crate) async fn apply_space_writes_in_tx(
     state: &CoreState,
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -179,17 +184,26 @@ pub(crate) async fn apply_space_writes_in_tx(
         return Ok(None);
     }
     validate_ops(ops)?;
-    let join = did == space.authority;
-    commit_ops(state, tx, space, did, ops, join).await.map(Some)
+    commit_ops(state, tx, space, did, ops, None).await.map(Some)
 }
 
-/// Whether a commit by `did` into `space` may join the writer set, decided before the commit's
-/// transaction (see the module doc). `true` for the authority and for a space this host doesn't
-/// govern (there the writer-set query records nothing and the commit is reported to the
-/// authority, which decides); otherwise the space's write policy, failing closed.
-async fn writer_may_join(state: &CoreState, space: &SpaceRef, did: &str) -> Result<bool, ApiError> {
+/// A managing app's `checkAccess` answer for one writer, asked before the commit's transaction.
+pub(crate) struct ManagedVerdict {
+    /// The managing app the answer came from, which the transaction must still see.
+    managing_app: String,
+    admitted: bool,
+}
+
+/// Ask the managing app whether `did` may write, when `space` is a managedspace this host
+/// governs and `did` isn't its authority; `None` otherwise. Outside the transaction because it
+/// is a network call; [`writer_set_entry`] decides whether the answer still applies.
+async fn managed_verdict(
+    state: &CoreState,
+    space: &SpaceRef,
+    did: &str,
+) -> Result<Option<ManagedVerdict>, ApiError> {
     if space.authority == did {
-        return Ok(true);
+        return Ok(None);
     }
     let row = crate::db::spaces::get_space(&state.db, &space.uri)
         .await
@@ -198,15 +212,84 @@ async fn writer_may_join(state: &CoreState, space: &SpaceRef, did: &str) -> Resu
             internal_error()
         })?;
     let Some(row) = row else {
-        return Ok(true);
+        return Ok(None);
     };
     let Some(policy) = row.space_policy()? else {
-        return Ok(true);
+        return Ok(None);
     };
-    // ponytail: decided before the transaction, so a member change that lands between this check
-    // and the commit is not seen by it; re-check inside the transaction for the local policies if
-    // that window matters.
-    crate::auth::space::authorize_write_notification(state, &row, &policy, did).await
+    let crate::policy::SpacePolicy::Managed(managed) = &policy else {
+        return Ok(None);
+    };
+    let admitted =
+        crate::auth::space::authorize_write_notification(state, &row, &policy, did).await?;
+    Ok(Some(ManagedVerdict {
+        managing_app: managed.managing_app.clone(),
+        admitted,
+    }))
+}
+
+/// What a commit does to the writer set, decided on its transaction.
+enum WriterSetEntry {
+    /// This host governs the space and the policy admits the writer: record it.
+    Join,
+    /// The space is governed by another host: record nothing, report the commit to it.
+    Report,
+    /// Not admitted, or not clearly governed: record nothing, announce nothing.
+    Skip,
+}
+
+/// Decide the writer-set entry for `did`'s commit into `space`, from the space row, policy and
+/// membership read on `tx` (see the module doc). A managedspace uses `managed`, asked before the
+/// transaction, and only while the policy still names the same managing app.
+async fn writer_set_entry(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space: &SpaceRef,
+    did: &str,
+    managed: Option<&ManagedVerdict>,
+) -> Result<WriterSetEntry, ApiError> {
+    use crate::policy::SpacePolicy;
+    let db_error = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space.uri, "failed to read the space's write policy");
+        internal_error()
+    };
+    let Some(row) = crate::db::spaces::get_space(&mut **tx, &space.uri)
+        .await
+        .map_err(db_error)?
+    else {
+        return Ok(WriterSetEntry::Skip);
+    };
+    let Some(policy) = row.space_policy()? else {
+        // No policy: either another host's space, or one whose local authority hasn't created
+        // it yet (a member's write records the row first). Only the first is reported.
+        let local_authority = custos_db::accounts::account_lifecycle(&mut **tx, &space.authority)
+            .await?
+            .is_some();
+        return Ok(if local_authority {
+            WriterSetEntry::Skip
+        } else {
+            WriterSetEntry::Report
+        });
+    };
+    if did == space.authority {
+        return Ok(WriterSetEntry::Join);
+    }
+    let admitted = match &policy {
+        SpacePolicy::Personal => false,
+        SpacePolicy::Member(member_policy) => {
+            let member = crate::db::spaces::get_member(&mut **tx, &space.uri, did)
+                .await
+                .map_err(db_error)?;
+            crate::auth::space::member_admits_write(member_policy, member)
+        }
+        SpacePolicy::Managed(current) => managed.is_some_and(|verdict| {
+            verdict.managing_app == current.managing_app && verdict.admitted
+        }),
+    };
+    Ok(if admitted {
+        WriterSetEntry::Join
+    } else {
+        WriterSetEntry::Skip
+    })
 }
 
 /// A space commit written inside a transaction that has not committed yet.
@@ -280,14 +363,14 @@ fn validate_ops(ops: &[SpaceWriteOp]) -> Result<(), ApiError> {
 }
 
 /// The commit itself, on the caller's transaction. Any error leaves the transaction to be
-/// dropped, which rolls it back. `join` is [`writer_may_join`]'s decision.
+/// dropped, which rolls it back. `managed` is [`managed_verdict`]'s answer.
 async fn commit_ops(
     state: &CoreState,
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     space: &SpaceRef,
     did: &str,
     ops: &[SpaceWriteOp],
-    join: bool,
+    managed: Option<&ManagedVerdict>,
 ) -> Result<PendingSpaceCommit, ApiError> {
     let space_uri = space.uri.as_str();
 
@@ -510,11 +593,11 @@ async fn commit_ops(
     // A commit that removes the last record leaves an empty repo, not a missing one: the head
     // stays at the empty-set digest, its rev keeps advancing, and reads answer as for any empty
     // repo. Nothing collects it.
-    finish_commit(tx, space, did, new_rev, &lthash, results, join).await
+    finish_commit(tx, space, did, new_rev, &lthash, results, managed).await
 }
 
 /// Store the folded LtHash state on the head the commit already advanced to `new_rev`, and,
-/// when `join` allows, record the commit in the writer set, inside the commit's transaction.
+/// when the write policy admits the writer, record the commit in the writer set, inside the commit's transaction.
 async fn finish_commit(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     space: &SpaceRef,
@@ -522,7 +605,7 @@ async fn finish_commit(
     new_rev: String,
     lthash: &LtHash,
     results: Vec<SpaceWriteResult>,
-    join: bool,
+    managed: Option<&ManagedVerdict>,
 ) -> Result<PendingSpaceCommit, ApiError> {
     let space_uri = space.uri.as_str();
     // The rev was already advanced (and CAS-guarded) before the fold; inside the same
@@ -547,20 +630,20 @@ async fn finish_commit(
 
     // The writer set `listWriters` answers, kept durable with the commit rather than derived
     // afterwards: for a space this host is the authority for, our own account's write is one of
-    // the facts the authority reports. The query no-ops for a space whose authority is
-    // elsewhere. Skipped entirely when the write policy refused the writer (`join`).
+    // the facts the authority reports. Recorded only when the write policy, read on this
+    // transaction, admits the writer ([`writer_set_entry`]).
     let hash = lthash.digest();
-    let update = if join {
-        Some(
+    let update = match writer_set_entry(tx, space, did, managed).await? {
+        WriterSetEntry::Join => Some(
             crate::db::space_notify::upsert_writer(tx, space_uri, did, &new_rev, &hash)
                 .await
                 .map_err(|e| {
                     tracing::error!(error = %e, space = %space_uri, did = %did, "failed to record space writer");
                     internal_error()
                 })?,
-        )
-    } else {
-        None
+        ),
+        WriterSetEntry::Report => Some(crate::db::space_notify::WriterUpdate::NotAuthority),
+        WriterSetEntry::Skip => None,
     };
 
     Ok(PendingSpaceCommit {
@@ -596,7 +679,7 @@ pub async fn clear_space_records(
         tracing::error!(error = %e, space = %space_uri, did = %did, "failed to clear space records");
         internal_error()
     };
-    let join = writer_may_join(state, space, did).await?;
+    let managed = managed_verdict(state, space, did).await?;
     let mut tx = state.db.begin().await.map_err(db_error)?;
     require_writable_account(&mut tx, did).await?;
     let Some(repo) = crate::db::space_repos::get_repo(&mut *tx, space_uri, did)
@@ -671,7 +754,16 @@ pub async fn clear_space_records(
             );
         })?;
 
-    let pending = finish_commit(&mut tx, space, did, new_rev, &lthash, Vec::new(), join).await?;
+    let pending = finish_commit(
+        &mut tx,
+        space,
+        did,
+        new_rev,
+        &lthash,
+        Vec::new(),
+        managed.as_ref(),
+    )
+    .await?;
     tx.commit().await.map_err(db_error)?;
     Ok(Some(pending.announce(state)))
 }
@@ -1162,5 +1254,186 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), &ErrorCode::AccountTakedown);
+    }
+
+    // ── the writer-set gate ─────────────────────────────────────────────────
+
+    const GOVERNED: &str = "at://did:plc:spacewriter/space/org.example.bucket/gate";
+    const MEMBER: &str = "did:plc:spacegatememberaaaaaaa";
+    const APP: &str = "did:web:managing.example#atproto_pds";
+
+    async fn seed_member(state: &CoreState) {
+        crate::test_support::seed_account_with_repo(&state.db, MEMBER).await;
+    }
+
+    async fn set_policy(state: &CoreState, policy: serde_json::Value) {
+        let policy = crate::policy::SpacePolicy::from_lex(&policy).unwrap();
+        sqlx::query("UPDATE spaces SET policy = ? WHERE uri = ?")
+            .bind(policy.to_json().to_string())
+            .bind(GOVERNED)
+            .execute(&state.db)
+            .await
+            .unwrap();
+    }
+
+    /// Commit one record by `MEMBER` into `GOVERNED` with the managing app's answer already in
+    /// hand, as `apply_space_writes` would after asking it, and report whether a writer row
+    /// exists for `MEMBER` afterwards, along with whether anything would be announced.
+    async fn commit_with(
+        state: &CoreState,
+        managed: Option<ManagedVerdict>,
+        rkey: &str,
+    ) -> (bool, bool) {
+        let space = custos_core::space_uri::parse_space_ref(GOVERNED).unwrap();
+        let mut tx = state.db.begin().await.unwrap();
+        let pending = commit_ops(
+            state,
+            &mut tx,
+            &space,
+            MEMBER,
+            &[put("org.example.note", rkey, rkey)],
+            managed.as_ref(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let announced = pending.update.is_some();
+        let joined = crate::db::space_notify::list_writers(&state.db, GOVERNED, None, 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|w| w.repo_did == MEMBER);
+        (joined, announced)
+    }
+
+    /// A managing app's answer counts only while the transaction still sees a managedspace with
+    /// the same managing app: a policy change between the pre-check and the commit is honoured,
+    /// including a switch to a memberspace that refuses the writer.
+    #[tokio::test]
+    async fn a_policy_change_after_the_managing_app_answered_is_honoured() {
+        let state = test_state().await;
+        seed(&state).await;
+        seed_member(&state).await;
+        crate::test_support::seed_authority_space(
+            &state.db,
+            GOVERNED,
+            &crate::test_support::memberspace_policy(false),
+        )
+        .await;
+        let yes = |app: &str| {
+            Some(ManagedVerdict {
+                managing_app: app.to_string(),
+                admitted: true,
+            })
+        };
+
+        // Admitted by the app, but the space is (now) a memberspace that refuses a non-member.
+        assert_eq!(commit_with(&state, yes(APP), "a").await, (false, false));
+
+        // A managedspace whose managing app changed since the answer.
+        set_policy(
+            &state,
+            serde_json::json!({
+                "$type": crate::policy::MANAGEDSPACE,
+                "managingApp": "did:web:other.example#atproto_pds",
+            }),
+        )
+        .await;
+        assert_eq!(commit_with(&state, yes(APP), "b").await, (false, false));
+        // No answer at all.
+        assert_eq!(commit_with(&state, None, "c").await, (false, false));
+
+        // The same managing app that answered yes: the writer joins.
+        set_policy(
+            &state,
+            serde_json::json!({ "$type": crate::policy::MANAGEDSPACE, "managingApp": APP }),
+        )
+        .await;
+        assert_eq!(commit_with(&state, yes(APP), "d").await, (true, true));
+    }
+
+    /// The memberspace rule is read on the commit's transaction: a membership change that lands
+    /// before the commit is what the commit sees, whichever way it goes.
+    #[tokio::test]
+    async fn the_membership_the_commit_sees_decides_the_join() {
+        let state = test_state().await;
+        seed(&state).await;
+        seed_member(&state).await;
+        crate::test_support::seed_authority_space(
+            &state.db,
+            GOVERNED,
+            &crate::test_support::memberspace_policy(false),
+        )
+        .await;
+        let put_member =
+            |write: bool| crate::db::spaces::put_member(&state.db, GOVERNED, MEMBER, true, write);
+
+        put_member(true).await.unwrap();
+        assert_eq!(commit_with(&state, None, "a").await, (true, true));
+
+        // Removed, then the commit: no rejoin.
+        let mut conn = state.db.acquire().await.unwrap();
+        crate::db::spaces::remove_member(&mut *conn, GOVERNED, MEMBER)
+            .await
+            .unwrap();
+        crate::db::space_notify::remove_writer(&mut conn, GOVERNED, MEMBER)
+            .await
+            .unwrap();
+        drop(conn);
+        commit_with(&state, None, "b").await;
+        let rows = crate::db::space_notify::list_writers(&state.db, GOVERNED, None, 10)
+            .await
+            .unwrap();
+        assert!(rows.iter().all(|w| w.repo_did != MEMBER || w.removed));
+
+        // Put back without `write`, still no rejoin; with it, the next commit rejoins.
+        put_member(false).await.unwrap();
+        commit_with(&state, None, "c").await;
+        let rows = crate::db::space_notify::list_writers(&state.db, GOVERNED, None, 10)
+            .await
+            .unwrap();
+        assert!(rows.iter().all(|w| w.repo_did != MEMBER || w.removed));
+        put_member(true).await.unwrap();
+        commit_with(&state, None, "d").await;
+        let rows = crate::db::space_notify::list_writers(&state.db, GOVERNED, None, 10)
+            .await
+            .unwrap();
+        assert!(rows.iter().any(|w| w.repo_did == MEMBER && !w.removed));
+    }
+
+    /// A row with no policy for a space whose authority is a local account (a member wrote before
+    /// the authority created it) is not governed yet: the commit joins nothing and reports
+    /// nothing. One whose authority is elsewhere is reported, as before.
+    #[tokio::test]
+    async fn a_policy_less_row_joins_nothing() {
+        let state = test_state().await;
+        seed(&state).await;
+        seed_member(&state).await;
+
+        // `GOVERNED`'s authority is the local account `DID`; the member's write records the row.
+        assert_eq!(commit_with(&state, None, "a").await, (false, false));
+        let row = crate::db::spaces::get_space(&state.db, GOVERNED)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.policy.is_none(), "precondition: no policy");
+
+        // `SPACE`'s authority (`did:plc:author`) has no account here: reported, never recorded.
+        let mut tx = state.db.begin().await.unwrap();
+        let pending = commit_ops(
+            &state,
+            &mut tx,
+            &space(),
+            MEMBER,
+            &[put("org.example.note", "x", "x")],
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert!(matches!(
+            pending.update,
+            Some(crate::db::space_notify::WriterUpdate::NotAuthority)
+        ));
     }
 }
