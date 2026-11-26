@@ -67,7 +67,7 @@ these ways, each folded into the sections below:
 7. **`simplespace` config hardening**: `policy` and `appAccess` are open
    unions at the schema layer; a host MUST reject values it does not implement
    at `createSpace`/`updateSpace` time.
-8. **Golden test vectors now exist** in `packages/space/tests/` — e.g. the
+8. **Golden test vectors now exist** in `packages/space/src/*.test.ts` (at the pin `047d603`) — e.g. the
    empty-state digest is `sha256(2048 zero bytes)` =
    `e5a00aa9…36b183ad`, and `add("one"); add("two")` digests to
    `ae05cb6d…701c63e7` — plus full test suites for commits, credentials,
@@ -778,8 +778,8 @@ rides `subscribeRepos`.
   before writing a second derivation.
 - Home: `crates/crypto` (pure, no deps on repo-engine) or a sibling module in
   `repo-engine`; Functional Core either way. Pin the reference golden vectors
-  from `packages/space/tests/` (empty digest `e5a00aa9…`, `one`+`two` digest
-  `ae05cb6d…`, plus the `kem` (incl. its HPKE secret-export vector)/`mac`/`repo-commit`/`credential` suites,
+  from `packages/space/src/*.test.ts` at the pin (`one`+`two` digest `ae05cb6d…`; the
+  empty digest `e5a00aa9…` is `sha256(2048 zero bytes)`, which the pin's suite doesn't assert; plus the `kem` (incl. its HPKE secret-export vector)/`mac`/`repo-commit`/`credential` suites,
   `http-signature.test.ts` and `space-meta-archive.test.ts`) alongside round-trip +
   property tests (order-independence, add/remove inverse, empty-state zero).
 
@@ -999,7 +999,7 @@ resident.
   Mitigation: re-diff the proposals repo before each implementation slice, and
   interop-test against the hosted alpha PDS + TS SDK continuously.
 - ~~No published test vectors~~ **Resolved**: golden vectors and full test
-  suites ship in `packages/space/tests/` on the `permissioned-data` branch.
+  suites ship in `packages/space/src/*.test.ts` on the `permissioned-data` branch.
 - **Per-request KEM MAC** (replaces per-reader commit signing) puts a
   `#atproto_kem` private-key load + ECDH + HMAC on the serving path of every
   commit/record response; cheaper than ECDSA but still needs a key-residency
