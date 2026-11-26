@@ -130,11 +130,13 @@ Enable `test-support` only under `[dev-dependencies]`.
 - `migrations/V081__space_notify_registrations_by_endpoint.sql` - Replaces `space_notify_registrations` with the `(endpoint, token)` registrations `authorizeSpaceSync` makes. See "Migration log"
 - `migrations/V082__space_syncer_notice_retries.sql` - Adds `space_syncer_notice_retries`, the durable queue for `spaceDeleted` and `registrationExpired`. See "Migration log"
 - `migrations/V083__space_writer_removed_at.sql` - Adds `space_writers.removed_at`, so a removed writer keeps its row. See "Migration log"
+- `migrations/V084__space_repo_update_retries.sql` - Adds `space_repo_update_retries`, the durable queue for a repo host's `notifyRepoUpdate`. See "Migration log"
 
 ## Migration log
 
 Newest first. One line per migration that needs more than its file name to explain.
 
+- **V084**: Adds `space_repo_update_retries` (PK `(repo_did, space_uri)`, FKs to `accounts` and `spaces`, index on `retry_at`): one row per local repo owed a `notifyRepoUpdate` to a foreign space host, written in the commit's transaction and coalesced to the newest rev (`repo_rev`, plus `data`, the set hash). `attempts`, `retry_at` and `expires_at` (unix seconds, 24 h after the newest commit) drive `custos-spaces`' retry sweep. Account purge deletes a repo's rows by `repo_did`.
 - **V083**: `space_writers.removed_at` (nullable). A removal keeps the writer's row, sets `removed_at` and assigns it a new `space_rev`, so `listWriters` reports it as a `repoRemoved` and `upsert_writer`'s stale-rev check still holds for the removed repo. A newer write clears it. Nothing collects removed rows. Queries in `custos-spaces`' `db::space_notify`.
 - **V082**: Adds `space_syncer_notice_retries` (PK `(space_uri, endpoint, token)`, FK to `spaces`, index on `retry_at`): one row per registration owed a `spaceDeleted` or `registrationExpired` notice, written in the transaction that owes it (the deletion's tombstone, or the claim of a lapse, which is what now sets `expiry_notified`). `notice` is the `update` JSON; `attempts`, `retry_at` and `expires_at` (unix seconds, 72 h after queueing) drive `custos-spaces`' retry sweep. The token is the registration's, in plain text. No account FK: account purge deletes an authority's rows by space, with its registrations.
 

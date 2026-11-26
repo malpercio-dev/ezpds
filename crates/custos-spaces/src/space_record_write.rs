@@ -23,13 +23,16 @@
 //!   (`blob_gc::collect_referenced_blob_cids`), so a blob referenced from a
 //!   space record is pinned exactly like one referenced from the MST.
 //! * **Notification dispatch** — the network fan-out is
-//!   `space_notify::{forward_write, report_write}`, spawned detached *after* the commit, so
+//!   `space_notify::forward_write` and `space_notify_retry::deliver_repo_update`, spawned
+//!   detached *after* the commit, so
 //!   the store's blocking job still ends at the durable commit. It is
 //!   triggered from here rather than from each record route because a write
 //!   path that forgot to notify would look correct and silently strand every
 //!   syncer. What stays inside the transaction is the writer-set row
 //!   `listWriters` answers — our own durable claim about our own repo, not a
-//!   network effect.
+//!   network effect — or, in a space governed elsewhere, the queued
+//!   `notifyRepoUpdate` the space host is owed, which the retry sweep delivers
+//!   if the attempt after the commit fails.
 //!
 //! **The writer set is gated on the space's write policy; the write is not.** In a space this
 //! host governs, a commit joins (or rejoins) the writer set only when the policy admits the
@@ -302,8 +305,8 @@ pub(crate) struct PendingSpaceCommit {
 }
 
 impl PendingSpaceCommit {
-    /// Best-effort, post-commit and non-blocking: tell the space host (or, when that is us, the
-    /// registered syncers) that this repo advanced. Called once the transaction has committed;
+    /// Post-commit and non-blocking: tell the space host (through its queued update) or, when
+    /// that is us, the registered syncers (best-effort) that this repo advanced. Called once the transaction has committed;
     /// every write path ends here, so none can silently skip it.
     pub(crate) fn announce(self, state: &CoreState) -> SpaceCommitOutcome {
         use crate::db::space_notify::WriterUpdate;
@@ -320,12 +323,8 @@ impl PendingSpaceCommit {
                 &outcome.hash,
                 revs,
             )),
-            WriterUpdate::NotAuthority => drop(crate::space_notify::report_write(
-                state,
-                space,
-                did,
-                &outcome.rev,
-                &outcome.hash,
+            WriterUpdate::NotAuthority => drop(crate::space_notify_retry::deliver_repo_update(
+                state, &space.uri, did,
             )),
             // Our own commit's rev always advances; nothing to announce if it somehow did not.
             WriterUpdate::Stale => {}
@@ -642,7 +641,16 @@ async fn finish_commit(
                     internal_error()
                 })?,
         ),
-        WriterSetEntry::Report => Some(crate::db::space_notify::WriterUpdate::NotAuthority),
+        WriterSetEntry::Report => {
+            // Owed to the space host, so queued with the commit rather than sent best-effort.
+            crate::space_notify_retry::queue_repo_update(tx, space_uri, did, &new_rev, &hash)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, space = %space_uri, did = %did, "failed to queue space repo update");
+                    internal_error()
+                })?;
+            Some(crate::db::space_notify::WriterUpdate::NotAuthority)
+        }
         WriterSetEntry::Skip => None,
     };
 
@@ -1435,5 +1443,22 @@ mod tests {
             pending.update,
             Some(crate::db::space_notify::WriterUpdate::NotAuthority)
         ));
+        // The report is queued with the commit, carrying the commit's own rev and hash; the
+        // local-authority row queued nothing.
+        let queued: Vec<(String, String, Vec<u8>)> = sqlx::query_as(
+            "SELECT space_uri, repo_rev, data FROM space_repo_update_retries WHERE repo_did = ?",
+        )
+        .bind(MEMBER)
+        .fetch_all(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            queued,
+            [(
+                space().uri,
+                pending.outcome.rev.clone(),
+                pending.outcome.hash.to_vec()
+            )]
+        );
     }
 }
