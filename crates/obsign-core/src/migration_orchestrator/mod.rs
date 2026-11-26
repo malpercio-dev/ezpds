@@ -34,9 +34,10 @@
 //!   `uploadBlob`, per space). A source without spaces counts as zero spaces; a destination
 //!   without them is `SpacesUnsupported` before anything is imported, which the user accepts
 //!   as a loss or stops on. Space blob failures join the `BlobLoss` manifest with their space.
-//! - `transfer_preferences` (get→put); `verify_import` (`checkAccountStatus`
-//!   completeness gate plus each source space's `data` digest against the destination's,
-//!   returns `AccountStatus`); `arm_identity_leg` (populate
+//! - `transfer_preferences` (get→put); `verify_import` (a repo commit, every CID the
+//!   destination's `listMissingBlobs` reports on the accepted public-loss manifest, and each
+//!   source space's `data` digest and stored blobs on the destination; returns
+//!   `AccountStatus`); `arm_identity_leg` (populate
 //!   `migrate::MigrationState.dest_oauth_client`, then run
 //!   `migrate::build_migration_op_cmd` / `submit_migration_op_cmd`).
 //! - `finalize_migration` — the safe cutover: activate dest → durably persist the
@@ -61,7 +62,7 @@
 //!
 //! Pure cores are split out for testability: `ensure_phase_did`, `digest_mismatches`,
 //! `create_destination_account_impl`, `drain_missing_blobs`, `transfer_repo_impl`,
-//! `transfer_preferences_impl`, `import_reconciles`, the
+//! `transfer_preferences_impl`, `unexplained_missing_blobs`, the
 //! `activate_destination_account` / `deactivate_source_account` cutover halves,
 //! `destination_credential`, `ensure_sovereign_session_persisted` (idempotent skip
 //! while a persisted record's refresh token is unexpired, else

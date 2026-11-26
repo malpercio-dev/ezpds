@@ -22,11 +22,14 @@
 //! There's no per-space journal. Both imports replace what the destination holds, so a resume
 //! simply reruns the whole step.
 //!
-//! **The blob baseline.** A space blob upload adds to the destination's `importedBlobs`, while
-//! its `expectedBlobs` counts only the public repo's references. So the first run records
-//! `importedBlobs` just before it imports anything (`SpaceTransferState::blob_baseline`), and
-//! `verify_import` reconciles the public blobs against that count instead of the live one. The
-//! baseline survives a rerun of this step and resets when the blob drain reruns.
+//! **What `verify_import` checks for spaces** ([`space_verification`]), all of it read from the
+//! two hosts at verify time, so nothing about it depends on this session's history:
+//!
+//! * every source space's `listSpaces` `data` digest matches the destination's;
+//! * every blob the source's `listBlobs` names for the account in a space answers a body-less
+//!   `HEAD` on the destination's space `getBlob`, unless the user accepted losing it. The
+//!   destination's own `listBlobs` can't stand in here: on both Custos and the reference it
+//!   lists the blobs the records reference, stored or not.
 
 use super::*;
 use crate::pds_client::{MissingBlob, PdsClientError};
@@ -38,9 +41,6 @@ pub struct SpaceTransferState {
     /// Spaces the user accepted leaving behind because the destination can't hold spaces.
     /// `verify_import` doesn't compare their digests.
     pub accepted_loss: Vec<String>,
-    /// The destination's `importedBlobs` just before the first space import. `None` until the
-    /// step first imports anything.
-    pub blob_baseline: Option<u64>,
 }
 
 // ── pure cores ─────────────────────────────────────────────────────
@@ -205,33 +205,68 @@ pub(super) async fn transfer_space_repos(
     Ok(losses)
 }
 
-/// `verify_import`'s digest check: the source spaces the destination doesn't match.
-pub(super) async fn space_digest_check(
+/// `verify_import`'s space check: the source spaces the destination doesn't match, either by
+/// `data` digest or by a blob it doesn't hold (see the module doc). `accepted_blob_loss` excuses
+/// the space blobs the user accepted losing; `spaces.accepted_loss` excuses whole spaces.
+pub(super) async fn space_verification(
     source: &OAuthClient,
     dest: &OAuthClient,
+    did: &str,
     spaces: &SpaceTransferState,
+    accepted_blob_loss: &[BlobLoss],
 ) -> Result<Vec<String>, MigrationError> {
-    let listing = |side: &'static str| {
+    let net = |what: &'static str| {
         move |e: PdsClientError| MigrationError::NetworkError {
-            message: format!("failed to list spaces on the {side}: {e}"),
+            message: format!("{what}: {e}"),
         }
     };
     let source_spaces = list_all_spaces(source)
         .await
-        .map_err(listing("source"))?
+        .map_err(net("failed to list spaces on the source"))?
         .unwrap_or_default();
     if source_spaces.is_empty() {
         return Ok(Vec::new());
     }
     let dest_spaces = list_all_spaces(dest)
         .await
-        .map_err(listing("destination"))?
+        .map_err(net("failed to list spaces on the destination"))?
         .unwrap_or_default();
-    Ok(digest_mismatches(
-        &source_spaces,
-        &dest_spaces,
-        &spaces.accepted_loss,
-    ))
+    let mut failed = digest_mismatches(&source_spaces, &dest_spaces, &spaces.accepted_loss);
+
+    for view in source_spaces.iter().filter(|v| v.data.is_some()) {
+        let space = view.space.as_str();
+        if spaces.accepted_loss.iter().any(|s| s == space) || failed.iter().any(|s| s == space) {
+            continue;
+        }
+        let excused = |cid: &str| {
+            accepted_blob_loss
+                .iter()
+                .any(|l| l.space.as_deref() == Some(space) && l.cid == cid)
+        };
+        let mut cursor: Option<String> = None;
+        'pages: loop {
+            let page = wire::list_space_blobs(source, space, did, cursor.as_deref())
+                .await
+                .map_err(net("failed to list a space's blobs on the source"))?;
+            for cid in page.cids.iter().filter(|c| !excused(c)) {
+                let present = wire::space_blob_present(dest, space, did, cid)
+                    .await
+                    .map_err(net("failed to check a space blob on the destination"))?;
+                if !present {
+                    tracing::warn!(did = %did, space = %space, cid = %cid, "space blob missing on the destination");
+                    failed.push(view.space.clone());
+                    break 'pages;
+                }
+            }
+            match page.cursor {
+                Some(next) if !page.cids.is_empty() && cursor.as_deref() != Some(next.as_str()) => {
+                    cursor = Some(next)
+                }
+                _ => break,
+            }
+        }
+    }
+    Ok(failed)
 }
 
 // ── transfer_spaces ────────────────────────────────────────────────
@@ -258,7 +293,7 @@ pub(super) async fn transfer_spaces_core(
     tracing::info!(did = %did, accept_loss, "transfer_spaces: carrying spaces to the destination");
     let journal = MigrationJournal::new(orchestration_state, did);
 
-    let (source_client, dest_client, recovery, baseline) = {
+    let (source_client, dest_client, recovery) = {
         let orchestration = orchestration_state.lock().await;
         let mig = ensure_phase_did(&orchestration, did, MigrationPhase::BlobsTransferred).map_err(
             |e| {
@@ -270,7 +305,6 @@ pub(super) async fn transfer_spaces_core(
             mig.source_client.clone(),
             mig.dest_client.clone(),
             mig.recovery,
-            mig.spaces.blob_baseline,
         )
     }; // lock released
 
@@ -329,16 +363,6 @@ pub(super) async fn transfer_spaces_core(
             .await;
     }
 
-    // Record the public blob count before the first import can add space blobs to it.
-    if baseline.is_none() {
-        let status = crate::pds_client::check_account_status(&dest_client)
-            .await
-            .map_err(|e| MigrationError::NetworkError {
-                message: format!("failed to check account status: {e}"),
-            })?;
-        record_blob_baseline(orchestration_state, did, status.imported_blobs).await?;
-    }
-
     transfer_space_meta(&source_client, &dest_client, did, &source_spaces).await?;
     let losses = transfer_space_repos(&source_client, &dest_client, did, &source_spaces).await?;
 
@@ -355,23 +379,4 @@ pub(super) async fn transfer_spaces_core(
         .await?;
     tracing::info!(did = %did, spaces = refs.len(), "spaces transferred successfully");
     Ok(())
-}
-
-/// Store the blob baseline without moving the phase, so a run that stops on a blob-loss
-/// manifest or a failed import keeps it for the rerun.
-async fn record_blob_baseline(
-    orchestration_state: &tokio::sync::Mutex<Option<OutboundMigrationState>>,
-    did: &str,
-    imported_blobs: u64,
-) -> Result<(), MigrationError> {
-    let mut orchestration = orchestration_state.lock().await;
-    match orchestration.as_mut() {
-        Some(mig) if mig.did == did => {
-            mig.spaces.blob_baseline.get_or_insert(imported_blobs);
-            Ok(())
-        }
-        _ => Err(MigrationError::MigrationNotReady {
-            message: "orchestration state lost or swapped".into(),
-        }),
-    }
 }

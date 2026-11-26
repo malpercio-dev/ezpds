@@ -184,21 +184,102 @@ fn space_errors_and_space_blob_losses_serialize_for_the_wallet() {
 
 // ── mock-server flows ──────────────────────────────────────────────
 
-// Two spaces, one this account is authority of and one it only writes in, reach Verified with
-// matching digests. Only the authority's space takes the meta pass; both take the repo pass;
-// the uploaded space blob doesn't upset the public blob count.
-#[tokio::test]
-#[ignore] // Requires socket binding; ignore in sandboxed environments
-async fn two_spaces_transfer_and_verify_with_matching_digests() {
-    let source = MockServer::start();
-    let dest = MockServer::start();
-    mock_source(&source, 200);
-    let export = source.mock(|when, then| {
+/// The destination's verify surface: its account status, the public blobs it still misses, and
+/// which space blobs it stores (a `HEAD` on space `getBlob` answers 200 for those, 404 else).
+fn mock_dest_verify<'a>(
+    dest: &'a MockServer,
+    imported: u64,
+    expected: u64,
+    missing: &[&str],
+    stored: &[(&str, &str)],
+) -> Vec<httpmock::Mock<'a>> {
+    dest.mock(|when, then| {
+        when.method(Method::GET)
+            .path("/xrpc/com.atproto.server.checkAccountStatus");
+        then.status(200).json_body(status(imported, expected));
+    });
+    let blobs: Vec<_> = missing
+        .iter()
+        .map(|cid| serde_json::json!({ "cid": cid, "recordUri": "at://did:plc:spacer/app.bsky.feed.post/1" }))
+        .collect();
+    dest.mock(|when, then| {
+        when.method(Method::GET)
+            .path("/xrpc/com.atproto.repo.listMissingBlobs");
+        then.status(200)
+            .json_body(serde_json::json!({ "blobs": blobs }));
+    });
+    let heads = stored
+        .iter()
+        .map(|(space, cid)| {
+            dest.mock(|when, then| {
+                when.method(Method::HEAD)
+                    .path("/xrpc/com.atproto.space.getBlob")
+                    .query_param("space", *space)
+                    .query_param("repo", DID)
+                    .query_param("cid", *cid);
+                then.status(200);
+            })
+        })
+        .collect();
+    dest.mock(|when, then| {
+        when.method(Method::HEAD)
+            .path("/xrpc/com.atproto.space.getBlob");
+        then.status(404);
+    });
+    heads
+}
+
+/// A destination that accepts every space import and blob upload and lists `listing()`.
+fn mock_dest_imports(dest: &MockServer) {
+    dest.mock(|when, then| {
+        when.method(Method::GET)
+            .path("/xrpc/com.atproto.space.listSpaces");
+        then.status(200).json_body(listing());
+    });
+    for path in [
+        "/xrpc/com.atproto.space.importSpaceMeta",
+        "/xrpc/com.atproto.space.importRepo",
+    ] {
+        dest.mock(|when, then| {
+            when.method(Method::POST).path(path);
+            then.status(200).json_body(serde_json::json!({}));
+        });
+    }
+    dest.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/xrpc/com.atproto.repo.uploadBlob");
+        then.status(200)
+            .json_body(serde_json::json!({ "blob": {} }));
+    });
+}
+
+fn mock_export(source: &MockServer) -> httpmock::Mock<'_> {
+    source.mock(|when, then| {
         when.method(Method::GET)
             .path("/xrpc/com.atproto.space.exportSpaceMeta")
             .query_param("space", AUTHORITY_SPACE);
         then.status(200).body("META-A");
-    });
+    })
+}
+
+async fn advance_to_preferences(state: &tokio::sync::Mutex<Option<OutboundMigrationState>>) {
+    MigrationJournal::new(state, DID)
+        .save(MigrationPhase::PreferencesTransferred)
+        .await
+        .unwrap();
+}
+
+// Two spaces, one this account is authority of and one it only writes in, reach Verified:
+// digests match and the space blob is stored. Only the authority's space takes the meta pass;
+// both take the repo pass. The destination's `importedBlobs` counting the space blob beside the
+// public ones doesn't matter, because verify reads missing CIDs, not counts.
+#[tokio::test]
+#[ignore] // Requires socket binding; ignore in sandboxed environments
+async fn two_spaces_transfer_and_verify_with_their_blobs() {
+    let source = MockServer::start();
+    let dest = MockServer::start();
+    mock_source(&source, 200);
+    let export = mock_export(&source);
 
     dest.mock(|when, then| {
         when.method(Method::GET)
@@ -231,11 +312,7 @@ async fn two_spaces_transfer_and_verify_with_matching_digests() {
         then.status(200)
             .json_body(serde_json::json!({ "blob": {} }));
     });
-    let mut before = dest.mock(|when, then| {
-        when.method(Method::GET)
-            .path("/xrpc/com.atproto.server.checkAccountStatus");
-        then.status(200).json_body(status(4, 4));
-    });
+    let heads = mock_dest_verify(&dest, 5, 4, &[], &[(AUTHORITY_SPACE, "bafyalpha")]);
 
     let state = state_at(MigrationPhase::BlobsTransferred, &source, &dest);
     transfer_spaces_core(&state, DID, false).await.unwrap();
@@ -247,44 +324,149 @@ async fn two_spaces_transfer_and_verify_with_matching_digests() {
     }
     assert_eq!(upload.calls(), 1);
 
-    // The destination now counts the space blob as imported; the public repo still expects 4.
-    before.delete();
+    advance_to_preferences(&state).await;
+    verify_import_core(&state, DID).await.unwrap();
+    assert_eq!(phase_of(&state).await, MigrationPhase::Verified);
+    assert_eq!(
+        heads[0].calls(),
+        1,
+        "the space blob was checked on the destination"
+    );
+}
+
+// A space blob the records reference but the destination doesn't store fails verify, naming its
+// space, even though both hosts' digests match.
+#[tokio::test]
+#[ignore] // Requires socket binding; ignore in sandboxed environments
+async fn verify_refuses_a_space_whose_blob_is_missing() {
+    let source = MockServer::start();
+    let dest = MockServer::start();
+    mock_source(&source, 200);
+    mock_dest_imports(&dest);
+    mock_dest_verify(&dest, 4, 4, &[], &[]);
+
+    let state = state_at(MigrationPhase::PreferencesTransferred, &source, &dest);
+    match verify_import_core(&state, DID).await {
+        Err(MigrationError::SpaceVerificationFailed { spaces }) => {
+            assert_eq!(spaces, vec![AUTHORITY_SPACE])
+        }
+        other => panic!("expected SpaceVerificationFailed, got {other:?}"),
+    }
+    assert_eq!(
+        phase_of(&state).await,
+        MigrationPhase::PreferencesTransferred
+    );
+}
+
+// The app is killed after a space transfer and the move starts over: a fresh migration state,
+// against a destination already holding the space repos and blobs, transfers again (the imports
+// replace) and verifies. Nothing verify reads came from the first session.
+#[tokio::test]
+#[ignore] // Requires socket binding; ignore in sandboxed environments
+async fn a_rerun_from_a_fresh_state_against_a_partly_filled_destination_verifies() {
+    let source = MockServer::start();
+    let dest = MockServer::start();
+    mock_source(&source, 200);
+    mock_export(&source);
+    mock_dest_imports(&dest);
+    mock_dest_verify(&dest, 5, 4, &[], &[(AUTHORITY_SPACE, "bafyalpha")]);
+
+    let first = state_at(MigrationPhase::BlobsTransferred, &source, &dest);
+    transfer_spaces_core(&first, DID, false).await.unwrap();
+    drop(first); // the killed session
+
+    let fresh = state_at(MigrationPhase::BlobsTransferred, &source, &dest);
+    transfer_spaces_core(&fresh, DID, false).await.unwrap();
+    advance_to_preferences(&fresh).await;
+    verify_import_core(&fresh, DID).await.unwrap();
+    assert_eq!(phase_of(&fresh).await, MigrationPhase::Verified);
+}
+
+// With no spaces at all, verify is the public check alone: a still-missing public blob passes
+// only once the user accepted it as lost from the drain.
+#[tokio::test]
+#[ignore] // Requires socket binding; ignore in sandboxed environments
+async fn public_blob_accounting_without_spaces() {
+    let source = MockServer::start();
+    let dest = MockServer::start();
+    source.mock(|when, then| {
+        when.method(Method::GET)
+            .path("/xrpc/com.atproto.space.listSpaces");
+        then.status(501)
+            .json_body(serde_json::json!({ "error": "MethodNotImplemented" }));
+    });
+    mock_dest_verify(&dest, 2, 3, &["bafypublic"], &[]);
+
+    let state = state_at(MigrationPhase::PreferencesTransferred, &source, &dest);
+    match verify_import_core(&state, DID).await {
+        Err(MigrationError::VerificationIncomplete { imported, expected }) => {
+            assert_eq!((imported, expected), (2, 3))
+        }
+        other => panic!("expected VerificationIncomplete, got {other:?}"),
+    }
+
+    state.lock().await.as_mut().unwrap().accepted_blob_loss = vec![BlobLoss {
+        cid: "bafypublic".into(),
+        record_uri: "at://did:plc:spacer/app.bsky.feed.post/1".into(),
+        direction: BlobTransferDirection::Source,
+        reason: "500".into(),
+        space: None,
+    }];
+    verify_import_core(&state, DID).await.unwrap();
+    assert_eq!(phase_of(&state).await, MigrationPhase::Verified);
+}
+
+// One blob referenced by a public record and a space record is stored once, so the destination's
+// `importedBlobs` counts it once. Verify still passes: nothing subtracts space blobs from a count.
+#[tokio::test]
+#[ignore] // Requires socket binding; ignore in sandboxed environments
+async fn a_blob_shared_by_a_public_and_a_space_record_verifies() {
+    let source = MockServer::start();
+    let dest = MockServer::start();
+    source.mock(|when, then| {
+        when.method(Method::GET)
+            .path("/xrpc/com.atproto.space.listSpaces");
+        then.status(200).json_body(serde_json::json!({ "spaces": [
+            { "space": AUTHORITY_SPACE, "repoRev": "3la", "data": { "$bytes": "AAAA" }, "spaceRev": "3ls" },
+        ]}));
+    });
+    source.mock(|when, then| {
+        when.method(Method::GET)
+            .path("/xrpc/com.atproto.space.listBlobs")
+            .query_param("space", AUTHORITY_SPACE);
+        then.status(200)
+            .json_body(serde_json::json!({ "cids": ["bafyshared"] }));
+    });
     dest.mock(|when, then| {
         when.method(Method::GET)
-            .path("/xrpc/com.atproto.server.checkAccountStatus");
-        then.status(200).json_body(status(5, 4));
+            .path("/xrpc/com.atproto.space.listSpaces");
+        then.status(200).json_body(serde_json::json!({ "spaces": [
+            { "space": AUTHORITY_SPACE, "repoRev": "3lz", "data": { "$bytes": "AAAA" }, "spaceRev": "3lt" },
+        ]}));
     });
-    MigrationJournal::new(&state, DID)
-        .save(MigrationPhase::PreferencesTransferred)
-        .await
-        .unwrap();
+    // One public reference, one stored blob, nothing missing.
+    mock_dest_verify(&dest, 1, 1, &[], &[(AUTHORITY_SPACE, "bafyshared")]);
+
+    let state = state_at(MigrationPhase::PreferencesTransferred, &source, &dest);
     verify_import_core(&state, DID).await.unwrap();
     assert_eq!(phase_of(&state).await, MigrationPhase::Verified);
 }
 
 // A destination without spaces stops the step before anything is imported; accepting the loss
-// advances it, and verify then leaves those spaces' digests out.
+// advances it, and verify then leaves those spaces out.
 #[tokio::test]
 #[ignore] // Requires socket binding; ignore in sandboxed environments
 async fn an_unsupported_destination_stops_before_importing_until_the_loss_is_accepted() {
     let source = MockServer::start();
     let dest = MockServer::start();
     mock_source(&source, 200);
-    let export = source.mock(|when, then| {
-        when.method(Method::GET)
-            .path("/xrpc/com.atproto.space.exportSpaceMeta");
-        then.status(200).body("META-A");
-    });
+    let export = mock_export(&source);
     dest.mock(|when, then| {
         when.path_prefix("/xrpc/com.atproto.space.");
         then.status(501)
             .json_body(serde_json::json!({ "error": "MethodNotImplemented" }));
     });
-    dest.mock(|when, then| {
-        when.method(Method::GET)
-            .path("/xrpc/com.atproto.server.checkAccountStatus");
-        then.status(200).json_body(status(0, 0));
-    });
+    mock_dest_verify(&dest, 0, 0, &[], &[]);
 
     let state = state_at(MigrationPhase::BlobsTransferred, &source, &dest);
     match transfer_spaces_core(&state, DID, false).await {
@@ -308,52 +490,21 @@ async fn an_unsupported_destination_stops_before_importing_until_the_loss_is_acc
         vec![AUTHORITY_SPACE, WRITER_SPACE]
     );
 
-    MigrationJournal::new(&state, DID)
-        .save(MigrationPhase::PreferencesTransferred)
-        .await
-        .unwrap();
+    advance_to_preferences(&state).await;
     verify_import_core(&state, DID).await.unwrap();
 }
 
 // A space blob the source can't serve joins the loss manifest with its space-ref. Accepting it
-// advances, and verify counts it against neither the public blobs nor the digests.
+// advances, and verify excuses that blob (and only the accepted public loss on the public side).
 #[tokio::test]
 #[ignore] // Requires socket binding; ignore in sandboxed environments
 async fn a_space_blob_loss_joins_the_manifest_and_is_accepted() {
     let source = MockServer::start();
     let dest = MockServer::start();
     mock_source(&source, 500);
-    source.mock(|when, then| {
-        when.method(Method::GET)
-            .path("/xrpc/com.atproto.space.exportSpaceMeta");
-        then.status(200).body("META-A");
-    });
-    dest.mock(|when, then| {
-        when.method(Method::GET)
-            .path("/xrpc/com.atproto.space.listSpaces");
-        then.status(200).json_body(listing());
-    });
-    for path in [
-        "/xrpc/com.atproto.space.importSpaceMeta",
-        "/xrpc/com.atproto.space.importRepo",
-    ] {
-        dest.mock(|when, then| {
-            when.method(Method::POST).path(path);
-            then.status(200).json_body(serde_json::json!({}));
-        });
-    }
-    let upload = dest.mock(|when, then| {
-        when.method(Method::POST)
-            .path("/xrpc/com.atproto.repo.uploadBlob");
-        then.status(200)
-            .json_body(serde_json::json!({ "blob": {} }));
-    });
-    // One public blob was already accepted as lost by the drain: 4 imported of 5 expected.
-    dest.mock(|when, then| {
-        when.method(Method::GET)
-            .path("/xrpc/com.atproto.server.checkAccountStatus");
-        then.status(200).json_body(status(4, 5));
-    });
+    mock_export(&source);
+    mock_dest_imports(&dest);
+    mock_dest_verify(&dest, 4, 5, &["bafypublic"], &[]);
 
     let state = state_at(MigrationPhase::BlobsTransferred, &source, &dest);
     state.lock().await.as_mut().unwrap().accepted_blob_loss = vec![BlobLoss {
@@ -373,14 +524,8 @@ async fn a_space_blob_loss_joins_the_manifest_and_is_accepted() {
     assert_eq!(losses[0].space.as_deref(), Some(AUTHORITY_SPACE));
     assert_eq!(losses[0].record_uri, AUTHORITY_SPACE);
     assert_eq!(phase_of(&state).await, MigrationPhase::BlobsTransferred);
-    assert_eq!(
-        state.lock().await.as_ref().unwrap().spaces.blob_baseline,
-        Some(4),
-        "the baseline outlives a run that stops on the manifest"
-    );
 
     transfer_spaces_core(&state, DID, true).await.unwrap();
-    assert_eq!(upload.calls(), 0);
     let accepted = state
         .lock()
         .await
@@ -394,25 +539,18 @@ async fn a_space_blob_loss_joins_the_manifest_and_is_accepted() {
         "the public loss is kept beside the space one"
     );
 
-    MigrationJournal::new(&state, DID)
-        .save(MigrationPhase::PreferencesTransferred)
-        .await
-        .unwrap();
+    advance_to_preferences(&state).await;
     verify_import_core(&state, DID).await.unwrap();
 }
 
-// A destination whose digest differs from the source's (or that lacks the space) fails verify
-// and names the space; the phase stays put.
+// A destination whose digest differs from the source's fails verify and names the space; the
+// phase stays put.
 #[tokio::test]
 #[ignore] // Requires socket binding; ignore in sandboxed environments
 async fn verify_refuses_a_space_whose_digest_differs() {
     let source = MockServer::start();
     let dest = MockServer::start();
-    source.mock(|when, then| {
-        when.method(Method::GET)
-            .path("/xrpc/com.atproto.space.listSpaces");
-        then.status(200).json_body(listing());
-    });
+    mock_source(&source, 200);
     dest.mock(|when, then| {
         when.method(Method::GET)
             .path("/xrpc/com.atproto.space.listSpaces");
@@ -421,11 +559,7 @@ async fn verify_refuses_a_space_whose_digest_differs() {
             { "space": WRITER_SPACE, "repoRev": "3lz", "data": { "$bytes": "BBBC" } },
         ]}));
     });
-    dest.mock(|when, then| {
-        when.method(Method::GET)
-            .path("/xrpc/com.atproto.server.checkAccountStatus");
-        then.status(200).json_body(status(0, 0));
-    });
+    mock_dest_verify(&dest, 0, 0, &[], &[(AUTHORITY_SPACE, "bafyalpha")]);
 
     let state = state_at(MigrationPhase::PreferencesTransferred, &source, &dest);
     match verify_import_core(&state, DID).await {

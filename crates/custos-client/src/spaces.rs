@@ -205,6 +205,34 @@ pub async fn list_space_blobs(
     xrpc_json("listSpaceBlobs", resp, client.observer()).await
 }
 
+/// Whether the host holds `cid` for `repo` in `space`: a body-less `HEAD` on
+/// `com.atproto.space.getBlob`. A `listBlobs` listing can't answer this, because it names the
+/// blobs the records reference, stored or not. `400`/`404` (`BlobNotFound`, whose envelope a
+/// HEAD response carries no body for) read as absent; any other failure is an error.
+pub async fn space_blob_present(
+    client: &OAuthClient,
+    space: &str,
+    repo: &str,
+    cid: &str,
+) -> Result<bool, PdsClientError> {
+    let path = format!(
+        "/xrpc/com.atproto.space.getBlob?space={}&repo={}&cid={}",
+        urlencoding::encode(space),
+        urlencoding::encode(repo),
+        urlencoding::encode(cid)
+    );
+    let resp = client
+        .head(&path)
+        .await
+        .map_err(|e| network("headSpaceBlob", e))?;
+    if matches!(resp.status().as_u16(), 400 | 404) {
+        return Ok(false);
+    }
+    xrpc_ok("headSpaceBlob", resp, client.observer())
+        .await
+        .map(|_| true)
+}
+
 /// `GET /xrpc/com.atproto.space.getBlob`: one blob a space record references.
 pub async fn get_space_blob(
     client: &OAuthClient,

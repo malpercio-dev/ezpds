@@ -67,7 +67,7 @@ pub struct MissingBlobs {
 ///
 /// Returned from `GET /xrpc/com.atproto.server.checkAccountStatus`.
 /// Also returned to the frontend via `verify_import` command, so it must derive Serialize.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountStatus {
     pub activated: bool,
