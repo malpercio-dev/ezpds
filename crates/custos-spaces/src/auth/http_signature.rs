@@ -38,18 +38,14 @@ fn covered_components() -> Vec<Item> {
 }
 
 /// Verify the request's credential signature: tagged [`SIGNATURE_TAG`], made by `key_id` (the
-/// credential's `cnf.kid`), over the request's `Authorization` and an `Atproto-Space-Audience`
-/// equal to `audience`.
+/// credential's `cnf.kid`), over the request's `Authorization` and `Atproto-Space-Audience`.
+/// Returns the audience it signed, for [`require_audience`] to compare.
 ///
-/// Every failure is `BadSpaceSignature` (401), the reference's name, except a valid signature
-/// over another audience, which is `BadSpaceAudience` (401). The audience is compared only once
-/// the signature verifies, as the reference's handlers do, so a bad signature names the
-/// signature whatever audience it claims.
-pub(super) fn verify_credential_signature(
-    headers: &HeaderMap,
+/// Every failure is `BadSpaceSignature` (401), the reference's name.
+pub(super) fn verify_credential_signature<'h>(
+    headers: &'h HeaderMap,
     key_id: &str,
-    audience: &str,
-) -> Result<(), ApiError> {
+) -> Result<&'h str, ApiError> {
     let invalid = |msg: String| ApiError::new(ErrorCode::BadSpaceSignature, msg);
 
     let authorization = single_field(headers, "authorization")
@@ -93,6 +89,14 @@ pub(super) fn verify_credential_signature(
     if !verified {
         return Err(invalid("invalid HTTP message signature".into()));
     }
+    Ok(presented)
+}
+
+/// The signed audience must be `audience`, the DID this request is for: `BadSpaceAudience`
+/// (401) otherwise. Compared only once the signature verifies (and, in the seam, after the
+/// revocation check), as the reference's handlers do, so a bad signature names the signature
+/// whatever audience it claims.
+pub(super) fn require_audience(presented: &str, audience: &str) -> Result<(), ApiError> {
     if presented != audience {
         return Err(ApiError::new(
             ErrorCode::BadSpaceAudience,
@@ -189,8 +193,13 @@ mod tests {
             ])
         }
         fn verify(&self, h: &HeaderMap) -> Result<(), ApiError> {
-            verify_credential_signature(h, &self.id, AUDIENCE)
+            verify_for(h, &self.id, AUDIENCE)
         }
+    }
+
+    /// The seam's two steps together: the signature, then the audience it signed.
+    fn verify_for(h: &HeaderMap, key_id: &str, audience: &str) -> Result<(), ApiError> {
+        require_audience(verify_credential_signature(h, key_id)?, audience)
     }
 
     fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
@@ -343,7 +352,7 @@ mod tests {
             } else {
                 AUDIENCE
             };
-            let err = message(verify_credential_signature(&h, &key.id, audience));
+            let err = message(verify_for(&h, &key.id, audience));
             assert_eq!(err, "invalid HTTP message signature", "{name}");
         }
     }
@@ -351,15 +360,14 @@ mod tests {
     #[test]
     fn rejects_an_audience_other_than_the_one_the_request_is_for() {
         let key = Key::new();
-        let err = verify_credential_signature(&key.headers(), &key.id, "did:example:someone-else")
-            .unwrap_err();
+        let err = verify_for(&key.headers(), &key.id, "did:example:someone-else").unwrap_err();
         assert_eq!(*err.code(), ErrorCode::BadSpaceAudience);
         assert_eq!(err.status_code(), 401);
         assert_eq!(err.message(), "space audience does not match the request");
         // A signature that does not verify names the signature, whatever audience it claims.
         let other = Key::new();
         assert_eq!(
-            message(verify_credential_signature(
+            message(verify_for(
                 &other.headers(),
                 &key.id,
                 "did:example:someone-else",
@@ -375,7 +383,7 @@ mod tests {
             let mut h = key.headers();
             set(&mut h, AUDIENCE_HEADER, audience);
             assert_eq!(
-                message(verify_credential_signature(&h, &key.id, AUDIENCE)),
+                message(verify_for(&h, &key.id, AUDIENCE)),
                 "missing or malformed \"atproto-space-audience\" field",
                 "{audience}"
             );
@@ -524,11 +532,7 @@ mod tests {
     #[test]
     fn rejects_a_credential_key_that_is_not_p256() {
         let key = Key::new();
-        let err = message(verify_credential_signature(
-            &key.headers(),
-            SECP256K1_KEY,
-            AUDIENCE,
-        ));
+        let err = message(verify_for(&key.headers(), SECP256K1_KEY, AUDIENCE));
         assert!(err.contains("P-256"), "{err}");
     }
 
