@@ -24,10 +24,11 @@
 //!   [`mint_space_credential`] / [`verify_space_credential`] (the latter verifies against the
 //!   authority's `#atproto` key). The `jti` is a revocation id, not a nonce: a credential is
 //!   reusable until it expires. Its checks run in the reference's order (`spaceCredentialAuth`)
-//!   with one divergence: a well-formed credential for another space answers `InvalidCredential`
-//!   once its structure checks out but *before* its signatures are checked, where the reference
-//!   compares the space last. That keeps an unsigned token naming any space from driving DID
-//!   resolution.
+//!   with two divergences, both so that an unsigned token never drives DID resolution:
+//!   a `sub` that is not a space reference answers `BadJwtSub` *before* the signatures are
+//!   checked, where the reference reaches that check only after them; and a well-formed
+//!   credential for another space answers `InvalidCredential` before its signatures are
+//!   checked, where the reference compares the space last.
 //! * **The read seam** — [`authenticate_space_read`] accepts a covering OAuth grant on the
 //!   caller's *own* repo *or* a signature-bound space credential for any repo in the space,
 //!   never a bearer credential. [`authenticate_space_access`] is the same pair of arms for a
@@ -817,11 +818,11 @@ fn check_credential_structure(token: &str, now: u64) -> Result<CredentialClaims,
 /// `BadJwtSub`, `BadJwtCnf`, `BadJwtSignature`, `JwtExpired`, all 401); an issuer that does not
 /// resolve, or whose document has no `#atproto` key, is `BadJwtIss`.
 ///
-/// **Divergence:** the reference compares the credential's space only after both signatures
-/// verify. Here a well-formed credential for another space answers `InvalidCredential` (400)
-/// before its signatures are checked, so an unsigned token naming any space never drives DID
-/// resolution (a cache miss plus the force-refresh retry is two upstream fetches per request).
-/// The structural checks come first, so a malformed token still answers its own name.
+/// **Divergences** (module doc): a `sub` that is not a space reference (`BadJwtSub`) and a
+/// well-formed credential for another space (`InvalidCredential`, 400) are both answered before
+/// the signatures are checked, so an unsigned token never drives DID resolution (a cache miss
+/// plus the force-refresh retry is two upstream fetches per request). The structural checks
+/// come first, so a malformed token still answers its own name.
 async fn verify_space_credential(
     state: &CoreState,
     token: &str,
