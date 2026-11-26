@@ -14,7 +14,12 @@
 //! * **Migration** (`did` present): authenticated by a service-auth JWT the OLD PDS minted
 //!   (Bearer), verified against the migrating DID's `#atproto` key. Creates the account
 //!   DEACTIVATED with no repo yet — the repo arrives via `importRepo`, and `activateAccount`
-//!   finalizes it. Resumable: a retry for a DID whose account exists and is still deactivated
+//!   finalizes it. The repo signing key is the one `reserveSigningKey` filed under the DID, or a
+//!   fresh one when the client reserved none (the reference needs no reservation here either);
+//!   `getRecommendedDidCredentials` then recommends whichever was stored. The reference ignores a
+//!   reservation on this path and always mints a fresh key. Keeping the reserved key is a
+//!   deliberate divergence, so a client that built its PLC op from `reserveSigningKey`'s answer
+//!   still names the key this host signs with. Resumable: a retry for a DID whose account exists and is still deactivated
 //!   re-issues a session (same credential proves the same control) instead of 409ing, so a
 //!   mid-flight client failure never strands the migration; active/moderation states still
 //!   conflict.
@@ -481,20 +486,16 @@ async fn create_account_migration(
     }
     let email = crate::uniqueness::normalize_email(require_email(payload)?);
 
-    // A repo signing key must have been reserved for this DID (via reserveSigningKey) so the PDS
-    // can sign commits once the repo is imported.
-    let repo_key = get_reserved_repo_key_by_did(&state.db, did)
+    // The key this PDS signs the imported repo's commits with: the DID's reservation, else fresh.
+    let repo_key = match get_reserved_repo_key_by_did(&state.db, did)
         .await
         .or_internal_as(
             "failed to load reserved signing key",
             "failed to load signing key",
-        )?
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::InvalidClaim,
-                "no reserved signing key for this DID; call reserveSigningKey first",
-            )
-        })?;
+        )? {
+        Some(reserved) => reserved,
+        None => custos_core::kem::generate_wrapped_key(state)?,
+    };
 
     // The KEM key the destination will recommend as `atproto_kem` (`getRecommendedDidCredentials`)
     // and require at `activateAccount`.
@@ -1173,8 +1174,8 @@ mod tests {
         })
     }
 
-    /// Seed a resolvable DID document whose #atproto key is `kp`, and reserve a signing key for it.
-    async fn seed_migration_did(
+    /// Seed a resolvable DID document whose #atproto key is a fresh `kp`, with no reservation.
+    async fn seed_unreserved_migration_did(
         db: &sqlx::SqlitePool,
         did: &str,
         handle: &str,
@@ -1186,8 +1187,120 @@ mod tests {
             migration_did_doc(did, handle, &kp, "https://old.example.com"),
         )
         .await;
+        kp
+    }
+
+    /// Seed a resolvable DID document whose #atproto key is `kp`, and reserve a signing key for it.
+    async fn seed_migration_did(
+        db: &sqlx::SqlitePool,
+        did: &str,
+        handle: &str,
+    ) -> crypto::P256Keypair {
+        let kp = seed_unreserved_migration_did(db, did, handle).await;
         reserve_key(db, Some(did)).await;
         kp
+    }
+
+    /// Drive a migration from `createAccount` through `getRecommendedDidCredentials` (whose
+    /// `#atproto` key is returned) to `activateAccount`, once `plc` serves a document publishing
+    /// the recommended keys, as the client's PLC op would.
+    async fn migrate_through_activation(
+        state: AppState,
+        plc: &MockServer,
+        did: &str,
+        handle: &str,
+        kp: &crypto::P256Keypair,
+    ) -> String {
+        let aud = state.config.resolve_server_did();
+        let token = service_auth_jwt(kp, did, &aud, Some("com.atproto.server.createAccount"));
+        let created = app(state.clone())
+            .oneshot(post(
+                serde_json::json!({ "handle": handle, "email": "m@example.com", "did": did }),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let access = body_json(created).await["accessJwt"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let recommended = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/com.atproto.identity.getRecommendedDidCredentials")
+                    .header("Authorization", format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recommended.status(), StatusCode::OK);
+        let methods = body_json(recommended).await["verificationMethods"].clone();
+        let atproto = methods["atproto"].as_str().unwrap().to_string();
+        let kem = methods["atproto_kem"].as_str().unwrap();
+
+        let multibase = |key: &str| key.strip_prefix("did:key:").unwrap().to_string();
+        let published = serde_json::json!({
+            "id": did,
+            "alsoKnownAs": [format!("at://{handle}")],
+            "verificationMethod": [
+                { "id": "#atproto", "type": "Multikey", "controller": did,
+                  "publicKeyMultibase": multibase(&atproto) },
+                { "id": "#atproto_kem", "type": "Multikey", "controller": did,
+                  "publicKeyMultibase": multibase(kem) },
+            ],
+            "service": [{ "id": "#atproto_pds", "type": "AtprotoPersonalDataServer",
+                          "serviceEndpoint": state.config.public_url }],
+        });
+        mount_did_resolution(plc, did, &published).await;
+        let activated = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/xrpc/com.atproto.server.activateAccount")
+                    .header("Authorization", format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(activated.status(), StatusCode::OK);
+        atproto
+    }
+
+    #[tokio::test]
+    async fn migration_with_a_reservation_uses_the_reserved_key_through_activation() {
+        let plc = MockServer::start().await;
+        let state = test_state(plc.uri(), false).await;
+        let did = "did:plc:migratorreserved22222222";
+        let kp = seed_unreserved_migration_did(&state.db, did, "res.migrated.example").await;
+        let reserved = reserve_key(&state.db, Some(did)).await;
+
+        let recommended =
+            migrate_through_activation(state, &plc, did, "res.migrated.example", &kp).await;
+        assert_eq!(recommended, reserved.key_id.to_string());
+    }
+
+    #[tokio::test]
+    async fn migration_without_a_reservation_generates_a_key_through_activation() {
+        let plc = MockServer::start().await;
+        let state = test_state(plc.uri(), false).await;
+        let db = state.db.clone();
+        let did = "did:plc:migratorunreserved222222";
+        let kp = seed_unreserved_migration_did(&db, did, "unres.migrated.example").await;
+
+        let recommended =
+            migrate_through_activation(state, &plc, did, "unres.migrated.example", &kp).await;
+        let stored: String =
+            sqlx::query_scalar("SELECT id FROM signing_keys WHERE did = ? AND status = 'active'")
+                .bind(did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(recommended, stored);
+        assert_ne!(recommended, kp.key_id.to_string(), "a key this host holds");
     }
 
     /// Mount a plc.directory `GET /{did}` mock that serves `doc` (the DID-resolution source the
