@@ -451,6 +451,35 @@ impl From<ServiceAuthError> for ApiError {
     }
 }
 
+/// Why [`verify_did_key_jwt`] refused a token. Each non-retriable variant carries the error a
+/// caller answers by default; [`ServiceAuthError`] folds them back into `Invalid`, so service
+/// auth sees exactly the classification it always has. The split exists for callers that name
+/// the failure, like the Atproto Spaces credential verifier.
+#[derive(Debug)]
+pub enum DidKeyJwtError {
+    /// The signature did not verify against the key, which may be a fossil: retriable, as
+    /// [`ServiceAuthError::SignatureMismatch`].
+    SignatureMismatch,
+    /// The signature cannot be verified with this key at all: an `alg` outside the ES256/ES256K
+    /// allowlist, a key on an unsupported curve, an `alg` that does not match the key's curve, or a
+    /// signature that decodes but is not a 64-byte `r‖s`.
+    Unverifiable(ApiError),
+    /// The token is not a well-formed JWT: wrong segment count, an undecodable header or payload,
+    /// or a signature segment that is empty or not base64url.
+    Malformed(ApiError),
+}
+
+impl From<DidKeyJwtError> for ServiceAuthError {
+    fn from(err: DidKeyJwtError) -> Self {
+        match err {
+            DidKeyJwtError::SignatureMismatch => ServiceAuthError::SignatureMismatch,
+            DidKeyJwtError::Unverifiable(e) | DidKeyJwtError::Malformed(e) => {
+                ServiceAuthError::Invalid(e)
+            }
+        }
+    }
+}
+
 /// A JWT whose signature verified against a `did:key`: its decoded header and payload, for the
 /// caller's own claim checks. Produced by [`verify_did_key_jwt`].
 #[derive(Debug)]
@@ -473,17 +502,17 @@ pub struct DidKeyJwt {
 /// (ECDSA-SHA256 over the exact `header.payload` bytes, curve dispatched by the key's multicodec
 /// prefix, non-canonical high-S rejected on both curves).
 ///
-/// A signature failure is the retriable [`ServiceAuthError::SignatureMismatch`] (the supplied key
-/// may be a fossil of a since-rotated DID document); everything else is a non-retriable
-/// [`ServiceAuthError::Invalid`].
+/// A signature failure is the retriable [`DidKeyJwtError::SignatureMismatch`] (the supplied key
+/// may be a fossil of a since-rotated DID document); everything else is non-retriable, split by
+/// [`DidKeyJwtError`].
 pub fn verify_did_key_jwt(
     token: &str,
     key: &crypto::DidKeyUri,
-) -> Result<DidKeyJwt, ServiceAuthError> {
+) -> Result<DidKeyJwt, DidKeyJwtError> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
     let invalid =
-        || ServiceAuthError::Invalid(ApiError::new(ErrorCode::InvalidToken, "invalid token"));
+        || DidKeyJwtError::Malformed(ApiError::new(ErrorCode::InvalidToken, "invalid token"));
 
     let mut parts = token.split('.');
     let header_b64 = parts.next().ok_or_else(invalid)?;
@@ -500,7 +529,7 @@ pub fn verify_did_key_jwt(
         Some("ES256") => crypto::DidKeyCurve::P256,
         Some("ES256K") => crypto::DidKeyCurve::Secp256k1,
         _ => {
-            return Err(ServiceAuthError::Invalid(ApiError::new(
+            return Err(DidKeyJwtError::Unverifiable(ApiError::new(
                 ErrorCode::InvalidToken,
                 "token must be ES256 or ES256K",
             )))
@@ -509,13 +538,13 @@ pub fn verify_did_key_jwt(
     // ...and require the declared alg to match the verification key's actual curve.
     let key_curve = crypto::did_key_curve(key).map_err(|e| {
         tracing::debug!(error = %e, "unsupported verification key");
-        ServiceAuthError::Invalid(ApiError::new(
+        DidKeyJwtError::Unverifiable(ApiError::new(
             ErrorCode::InvalidToken,
             "the DID's verification key is not a supported curve",
         ))
     })?;
     if alg_curve != key_curve {
-        return Err(ServiceAuthError::Invalid(ApiError::new(
+        return Err(DidKeyJwtError::Unverifiable(ApiError::new(
             ErrorCode::InvalidToken,
             "token algorithm does not match the signing key's curve",
         )));
@@ -527,10 +556,12 @@ pub fn verify_did_key_jwt(
     // holding a fossil key.
     let signing_input = format!("{header_b64}.{payload_b64}");
     let sig_bytes = URL_SAFE_NO_PAD.decode(sig_b64).map_err(|_| invalid())?;
-    let sig: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| invalid())?;
+    let sig: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| {
+        DidKeyJwtError::Unverifiable(ApiError::new(ErrorCode::InvalidToken, "invalid token"))
+    })?;
     crypto::verify_did_key_signature(key, signing_input.as_bytes(), &sig).map_err(|e| {
         tracing::debug!(error = %e, "did:key JWT signature verification failed");
-        ServiceAuthError::SignatureMismatch
+        DidKeyJwtError::SignatureMismatch
     })?;
 
     let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).map_err(|_| invalid())?;

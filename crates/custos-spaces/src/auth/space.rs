@@ -84,7 +84,7 @@ use custos_core::auth::bearer::{extract_access_token, extract_space_credential};
 use custos_core::auth::extractors::AuthenticatedUser;
 use custos_core::auth::jwt::{
     peek_jwt_iss, peek_jwt_typ, random_jti, sign_jwt, verify_did_key_jwt, AuthScope, DidKeyJwt,
-    ServiceAuthError,
+    DidKeyJwtError, ServiceAuthError,
 };
 use custos_core::auth::oauth_scopes::{self, SpaceOp, SpaceRequest};
 
@@ -611,7 +611,7 @@ pub async fn verify_delegation_token(
 
     let jwt = verify_did_jwt_resolving_key(state, token, &iss, &atproto_verification_key)
         .await
-        .map_err(|e| {
+        .map_err(|DidJwtFailure { error: e, .. }| {
             if *e.code() == ErrorCode::InvalidToken {
                 e.with_code(ErrorCode::InvalidDelegationToken)
             } else {
@@ -716,9 +716,8 @@ pub struct VerifiedCredential {
 /// makes a verified credential usable lives there; this function is private to hold that.
 ///
 /// Each failure answers the reference's name for it (`BadJwt`, `BadJwtType`, `BadJwtIss`,
-/// `BadJwtSub`, `BadJwtCnf`, `JwtExpired`, `CredentialRevoked`, all 401), and an issuer that
-/// does not resolve is `BadJwtIss`. The signature verification itself
-/// (`verify_did_jwt_resolving_key`) still answers `InvalidToken`.
+/// `BadJwtSub`, `BadJwtCnf`, `BadJwtSignature`, `JwtExpired`, `CredentialRevoked`, all 401); an
+/// issuer that does not resolve, or whose document has no `#atproto` key, is `BadJwtIss`.
 async fn verify_space_credential(
     state: &CoreState,
     token: &str,
@@ -749,17 +748,20 @@ async fn verify_space_credential(
         .and_then(|i| common::Did::parse(i).ok())
         .ok_or_else(|| bad("space credential issuer is not a DID"))?;
 
-    // Verification failures keep their `InvalidToken`; any failure to resolve the issuer is the
-    // reference's `BadJwtIss` (401), not the resolver's own code. A server fault stays one.
+    // Each failure is the reference's name for it. An issuer that does not resolve is
+    // `BadJwtIss` (401), not the resolver's own code; a server fault stays one.
     let jwt = verify_did_jwt_resolving_key(state, token, &iss, &atproto_verification_key)
         .await
-        .map_err(|e| match e.code() {
-            ErrorCode::InvalidToken | ErrorCode::InternalError => e,
-            _ => fail(
+        .map_err(|DidJwtFailure { kind, error }| match kind {
+            DidJwtFault::Signature => fail(ErrorCode::BadJwtSignature, error.message()),
+            DidJwtFault::Malformed => bad(error.message()),
+            DidJwtFault::NoKey => fail(ErrorCode::BadJwtIss, error.message()),
+            DidJwtFault::Resolution if *error.code() == ErrorCode::InternalError => error,
+            DidJwtFault::Resolution => fail(
                 ErrorCode::BadJwtIss,
                 &format!(
                     "could not resolve the space credential issuer: {}",
-                    e.message()
+                    error.message()
                 ),
             ),
         })?;
@@ -1065,6 +1067,47 @@ async fn check_access(
 
 // ── Shared plumbing ──────────────────────────────────────────────────────────
 
+/// Why [`verify_did_jwt_resolving_key`] refused a token: `error`, what a caller answers by
+/// default, and `kind`, which failure it was, for a caller that names it (the space credential).
+#[derive(Debug)]
+struct DidJwtFailure {
+    kind: DidJwtFault,
+    error: ApiError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DidJwtFault {
+    /// The issuer's DID document could not be resolved; `error` is the resolver's own.
+    Resolution,
+    /// The resolved document has no verification key `pick_key` accepts.
+    NoKey,
+    /// The signature does not verify against the issuer's key, even after the refresh retry, or
+    /// cannot (`alg` outside the allowlist or not the key's curve, or not 64 bytes).
+    Signature,
+    /// The token is not a well-formed JWT, or its signature segment does not decode.
+    Malformed,
+}
+
+impl DidJwtFailure {
+    fn new(kind: DidJwtFault, error: ApiError) -> Self {
+        Self { kind, error }
+    }
+}
+
+impl From<DidKeyJwtError> for DidJwtFailure {
+    fn from(err: DidKeyJwtError) -> Self {
+        match err {
+            // The same error service auth's conversion gives a signature that never verified.
+            DidKeyJwtError::SignatureMismatch => DidJwtFailure::new(
+                DidJwtFault::Signature,
+                ServiceAuthError::SignatureMismatch.into(),
+            ),
+            DidKeyJwtError::Unverifiable(e) => DidJwtFailure::new(DidJwtFault::Signature, e),
+            DidKeyJwtError::Malformed(e) => DidJwtFailure::new(DidJwtFault::Malformed, e),
+        }
+    }
+}
+
 /// Resolve `iss`'s DID document, pick the verification key with `pick_key`, and verify `token`
 /// against it — force-refreshing the cached document and retrying once on a signature
 /// mismatch, the same fossil-key healing `service_auth::verify_service_auth_resolving_key`
@@ -1072,41 +1115,48 @@ async fn check_access(
 /// `refresh_did_document_after_signature_mismatch` seam.
 ///
 /// A failure to resolve the issuer at all (`DidNotFound`, `DidDeactivated`,
-/// `PlcDirectoryError`, …) passes through with its own code and status — an unreachable PLC
-/// directory is not an invalid token. A failed *refresh* after a signature mismatch does not:
-/// the cached document was there and the signature did not verify against it, so that verdict
-/// stands — as does a refresh the per-DID cool-down suppressed. Verification failures are
-/// `InvalidToken`; callers re-code those alone.
+/// `PlcDirectoryError`, …) carries its own code and status — an unreachable PLC directory is not
+/// an invalid token. A failed *refresh* after a signature mismatch does not: the cached document
+/// was there and the signature did not verify against it, so that verdict stands — as does a
+/// refresh the per-DID cool-down suppressed. Verification failures are `InvalidToken`; callers
+/// re-code those alone, by [`DidJwtFailure::kind`] where they name the failure.
 async fn verify_did_jwt_resolving_key(
     state: &CoreState,
     token: &str,
     iss: &str,
     pick_key: &(dyn Fn(&Value) -> Option<crypto::DidKeyUri> + Sync),
-) -> Result<DidKeyJwt, ApiError> {
-    let verify = |doc: &Value| -> Result<DidKeyJwt, ServiceAuthError> {
-        let key = pick_key(doc).ok_or_else(|| {
-            ServiceAuthError::Invalid(ApiError::new(
-                ErrorCode::InvalidToken,
-                "the issuer's DID document has no matching verification key",
-            ))
-        })?;
-        verify_did_key_jwt(token, &key)
+) -> Result<DidKeyJwt, DidJwtFailure> {
+    let key_in = |doc: &Value| {
+        pick_key(doc).ok_or_else(|| {
+            DidJwtFailure::new(
+                DidJwtFault::NoKey,
+                ApiError::new(
+                    ErrorCode::InvalidToken,
+                    "the issuer's DID document has no matching verification key",
+                ),
+            )
+        })
     };
-    let cached = resolve_did_document(state, iss).await?;
-    match verify(&cached) {
+    let cached = resolve_did_document(state, iss)
+        .await
+        .map_err(|e| DidJwtFailure::new(DidJwtFault::Resolution, e))?;
+    match verify_did_key_jwt(token, &key_in(&cached)?) {
         Ok(jwt) => Ok(jwt),
-        Err(ServiceAuthError::SignatureMismatch) => {
+        Err(DidKeyJwtError::SignatureMismatch) => {
             match refresh_did_document_after_signature_mismatch(state, iss).await {
-                Ok(fresh) => Ok(verify(&fresh)?),
+                Ok(fresh) => Ok(verify_did_key_jwt(token, &key_in(&fresh)?)?),
                 Err(refresh_error) => {
                     tracing::debug!(
                         iss = %iss,
                         error = %refresh_error,
                         "force-refresh failed; keeping the signature-mismatch verdict"
                     );
-                    Err(ApiError::new(
-                        ErrorCode::InvalidToken,
-                        "token signature does not verify against the issuer's published key",
+                    Err(DidJwtFailure::new(
+                        DidJwtFault::Signature,
+                        ApiError::new(
+                            ErrorCode::InvalidToken,
+                            "token signature does not verify against the issuer's published key",
+                        ),
                     ))
                 }
             }
@@ -1569,7 +1619,7 @@ mod tests {
             // Forged: claims iss = authority but signed by alice's key.
             (
                 mint_space_credential(|b| alice.sign(b), AUTHORITY, &space(), key.key_id(), now),
-                ErrorCode::InvalidToken,
+                ErrorCode::BadJwtSignature,
             ),
         ] {
             let err = read(&state, &key.credential_headers(&cred, ALICE), ALICE)
@@ -1710,6 +1760,91 @@ mod tests {
                 .unwrap_err();
             assert_eq!(*err.code(), code, "{}", err.message());
             assert_eq!(err.status_code(), 401);
+        }
+    }
+
+    /// The failures inside the shared JWT verification each answer the reference's name on the
+    /// credential path, while the delegation token, which shares that verification, keeps its
+    /// one `InvalidDelegationToken` with the message it always had.
+    #[tokio::test]
+    async fn jwt_verification_faults_are_named_on_the_credential_path_only() {
+        let state = state_with_master_key().await;
+        let authority = seed_identity(&state, AUTHORITY).await;
+        let key = SpaceSigKey::generate();
+        let now = unix_now().unwrap();
+        let claims = serde_json::json!({
+            "iss": AUTHORITY, "sub": SPACE, "cnf": { "kid": key.key_id() },
+            "iat": now, "exp": now + 60, "jti": "jwt-faults",
+        });
+        let es256k =
+            serde_json::json!({ "typ": SPACE_CREDENTIAL_TYP, "alg": "ES256K", "kid": "#atproto" });
+        let valid = mint_space_credential(
+            |b| authority.sign(b),
+            AUTHORITY,
+            &space(),
+            key.key_id(),
+            now,
+        );
+        let unsigned = valid.rsplit_once('.').unwrap().0;
+
+        for (cred, code) in [
+            // `alg` names a curve the authority's P-256 key is not on.
+            (
+                sign_jwt(|b| authority.sign(b), &es256k, &claims),
+                ErrorCode::BadJwtSignature,
+            ),
+            // A signature segment that is not base64url is malformed; one that decodes to the
+            // wrong length reaches the signature check, as in the reference.
+            (format!("{unsigned}.not-base64!"), ErrorCode::BadJwt),
+            (format!("{unsigned}.YWJj"), ErrorCode::BadJwtSignature),
+        ] {
+            let err = verify_space_credential(&state, &cred, now)
+                .await
+                .unwrap_err();
+            assert_eq!(*err.code(), code, "{}", err.message());
+            assert_eq!(err.status_code(), 401);
+        }
+
+        // An issuer whose document publishes no #atproto key.
+        let keyless = "did:plc:keylessauthority0000000";
+        seed_did_document(
+            &state.db,
+            keyless,
+            serde_json::json!({ "id": keyless, "verificationMethod": [] }),
+        )
+        .await;
+        let keyless_space =
+            parse_space_ref(&format!("at://{keyless}/space/org.example.bucket/x")).unwrap();
+        let cred = mint_space_credential(
+            |b| authority.sign(b),
+            keyless,
+            &keyless_space,
+            key.key_id(),
+            now,
+        );
+        let err = verify_space_credential(&state, &cred, now)
+            .await
+            .unwrap_err();
+        assert_eq!(*err.code(), ErrorCode::BadJwtIss, "{}", err.message());
+        assert_eq!(err.status_code(), 401);
+
+        // The delegation token through the same verification: unchanged.
+        let delegation = mint_delegation_token(|b| authority.sign(b), AUTHORITY, &space(), now);
+        let (unsigned, _) = delegation.rsplit_once('.').unwrap();
+        let mut es256k = header(&delegation);
+        es256k["alg"] = "ES256K".into();
+        for (token, message) in [
+            (format!("{unsigned}.not-base64!"), "invalid token"),
+            (
+                sign_jwt(|b| authority.sign(b), &es256k, &payload(&delegation)),
+                "token algorithm does not match the signing key's curve",
+            ),
+        ] {
+            let err = verify_delegation_token(&state, &token, &space(), now)
+                .await
+                .unwrap_err();
+            assert_eq!(*err.code(), ErrorCode::InvalidDelegationToken);
+            assert_eq!(err.message(), message);
         }
     }
 
