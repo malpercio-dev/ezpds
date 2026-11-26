@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.19.0] - 2026-11-26
+
+### Added
+
+- The operator listing `GET /v1/admin/spaces` reports each governed space's policy as `policyType`, and the operator console shows it on the space's detail.
+
+- Custos can now derive the Atproto Spaces per-request MAC key (HPKE secret export) and compute the RFC 9421 commit and record MACs, the groundwork for MACs on space reads.
+
+- Custos can now read and write STAR archives, the format Atproto Spaces uses to move a space repo or a space's host state between servers. Nothing serves them yet.
+
+- Every new account now gets a dedicated Spaces KEM key, published in its DID document as `#atproto_kem`. Existing accounts publish one through the new `POST /v1/kem-key` ceremony; until they do, space writes answer `KemKeyNotPublished`. Adds `com.atproto.server.reserveKemKey`, and `getRecommendedDidCredentials` now recommends `atproto_kem` instead of the `atproto_space` entries.
+
+- Obsign can publish your server's Spaces key with "Update identity for Spaces" (Manage identity → Advanced, or the `obsign:/spaces?did=…` link the Custos MCP tools show when a space write is refused with `KemKeyNotPublished`). A did:plc identity approves a device-signed update behind Face ID; a self-hosted did:web exports an updated `did.json`. Outbound migration now carries the destination's `atproto_kem` key, or drops it when the destination recommends none. The docs site gains "How Spaces proves a record came from you".
+
+- Moving an identity with Obsign now carries its spaces too. The new **Transfer spaces** step copies the state of every space you run, then each space repo and its files. If the new server can't hold spaces, Obsign stops before moving anything and asks whether to leave them behind. The move is verified only once every space matches on the new server.
+
+- Space syncers are reliably told when a space is deleted or their registration lapses: `deleteSpace` queues a `spaceDeleted` notice for every registration, lapsed ones included and with no cap, and the first update after a lapse queues one `registrationExpired`. Both are retried on the reference schedule (1 m, 10 m, 1 h, 6 h, then every 12 h) for 72 h by a new retry sweep, reported as `sweeps.spaceNotifyRetrySweep` in `GET /v1/admin/health`, and paused while the space's authority is deactivated or taken down.
+
+
+### Changed
+
+- Spaces are now managed through `com.atproto.space.{createSpace,updateSpace,deleteSpace,getSpace}` with a single space policy — personalspace, memberspace, or managedspace — and memberspace member lists through `com.atproto.memberspace.{putMembers,removeMembers,listMembers}`. A space can publish its policy and member list as records in its authority's repo, `listSpaces` now includes spaces you are the authority of, and existing spaces convert to the new policy automatically.
+
+- Space reads are now authenticated with a MAC over RFC 9421 HTTP message signatures. A syncer sends `Accept-Signature` with a throwaway key as `keyid`, and `getRecord`, `getLatestCommit`, `listRepoOps` and `getRepo` answer with `Atproto-Space-Record` or `Atproto-Space-Commit` plus `Signature-Input` / `Signature`, keyed through the writer's `#atproto_kem` key. A space-credential read that asks for no MAC, or a malformed request, answers `InvalidSpaceMac`, and every one of those responses varies on `Accept-Signature`. A writer whose DID document does not publish its KEM key is read without a MAC. The commit is now the unsigned `{ver, repo, space, rev, data}`, and `listRepoOps` carries it on every page.
+
+- Space credentials now come from `com.atproto.space.authorizeSpaceSync`, which binds the credential to the `credentialKey` in its body, returns the space's `spaceRev`, and mints for a `publicRead` memberspace without a delegation token (`allowedApps` still applies). Credentials are presented as `Authorization: Atproto-Space-Credential` with a signature tagged `atproto-space-credential`, signed by the authority's `#atproto` key, and delegation tokens and client attestations name the authority as `#atproto_pds`. Space reads of a taken-down or deactivated writer answer `RepoTakendown` / `RepoDeactivated`, that writer's writes answer `AccountTakedown` / `AccountDeactivated`, and a non-active space authority is refused only by `authorizeSpaceSync` and `listRepos`.
+
+- Spaces now migrate over the spec'd methods. `com.atproto.space.getRepo` answers an `atproto-space-repo` STAR archive instead of a CAR (its MAC still rides the response headers), `importRepo` lands that archive on the destination as the account's repo under a fresh rev with an empty oplog, and an authority moves a space's policy, member list and writer set with `exportSpaceMeta` / `importSpaceMeta` before its own repo. Both imports take a deactivated account. A space the operator took down cannot be exported.
+
+- Space syncers register for notifications through `authorizeSpaceSync`'s `notify: {endpoint, token}`: the endpoint must be an https URL on a domain host, a new registration must echo a `confirmRegistration` challenge (`RegistrationNotConfirmed`), a space holds at most 100 active registrations (`TooManyRegistrations`), and each registration lapses with its credential. Updates reach syncers as `notifySpaceUpdate` with the `{space, token, update}` envelope, one attempt each; repo hosts report writes with `notifyRepoUpdate` (`data` in place of `hash`), and revocations arrive on `notifyCredentialsRevoked`. Existing registrations are dropped, so syncers register again on their next authorization.
+
+- Purging an account now deletes the spaces it is the authority for, as `deleteSpace` would but without notifying syncers: the space is tombstoned and its members, writer set, notification registrations and pending notices are removed. A registration is dropped once its expiry notice is delivered or abandoned, and registrations that lapsed more than 72 h ago without one are pruned.
+
+- Atproto Spaces tracks removals from a space's writer set. `com.atproto.space.listWriters` replaces `listRepos` and lists each writer's latest update, a `repoWrite` or a `repoRemoved`. The authority removes a writer with the new `removeWriter`, and `removeMembers` and `putMembers` with `write: false` remove the member's writer entry too. Each removal reaches registered syncers as a `repoRemoved`, and the writer's next authorized write adds it back. An emptied space repo now stays as an empty repo: reads answer empty instead of `RepoNotFound`, and its writer entry stays at the empty-set digest. The new `clearRecords` deletes every record in the caller's repo in a space, keeping the authority's published policy and member records. `exportSpaceMeta` leaves removed writers out. A local write into a space this host governs now joins the writer set, and reaches its syncers, only when the space's write policy admits the writer; the record itself is still written.
+
+- A write into a space governed by another host now reliably reaches that space host: the `notifyRepoUpdate` is queued with the commit, tried once at once, and retried by the space notify retry sweep (1 m, doubling to 1 h, for 24 h) instead of three times in memory. Pending updates coalesce per repo and space to the newest rev, so a space host that was down receives one notification carrying the newest rev when it is back. Delivery pauses while the repo is deactivated or taken down, and purging the account removes its pending updates.
+
+- A space write refused with `KemKeyNotPublished` now names the fix in its message: the `obsign:/spaces?did=…` link that opens "Update identity for Spaces" in Obsign for the writer's DID. The Custos MCP tools pass that message through instead of composing their own.
+
+- A space-credential read that fails verification now answers the same error names as the Atproto Spaces reference: `BadSpaceSignature` for a missing or bad HTTP signature, `BadSpaceAudience` for a signature made for another audience, and `BadJwt`, `BadJwtType`, `BadJwtIss` (also when the issuer DID does not resolve), `BadJwtSub`, `BadJwtCnf`, `JwtExpired` or `CredentialRevoked` for a faulty credential, all 401, in place of `InvalidToken`, `ExpiredToken` and the DID resolver's own errors. A credential for a different space now answers 400 `InvalidCredential`.
+
+- A migrating `com.atproto.server.createAccount` no longer requires a prior `reserveSigningKey`: when none is reserved for the DID, the PDS generates the repo signing key itself and `getRecommendedDidCredentials` recommends it, as the reference PDS does. A reserved key is still used when one exists.
+
+- A space credential whose own JWT fails verification now answers the Atproto Spaces reference's name for the failure instead of `InvalidToken`. A forged or wrong-key signature, an `alg` that does not match the authority's key, or a signature of the wrong length answers `BadJwtSignature`. A signature that does not decode answers `BadJwt`, and an authority whose DID document publishes no `#atproto` key answers `BadJwtIss`.
+
+
+### Fixed
+
+- The Railway project file now pins the Umami Postgres database to the image it runs (`postgres-ssl:16`); the first production plan would otherwise have repointed the running database at Postgres 18.
+
+- Atproto Spaces now interoperate with the reference PDS across hosts. A write into a space that Custos is the authority for now reaches the writer set when it comes from a reference repo host: `notifyRepoUpdate` accepts service auth addressed to the authority (`<did>#atproto_pds` or the bare DID), as the reference sends it, and lexicon `$bytes` are read unpadded or padded and written unpadded.
+
+- Spaces `listRepoOps` now applies `cursor` and `since` together, as the reference does, and answers a malformed cursor with `InvalidCursor` instead of `InvalidRequest`.
+
+
+### Removed
+
+- The `com.atproto.simplespace.*` methods are gone, replaced by the `com.atproto.space` and `com.atproto.memberspace` management methods; the MCP `list_spaces` tool now filters by `spaceDid`.
+
+- Space commits are no longer signed: the per-serving `ikm` / `sig` / `mac` / `hash` commit is gone.
+
+- `com.atproto.space.getSpaceCredential` is gone, replaced by `authorizeSpaceSync`, and the `#atproto_space` / `#atproto_space_host` DID-document entries are no longer read.
+
+- `POST /v1/space/import-repo` is gone, replaced by `com.atproto.space.importRepo`, and `getRepo` no longer takes `excludeValues`.
+
+- `com.atproto.space.registerNotify`, `unregisterNotify`, `notifyWrite` and `notifyCredentialRevoked` are gone, with the `ServiceNotResolvable` error; syncers register through `authorizeSpaceSync`, and the space host no longer sends `notifyWrite` or `notifySpaceDeleted` to them.
+
+- `com.atproto.space.listRepos` is removed; use `com.atproto.space.listWriters`.
+
+
+### Security
+
+- Updated the `url` library to 2.5.9, fixing RUSTSEC-2026-0592: a stack overflow when computing the origin of a deeply nested `blob:` URL.
+
+- Updated the `cookie` library to 0.18.3, clearing RUSTSEC-2026-0594: private cookie nonces could repeat across a `fork()`. The crate is used only by the mobile app shells, not the deployed PDS.
+
+- Updated the `cookie` library to 0.18.3, fixing RUSTSEC-2026-0594: private cookie nonces could repeat in processes that fork.
+
+
 ## [0.18.0] - 2026-11-21
 
 ### Added
