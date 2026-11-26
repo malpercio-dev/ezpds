@@ -198,6 +198,45 @@ pub enum ErrorCode {
     /// A page `cursor` did not parse. Declared by `com.atproto.space.listRepoOps`.
     #[serde(rename = "InvalidCursor")]
     InvalidCursor,
+    // The space-credential verifier's names, all 401 but `InvalidCredential`: the reference's codes
+    // on that path (its `SpaceTokenError` and `SpaceSignatureError` codes, and the audience and
+    // revocation checks around them).
+    /// A space-credential request whose RFC 9421 signature is missing, malformed, or does not verify
+    /// against the credential's `cnf.kid`, or whose `Atproto-Space-Audience` is absent or not a DID.
+    #[serde(rename = "BadSpaceSignature")]
+    BadSpaceSignature,
+    /// A space-credential request signed for an audience other than the DID the request is for.
+    #[serde(rename = "BadSpaceAudience")]
+    BadSpaceAudience,
+    /// A space credential that is malformed or breaks a structural rule no more specific name covers
+    /// (header `kid`, `iat`/`exp`, lifetime, `jti`).
+    #[serde(rename = "BadJwt")]
+    BadJwt,
+    /// A space credential whose header `typ` is not `atproto-space-credential+jwt`.
+    #[serde(rename = "BadJwtType")]
+    BadJwtType,
+    /// A space credential with no `iss`, or one that is not the space's authority.
+    #[serde(rename = "BadJwtIss")]
+    BadJwtIss,
+    /// A space credential whose `sub` is not a space reference.
+    #[serde(rename = "BadJwtSub")]
+    BadJwtSub,
+    /// A space credential with no `cnf.kid` binding.
+    #[serde(rename = "BadJwtCnf")]
+    BadJwtCnf,
+    /// A space credential whose signature does not verify against its issuer's `#atproto` key.
+    #[serde(rename = "BadJwtSignature")]
+    BadJwtSignature,
+    /// An expired space credential.
+    #[serde(rename = "JwtExpired")]
+    JwtExpired,
+    /// A space credential its authority has revoked through `notifyCredentialsRevoked`.
+    #[serde(rename = "CredentialRevoked")]
+    CredentialRevoked,
+    /// A verified space credential for a space other than the one the request names. The
+    /// reference raises it as `InvalidRequestError` (400), not an auth failure.
+    #[serde(rename = "InvalidCredential")]
+    InvalidCredential,
     // Codes for endpoints/designs not yet shipped (tiers, did:web self-service, device
     // leases, Shamir recovery, etc.) are catalogued in docs/provisioning-api-spec.md's
     // status-code appendix; add them here as those designs actually land.
@@ -283,6 +322,17 @@ impl ErrorCode {
             ErrorCode::RegistrationNotConfirmed => "RegistrationNotConfirmed",
             ErrorCode::TooManyRegistrations => "TooManyRegistrations",
             ErrorCode::InvalidCursor => "InvalidCursor",
+            ErrorCode::BadSpaceSignature => "BadSpaceSignature",
+            ErrorCode::BadSpaceAudience => "BadSpaceAudience",
+            ErrorCode::BadJwt => "BadJwt",
+            ErrorCode::BadJwtType => "BadJwtType",
+            ErrorCode::BadJwtIss => "BadJwtIss",
+            ErrorCode::BadJwtSub => "BadJwtSub",
+            ErrorCode::BadJwtCnf => "BadJwtCnf",
+            ErrorCode::BadJwtSignature => "BadJwtSignature",
+            ErrorCode::JwtExpired => "JwtExpired",
+            ErrorCode::CredentialRevoked => "CredentialRevoked",
+            ErrorCode::InvalidCredential => "InvalidCredential",
         }
     }
 
@@ -356,6 +406,17 @@ impl ErrorCode {
             ErrorCode::RegistrationNotConfirmed => 400,
             ErrorCode::TooManyRegistrations => 400,
             ErrorCode::InvalidCursor => 400,
+            ErrorCode::BadSpaceSignature => 401,
+            ErrorCode::BadSpaceAudience => 401,
+            ErrorCode::BadJwt => 401,
+            ErrorCode::BadJwtType => 401,
+            ErrorCode::BadJwtIss => 401,
+            ErrorCode::BadJwtSub => 401,
+            ErrorCode::BadJwtCnf => 401,
+            ErrorCode::BadJwtSignature => 401,
+            ErrorCode::JwtExpired => 401,
+            ErrorCode::CredentialRevoked => 401,
+            ErrorCode::InvalidCredential => 400,
         }
     }
 }
@@ -664,6 +725,17 @@ mod tests {
             (ErrorCode::HandleResolutionFailed, 400),
             (ErrorCode::BlockNotFound, 400),
             (ErrorCode::InvalidCursor, 400),
+            (ErrorCode::BadSpaceSignature, 401),
+            (ErrorCode::BadSpaceAudience, 401),
+            (ErrorCode::BadJwt, 401),
+            (ErrorCode::BadJwtType, 401),
+            (ErrorCode::BadJwtIss, 401),
+            (ErrorCode::BadJwtSub, 401),
+            (ErrorCode::BadJwtCnf, 401),
+            (ErrorCode::BadJwtSignature, 401),
+            (ErrorCode::JwtExpired, 401),
+            (ErrorCode::CredentialRevoked, 401),
+            (ErrorCode::InvalidCredential, 400),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");

@@ -41,17 +41,21 @@ fn covered_components() -> Vec<Item> {
 /// credential's `cnf.kid`), over the request's `Authorization` and an `Atproto-Space-Audience`
 /// equal to `audience`.
 ///
-/// Every failure is `InvalidToken` (401): the caller has not proven possession of the key.
+/// Every failure is `BadSpaceSignature` (401), the reference's name, except a valid signature
+/// over another audience, which is `BadSpaceAudience` (401). The audience is compared only once
+/// the signature verifies, as the reference's handlers do, so a bad signature names the
+/// signature whatever audience it claims.
 pub(super) fn verify_credential_signature(
     headers: &HeaderMap,
     key_id: &str,
     audience: &str,
 ) -> Result<(), ApiError> {
-    let invalid = |msg: String| ApiError::new(ErrorCode::InvalidToken, msg);
+    let invalid = |msg: String| ApiError::new(ErrorCode::BadSpaceSignature, msg);
 
     let authorization = single_field(headers, "authorization")
         .ok_or_else(|| invalid("missing or malformed \"authorization\" field".into()))?;
     let presented = single_field(headers, AUDIENCE_HEADER)
+        .filter(|value| common::is_valid_did(value))
         .ok_or_else(|| invalid(format!("missing or malformed \"{AUDIENCE_HEADER}\" field")))?;
 
     let components = covered_components();
@@ -74,9 +78,6 @@ pub(super) fn verify_credential_signature(
     ) {
         return Err(invalid("signature key must be a P-256 did:key".into()));
     }
-    if presented != audience {
-        return Err(invalid("space audience does not match the request".into()));
-    }
 
     let base = signature_base(
         &components,
@@ -91,6 +92,12 @@ pub(super) fn verify_credential_signature(
         });
     if !verified {
         return Err(invalid("invalid HTTP message signature".into()));
+    }
+    if presented != audience {
+        return Err(ApiError::new(
+            ErrorCode::BadSpaceAudience,
+            "space audience does not match the request",
+        ));
     }
     Ok(())
 }
@@ -237,7 +244,8 @@ mod tests {
 
     fn message(result: Result<(), ApiError>) -> String {
         let err = result.unwrap_err();
-        assert_eq!(*err.code(), ErrorCode::InvalidToken);
+        assert_eq!(*err.code(), ErrorCode::BadSpaceSignature);
+        assert_eq!(err.status_code(), 401);
         err.message().to_string()
     }
 
@@ -343,12 +351,35 @@ mod tests {
     #[test]
     fn rejects_an_audience_other_than_the_one_the_request_is_for() {
         let key = Key::new();
-        let err = message(verify_credential_signature(
-            &key.headers(),
-            &key.id,
-            "did:example:someone-else",
-        ));
-        assert_eq!(err, "space audience does not match the request");
+        let err = verify_credential_signature(&key.headers(), &key.id, "did:example:someone-else")
+            .unwrap_err();
+        assert_eq!(*err.code(), ErrorCode::BadSpaceAudience);
+        assert_eq!(err.status_code(), 401);
+        assert_eq!(err.message(), "space audience does not match the request");
+        // A signature that does not verify names the signature, whatever audience it claims.
+        let other = Key::new();
+        assert_eq!(
+            message(verify_credential_signature(
+                &other.headers(),
+                &key.id,
+                "did:example:someone-else",
+            )),
+            "invalid HTTP message signature"
+        );
+    }
+
+    #[test]
+    fn rejects_an_audience_that_is_not_one_did() {
+        let key = Key::new();
+        for audience in ["not-a-did", &format!("{AUDIENCE}, {AUDIENCE}")] {
+            let mut h = key.headers();
+            set(&mut h, AUDIENCE_HEADER, audience);
+            assert_eq!(
+                message(verify_credential_signature(&h, &key.id, AUDIENCE)),
+                "missing or malformed \"atproto-space-audience\" field",
+                "{audience}"
+            );
+        }
     }
 
     #[test]
