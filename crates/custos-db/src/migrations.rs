@@ -354,4 +354,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 83,
         sql: include_str!("migrations/V083__space_writer_removed_at.sql"),
     },
+    Migration {
+        version: 84,
+        sql: include_str!("migrations/V084__space_repo_update_retries.sql"),
+    },
 ];

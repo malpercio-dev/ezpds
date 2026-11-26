@@ -5,5 +5,6 @@ pub mod space_jti;
 pub mod space_meta;
 pub mod space_notice_retries;
 pub mod space_notify;
+pub mod space_repo_update_retries;
 pub mod space_repos;
 pub mod spaces;

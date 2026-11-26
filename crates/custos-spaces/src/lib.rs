@@ -64,8 +64,8 @@ where
         retention_secs = space_oplog_sweep::OPLOG_RETENTION_SECS,
         "space oplog compaction sweep started"
     );
-    // Retries the syncer notices that must arrive, written durably by the transaction that
-    // owes them.
+    // Retries the syncer notices and repo updates that must arrive, written durably by the
+    // transaction that owes them.
     scheduler.spawn(space_notify_retry::SpaceNotifyRetrySweep);
     tracing::info!(
         interval_secs = space_notify_retry::SWEEP_INTERVAL.as_secs(),
@@ -76,7 +76,8 @@ where
 /// The statements [`purge_account_rows`] runs, in FK order (ops and records reference the repo
 /// row); this crate's own schema-walking test checks it covers every space table's account FK.
 ///
-/// The account's own rows go: its space repos, its memberships, and its rows in any locally
+/// The account's own rows go: its space repos, its memberships, its pending `notifyRepoUpdate`
+/// retries, and its rows in any locally
 /// hosted writer set (`space_writers` has no FK to `accounts`, since most writers are foreign
 /// repos, and a purged account left there advertises a repo every reader then gets
 /// `RepoNotFound` for).
@@ -91,6 +92,7 @@ pub const PURGE_ACCOUNT_SQL: &[&str] = &[
     "DELETE FROM space_repos WHERE account_did = ?",
     "DELETE FROM space_members WHERE member_did = ?",
     "DELETE FROM space_writers WHERE repo_did = ?",
+    "DELETE FROM space_repo_update_retries WHERE repo_did = ?",
     "DELETE FROM space_syncer_notice_retries \
      WHERE space_uri IN (SELECT uri FROM spaces WHERE authority_did = ?)",
     "DELETE FROM space_notify_registrations \
