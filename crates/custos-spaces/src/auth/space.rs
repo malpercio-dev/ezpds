@@ -23,7 +23,11 @@
 //!   verifier accepts up to 60). Possession of the key is proven on every use, not at minting.
 //!   [`mint_space_credential`] / [`verify_space_credential`] (the latter verifies against the
 //!   authority's `#atproto` key). The `jti` is a revocation id, not a nonce: a credential is
-//!   reusable until it expires.
+//!   reusable until it expires. Its checks run in the reference's order (`spaceCredentialAuth`)
+//!   with one divergence: a well-formed credential for another space answers `InvalidCredential`
+//!   once its structure checks out but *before* its signatures are checked, where the reference
+//!   compares the space last. That keeps an unsigned token naming any space from driving DID
+//!   resolution.
 //! * **The read seam** — [`authenticate_space_read`] accepts a covering OAuth grant on the
 //!   caller's *own* repo *or* a signature-bound space credential for any repo in the space,
 //!   never a bearer credential. [`authenticate_space_access`] is the same pair of arms for a
@@ -79,7 +83,7 @@ use custos_core::identity::resolution::{
 use custos_core::space_uri::SpaceRef;
 use custos_db::accounts::AccountLifecycle;
 
-use super::http_signature::verify_credential_signature;
+use super::http_signature::{require_audience, verify_credential_signature};
 use custos_core::auth::bearer::{extract_access_token, extract_space_credential};
 use custos_core::auth::extractors::AuthenticatedUser;
 use custos_core::auth::jwt::{
@@ -418,23 +422,27 @@ async fn authenticate_space_credential(
     space: &SpaceRef,
     audience: &str,
 ) -> Result<VerifiedCredential, ApiError> {
-    // Cheap pre-filter on the unverified `sub`, so a credential for some other space cannot
-    // drive DID resolution (a cache miss plus the force-refresh retry is two upstream fetches
-    // per request) before it is thrown out. The authoritative comparison follows verification.
-    if peek_jwt_payload(token)
-        .and_then(|p| p.get("sub").and_then(Value::as_str).map(str::to_string))
-        .as_deref()
-        != Some(space.uri.as_str())
-    {
-        return Err(other_space());
+    // The reference's order: the credential (structure, the other-space filter, then the issuer
+    // and its signature), then the request's signature, revocation, and last the audience.
+    let credential = verify_space_credential(state, token, space, unix_now()?).await?;
+    let presented = verify_credential_signature(headers, &credential.kid)?;
+    let revoked = crate::db::space_jti::is_credential_revoked(
+        &state.db,
+        &space.uri,
+        &credential.jti,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, space = %space.uri, "failed to read credential revocations");
+        ApiError::new(ErrorCode::InternalError, "internal server error")
+    })?;
+    if revoked {
+        return Err(ApiError::new(
+            ErrorCode::CredentialRevoked,
+            "space credential has been revoked",
+        ));
     }
-
-    let credential = verify_space_credential(state, token, unix_now()?).await?;
-    if credential.space.uri != space.uri {
-        return Err(other_space());
-    }
-
-    verify_credential_signature(headers, &credential.kid, audience)?;
+    require_audience(presented, audience)?;
 
     // Charged last, on the *verified* key, so unauthenticated garbage cannot drain a holder's
     // budget.
@@ -699,34 +707,38 @@ where
 /// [`authenticate_space_credential`], not here.
 #[derive(Debug, Clone)]
 pub struct VerifiedCredential {
-    /// The space the credential reads (`sub`).
-    pub space: SpaceRef,
     /// The bound key (`cnf.kid`), a `did:key`.
     pub kid: String,
+    /// The revocation id, checked by [`authenticate_space_credential`] after the request's own
+    /// signature, as the reference orders it.
+    jti: String,
 }
 
-/// Verify a space credential as a repo host: `typ`; header `kid` `#atproto`; the signature
-/// against the authority's `#atproto` key (cache-first, force-refreshed and retried once on a
-/// mismatch — a foreign authority may be ES256K, which the shared core accepts); `sub` a space
-/// anchored on `iss`; `exp` in the future, `iat` not, and `exp − iat` within
-/// [`SPACE_CREDENTIAL_MAX_TTL_SECS`]; a `cnf.kid`; and a `jti` its authority has not revoked
-/// through `notifyCredentialsRevoked`.
-///
-/// Only [`authenticate_space_credential`] may call this — the proof-of-possession check that
-/// makes a verified credential usable lives there; this function is private to hold that.
-///
-/// Each failure answers the reference's name for it (`BadJwt`, `BadJwtType`, `BadJwtIss`,
-/// `BadJwtSub`, `BadJwtCnf`, `BadJwtSignature`, `JwtExpired`, `CredentialRevoked`, all 401); an
-/// issuer that does not resolve, or whose document has no `#atproto` key, is `BadJwtIss`.
-async fn verify_space_credential(
-    state: &CoreState,
-    token: &str,
-    now: u64,
-) -> Result<VerifiedCredential, ApiError> {
+/// A space credential's claims that passed the structural checks, read before its signature
+/// is verified. The signature later covers these exact bytes, so nothing read here is trusted
+/// on its own until then.
+struct CredentialClaims {
+    iss: Value,
+    sub: String,
+    kid: String,
+    jti: String,
+}
+
+/// The structural checks, in the reference's order (`parseSpaceToken` then the time checks in
+/// `verifySpaceToken`, `packages/space/src/credential.ts`): three segments with JSON header and
+/// payload; `typ`; an `alg`; header `kid` `#atproto`; an `iss`; a `sub`; a numeric `exp`; a
+/// `cnf.kid`; a `jti`; `exp` after `iat` and within [`SPACE_CREDENTIAL_MAX_TTL_SECS`] of it;
+/// `iat` not in the future; not expired. Pure: nothing here resolves a DID.
+fn check_credential_structure(token: &str, now: u64) -> Result<CredentialClaims, ApiError> {
     let fail = |code: ErrorCode, msg: &str| ApiError::new(code, msg);
     let bad = |msg: &str| fail(ErrorCode::BadJwt, msg);
+    let present = |v: &Value| !v.is_null() && v.as_str() != Some("");
 
-    let (Some(header), Some(unverified)) = (peek_jwt_header(token), peek_jwt_payload(token)) else {
+    let (3, Some(header), Some(claims)) = (
+        token.split('.').count(),
+        peek_jwt_header(token),
+        peek_jwt_payload(token),
+    ) else {
         return Err(bad("malformed space credential"));
     };
     if header.get("typ").and_then(Value::as_str) != Some(SPACE_CREDENTIAL_TYP) {
@@ -735,69 +747,31 @@ async fn verify_space_credential(
             "space credential typ must be atproto-space-credential+jwt",
         ));
     }
+    if header
+        .get("alg")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(bad("space credential has no alg"));
+    }
     if header.get("kid").and_then(Value::as_str) != Some("#atproto") {
         return Err(bad("space credential kid must be #atproto"));
     }
-    // An absent `iss` is `BadJwtIss`; one that is not a DID is `BadJwt`, as the reference's
-    // resolver throws on it.
-    let iss = unverified
+    let iss = claims
         .get("iss")
-        .filter(|i| !i.is_null() && i.as_str() != Some(""))
+        .filter(|i| present(i))
         .ok_or_else(|| fail(ErrorCode::BadJwtIss, "space credential has no issuer"))?
-        .as_str()
-        .and_then(|i| common::Did::parse(i).ok())
-        .ok_or_else(|| bad("space credential issuer is not a DID"))?;
-
-    // Each failure is the reference's name for it. An issuer that does not resolve is
-    // `BadJwtIss` (401), not the resolver's own code; a server fault stays one.
-    let jwt = verify_did_jwt_resolving_key(state, token, &iss, &atproto_verification_key)
-        .await
-        .map_err(|DidJwtFailure { kind, error }| match kind {
-            DidJwtFault::Signature => fail(ErrorCode::BadJwtSignature, error.message()),
-            DidJwtFault::Malformed => bad(error.message()),
-            DidJwtFault::NoKey => fail(ErrorCode::BadJwtIss, error.message()),
-            DidJwtFault::Resolution if *error.code() == ErrorCode::InternalError => error,
-            DidJwtFault::Resolution => fail(
-                ErrorCode::BadJwtIss,
-                &format!(
-                    "could not resolve the space credential issuer: {}",
-                    error.message()
-                ),
-            ),
-        })?;
-    let claims = &jwt.payload;
-
-    let space = claims
+        .clone();
+    let sub = claims
         .get("sub")
+        .filter(|s| present(s))
         .and_then(Value::as_str)
-        .and_then(custos_core::space_uri::parse_space_ref)
-        .ok_or_else(|| {
-            fail(
-                ErrorCode::BadJwtSub,
-                "space credential sub is not a space reference",
-            )
-        })?;
-    if space.authority != iss {
-        return Err(fail(
-            ErrorCode::BadJwtIss,
-            "space credential issuer is not the space's authority",
-        ));
-    }
-    let (Some(iat), Some(exp)) = (
-        claims.get("iat").and_then(Value::as_u64),
-        claims.get("exp").and_then(Value::as_u64),
-    ) else {
-        return Err(bad("space credential needs numeric iat and exp"));
-    };
-    if exp <= now {
-        return Err(fail(ErrorCode::JwtExpired, "space credential has expired"));
-    }
-    if iat > now + CLOCK_SKEW_SECS {
-        return Err(bad("space credential issued in the future"));
-    }
-    if exp <= iat || exp - iat > SPACE_CREDENTIAL_MAX_TTL_SECS {
-        return Err(bad("invalid space credential lifetime"));
-    }
+        .ok_or_else(|| fail(ErrorCode::BadJwtSub, "space credential has no sub"))?
+        .to_string();
+    let exp = claims
+        .get("exp")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| bad("space credential has no numeric exp"))?;
     let kid = claims
         .get("cnf")
         .and_then(|c| c.get("kid"))
@@ -814,21 +788,98 @@ async fn verify_space_credential(
         .get("jti")
         .and_then(Value::as_str)
         .filter(|j| !j.is_empty())
-        .ok_or_else(|| bad("space credential has no jti"))?;
-    let revoked = crate::db::space_jti::is_credential_revoked(&state.db, &space.uri, jti)
+        .ok_or_else(|| bad("space credential has no jti"))?
+        .to_string();
+    let iat = claims.get("iat").and_then(Value::as_u64);
+    if !iat.is_some_and(|iat| exp > iat && exp - iat <= SPACE_CREDENTIAL_MAX_TTL_SECS) {
+        return Err(bad("invalid space credential lifetime"));
+    }
+    if iat.is_some_and(|iat| iat > now + CLOCK_SKEW_SECS) {
+        return Err(bad("space credential issued in the future"));
+    }
+    if exp <= now {
+        return Err(fail(ErrorCode::JwtExpired, "space credential has expired"));
+    }
+    Ok(CredentialClaims { iss, sub, kid, jti })
+}
+
+/// Verify a space credential for `space` as a repo host: [`check_credential_structure`]; then
+/// that its `sub` is a space reference naming `space`; then the signature against the issuer's
+/// `#atproto` key (cache-first, force-refreshed and retried once on a mismatch — a foreign
+/// authority may be ES256K, which the shared core accepts); then that space anchored on `iss`.
+/// Revocation and the request's own signature are [`authenticate_space_credential`]'s, after
+/// this.
+///
+/// Only [`authenticate_space_credential`] may call this — the proof-of-possession check that
+/// makes a verified credential usable lives there; this function is private to hold that.
+///
+/// Each failure answers the reference's name for it (`BadJwt`, `BadJwtType`, `BadJwtIss`,
+/// `BadJwtSub`, `BadJwtCnf`, `BadJwtSignature`, `JwtExpired`, all 401); an issuer that does not
+/// resolve, or whose document has no `#atproto` key, is `BadJwtIss`.
+///
+/// **Divergence:** the reference compares the credential's space only after both signatures
+/// verify. Here a well-formed credential for another space answers `InvalidCredential` (400)
+/// before its signatures are checked, so an unsigned token naming any space never drives DID
+/// resolution (a cache miss plus the force-refresh retry is two upstream fetches per request).
+/// The structural checks come first, so a malformed token still answers its own name.
+async fn verify_space_credential(
+    state: &CoreState,
+    token: &str,
+    space: &SpaceRef,
+    now: u64,
+) -> Result<VerifiedCredential, ApiError> {
+    let fail = |code: ErrorCode, msg: &str| ApiError::new(code, msg);
+    let bad = |msg: &str| fail(ErrorCode::BadJwt, msg);
+
+    let claims = check_credential_structure(token, now)?;
+    // A `sub` that is no space reference at all is `BadJwtSub` here rather than after the
+    // signatures (where the reference checks it), so the other-space filter only ever answers
+    // for a credential that names a space.
+    let named = custos_core::space_uri::parse_space_ref(&claims.sub).ok_or_else(|| {
+        fail(
+            ErrorCode::BadJwtSub,
+            "space credential sub is not a space reference",
+        )
+    })?;
+    if named.uri != space.uri {
+        return Err(other_space());
+    }
+    // A non-DID `iss` is `BadJwt`, as the reference's resolver throws on it.
+    let iss = claims
+        .iss
+        .as_str()
+        .and_then(|i| common::Did::parse(i).ok())
+        .ok_or_else(|| bad("space credential issuer is not a DID"))?;
+
+    // An issuer that does not resolve is `BadJwtIss` (401), not the resolver's own code; a
+    // server fault stays one.
+    verify_did_jwt_resolving_key(state, token, &iss, &atproto_verification_key)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space.uri, "failed to read credential revocations");
-            ApiError::new(ErrorCode::InternalError, "internal server error")
+        .map_err(|DidJwtFailure { kind, error }| match kind {
+            DidJwtFault::Signature => fail(ErrorCode::BadJwtSignature, error.message()),
+            DidJwtFault::Malformed => bad(error.message()),
+            DidJwtFault::NoKey => fail(ErrorCode::BadJwtIss, error.message()),
+            DidJwtFault::Resolution if *error.code() == ErrorCode::InternalError => error,
+            DidJwtFault::Resolution => fail(
+                ErrorCode::BadJwtIss,
+                &format!(
+                    "could not resolve the space credential issuer: {}",
+                    error.message()
+                ),
+            ),
         })?;
-    if revoked {
+
+    if named.authority != iss {
         return Err(fail(
-            ErrorCode::CredentialRevoked,
-            "space credential has been revoked",
+            ErrorCode::BadJwtIss,
+            "space credential issuer is not the space's authority",
         ));
     }
 
-    Ok(VerifiedCredential { space, kid })
+    Ok(VerifiedCredential {
+        kid: claims.kid,
+        jti: claims.jti,
+    })
 }
 
 // ── Credential issuance policy ───────────────────────────────────────────────
@@ -1455,8 +1506,6 @@ mod tests {
         let signed = key.credential_headers(&credential, ALICE);
         match read(&state, &signed, ALICE).await.unwrap() {
             SpaceReader::Credential(c) => {
-                assert_eq!(c.space.authority, AUTHORITY);
-                assert_eq!(c.space.uri, SPACE);
                 assert_eq!(c.kid, key.key_id());
             }
             other => panic!("expected the credential arm, got {other:?}"),
@@ -1653,6 +1702,7 @@ mod tests {
         assert!(verify_space_credential(
             &state,
             &with(now, now + SPACE_CREDENTIAL_MAX_TTL_SECS),
+            &space(),
             now
         )
         .await
@@ -1663,7 +1713,7 @@ mod tests {
             (now + 1, now + 1),
         ] {
             assert_eq!(
-                *verify_space_credential(&state, &with(iat, exp), now)
+                *verify_space_credential(&state, &with(iat, exp), &space(), now)
                     .await
                     .unwrap_err()
                     .code(),
@@ -1673,7 +1723,7 @@ mod tests {
         }
         // Expired is its own code.
         assert_eq!(
-            *verify_space_credential(&state, &with(now - 120, now - 60), now)
+            *verify_space_credential(&state, &with(now - 120, now - 60), &space(), now)
                 .await
                 .unwrap_err()
                 .code(),
@@ -1700,9 +1750,15 @@ mod tests {
             sign_jwt(|b| authority.sign(b), &header, &claims)
         };
 
-        assert!(verify_space_credential(&state, &with(Some("live")), now)
-            .await
-            .is_ok());
+        // Revocation is checked after the request's own signature, as the reference orders it,
+        // so it goes through the seam.
+        seed_identity(&state, ALICE).await;
+        let read_with = |cred: String| {
+            let headers = key.credential_headers(&cred, ALICE);
+            let state = state.clone();
+            async move { read(&state, &headers, ALICE).await }
+        };
+        assert!(read_with(with(Some("live"))).await.is_ok());
         crate::db::space_jti::revoke_credentials(&state.db, SPACE, &["live".into()], 60)
             .await
             .unwrap();
@@ -1710,13 +1766,7 @@ mod tests {
             (with(Some("live")), ErrorCode::CredentialRevoked),
             (with(None), ErrorCode::BadJwt),
         ] {
-            assert_eq!(
-                *verify_space_credential(&state, &cred, now)
-                    .await
-                    .unwrap_err()
-                    .code(),
-                code
-            );
+            assert_eq!(*read_with(cred).await.unwrap_err().code(), code);
         }
     }
 
@@ -1755,7 +1805,7 @@ mod tests {
             (edit("sub", "not-a-space".into()), ErrorCode::BadJwtSub),
             (edit("cnf", Value::Null), ErrorCode::BadJwtCnf),
         ] {
-            let err = verify_space_credential(&state, &cred, now)
+            let err = verify_space_credential(&state, &cred, &space(), now)
                 .await
                 .unwrap_err();
             assert_eq!(*err.code(), code, "{}", err.message());
@@ -1798,7 +1848,7 @@ mod tests {
             (format!("{unsigned}.not-base64!"), ErrorCode::BadJwt),
             (format!("{unsigned}.YWJj"), ErrorCode::BadJwtSignature),
         ] {
-            let err = verify_space_credential(&state, &cred, now)
+            let err = verify_space_credential(&state, &cred, &space(), now)
                 .await
                 .unwrap_err();
             assert_eq!(*err.code(), code, "{}", err.message());
@@ -1822,7 +1872,7 @@ mod tests {
             key.key_id(),
             now,
         );
-        let err = verify_space_credential(&state, &cred, now)
+        let err = verify_space_credential(&state, &cred, &keyless_space, now)
             .await
             .unwrap_err();
         assert_eq!(*err.code(), ErrorCode::BadJwtIss, "{}", err.message());
@@ -1872,7 +1922,9 @@ mod tests {
                 serde_json::json!({ "typ": SPACE_CREDENTIAL_TYP, "alg": "ES256", "kid": kid });
             let cred = sign_jwt(|b| authority.sign(b), &header, &claims);
             assert_eq!(
-                verify_space_credential(&state, &cred, now).await.is_ok(),
+                verify_space_credential(&state, &cred, &space(), now)
+                    .await
+                    .is_ok(),
                 ok,
                 "{kid}"
             );
@@ -1905,11 +1957,129 @@ mod tests {
 
         // Once that filter passes, an issuer that resolves nowhere is the reference's
         // BadJwtIss, not the resolver's own code.
-        let err = verify_space_credential(&state, &cred, now)
+        let err = verify_space_credential(&state, &cred, &other, now)
             .await
             .unwrap_err();
         assert_eq!(*err.code(), ErrorCode::BadJwtIss, "{}", err.message());
         assert_eq!(err.status_code(), 401);
+    }
+
+    /// An unparseable token is the reference's `BadJwt` whether or not the request is signed:
+    /// the structural checks run before the other-space filter and before the request's own
+    /// signature.
+    #[tokio::test]
+    async fn an_unparseable_credential_answers_bad_jwt() {
+        let state = state_with_master_key().await;
+        seed_identity(&state, ALICE).await;
+        let key = SpaceSigKey::generate();
+        let mut unsigned = key.credential_headers("x.y.z", ALICE);
+        unsigned.remove("signature");
+        unsigned.remove("signature-input");
+        for headers in [unsigned, key.credential_headers("x.y.z", ALICE)] {
+            let err = read(&state, &headers, ALICE).await.unwrap_err();
+            assert_eq!(*err.code(), ErrorCode::BadJwt, "{}", err.message());
+            assert_eq!(err.status_code(), 401);
+        }
+    }
+
+    /// Each structural fault answers its own name even when the credential names another
+    /// space: the other-space filter runs only on a credential that is well formed.
+    #[tokio::test]
+    async fn structural_faults_answer_their_names_before_the_other_space_filter() {
+        let state = state_with_master_key().await;
+        let authority = seed_identity(&state, AUTHORITY).await;
+        seed_identity(&state, ALICE).await;
+        let key = SpaceSigKey::generate();
+        let now = unix_now().unwrap();
+        let other = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/other";
+        let header =
+            serde_json::json!({ "typ": SPACE_CREDENTIAL_TYP, "alg": "ES256", "kid": "#atproto" });
+        let claims = serde_json::json!({
+            "iss": AUTHORITY, "sub": other, "cnf": { "kid": key.key_id() },
+            "iat": now, "exp": now + 60, "jti": "elsewhere",
+        });
+        let with = |header_edit: (&str, Value), claim_edit: (&str, Value)| {
+            let (mut h, mut c) = (header.clone(), claims.clone());
+            for (obj, (field, value)) in [(&mut h, header_edit), (&mut c, claim_edit)] {
+                if field.is_empty() {
+                    continue;
+                }
+                if value.is_null() {
+                    obj.as_object_mut().unwrap().remove(field);
+                } else {
+                    obj[field] = value;
+                }
+            }
+            sign_jwt(|b| authority.sign(b), &h, &c)
+        };
+        let none = || ("", Value::Null);
+        for (cred, code) in [
+            (with(("typ", "JWT".into()), none()), ErrorCode::BadJwtType),
+            (with(("alg", Value::Null), none()), ErrorCode::BadJwt),
+            (with(("kid", "#other".into()), none()), ErrorCode::BadJwt),
+            (with(none(), ("iss", Value::Null)), ErrorCode::BadJwtIss),
+            (with(none(), ("sub", Value::Null)), ErrorCode::BadJwtSub),
+            (
+                with(none(), ("sub", "not-a-space".into())),
+                ErrorCode::BadJwtSub,
+            ),
+            (with(none(), ("exp", Value::Null)), ErrorCode::BadJwt),
+            (with(none(), ("cnf", Value::Null)), ErrorCode::BadJwtCnf),
+            (with(none(), ("jti", Value::Null)), ErrorCode::BadJwt),
+            (with(none(), ("iat", (now + 600).into())), ErrorCode::BadJwt),
+            (with(none(), ("exp", (now - 1).into())), ErrorCode::BadJwt),
+            // Well formed: the other-space filter answers.
+            (with(none(), none()), ErrorCode::InvalidCredential),
+        ] {
+            let err = read(&state, &key.credential_headers(&cred, ALICE), ALICE)
+                .await
+                .unwrap_err();
+            assert_eq!(*err.code(), code, "{}", err.message());
+        }
+        // Expired, with a lifetime that is otherwise valid.
+        let mut expired = claims.clone();
+        expired["iat"] = (now - 120).into();
+        expired["exp"] = (now - 60).into();
+        let cred = sign_jwt(|b| authority.sign(b), &header, &expired);
+        let err = read(&state, &key.credential_headers(&cred, ALICE), ALICE)
+            .await
+            .unwrap_err();
+        assert_eq!(*err.code(), ErrorCode::JwtExpired);
+    }
+
+    /// A well-formed credential for another space is refused before any DID is resolved: the
+    /// issuer here resolves nowhere, and the PLC directory is never asked.
+    #[tokio::test]
+    async fn a_credential_for_another_space_resolves_no_did() {
+        use wiremock::{matchers::any, Mock, MockServer, ResponseTemplate};
+
+        let plc = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(404))
+            .expect(0)
+            .mount(&plc)
+            .await;
+        let state = custos_core::test_support::test_state_with_plc_url(plc.uri()).await;
+        seed_identity(&state, ALICE).await;
+        let ghost = crypto::generate_p256_keypair().unwrap();
+        let ghost = repo_engine::CommitSigner::from_bytes(&ghost.private_key_bytes).unwrap();
+        let key = SpaceSigKey::generate();
+        let now = unix_now().unwrap();
+        let elsewhere =
+            parse_space_ref("at://did:plc:nobodyhere/space/org.example.bucket/x").unwrap();
+        let cred = mint_space_credential(
+            |b| ghost.sign(b),
+            "did:plc:nobodyhere",
+            &elsewhere,
+            key.key_id(),
+            now,
+        );
+        let err = read(&state, &key.credential_headers(&cred, ALICE), ALICE)
+            .await
+            .unwrap_err();
+        assert_eq!(*err.code(), ErrorCode::InvalidCredential);
+        assert_eq!(err.status_code(), 400);
+        plc.verify().await;
     }
 
     #[tokio::test]
