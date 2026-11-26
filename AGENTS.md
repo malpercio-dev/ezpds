@@ -74,7 +74,7 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 - `apps/admin-companion/` - Tauri v2 mobile app (iOS) — operator console ("Brass Console")
 - `crates/pds/` - PDS / Custos server (axum-based)
 - `crates/notify-relay/` - Notification relay (own binary + SQLite DB): the blind courier a self-hosted Custos instance enrolls with over iroh (`ezpds/notify/0`) to get opaque push handles for its devices, so payloads HPKE-sealed on the instance reach APNs without the relay ever seeing plaintext or keys. Enrollment is closed by default and gated on operator-minted single-use codes (`notify-relay mint-code --ttl`); `open_enrollment` opens it for a self-run relay. Deploys as its own Railway service from `crates/notify-relay/Dockerfile` — no HTTP surface, so no domain and no health check path. See its AGENTS.md and [docs/operations/self-relay-runbook.md](docs/operations/self-relay-runbook.md)
-- `crates/repo-engine/` - ATProto repo engine
+- `crates/repo-engine/` - ATProto repo engine: repository construction over atrium-repo (MST, commits, CAR export/import, genesis), record read/write, the AT-URI/data-model/lexicon/datetime validators, and the STAR archive codec (`star`/`star_profile`) serving the Spaces archive profiles
 - `crates/crypto/` - Cryptographic operations (P-256 key generation, did:key derivation, AES-256-GCM encryption, did:plc genesis ops and verification)
 - `crates/common/` - Shared types and utilities
 - `crates/ceremony-journal/` - `Journal<S: Step>` + `JournalStore`: the typed-step, persisted-cursor shape every resumable ceremony runs under (agent-child minting on the server, the outbound migration in the wallet). Dependency-free, so the iOS apps link it without pulling in `common`; see its module doc
