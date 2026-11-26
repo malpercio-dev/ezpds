@@ -426,18 +426,12 @@ async fn authenticate_space_credential(
         .as_deref()
         != Some(space.uri.as_str())
     {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "space credential is for a different space",
-        ));
+        return Err(other_space());
     }
 
     let credential = verify_space_credential(state, token, unix_now()?).await?;
     if credential.space.uri != space.uri {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "space credential is for a different space",
-        ));
+        return Err(other_space());
     }
 
     verify_credential_signature(headers, &credential.kid, audience)?;
@@ -458,6 +452,15 @@ async fn authenticate_space_credential(
         })?;
 
     Ok(credential)
+}
+
+/// A credential for some other space: the reference's `InvalidCredential` (400), a request
+/// error rather than an auth failure.
+fn other_space() -> ApiError {
+    ApiError::new(
+        ErrorCode::InvalidCredential,
+        "space credential is for a different space",
+    )
 }
 
 /// The `RepoNotFound` a space read answers with, whether the repo is absent or merely not the
@@ -713,9 +716,9 @@ pub struct VerifiedCredential {
 /// makes a verified credential usable lives there; this function is private to hold that.
 ///
 /// Each failure answers the reference's name for it (`BadJwt`, `BadJwtType`, `BadJwtIss`,
-/// `BadJwtSub`, `BadJwtCnf`, `JwtExpired`, `CredentialRevoked`, all 401). The signature
-/// verification itself (`verify_did_jwt_resolving_key`) still answers `InvalidToken`, and a
-/// failure to resolve the issuer its own code.
+/// `BadJwtSub`, `BadJwtCnf`, `JwtExpired`, `CredentialRevoked`, all 401), and an issuer that
+/// does not resolve is `BadJwtIss`. The signature verification itself
+/// (`verify_did_jwt_resolving_key`) still answers `InvalidToken`.
 async fn verify_space_credential(
     state: &CoreState,
     token: &str,
@@ -746,7 +749,20 @@ async fn verify_space_credential(
         .and_then(|i| common::Did::parse(i).ok())
         .ok_or_else(|| bad("space credential issuer is not a DID"))?;
 
-    let jwt = verify_did_jwt_resolving_key(state, token, &iss, &atproto_verification_key).await?;
+    // Verification failures keep their `InvalidToken`; any failure to resolve the issuer is the
+    // reference's `BadJwtIss` (401), not the resolver's own code. A server fault stays one.
+    let jwt = verify_did_jwt_resolving_key(state, token, &iss, &atproto_verification_key)
+        .await
+        .map_err(|e| match e.code() {
+            ErrorCode::InvalidToken | ErrorCode::InternalError => e,
+            _ => fail(
+                ErrorCode::BadJwtIss,
+                &format!(
+                    "could not resolve the space credential issuer: {}",
+                    e.message()
+                ),
+            ),
+        })?;
     let claims = &jwt.payload;
 
     let space = claims
@@ -1543,7 +1559,7 @@ mod tests {
             // Credential for a different space than the request targets.
             (
                 mint_space_credential(|b| authority.sign(b), AUTHORITY, &other, key.key_id(), now),
-                ErrorCode::InvalidToken,
+                ErrorCode::InvalidCredential,
             ),
             // Signed by alice (a valid key, but not the space's authority).
             (
@@ -1559,8 +1575,8 @@ mod tests {
             let err = read(&state, &key.credential_headers(&cred, ALICE), ALICE)
                 .await
                 .unwrap_err();
+            assert_eq!(err.status_code(), code.status_code());
             assert_eq!(*err.code(), code);
-            assert_eq!(err.status_code(), 401);
         }
     }
 
@@ -1749,7 +1765,16 @@ mod tests {
         let err = read(&state, &key.credential_headers(&cred, ALICE), ALICE)
             .await
             .unwrap_err();
-        assert_eq!(*err.code(), ErrorCode::InvalidToken);
+        assert_eq!(*err.code(), ErrorCode::InvalidCredential);
+        assert_eq!(err.status_code(), 400);
+
+        // Once that filter passes, an issuer that resolves nowhere is the reference's
+        // BadJwtIss, not the resolver's own code.
+        let err = verify_space_credential(&state, &cred, now)
+            .await
+            .unwrap_err();
+        assert_eq!(*err.code(), ErrorCode::BadJwtIss, "{}", err.message());
+        assert_eq!(err.status_code(), 401);
     }
 
     #[tokio::test]

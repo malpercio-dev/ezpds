@@ -198,7 +198,7 @@ pub enum ErrorCode {
     /// A page `cursor` did not parse. Declared by `com.atproto.space.listRepoOps`.
     #[serde(rename = "InvalidCursor")]
     InvalidCursor,
-    // The space-credential verifier's names, all 401: the reference's `AuthRequiredError` codes
+    // The space-credential verifier's names, all 401 but `InvalidCredential`: the reference's codes
     // on that path (its `SpaceTokenError` and `SpaceSignatureError` codes, and the audience and
     // revocation checks around them).
     /// A space-credential request whose RFC 9421 signature is missing, malformed, or does not verify
@@ -233,6 +233,10 @@ pub enum ErrorCode {
     /// A space credential its authority has revoked through `notifyCredentialsRevoked`.
     #[serde(rename = "CredentialRevoked")]
     CredentialRevoked,
+    /// A verified space credential for a space other than the one the request names. The
+    /// reference raises it as `InvalidRequestError` (400), not an auth failure.
+    #[serde(rename = "InvalidCredential")]
+    InvalidCredential,
     // Codes for endpoints/designs not yet shipped (tiers, did:web self-service, device
     // leases, Shamir recovery, etc.) are catalogued in docs/provisioning-api-spec.md's
     // status-code appendix; add them here as those designs actually land.
@@ -328,6 +332,7 @@ impl ErrorCode {
             ErrorCode::BadJwtSignature => "BadJwtSignature",
             ErrorCode::JwtExpired => "JwtExpired",
             ErrorCode::CredentialRevoked => "CredentialRevoked",
+            ErrorCode::InvalidCredential => "InvalidCredential",
         }
     }
 
@@ -411,6 +416,7 @@ impl ErrorCode {
             ErrorCode::BadJwtSignature => 401,
             ErrorCode::JwtExpired => 401,
             ErrorCode::CredentialRevoked => 401,
+            ErrorCode::InvalidCredential => 400,
         }
     }
 }
@@ -729,6 +735,7 @@ mod tests {
             (ErrorCode::BadJwtSignature, 401),
             (ErrorCode::JwtExpired, 401),
             (ErrorCode::CredentialRevoked, 401),
+            (ErrorCode::InvalidCredential, 400),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
