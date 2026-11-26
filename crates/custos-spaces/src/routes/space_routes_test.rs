@@ -601,6 +601,10 @@ async fn space_writes_wait_for_a_published_kem_key() {
         ("com.atproto.space.putRecord", put),
         ("com.atproto.space.deleteRecord", record),
         (
+            "com.atproto.space.clearRecords",
+            serde_json::json!({"space": SPACE, "repo": DID}),
+        ),
+        (
             "com.atproto.space.applyWrites",
             serde_json::json!({"space": SPACE, "repo": DID, "writes": [
                 {"$type": "com.atproto.space.applyWrites#create",
@@ -618,10 +622,15 @@ async fn space_writes_wait_for_a_published_kem_key() {
                     .await
                     .unwrap();
                 assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{method}");
-                assert_eq!(
-                    body_json(response).await["error"],
-                    "KemKeyNotPublished",
-                    "{method}"
+                let body = body_json(response).await;
+                assert_eq!(body["error"], "KemKeyNotPublished", "{method}");
+                // The message carries the wallet link that opens the fix for this DID.
+                assert!(
+                    body["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("obsign:/spaces?did=did%3Aplc%3Aspaceroutesaaaaaaaaaaaaa"),
+                    "{method}: {body}"
                 );
             }
         }

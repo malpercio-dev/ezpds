@@ -39,10 +39,16 @@ pub async fn require_kem_key_published_in(
     if published_active_key(conn, did).await?.is_some() {
         return Ok(());
     }
+    // The link is the wallet's `obsign:/spaces?did=…` route, which opens "Update identity for
+    // Spaces" for this DID; the DID is percent-encoded because the wallet decodes the query.
     Err(ApiError::new(
         ErrorCode::KemKeyNotPublished,
-        "your DID document does not publish this account's Spaces KEM key; \
-         publish it through POST /v1/kem-key before writing to a space",
+        format!(
+            "this account's DID document does not list its server's Spaces key yet; the \
+             account owner can publish it in Obsign under Advanced → \"Update identity for \
+             Spaces\", or by opening obsign:/spaces?did={} on their phone",
+            urlencoding::encode(did)
+        ),
     ))
 }
 
