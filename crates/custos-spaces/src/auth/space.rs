@@ -1082,9 +1082,9 @@ enum DidJwtFault {
     /// The resolved document has no verification key `pick_key` accepts.
     NoKey,
     /// The signature does not verify against the issuer's key, even after the refresh retry, or
-    /// cannot (`alg` outside the allowlist or not the key's curve).
+    /// cannot (`alg` outside the allowlist or not the key's curve, or not 64 bytes).
     Signature,
-    /// The token is not a well-formed JWT, its signature segment included.
+    /// The token is not a well-formed JWT, or its signature segment does not decode.
     Malformed,
 }
 
@@ -1102,7 +1102,7 @@ impl From<DidKeyJwtError> for DidJwtFailure {
                 DidJwtFault::Signature,
                 ServiceAuthError::SignatureMismatch.into(),
             ),
-            DidKeyJwtError::Algorithm(e) => DidJwtFailure::new(DidJwtFault::Signature, e),
+            DidKeyJwtError::Unverifiable(e) => DidJwtFailure::new(DidJwtFault::Signature, e),
             DidKeyJwtError::Malformed(e) => DidJwtFailure::new(DidJwtFault::Malformed, e),
         }
     }
@@ -1793,9 +1793,10 @@ mod tests {
                 sign_jwt(|b| authority.sign(b), &es256k, &claims),
                 ErrorCode::BadJwtSignature,
             ),
-            // A signature segment that is not base64url, or not 64 bytes.
+            // A signature segment that is not base64url is malformed; one that decodes to the
+            // wrong length reaches the signature check, as in the reference.
             (format!("{unsigned}.not-base64!"), ErrorCode::BadJwt),
-            (format!("{unsigned}.YWJj"), ErrorCode::BadJwt),
+            (format!("{unsigned}.YWJj"), ErrorCode::BadJwtSignature),
         ] {
             let err = verify_space_credential(&state, &cred, now)
                 .await

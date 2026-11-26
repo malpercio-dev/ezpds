@@ -446,12 +446,15 @@ mod tests {
         assert_eq!(err.message(), "service auth signature verification failed");
 
         let (signed, _) = token.rsplit_once('.').unwrap();
-        let malformed = format!("{signed}.not-base64!");
-        let err = require_service_auth(&state, &headers_with(&malformed), UPLOAD_BLOB_LXM, 1_001)
-            .await
-            .unwrap_err();
-        assert_eq!(*err.code(), ErrorCode::InvalidToken);
-        assert_eq!(err.message(), "invalid token");
+        for sig in ["not-base64!", "YWJj"] {
+            let malformed = format!("{signed}.{sig}");
+            let err =
+                require_service_auth(&state, &headers_with(&malformed), UPLOAD_BLOB_LXM, 1_001)
+                    .await
+                    .unwrap_err();
+            assert_eq!(*err.code(), ErrorCode::InvalidToken, "{sig}");
+            assert_eq!(err.message(), "invalid token", "{sig}");
+        }
     }
 
     #[tokio::test]
