@@ -992,7 +992,7 @@ mod tests {
                 "space": FOREIGN_SPACE,
                 "repo": WRITER,
                 "repoRev": "3m22aaaaaaaa3",
-                "data": { "$bytes": "Aw==" },
+                "data": { "$bytes": "Aw" },
             })
         );
         assert!(queued_updates(&state).await.is_empty(), "delivered");

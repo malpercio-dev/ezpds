@@ -130,6 +130,8 @@ just reference-pds            # build if needed, then serve 2 PDSes + a local PL
 just reference-pds up 3       # 3 PDSes
 just reference-pds smoke      # start, run create-account + crud-test on every PDS, stop
 just reference-pds build      # clone/fetch, check out + verify the pin, install, build
+just reference-pds spaces     # + a local Custos: the cross-host Spaces scenario both ways
+just reference-pds spaces-up  # the same network, left up (see "The cross-host scenario")
 ```
 
 `up` prints the hosts: PLC on `http://localhost:2680`, then PDS *i* on `2680 + i`.
@@ -183,92 +185,99 @@ Gotchas:
 
 ## Atproto Spaces
 
-Three commands, in order of how much of the protocol they touch:
+Four commands:
 
 ```sh
 just interop spaces-test --name primary          # authority = self, one host
-just interop spaces-cross-host --member primary  # + delegation → space credential → credential-authed reads
-just interop spaces-allowlist --name primary     # allowedApps refuses an unattested credential request
+just interop spaces-allowlist --name primary     # allowedApps refuses authorizeSpaceSync without an attestation
+just interop spaces-interop --authority a --member b   # the cross-host scenario, two hosts
+just interop spaces-vectors                      # the crypto crate's MAC vectors, recomputed by the reference
 ```
 
-`spaces-test` is the single-host round-trip: `space.createSpace` → `space.createRecord`
-→ get/list/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` → teardown. It reads the
-space export as a **parsed** `atproto-space-repo` STAR archive, not a byte count: the commit as
-its metadata, record keys in strict order, and the written record among them.
+`spaces-test` is the single-host round-trip: `createSpace` → `createRecord` →
+get/list/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` → teardown, reading the export
+as a parsed STAR archive. `spaces-allowlist` checks that an `allowedApps` space answers
+`AppNotAuthorized` to an `authorizeSpaceSync` naming no client, the authority's own request
+included. Both run against any deployment, so `suite` includes them.
 
-`spaces-cross-host` drives the credential flow a foreign implementation actually judges a
-host on:
+### The cross-host scenario
 
-1. the member writes into the space through **their own PDS** (the repo host) — which
-   registers a space it may never have heard of, the path that lets anyone join a foreign
-   authority's space;
-2. the repo host mints a **delegation token** (`space.getDelegationToken`);
-3. the **space host** spends it for a **space credential** bound to a fresh P-256 key
-   (`space.getSpaceCredential`, Bearer delegation + an RFC 9421 `atproto-space` signature
-   naming the key, which becomes the credential's `cnf.kid`);
-4. that credential drives reads on **both** hosts — `space.getRecord`/`listRepoOps`/`getRepo`
-   on the repo host, `space.listWriters` on the authority — each under
-   `Authorization: Atproto-Space`, signed together with the request's audience (the repo
-   owner's DID on the repo host, the authority's DID on the space host);
-5. it also asserts the credential is **refused** when presented without its signature. A host that
-   accepts it as a plain bearer token has thrown away the binding.
+`spaces-interop` is the check that defines conformance: Custos against the reference built from
+source at the pin, in both directions. One command stands up the network and runs it:
+
+```sh
+cargo build -p pds            # the scenario runs the debug binary
+just reference-pds spaces     # reference + local Custos on one PLC, scenario both ways, stop
+```
+
+`just reference-pds spaces-up` keeps the network up instead and writes `<dir>/env`. Source it,
+create the accounts, and run each direction yourself:
+
+```sh
+. <dir>/env
+just interop create-account --name custos                              # on the local Custos
+just interop create-account --name ref --host "$EZPDS_REFERENCE_URL"   # on the reference
+just interop spaces-interop --authority custos --member ref
+just interop spaces-interop --authority ref --member custos
+```
+
+The authority hosts a memberspace and the member writes into it from its own host. Each step
+is reported pass or fail, and a failed step does not stop the ones that don't depend on it:
+
+1. **identity.** Both DID documents publish `#atproto_kem`.
+2. **policy.** `createSpace` with `publishPolicy`/`publishMembers`, `putMembers` for the member,
+   then the published `com.atproto.space.policy` and member records and `listMembers`.
+3. **credential.** A delegation token from the member's host, spent at the authority's
+   `authorizeSpaceSync` with a fresh P-256 `credentialKey` and a `notify` registration. The
+   scenario serves the syncer endpoint on `localhost` and must see `confirmRegistration`.
+4. **write** and **moderation.** The member writes a note and a `com.atproto.label.record`
+   into the foreign space, and the authority's registered syncer receives a `repoWrite`.
+5. **MAC** and **STAR.** Credential-authed `getRecord`, `getLatestCommit`, `listRepoOps` and
+   `getRepo` on the member's host, each with `Accept-Signature` under a fresh key share
+   encapsulated to the member's published `#atproto_kem`. Each MAC is verified, and `getRepo`
+   is checked with the LtHash recomputed against the commit's `data`. An unsigned credential
+   must be refused.
+6. **authority reads.** A credential-authed, MAC-verified read of the policy record on the
+   authority, then `listWriters` with the member's commit digest.
+7. **writer set.** `removeWriter` → `listWriters` shows `repoRemoved` (and the syncer is told);
+   `clearRecords` → the empty LtHash digest.
+8. **migration.** A throwaway authority's space moves to the other host the way an account
+   migration carries it: `reserveSigningKey` and `createAccount` under service auth, then
+   `exportSpaceMeta` → `importSpaceMeta` and `getRepo` → `importRepo`, and the digests must
+   match. The account stays deactivated there.
+9. **vectors.** As `spaces-vectors`.
+
+Every MAC, STAR archive and LtHash is checked with the reference's own `@atproto/space` from
+the `bin/reference-pds build` checkout, not this tool's code.
+
+How the network is wired (`bin/reference-pds`, `reference/custos-local.mjs`):
+
+- **One PLC.** Custos registers its DIDs with the reference's local PLC, so each side
+  resolves the other's DID documents.
+- **TLS for Custos.** Custos needs an https public URL. It sits behind a TLS proxy on
+  `https://localhost:2690` (`EZPDS_CUSTOS_PORT`) with a throwaway cert. The reference and the
+  CLI trust that cert through `NODE_EXTRA_CA_CERTS`.
+- **Loopback for Custos.** Custos reaches the reference's http loopback PDS through its
+  SSRF-hardened client only because `EZPDS_DEV_ALLOW_LOOPBACK_TARGETS=true`. Only a debug
+  build honors it. A release build logs a warning and ignores it.
 
 ### Naming the two hosts
 
-The host comes from the **account**, not from a global — `import-session` records the PDS it
-authenticated against, so naming two accounts spans two hosts:
-
-```sh
-# adopt an account on a foreign alpha PDS (standard createSession; no Custos /v1/* provisioning)
-just interop import-session --name alpha --host https://pds.spaces-alpha.bsky.network \
-  --identifier alice.example --password '…'
-
-# Custos repo host + foreign space host
-just interop spaces-cross-host --member primary --authority alpha
-
-# the reverse: foreign repo host + Custos space host
-just interop spaces-cross-host --member alpha --authority primary
-```
-
-With only `--member`, both halves are that account's PDS. That degenerate run still exercises
-the entire credential path, so `suite` includes it and the flow is covered without a second
-deployment.
-
-To join a space that already exists somewhere (e.g. a bulletin space), pass it directly —
-the authority's host is then resolved from its **DID document** the way a real client would,
-preferring an `#atproto_space` / `AtprotoSpaceHost` service entry and falling back to the
-PDS endpoint. `--space-host` overrides that when the authority publishes neither:
-
-```sh
-just interop spaces-cross-host --member primary \
-  --space at://did:plc:…/space/my.bulletin.board/self [--space-host https://…]
-```
-
-### Bring your own session
-
-`create-account` drives the Custos-proprietary `/v1/*` provisioning ceremony and cannot
-reach a foreign PDS. `import-session` is the documented alternative: it does nothing but
-standard `com.atproto.server.createSession` and records the result (with its host) in
-`.state/state.json`. That is all the spaces scenarios need, so any account on any
-atproto PDS can play either role. Imported accounts are marked `kind: foreign` and are
-never touched by `delete-ephemeral`.
+The host comes from the **account**: `create-account --host` and `import-session` record the
+PDS, so naming two accounts spans two hosts. `import-session` is standard
+`com.atproto.server.createSession` and nothing else, so any account on any atproto PDS can
+play either role. Imported accounts are marked `kind: foreign` and are never touched by
+`delete-ephemeral`.
 
 ### What is still exercised by hand
 
-Three parts of the alpha surface need a **publicly reachable host** the CLI does not have,
-and so stay manual:
-
-| Surface | Why it needs a host |
+| Surface | Why |
 |---|---|
 | client attestation (the positive `allowedApps` case, managedspace policies) | the authority resolves the caller's `client_id` **URL** to fetch its JWKS |
-| `authorizeSpaceSync` with `notify` → `confirmRegistration`, then receive `notifySpaceUpdate` (acting as a syncer) | the space host POSTs to the syncer's https endpoint |
 | the alpha `@atproto` TS SDK as a client; the bulletin sample app | ship on atproto's `permissioned-data` branch and move weekly |
 
-`spaces-allowlist` covers the reachable half of the app perimeter: an `allowedApps` space
-must answer `AppNotAuthorized` (403) to a credential request naming no client — including
-the authority's own request, which is the part a host is likeliest to get wrong. The Friday
-[alpha-watch routine](../../docs/operations/spaces-alpha-watch-routine.md) tracks the spec
-drift that would invalidate any of this.
+The Friday [alpha-watch routine](../../docs/operations/spaces-alpha-watch-routine.md) tracks
+the spec drift that would invalidate any of this.
 
 ## What the suite checks
 
@@ -279,8 +288,7 @@ drift that would invalidate any of this.
 | identity | `resolveHandle`, `/.well-known/atproto-did`, and the plc.directory DID doc all agree; PDS endpoint in the doc points at this deployment |
 | CRUD | createRecord → getRecord (CID match) → listRecords → deleteRecord |
 | spaces | Atproto Spaces round-trip on the account's own PDS: `space.createSpace` → `space.createRecord` → getRecord/listRecords/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` (STAR archive parsed: the commit as metadata, keys in strict order, the record present) → deleteRecord → `deleteSpace` (random skey per run; the space is torn down even on failure) |
-| spaces credential | delegation token → signature-bound space credential → credential-authed reads on both the repo host and the authority; the credential is rejected when presented without its signature |
-| spaces allowedApps | an `allowedApps` space answers `AppNotAuthorized` to a credential request naming no client |
+| spaces allowedApps | an `allowedApps` space answers `AppNotAuthorized` to an `authorizeSpaceSync` naming no client |
 | firehose | a live `subscribeRepos` subscriber sees the `#commit` frame for a write, correct repo + op path |
 | sync | CAR export parses, root CID == `getLatestCommit`, `getRepoStatus` active, repo in `listRepos` |
 | network | relay (`bsky.network`) crawl status + AppView profile visibility — **informational** (staging may not be crawled); PDS→AppView service-proxy auth leg must pass |
@@ -288,7 +296,7 @@ drift that would invalidate any of this.
 | lifecycle | ephemeral account created, verified, deactivated with `deleteAfter`; the server reaper purges it (~5 min) and broadcasts `#account` deleted |
 
 Individual steps are runnable standalone (`verify-identity`, `crud-test`,
-`spaces-test`, `spaces-cross-host`, `spaces-allowlist`, `firehose-test`, `sync-test`,
+`spaces-test`, `spaces-allowlist`, `spaces-interop`, `firehose-test`, `sync-test`,
 `network-check`, `interact …`) —
 see `just interop help`.
 

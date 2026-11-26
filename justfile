@@ -243,7 +243,9 @@ interop-test:
 # default 2680, PDS i on +i): `just reference-pds` serves N (default 2) http loopback
 # PDSes + a local PLC in the foreground and prints their URLs;
 # `just reference-pds smoke` starts them, runs the interop account steps against each,
-# and stops. Needs node/pnpm + network; not part of `just ci`. See tools/interop/README.md.
+# and stops. `just reference-pds spaces` adds a local debug Custos (`cargo build -p pds`) on
+# the same PLC and runs the cross-host Spaces scenario both ways (`spaces-up` leaves it up).
+# Needs node/pnpm + network; not part of `just ci`. See tools/interop/README.md.
 reference-pds mode="up" count="2":
     tools/interop/bin/reference-pds {{mode}} {{count}}
 

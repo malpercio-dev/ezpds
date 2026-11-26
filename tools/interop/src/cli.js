@@ -11,7 +11,7 @@ import { syncChecks } from './sync.js';
 import { networkChecks, relayHostStatus, appviewProfile } from './network.js';
 import { resolveTarget, followTarget, likeTargetPost, mentionTarget, cleanupInteractions } from './interact.js';
 import { performMigration, verifyMigration } from './migrate.js';
-import { spacesRoundTrip, crossHostRoundTrip, allowListRefusal } from './spaces.js';
+import { spacesRoundTrip, spacesInterop, confirmMacVectors, allowListRefusal } from './spaces.js';
 import { runSuite } from './suite.js';
 import { loadState, statePaths } from './state.js';
 
@@ -40,9 +40,10 @@ Checks
   verify-identity --name <n>       handle ↔ DID ↔ plc.directory agreement
   crud-test --name <n>             create/read/list/delete round-trip
   spaces-test --name <n>           Atproto Spaces round-trip (memberspace + records + sync reads)
-  spaces-cross-host --member <n> [--authority <n>] [--space <uri>] [--space-host <url>]
-                                   delegation token → signature-bound credential → credential-authed
-                                   reads on the repo host AND the space host
+  spaces-interop --authority <n> --member <n>
+                                   cross-host Spaces scenario: authority and member on two hosts
+                                   (policy, credential, MACs, STAR, notify, writer set, migration)
+  spaces-vectors                   recompute the crypto crate's MAC vectors with the reference
   spaces-allowlist --name <n>      an allowList space refuses an unattested credential request
   firehose-test --name <n>         write a post, observe its #commit frame
   sync-test --name <n>             CAR export, latestCommit, repoStatus, listRepos
@@ -86,8 +87,6 @@ function flags(args, extra = {}) {
       password: { type: 'string' },
       member: { type: 'string' },
       authority: { type: 'string' },
-      space: { type: 'string' },
-      'space-host': { type: 'string' },
       'invite-code': { type: 'string' },
       ephemeral: { type: 'boolean' },
       lifecycle: { type: 'boolean' },
@@ -176,14 +175,21 @@ async function main() {
     case 'spaces-test':
       print(await spacesRoundTrip(requireName(v)));
       break;
-    case 'spaces-cross-host':
-      if (!v.member) throw new Error('--member is required (the account whose PDS hosts the repo)');
-      print(await crossHostRoundTrip({
-        member: v.member,
-        authority: v.authority,
-        space: v.space,
-        spaceHost: v['space-host'],
-      }));
+    case 'spaces-interop': {
+      if (!v.member || !v.authority) throw new Error('--authority and --member are required (accounts on two hosts)');
+      const result = await spacesInterop({ authority: v.authority, member: v.member });
+      const vectors = await confirmMacVectors().then((r) => ({ step: 'vectors: MAC fixture recomputed by the reference', ok: true, detail: r }),
+        (e) => ({ step: 'vectors: MAC fixture recomputed by the reference', ok: false, error: e.message }));
+      result.steps.push(vectors);
+      result.ok &&= vectors.ok;
+      print(result);
+      console.log(`\n${result.authority} (authority) / ${result.member} (member)`);
+      for (const s of result.steps) console.log(`  ${s.ok ? 'PASS' : 'FAIL'}  ${s.step}${s.ok ? '' : `\n        ${s.error}`}`);
+      if (!result.ok) process.exitCode = 1;
+      break;
+    }
+    case 'spaces-vectors':
+      print(await confirmMacVectors());
       break;
     case 'spaces-allowlist':
       print(await allowListRefusal(requireName(v)));

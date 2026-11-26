@@ -62,7 +62,7 @@ export function sleep(ms) {
  *
  * @param {string} url
  * @param {{method?: string, headers?: object, body?: any, token?: string, raw?: boolean,
- *          spaceSig?: {key: object, credential?: string, audience?: string},
+ *          spaceSig?: {key: object, credential: string, audience: string},
  *          minIntervalMs?: number, maxRetries?: number}} options
  *   `body` objects are JSON-encoded; a `URLSearchParams` body is form-encoded instead
  *   (`application/x-www-form-urlencoded`, e.g. an OAuth token-endpoint request); string
@@ -70,11 +70,9 @@ export function sleep(ms) {
  *   unconsumed (for CAR/blob downloads); otherwise JSON (or text) is parsed and
  *   non-2xx throws HttpError.
  *
- *   `spaceSig` attaches an Atproto Spaces RFC 9421 signature (`space-signature.js`).
- *   With `credential` the request switches to `Authorization: Atproto-Space <credential>`
- *   and signs it together with `audience`; without it, `token` still supplies the Bearer
- *   delegation grant and the signature names its key — the two shapes the credential-authed
- *   reads and `getSpaceCredential` want.
+ *   `spaceSig` authorizes the request with a space credential instead
+ *   (`Authorization: Atproto-Space-Credential <credential>`), signed together with
+ *   `audience` by the credential's bound key (`space-signature.js`).
  *
  *   `minIntervalMs`/`maxRetries` override this module's own pacing defaults for callers
  *   (e.g. tools/mcp) that configure their own — every request still funnels through the
@@ -88,9 +86,7 @@ export async function request(url, options = {}) {
   if (options.token) headers['Authorization'] = `Bearer ${options.token}`;
   if (options.spaceSig) {
     const { key, credential, audience } = options.spaceSig;
-    Object.assign(headers, await spaceSigHeaders(key, credential === undefined
-      ? { authorization: headers['Authorization'] }
-      : { authorization: `Atproto-Space ${credential}`, audience }));
+    Object.assign(headers, await spaceSigHeaders(key, { credential, audience }));
   }
 
   let body;

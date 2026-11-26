@@ -6,6 +6,9 @@
 #   reference-pds build          clone/fetch, check out the pin, verify the SHA, install, build
 #   reference-pds up [N]         build, then run N PDSes (default 2) in the foreground; Ctrl-C stops
 #   reference-pds smoke [N]      build, start, run the interop account steps against every PDS, stop
+#   reference-pds spaces-up      build, then run the reference (1 PDS) and a local debug Custos on
+#                                one PLC in the foreground; writes <dir>/env for the interop CLI
+#   reference-pds spaces         spaces-up, run the cross-host Spaces scenario both ways, stop
 #
 # Never `latest` or an image tag: the pin is a reference commit, and moving it is a decision.
 set -euo pipefail
@@ -94,6 +97,65 @@ smoke() {
   echo "smoke: $i reference PDSes — create-account + crud-test passed on each"
 }
 
+# The cross-host Spaces network: the reference PDS and a local debug Custos (`cargo build -p pds`)
+# on the reference's PLC. Custos needs an https public URL, so it sits behind a TLS proxy on
+# localhost with a throwaway cert that the reference and the CLI trust via NODE_EXTRA_CA_CERTS.
+# Sets the globals `dir` (state, logs, env file) and `pids`; the caller's EXIT trap stops them.
+CUSTOS_PORT="${EZPDS_CUSTOS_PORT:-2690}"
+spaces_start() {
+  ports_free 1
+  dir="${EZPDS_SPACES_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/spaces-interop.XXXXXX")}"
+  mkdir -p "$dir"
+  openssl req -x509 -newkey rsa:2048 -nodes -keyout "$dir/key.pem" -out "$dir/cert.pem" -days 1 \
+    -subj /CN=localhost -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' 2>/dev/null
+  export NODE_EXTRA_CA_CERTS="$dir/cert.pem"
+  "${network[@]}" 1 "$PORT" > "$dir/reference.log" 2>&1 &
+  pids="$!"
+  wait_ready "$dir/reference.log" 180
+  local plc ref
+  plc="$(sed -n 's/^PLC \(http[^ ]*\)$/\1/p' "$dir/reference.log")"
+  ref="$(sed -n 's/^PDS1 \(http[^ ]*\)$/\1/p' "$dir/reference.log")"
+  node "$here/../reference/custos-local.mjs" "$here/../../.." "$plc" "$CUSTOS_PORT" "$dir" > "$dir/custos.log" 2>&1 &
+  pids="$pids $!"
+  echo "$pids" > "$dir/pids"
+  wait_ready "$dir/custos.log" 90
+  cat > "$dir/env" <<ENV
+export NODE_EXTRA_CA_CERTS=$dir/cert.pem EZPDS_PLC_URL=$plc EZPDS_INTEROP_PACE_MS=0
+export EZPDS_BASE_URL=https://localhost:$CUSTOS_PORT EZPDS_ADMIN_TOKEN=interop-admin-token
+export EZPDS_INTEROP_STATE_DIR=$dir/state EZPDS_REFERENCE_URL=$ref
+ENV
+  echo "spaces network up: source $dir/env"
+}
+
+wait_ready() {
+  local _
+  for _ in $(seq 1 "$2"); do
+    grep -qx 'ready' "$1" && return
+    sleep 1
+  done
+  cat "$1" >&2; echo "$1: not ready in $2s" >&2; exit 1
+}
+
+spaces_stop() { kill $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; }
+
+spaces_up() {
+  trap 'spaces_stop' EXIT
+  trap 'exit 0' INT TERM
+  spaces_start
+  wait
+}
+
+spaces() {
+  trap 'rc=$?; spaces_stop; exit $rc' EXIT
+  spaces_start
+  # shellcheck disable=SC1091
+  . "$dir/env"
+  "$here/interop" create-account --name custos
+  "$here/interop" create-account --name ref --host "$EZPDS_REFERENCE_URL"
+  "$here/interop" spaces-interop --authority custos --member ref
+  "$here/interop" spaces-interop --authority ref --member custos
+}
+
 cmd="${1:-up}"
 count="${2:-2}"
 build
@@ -101,5 +163,7 @@ case "$cmd" in
   build) ;;
   up) up "$count" ;;
   smoke) smoke "$count" ;;
-  *) echo "usage: reference-pds [build|up|smoke] [pds-count]" >&2; exit 2 ;;
+  spaces-up) spaces_up ;;
+  spaces) spaces ;;
+  *) echo "usage: reference-pds [build|up|smoke|spaces-up|spaces] [pds-count]" >&2; exit 2 ;;
 esac

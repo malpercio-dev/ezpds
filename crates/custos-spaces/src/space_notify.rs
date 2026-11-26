@@ -572,7 +572,7 @@ mod tests {
                     "$type": "com.atproto.space.defs#repoWrite",
                     "repo": WRITER,
                     "repoRev": "3lzz",
-                    "data": { "$bytes": "3q0=" },
+                    "data": { "$bytes": "3q0" },
                     "spaceRev": "3m22",
                     "prevSpaceRev": "3m21",
                 },
@@ -634,7 +634,7 @@ mod tests {
                 "space": SPACE,
                 "repo": WRITER,
                 "repoRev": "3lzz",
-                "data": { "$bytes": "3q0=" },
+                "data": { "$bytes": "3q0" },
             }),
             "a repo host assigns no spaceRev — that is the authority's job"
         );

@@ -798,6 +798,11 @@ fn notify_body(space: &str, repo: &str, rev: &str) -> serde_json::Value {
 /// A foreign account (DID document seeded, no local account row) plus a service-auth token it
 /// signed for `lxm`, addressed to this server.
 async fn foreign_repo_token(state: &CoreState, lxm: &str) -> (String, String) {
+    foreign_repo_token_to(state, lxm, &state.config.resolve_server_did()).await
+}
+
+/// [`foreign_repo_token`] addressed to `aud`.
+async fn foreign_repo_token_to(state: &CoreState, lxm: &str, aud: &str) -> (String, String) {
     const CAROL: &str = "did:plc:carolnotifyaaaaaaaaaaaa";
     let kp = crypto::generate_p256_keypair().unwrap();
     seed_undeliverable(state, CAROL, &kp).await;
@@ -806,12 +811,38 @@ async fn foreign_repo_token(state: &CoreState, lxm: &str) -> (String, String) {
     let token = custos_core::auth::jwt::mint_service_auth_jwt(
         |b| signer.sign(b),
         CAROL,
-        &state.config.resolve_server_did(),
+        aud,
         Some(lxm),
         now,
         now + 60,
     );
     (CAROL.to_string(), token)
+}
+
+/// The reference's repo host addresses the authority's `#atproto_pds` service, not the host
+/// serving it, and writes `$bytes` unpadded. Both must be accepted; another DID must not.
+#[tokio::test]
+async fn notify_repo_update_accepts_the_reference_shaped_notification() {
+    use base64::Engine as _;
+    let state = setup().await;
+    let lxm = "com.atproto.space.notifyRepoUpdate";
+    let mut body = notify_body(SPACE, "unused", "3kabcdefghij2");
+    body["data"]["$bytes"] = base64::engine::general_purpose::STANDARD_NO_PAD
+        .encode([7u8; 32])
+        .into();
+
+    let (_, wrong) = foreign_repo_token_to(&state, lxm, &format!("{BOB}#atproto_pds")).await;
+    let (carol, token) = foreign_repo_token_to(&state, lxm, &format!("{ALICE}#atproto_pds")).await;
+    body["repo"] = carol.clone().into();
+    let (status, out) = send(&state, post(lxm, &wrong, body.clone())).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{out}");
+    let (status, out) = send(&state, post(lxm, &token, body)).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+
+    let writers = crate::db::space_notify::list_writers(&state.db, SPACE, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(writers.len(), 1);
 }
 
 /// A service-auth token signed by a *local* account's repo key.
