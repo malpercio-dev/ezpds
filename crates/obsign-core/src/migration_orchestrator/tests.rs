@@ -14,6 +14,7 @@ fn test_ensure_phase_did_phase_too_low() {
         dest_client: None,
         phase: MigrationPhase::SourceAuthed,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -37,6 +38,7 @@ fn test_ensure_phase_did_did_mismatch() {
         dest_client: None,
         phase: MigrationPhase::Resolved,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -70,6 +72,7 @@ fn test_ensure_phase_did_success() {
         dest_client: None,
         phase: MigrationPhase::RepoTransferred,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -113,12 +116,14 @@ fn test_migration_error_serialization_blob_drain_incomplete() {
                 record_uri: "at://did:plc:abc/app.bsky.feed.post/1".into(),
                 direction: BlobTransferDirection::Source,
                 reason: "server error (500)".into(),
+                space: None,
             },
             BlobLoss {
                 cid: "bafyupload".into(),
                 record_uri: "at://did:plc:abc/app.bsky.feed.post/2".into(),
                 direction: BlobTransferDirection::Destination,
                 reason: "rejected".into(),
+                space: None,
             },
         ],
     };
@@ -182,6 +187,7 @@ fn test_authenticate_migration_source_did_mismatch_gate() {
         dest_client: None,
         phase: MigrationPhase::Resolved,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -489,6 +495,7 @@ fn test_create_destination_account_phase_gate() {
         dest_client: None,
         phase: MigrationPhase::Resolved, // Too early!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -574,6 +581,7 @@ fn test_transfer_repo_phase_gate() {
         dest_client: None,
         phase: MigrationPhase::SourceAuthed, // Too early!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -597,6 +605,7 @@ fn test_transfer_repo_phase_too_low() {
         dest_client: None,
         phase: MigrationPhase::SourceAuthed, // Too early!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -622,6 +631,7 @@ fn test_transfer_blobs_phase_too_low() {
         dest_client: None,
         phase: MigrationPhase::DestCreated, // Too early for transfer_blobs!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -633,7 +643,7 @@ fn test_transfer_blobs_phase_too_low() {
 }
 
 // Build a Bearer dest client (future-exp so no proactive refresh fires) at `base_url`.
-fn bearer_client_at(base_url: String) -> OAuthClient {
+pub(super) fn bearer_client_at(base_url: String) -> OAuthClient {
     OAuthClient::new_bearer(make_bearer_jwt(9999999999), String::new(), base_url).unwrap()
 }
 
@@ -1248,7 +1258,8 @@ async fn test_drain_missing_blobs_list_failure_is_hard_error() {
 
 // ── Task 3 tests: transfer_preferences ─────────────────────────────────
 
-// Pure gate test: transfer_preferences before BlobsTransferred phase fails
+// Pure gate test: transfer_preferences before SpacesTransferred fails, so the space transfer
+// can never be skipped by running the next leg
 #[test]
 fn test_transfer_preferences_phase_too_low() {
     let state = Some(OutboundMigrationState {
@@ -1259,12 +1270,13 @@ fn test_transfer_preferences_phase_too_low() {
         handle: "alice.test".into(),
         source_client: None,
         dest_client: None,
-        phase: MigrationPhase::RepoTransferred, // Too early for transfer_preferences!
+        phase: MigrationPhase::BlobsTransferred, // Spaces not transferred yet
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
-    let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::BlobsTransferred);
+    let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::SpacesTransferred);
     assert!(matches!(
         result,
         Err(MigrationError::MigrationNotReady { .. })
@@ -1365,117 +1377,27 @@ async fn test_transfer_preferences_impl_dest_failure() {
 
 // ── Task 4 tests: verify_import ────────────────────────────────────────
 
-// Pure: import_reconciles is true when imported_blobs == expected_blobs AND repo_commit exists
+// Pure: a public blob still missing on the destination is unexplained unless the user accepted
+// it as lost from the public drain; a space loss with the same CID doesn't excuse it.
 #[test]
-fn test_import_reconciles_true_when_complete() {
-    let status = crate::pds_client::AccountStatus {
-        activated: false,
-        valid_did: true,
-        repo_commit: Some("baffy".to_string()),
-        repo_rev: Some("rev".to_string()),
-        stored_blocks: 10,
-        indexed_records: 5,
-        private_state_values: 0,
-        expected_blobs: 10,
-        imported_blobs: 10,
+fn test_unexplained_missing_blobs_excuses_only_accepted_public_losses() {
+    let loss = |cid: &str, space: Option<&str>| BlobLoss {
+        cid: cid.into(),
+        record_uri: "at://did:plc:abc/app.bsky.feed.post/1".into(),
+        direction: BlobTransferDirection::Source,
+        reason: "500".into(),
+        space: space.map(str::to_string),
     };
-
-    assert!(import_reconciles_with_loss(&status, 0));
-}
-
-// Pure: import_reconciles is true even when valid_did = false
-#[test]
-fn test_import_reconciles_ignores_valid_did() {
-    let status = crate::pds_client::AccountStatus {
-        activated: false,
-        valid_did: false, // Still invalid DID, but import reconciles
-        repo_commit: Some("baffy".to_string()),
-        repo_rev: Some("rev".to_string()),
-        stored_blocks: 10,
-        indexed_records: 5,
-        private_state_values: 0,
-        expected_blobs: 10,
-        imported_blobs: 10,
-    };
-
-    assert!(import_reconciles_with_loss(&status, 0));
-}
-
-// Pure: import_reconciles is false when imported_blobs < expected_blobs
-#[test]
-fn test_import_reconciles_false_when_blobs_incomplete() {
-    let status = crate::pds_client::AccountStatus {
-        activated: false,
-        valid_did: true,
-        repo_commit: Some("baffy".to_string()),
-        repo_rev: Some("rev".to_string()),
-        stored_blocks: 10,
-        indexed_records: 5,
-        private_state_values: 0,
-        expected_blobs: 10,
-        imported_blobs: 5, // Incomplete
-    };
-
-    assert!(!import_reconciles_with_loss(&status, 0));
-}
-
-// Pure: import_reconciles is false when repo_commit is None
-#[test]
-fn test_import_reconciles_false_when_repo_absent() {
-    let status = crate::pds_client::AccountStatus {
-        activated: false,
-        valid_did: true,
-        repo_commit: None, // No repo yet
-        repo_rev: None,
-        stored_blocks: 0,
-        indexed_records: 0,
-        private_state_values: 0,
-        expected_blobs: 10,
-        imported_blobs: 10,
-    };
-
-    assert!(!import_reconciles_with_loss(&status, 0));
-}
-
-// Pure: a degraded import reconciles when imported + accepted-loss == expected. The
-// skipped blobs never arrive, so without the tolerance verify_import would reject forever.
-#[test]
-fn test_import_reconciles_with_loss_tolerates_accepted_skips() {
-    let status = crate::pds_client::AccountStatus {
-        activated: false,
-        valid_did: true,
-        repo_commit: Some("baffy".to_string()),
-        repo_rev: Some("rev".to_string()),
-        stored_blocks: 10,
-        indexed_records: 5,
-        private_state_values: 0,
-        expected_blobs: 10,
-        imported_blobs: 7, // 3 blobs permanently lost
-    };
-
-    // 3 accepted losses close the gap; 2 leaves it open; 0 (exact) fails.
-    assert!(import_reconciles_with_loss(&status, 3));
-    assert!(!import_reconciles_with_loss(&status, 2));
-    assert!(!import_reconciles_with_loss(&status, 0));
-}
-
-// Pure: accepted loss never papers over a MISSING repo — a degraded blob set with no
-// repo commit must still fail the gate.
-#[test]
-fn test_import_reconciles_with_loss_still_requires_repo() {
-    let status = crate::pds_client::AccountStatus {
-        activated: false,
-        valid_did: true,
-        repo_commit: None,
-        repo_rev: None,
-        stored_blocks: 0,
-        indexed_records: 0,
-        private_state_values: 0,
-        expected_blobs: 10,
-        imported_blobs: 7,
-    };
-
-    assert!(!import_reconciles_with_loss(&status, 3));
+    let missing = vec!["bafyaccepted".to_string(), "bafyspaceonly".to_string()];
+    let accepted = [
+        loss("bafyaccepted", None),
+        loss("bafyspaceonly", Some("at://did:plc:abc/space/a.b/c")),
+    ];
+    assert_eq!(
+        unexplained_missing_blobs(&missing, &accepted),
+        vec!["bafyspaceonly".to_string()]
+    );
+    assert!(unexplained_missing_blobs(&[], &[]).is_empty());
 }
 
 // Pure: the per-blob backoff is 250ms after the 1st failure, 500ms after the 2nd.
@@ -1483,73 +1405,6 @@ fn test_import_reconciles_with_loss_still_requires_repo() {
 fn test_blob_backoff_schedule() {
     assert_eq!(blob_backoff(1), std::time::Duration::from_millis(250));
     assert_eq!(blob_backoff(2), std::time::Duration::from_millis(500));
-}
-
-// A real checkAccountStatus payload with imported==expected and a repo commit passes the
-// import_reconciles gate (the branch verify_import uses to decide whether to advance to Verified).
-#[tokio::test]
-#[ignore] // Requires socket binding; ignore in sandboxed environments
-async fn test_verify_import_gate_reconciles_on_complete_status() {
-    let dest = MockServer::start();
-    dest.mock(|when, then| {
-        when.method(httpmock::Method::GET)
-            .path("/xrpc/com.atproto.server.checkAccountStatus");
-        then.status(200).json_body(serde_json::json!({
-            "activated": false,
-            "validDid": true,
-            "repoCommit": "baffy",
-            "repoRev": "rev",
-            "storedBlocks": 10,
-            "indexedRecords": 5,
-            "privateStateValues": 0,
-            "expectedBlobs": 10,
-            "importedBlobs": 10
-        }));
-    });
-
-    let dest_client = bearer_client_at(dest.base_url());
-
-    let status = crate::pds_client::check_account_status(&dest_client)
-        .await
-        .unwrap();
-
-    assert!(import_reconciles_with_loss(&status, 0));
-    assert_eq!(status.imported_blobs, 10);
-    assert_eq!(status.expected_blobs, 10);
-}
-
-// A real checkAccountStatus payload with imported<expected fails the import_reconciles
-// gate (the branch on which verify_import returns VerificationIncomplete with these counts).
-#[tokio::test]
-#[ignore] // Requires socket binding; ignore in sandboxed environments
-async fn test_verify_import_gate_rejects_incomplete_status() {
-    let dest = MockServer::start();
-    dest.mock(|when, then| {
-        when.method(httpmock::Method::GET)
-            .path("/xrpc/com.atproto.server.checkAccountStatus");
-        then.status(200).json_body(serde_json::json!({
-            "activated": false,
-            "validDid": false,
-            "repoCommit": null,
-            "repoRev": null,
-            "storedBlocks": 0,
-            "indexedRecords": 0,
-            "privateStateValues": 0,
-            "expectedBlobs": 10,
-            "importedBlobs": 5
-        }));
-    });
-
-    let dest_client = bearer_client_at(dest.base_url());
-
-    let status = crate::pds_client::check_account_status(&dest_client)
-        .await
-        .unwrap();
-
-    // Verify the pure gate catches the incompleteness
-    assert!(!import_reconciles_with_loss(&status, 0));
-    assert_eq!(status.imported_blobs, 5);
-    assert_eq!(status.expected_blobs, 10);
 }
 
 // ── Task 1 tests: arm_identity_leg ─────────────────────────────────────
@@ -1567,6 +1422,7 @@ fn test_arm_identity_leg_phase_gate_too_low() {
         dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
         phase: MigrationPhase::PreferencesTransferred, // Too early!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -1589,6 +1445,7 @@ fn verified_state(did: &str) -> OutboundMigrationState {
         dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
         phase: MigrationPhase::Verified,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     }
 }
@@ -1703,6 +1560,7 @@ fn test_finalize_migration_phase_gate_too_low() {
         dest_client: None,
         phase: MigrationPhase::Verified, // Too early for finalize!
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     });
 
@@ -2336,7 +2194,7 @@ async fn test_finalize_migration_core_advances_to_finalized() {
 // 2. getRepo + importRepo (assert importRepo before uploadBlob)
 // 3. listMissingBlobs + getBlob + uploadBlob (loop until empty)
 // 4. getPreferences + putPreferences
-// 5. checkAccountStatus → import_reconciles
+// 5. checkAccountStatus + listMissingBlobs (the verify inputs)
 // 6. arm_identity_leg (populates migration_state)
 // 7. getRecommendedDidCredentials + plc.directory POST (identity submit)
 // 8. activateAccount (dest) BEFORE deactivateAccount (source) — last hit (ordering enforced)
@@ -2628,14 +2486,15 @@ async fn test_full_migration_pipeline_happy_path() {
         "transfer_preferences_impl should succeed"
     );
 
-    // ─ Step 5: check_account_status via import_reconciles ─
+    // ─ Step 5: the verify inputs — a repo commit and no missing public blobs ─
     let status = crate::pds_client::check_account_status(&dest_client)
         .await
         .expect("check_account_status should succeed");
-    assert!(
-        import_reconciles_with_loss(&status, 0),
-        "import should reconcile"
-    );
+    assert!(status.repo_commit.is_some(), "import should carry the repo");
+    let missing = list_all_missing_blobs(&dest_client)
+        .await
+        .expect("listMissingBlobs should succeed");
+    assert!(unexplained_missing_blobs(&missing, &[]).is_empty());
 
     // ─ Step 6/7: identity leg — build_migration_op (dest getRecommendedDidCredentials +
     //   plc.directory audit fetch). arm_identity_leg (parking migrate::MigrationState) is a
@@ -2665,6 +2524,7 @@ async fn test_full_migration_pipeline_happy_path() {
         dest_client: Some(dest_client),
         phase: MigrationPhase::IdentityArmed,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     }));
     let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted
@@ -2835,6 +2695,7 @@ async fn test_finalize_migration_uses_bearer_on_a_non_custos_destination() {
         dest_client: Some(dest_client),
         phase: MigrationPhase::IdentityArmed,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     }));
     let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted
@@ -3101,7 +2962,7 @@ async fn test_full_migration_abort_before_identity_leg_leaves_dest_deactivated()
     let status = crate::pds_client::check_account_status(&dest_client)
         .await
         .expect("check status");
-    assert!(import_reconciles_with_loss(&status, 0));
+    assert!(status.repo_commit.is_some());
 
     // ─ Verify dest was NEVER activated (coherent state on abort) ─
     assert_eq!(

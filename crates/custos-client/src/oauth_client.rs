@@ -179,6 +179,11 @@ impl OAuthClient {
         self.send(reqwest::Method::GET, path, |b| b).await
     }
 
+    /// HEAD `{base_url}/{path}`: the GET's status without its body, for presence checks.
+    pub async fn head(&self, path: &str) -> Result<Response, OAuthError> {
+        self.send(reqwest::Method::HEAD, path, |b| b).await
+    }
+
     /// POST `{base_url}/{path}` with a JSON body.
     pub async fn post<B: Serialize + Sync>(
         &self,

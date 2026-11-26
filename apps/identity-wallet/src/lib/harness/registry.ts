@@ -200,6 +200,7 @@ export type CommandName =
   | 'create_destination_account'
   | 'transfer_repo'
   | 'transfer_blobs'
+  | 'transfer_spaces'
   | 'transfer_preferences'
   | 'verify_import'
   | 'arm_identity_leg'
@@ -904,6 +905,7 @@ export function buildRegistry(state: WalletState): Registry {
         destinationCreated: false,
         repoTransferred: false,
         blobsTransferred: false,
+        spacesTransferred: false,
         preferencesTransferred: false,
         verified: false,
         armed: false,
@@ -927,6 +929,33 @@ export function buildRegistry(state: WalletState): Registry {
     },
     transfer_blobs: () => {
       if (state.migration) state.migration.blobsTransferred = true;
+      return null;
+    },
+    // The space transfer's two stopping points, in the order the real step reaches them: a
+    // destination without spaces stops before anything moves, then space blobs that failed.
+    // `acceptLoss` passes either, as it does in `migration_orchestrator/spaces.rs`.
+    transfer_spaces: (args) => {
+      const accept = args.acceptLoss === true;
+      const { sourceSpaces, destinationSupportsSpaces, lostBlobs } = state.spaceTransfer;
+      const recovery = state.migration?.recovery === true;
+      if (!recovery && sourceSpaces.length > 0 && !accept) {
+        if (!destinationSupportsSpaces) {
+          throw { code: 'SPACES_UNSUPPORTED', spaces: [...sourceSpaces] };
+        }
+        if (lostBlobs.length > 0) {
+          throw {
+            code: 'BLOB_DRAIN_INCOMPLETE',
+            losses: lostBlobs.map(({ space, cid }) => ({
+              cid,
+              recordUri: space,
+              direction: 'source',
+              reason: 'server error (500)',
+              space,
+            })),
+          };
+        }
+      }
+      if (state.migration) state.migration.spacesTransferred = true;
       return null;
     },
     transfer_preferences: () => {
@@ -969,6 +998,7 @@ export function buildRegistry(state: WalletState): Registry {
         destinationCreated: false,
         repoTransferred: false,
         blobsTransferred: false,
+        spacesTransferred: false,
         preferencesTransferred: false,
         verified: false,
         armed: false,

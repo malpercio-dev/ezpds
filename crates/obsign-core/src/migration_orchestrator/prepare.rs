@@ -97,6 +97,7 @@ pub(super) async fn prepare_migration_impl(
         dest_client: None,
         phase: MigrationPhase::Resolved,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: false,
     })
 }

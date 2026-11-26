@@ -6,6 +6,7 @@
     createRecoveryDestinationAccount,
     recoveryTransferRepo,
     transferBlobs,
+    transferSpaces,
     transferPreferences,
     verifyImport,
     isCodedError,
@@ -32,7 +33,7 @@
     onerror: (err: unknown) => void;
   } = $props();
 
-  type LegId = 'enroll' | 'propagate' | 'account' | 'repo' | 'blobs' | 'preferences' | 'verify';
+  type LegId = 'enroll' | 'propagate' | 'account' | 'repo' | 'blobs' | 'spaces' | 'preferences' | 'verify';
   type LegState = 'pending' | 'active' | 'done' | 'failed';
 
   const LEGS: { id: LegId; label: string }[] = [
@@ -41,6 +42,8 @@
     { id: 'account', label: 'Create destination account' },
     { id: 'repo', label: 'Restore posts from backup' },
     { id: 'blobs', label: 'Restore media from backup' },
+    // A backup holds no spaces and the old server can't be asked, so there are none to restore.
+    { id: 'spaces', label: 'Spaces (no backup to restore from)' },
     { id: 'preferences', label: 'Preferences (nothing to restore)' },
     { id: 'verify', label: 'Verify destination' },
   ];
@@ -51,6 +54,7 @@
     account: 'pending',
     repo: 'pending',
     blobs: 'pending',
+    spaces: 'pending',
     preferences: 'pending',
     verify: 'pending',
   });
@@ -203,6 +207,7 @@
       });
       await runLeg('repo', () => recoveryTransferRepo(did));
       await runLeg('blobs', () => transferBlobs(did, acceptBlobLoss));
+      await runLeg('spaces', () => transferSpaces(did));
       await runLeg('preferences', () => transferPreferences(did));
 
       legStates.verify = 'active';

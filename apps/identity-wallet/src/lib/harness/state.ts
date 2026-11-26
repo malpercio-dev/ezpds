@@ -234,6 +234,7 @@ export interface MigrationFlow {
   destinationCreated: boolean;
   repoTransferred: boolean;
   blobsTransferred: boolean;
+  spacesTransferred: boolean;
   preferencesTransferred: boolean;
   verified: boolean;
   armed: boolean;
@@ -243,6 +244,20 @@ export interface MigrationFlow {
   recoveryKeyEnrolled?: boolean;
   /** Disaster recovery: polls before the enrolled key reads as visible. */
   recoveryVisibilityPollsRemaining?: number;
+}
+
+/**
+ * What the fake space transfer finds: the spaces the source lists, whether the destination can
+ * hold spaces, and which space blobs the source can't serve. Lives outside `MigrationFlow`
+ * because `prepare_migration` rebuilds that, and a scenario seeds this before the flow starts.
+ */
+export interface SpaceTransferFixture {
+  /** Space-refs the source's `listSpaces` returns. Empty: the account holds no spaces. */
+  sourceSpaces: string[];
+  /** False models a destination that doesn't implement spaces (`SPACES_UNSUPPORTED`). */
+  destinationSupportsSpaces: boolean;
+  /** Space blobs that fail after retries, as `{ space, cid }`. */
+  lostBlobs: { space: string; cid: string }[];
 }
 
 /** Transient state for the create flow (account → DID ceremony → handle). */
@@ -440,6 +455,7 @@ export interface WalletState {
   create: CreateFlow | null;
   claim: ClaimFlow | null;
   migration: MigrationFlow | null;
+  spaceTransfer: SpaceTransferFixture;
   recovery: RecoveryFlow;
 }
 
@@ -492,6 +508,7 @@ export function emptyWalletState(): WalletState {
     create: null,
     claim: null,
     migration: null,
+    spaceTransfer: { sourceSpaces: [], destinationSupportsSpaces: true, lostBlobs: [] },
     recovery: defaultRecoveryFlow(),
   };
 }

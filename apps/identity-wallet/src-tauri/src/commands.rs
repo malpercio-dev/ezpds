@@ -129,6 +129,7 @@ commands! {
     [async state] create_destination_account = crate::migration_orchestrator::create_destination_account(did: String, email: String, invite_code: Option<String>) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] transfer_repo = crate::migration_orchestrator::transfer_repo(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] transfer_blobs = crate::migration_orchestrator::transfer_blobs(did: String, accept_loss: bool) -> Result<(), crate::migration_orchestrator::MigrationError>;
+    [async state] transfer_spaces = crate::migration_orchestrator::transfer_spaces(did: String, accept_loss: bool) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] transfer_preferences = crate::migration_orchestrator::transfer_preferences(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;
     [async state] verify_import = crate::migration_orchestrator::verify_import(did: String) -> Result<crate::pds_client::AccountStatus, crate::migration_orchestrator::MigrationError>;
     [async state] arm_identity_leg = crate::migration_orchestrator::arm_identity_leg(did: String) -> Result<(), crate::migration_orchestrator::MigrationError>;

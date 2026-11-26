@@ -197,6 +197,7 @@ pub(super) async fn transfer_one_blob(
                         direction: BlobTransferDirection::Source,
                         reason: "source PDS unavailable and the backup mirror has no usable copy"
                             .to_string(),
+                        space: None,
                     }),
                 }
             }
@@ -205,6 +206,7 @@ pub(super) async fn transfer_one_blob(
                 record_uri: blob.record_uri.clone(),
                 direction: BlobTransferDirection::Source,
                 reason: "source PDS unavailable and no backup mirror on this device".to_string(),
+                space: None,
             }),
         };
     };
@@ -230,6 +232,7 @@ pub(super) async fn transfer_one_blob(
                                     record_uri: blob.record_uri.clone(),
                                     direction: BlobTransferDirection::Source,
                                     reason: e.to_string(),
+                                    space: None,
                                 });
                             }
                         }
@@ -241,6 +244,7 @@ pub(super) async fn transfer_one_blob(
                             record_uri: blob.record_uri.clone(),
                             direction: BlobTransferDirection::Source,
                             reason: e.to_string(),
+                            space: None,
                         });
                     }
                 }
@@ -280,6 +284,7 @@ pub(super) async fn upload_blob_with_retries(
                     record_uri: blob.record_uri.clone(),
                     direction: BlobTransferDirection::Destination,
                     reason: e.to_string(),
+                    space: None,
                 });
             }
             Err(e) => {
@@ -455,7 +460,9 @@ pub async fn transfer_blobs(
     }
     MigrationJournal::new(&state.orchestration_state, &did)
         .commit(MigrationPhase::BlobsTransferred, |mig| {
-            mig.accepted_blob_loss = losses
+            // A re-drain re-opens the space transfer (the journal rewinds), which re-records its
+            // own losses.
+            mig.accepted_blob_loss = losses;
         })
         .await?;
 
@@ -498,7 +505,7 @@ pub(super) async fn transfer_preferences_impl(
 
 /// Tauri command: get preferences from source PDS and put to destination.
 ///
-/// Gate: ensure_phase_did(..., BlobsTransferred) → clone source_client AND dest_client; drop lock
+/// Gate: ensure_phase_did(..., SpacesTransferred) → clone source_client AND dest_client; drop lock
 /// Then: transfer_preferences_impl; re-lock + advance to PreferencesTransferred
 pub async fn transfer_preferences(
     state: &crate::oauth::Core,
@@ -509,7 +516,7 @@ pub async fn transfer_preferences(
     // Gate + extract dependencies
     let (source_client, dest_client, recovery) = {
         let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::BlobsTransferred)
+        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::SpacesTransferred)
             .map_err(|e| {
                 tracing::warn!("transfer_preferences: phase gate failed: {}", e);
                 e
@@ -559,41 +566,77 @@ pub async fn transfer_preferences(
 
 // ── verify_import ──────────────────────────────────────────────────
 
-/// Pure completeness check: the import reconciles when every expected blob is accounted
-/// for — either imported or on the user-accepted loss manifest — AND the repo is present. Does NOT
-/// require valid_did (the DID doc still points at the old PDS pre-identity-op). `accepted_loss` is
-/// the count of blobs the user explicitly chose to skip via the drain's manifest; on a clean
-/// migration it is 0 and this reduces to the exact `imported == expected` check.
-pub fn import_reconciles_with_loss(
-    status: &crate::pds_client::AccountStatus,
-    accepted_loss: u64,
-) -> bool {
-    status.imported_blobs.saturating_add(accepted_loss) == status.expected_blobs
-        && status.repo_commit.is_some()
+/// Pure: the destination's still-missing public blobs the user did NOT accept losing from the
+/// public drain. A space loss with the same CID doesn't excuse a public one.
+pub fn unexplained_missing_blobs(missing: &[String], accepted: &[BlobLoss]) -> Vec<String> {
+    missing
+        .iter()
+        .filter(|cid| !accepted.iter().any(|l| l.space.is_none() && &l.cid == *cid))
+        .cloned()
+        .collect()
 }
 
-/// Tauri command: check destination account completeness, advance to Verified if reconciled.
+/// Every CID the destination's `listMissingBlobs` reports: the public repo's references it
+/// doesn't hold.
+pub(super) async fn list_all_missing_blobs(
+    dest: &OAuthClient,
+) -> Result<Vec<String>, crate::pds_client::PdsClientError> {
+    let mut missing = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = crate::pds_client::list_missing_blobs(dest, cursor.as_deref()).await?;
+        let exhausted = page.blobs.is_empty();
+        missing.extend(page.blobs.into_iter().map(|b| b.cid));
+        match page.cursor {
+            Some(next) if !exhausted && cursor.as_deref() != Some(next.as_str()) => {
+                cursor = Some(next)
+            }
+            _ => return Ok(missing),
+        }
+    }
+}
+
+/// Tauri command: check the destination is complete, advance to Verified if it is.
 ///
-/// Gate: ensure_phase_did(..., PreferencesTransferred) → clone dest_client; drop lock
-/// Then: check_account_status(dest_client); if import_reconciles → advance to Verified & return status;
-///       else → VerificationIncomplete with counts, phase unchanged
+/// Gate: ensure_phase_did(..., PreferencesTransferred) → clone both clients; drop lock.
+/// Then, all read from the two hosts now, so a resumed or restarted session verifies the same:
+/// 1. `checkAccountStatus` must show a repo commit, and every CID the destination's
+///    `listMissingBlobs` still reports must be a public loss the user accepted. Missing CIDs,
+///    not `importedBlobs` counts: `importedBlobs` also counts space blobs, which a count of the
+///    public repo's references can't be squared with.
+/// 2. `space_verification`: every source space's `data` digest matches the destination's, and
+///    every source space blob is stored there, except the losses the user accepted.
+///
+/// A failure leaves the phase unchanged: `VerificationIncomplete` with counts, or
+/// `SpaceVerificationFailed` naming the spaces.
 pub async fn verify_import(
     state: &crate::oauth::Core,
     did: String,
 ) -> Result<crate::pds_client::AccountStatus, MigrationError> {
+    verify_import_core(&state.orchestration_state, &did).await
+}
+
+/// [`verify_import`] over the orchestration slot, so it is drivable against mock servers.
+pub(super) async fn verify_import_core(
+    orchestration_state: &tokio::sync::Mutex<Option<OutboundMigrationState>>,
+    did: &str,
+) -> Result<crate::pds_client::AccountStatus, MigrationError> {
     tracing::info!(did = %did, "verify_import: checking account completeness");
 
-    // Gate + extract dependencies. Capture the accepted blob-loss count so the reconcile check can
-    // tolerate blobs the user explicitly chose to skip via the drain's manifest.
-    let (dest_client, accepted_loss) = {
-        let orchestration = state.orchestration_state.lock().await;
-        let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::PreferencesTransferred)
+    let (source_client, dest_client, accepted_blob_loss, spaces, recovery) = {
+        let orchestration = orchestration_state.lock().await;
+        let mig = ensure_phase_did(&orchestration, did, MigrationPhase::PreferencesTransferred)
             .map_err(|e| {
                 tracing::warn!("verify_import: phase gate failed: {}", e);
                 e
             })?;
-
-        (mig.dest_client.clone(), mig.accepted_blob_loss.len() as u64)
+        (
+            mig.source_client.clone(),
+            mig.dest_client.clone(),
+            mig.accepted_blob_loss.clone(),
+            mig.spaces.clone(),
+            mig.recovery,
+        )
     }; // lock released
 
     let Some(dest_client) = dest_client else {
@@ -613,26 +656,56 @@ pub async fn verify_import(
             }
         })?;
 
-    // Gate: verify import is complete (blobs — imported or accepted-as-lost — plus repo)
-    if import_reconciles_with_loss(&status, accepted_loss) {
-        MigrationJournal::new(&state.orchestration_state, &did)
-            .save(MigrationPhase::Verified)
-            .await?;
-
-        tracing::info!(did = %did, "import verified successfully");
-        Ok(status)
-    } else {
-        // Import incomplete — return counts, phase unchanged
+    // Gate 1: the repo, and every public blob stored or accepted as lost.
+    let missing = list_all_missing_blobs(&dest_client).await.map_err(|e| {
+        tracing::error!(did = %did, error = %e, "listMissingBlobs failed");
+        MigrationError::NetworkError {
+            message: format!("failed to list missing blobs: {}", e),
+        }
+    })?;
+    let unexplained = unexplained_missing_blobs(&missing, &accepted_blob_loss);
+    if status.repo_commit.is_none() || !unexplained.is_empty() {
         tracing::warn!(
             did = %did,
-            imported_blobs = status.imported_blobs,
+            unexplained = unexplained.len(),
             expected_blobs = status.expected_blobs,
             repo_commit = ?status.repo_commit,
             "import incomplete"
         );
-        Err(MigrationError::VerificationIncomplete {
-            imported: status.imported_blobs,
+        return Err(MigrationError::VerificationIncomplete {
+            imported: status
+                .expected_blobs
+                .saturating_sub(unexplained.len() as u64),
             expected: status.expected_blobs,
-        })
+        });
     }
+
+    // Gate 2: the spaces. A recovery session has no source to list.
+    if !recovery {
+        let Some(source_client) = source_client else {
+            tracing::error!(did = %did, "verify_import: source_client not found");
+            return Err(MigrationError::SourceAuthFailed {
+                message: "source client not authenticated".into(),
+            });
+        };
+        let mismatched = space_verification(
+            &source_client,
+            &dest_client,
+            did,
+            &spaces,
+            &accepted_blob_loss,
+        )
+        .await?;
+        if !mismatched.is_empty() {
+            tracing::warn!(did = %did, ?mismatched, "spaces don't match on the destination");
+            return Err(MigrationError::SpaceVerificationFailed { spaces: mismatched });
+        }
+    }
+
+    MigrationJournal::new(orchestration_state, did)
+        .save(MigrationPhase::Verified)
+        .await?;
+
+    tracing::info!(did = %did, "import verified successfully");
+    Ok(status)
 }

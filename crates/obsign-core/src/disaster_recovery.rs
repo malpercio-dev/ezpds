@@ -35,7 +35,8 @@
 //!    snapshot exists. The rest of the tail reuses the orchestrator's shared commands
 //!    on the same session: `transfer_blobs` (mirror-primary — the drain reads
 //!    `blob_backup::mirror_fallback_blob` directly, no doomed source fetches),
-//!    `transfer_preferences` (honest no-op skip: no preferences backup exists),
+//!    `transfer_spaces` (no-op skip: a dead source can't list its spaces and no backup
+//!    holds them), `transfer_preferences` (honest no-op skip: no preferences backup exists),
 //!    `verify_import`, `arm_identity_leg` + the `migrate.rs` identity leg (PLC op #2:
 //!    adopt the destination's recommended keys + `services` repoint, wallet device
 //!    key still at `rotationKeys[0]`), and `finalize_migration` (activate the
@@ -393,6 +394,7 @@ pub async fn prepare_disaster_recovery(
         dest_client: None,
         phase: MigrationPhase::Resolved,
         accepted_blob_loss: Vec::new(),
+        spaces: Default::default(),
         recovery: true,
     });
 
