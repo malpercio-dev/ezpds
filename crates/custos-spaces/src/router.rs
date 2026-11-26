@@ -46,6 +46,10 @@ where
             post(space_apply_writes),
         )
         .route(
+            "/xrpc/com.atproto.space.clearRecords",
+            post(space_clear_records),
+        )
+        .route(
             "/xrpc/com.atproto.space.createRecord",
             post(space_create_record),
         )
@@ -75,7 +79,10 @@ where
             "/xrpc/com.atproto.space.listRepoOps",
             get(space_list_repo_ops).layer(map_response(vary_accept_signature)),
         )
-        .route("/xrpc/com.atproto.space.listRepos", get(space_list_repos))
+        .route(
+            "/xrpc/com.atproto.space.listWriters",
+            get(space_list_writers),
+        )
         .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
         .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
         // The notification surface: repo hosts report here, and authorities revoke credentials
@@ -99,6 +106,10 @@ where
             post(space_delete_space),
         )
         .route("/xrpc/com.atproto.space.getSpace", get(space_get_space))
+        .route(
+            "/xrpc/com.atproto.space.removeWriter",
+            post(space_remove_writer),
+        )
         // Migration: the authority's space meta archive, then each repo's archive (`getRepo`).
         .route(
             "/xrpc/com.atproto.space.exportSpaceMeta",

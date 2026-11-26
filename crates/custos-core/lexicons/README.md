@@ -43,7 +43,7 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     is much smaller than the full `app.bsky` graph.
   - **Atproto Spaces (`com.atproto.space.*`):** the record CRUD, read, and sync documents behind
     the permissioned-data surface (the sync group: `listRepoOps`, `getRepo`, `getBlob`,
-    `listBlobs`), the notification group (`listRepos`, `notifyRepoUpdate`,
+    `listBlobs`), the notification group (`listWriters`, `notifyRepoUpdate`,
     `notifyCredentialsRevoked`; `notifySpaceUpdate` and `confirmRegistration`, which this server
     only ever *sends*, are vendored but, like `managedspace.checkAccess`, not registered as
     validation roots), plus the `defs`
@@ -80,8 +80,9 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
       `listSpaces`, `getDelegationToken`, `authorizeSpaceSync`, `server.reserveKemKey`,
       `space.{createSpace,updateSpace,deleteSpace,getSpace,notifyRepoUpdate,
       notifyCredentialsRevoked}`, `memberspace.{defs,putMembers,removeMembers,listMembers}`,
-      the three `*space.policy` documents, and `space.{exportSpaceMeta,importRepo,
-      importSpaceMeta}`.
+      the three `*space.policy` documents, `space.{exportSpaceMeta,importRepo,
+      importSpaceMeta}`, and `space.{listWriters,removeWriter,clearRecords}` (`listWriters`
+      replaced `listRepos`, which is deleted).
 
     The frozen pin is final: an upstream change after it is new work, never a silent SHA bump.
     The Friday [spaces-alpha-watch routine](../../../docs/operations/spaces-alpha-watch-routine.md)

@@ -295,11 +295,6 @@ export type XrpcMethods = {
     input: com_atproto_space.ListRepoOpsInput;
     output: com_atproto_space.ListRepoOpsOutput;
   };
-  "com.atproto.space.listRepos": {
-    params: com_atproto_space.ListReposParams;
-    input: com_atproto_space.ListReposInput;
-    output: com_atproto_space.ListReposOutput;
-  };
   "com.atproto.space.listSpaces": {
     params: com_atproto_space.ListSpacesParams;
     input: com_atproto_space.ListSpacesInput;

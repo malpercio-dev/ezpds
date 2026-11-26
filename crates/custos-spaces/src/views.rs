@@ -91,7 +91,7 @@ fn decode_error(e: impl std::fmt::Display) -> ApiError {
 }
 
 /// Confirm this host is the space's authority — the precondition for every space-host method
-/// (`listRepos`).
+/// (`listWriters`).
 ///
 /// A `spaces` row with no policy is a space this host only keeps repos in; its
 /// authority is elsewhere and is the one to answer. That reads as `SpaceNotFound`, the same

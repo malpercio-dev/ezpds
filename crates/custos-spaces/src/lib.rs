@@ -132,7 +132,7 @@ mod purge_tests {
     }
 
     /// The purge takes the account's own space repo, its membership, and its row
-    /// in a locally-hosted space's writer set (`listRepos` must stop advertising it). The space
+    /// in a locally-hosted space's writer set (`listWriters` must stop advertising it). The space
     /// it is authority for is deleted without a notice: no space-keyed row of it survives, a
     /// pending syncer notice included, and the `spaces` row stays as the tombstone that makes the
     /// space unanswerable (members' own records are theirs; the space simply stops answering).

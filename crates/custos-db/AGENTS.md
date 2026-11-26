@@ -129,11 +129,13 @@ Enable `test-support` only under `[dev-dependencies]`.
 - `migrations/V070__space_takedown.sql` - Adds `spaces.takendown_at` (the operator's per-space refusal to serve) and its partial index. See "Latest Updates"
 - `migrations/V081__space_notify_registrations_by_endpoint.sql` - Replaces `space_notify_registrations` with the `(endpoint, token)` registrations `authorizeSpaceSync` makes. See "Migration log"
 - `migrations/V082__space_syncer_notice_retries.sql` - Adds `space_syncer_notice_retries`, the durable queue for `spaceDeleted` and `registrationExpired`. See "Migration log"
+- `migrations/V083__space_writer_removed_at.sql` - Adds `space_writers.removed_at`, so a removed writer keeps its row. See "Migration log"
 
 ## Migration log
 
 Newest first. One line per migration that needs more than its file name to explain.
 
+- **V083**: `space_writers.removed_at` (nullable). A removal keeps the writer's row, sets `removed_at` and assigns it a new `space_rev`, so `listWriters` reports it as a `repoRemoved` and `upsert_writer`'s stale-rev check still holds for the removed repo. A newer write clears it. Nothing collects removed rows. Queries in `custos-spaces`' `db::space_notify`.
 - **V082**: Adds `space_syncer_notice_retries` (PK `(space_uri, endpoint, token)`, FK to `spaces`, index on `retry_at`): one row per registration owed a `spaceDeleted` or `registrationExpired` notice, written in the transaction that owes it (the deletion's tombstone, or the claim of a lapse, which is what now sets `expiry_notified`). `notice` is the `update` JSON; `attempts`, `retry_at` and `expires_at` (unix seconds, 72 h after queueing) drive `custos-spaces`' retry sweep. The token is the registration's, in plain text. No account FK: account purge deletes an authority's rows by space, with its registrations.
 
 - **V081**: `space_notify_registrations` is dropped and recreated as `(space_uri, endpoint, token, expires_at, expiry_notified)`, PK on the first three. A syncer registers a base URL and an opaque token through `authorizeSpaceSync` (the `registerNotify` DID rows are gone, nothing converts; their syncers register again on their next authorization). `expires_at` is the credential's `exp`; `expiry_notified` is for the one `registrationExpired` notice a lapse is owed; renewal clears it, and nothing sets it yet. The token is plaintext, because every notice carries it; it is never logged or returned. No account FK: a registration names an endpoint, not a DID, so account purge has nothing of it to delete.

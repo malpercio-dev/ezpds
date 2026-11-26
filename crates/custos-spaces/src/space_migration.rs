@@ -22,8 +22,8 @@
 //! holding a `since` from the old host heals with `getRepo`. `importSpaceMeta` creates the space,
 //! or replaces the configuration of one this host already answers for, and replaces its member
 //! list and writer set. It publishes nothing, because the published policy and member records
-//! arrive with the authority's own repo. The writer export leaves no writer out, since this host
-//! keeps no removed writers.
+//! arrive with the authority's own repo. The writer export leaves removed writers out, as the
+//! reference does, so every imported writer arrives present.
 //!
 //! Deliberate divergences from the reference:
 //!

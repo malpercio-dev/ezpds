@@ -1,0 +1,34 @@
+meta {
+  name: Space Clear Records
+  type: http
+  seq: 180
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.clearRecords
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main",
+    "repo": "{{did}}"
+  }
+}
+
+docs {
+  Delete every record in your own repo in a space, as one commit. The repo stays (empty) at a new
+  rev, its oplog is cleared, and the space host is told like after any write. In the space
+  authority's own repo, the published policy and member records are kept. With nothing to
+  delete, nothing is committed.
+
+  Needs a "space:…?action=delete" grant for every collection the repo holds (kept records need
+  none). Errors: 400 SpaceNotFound (a deleted or taken-down space), 400 KemKeyNotPublished,
+  401 AccountDeactivated / AccountTakedown, 403 Forbidden (repo is not yours),
+  403 InsufficientScope, 409 Conflict (a concurrent write; retry).
+}

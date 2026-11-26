@@ -320,12 +320,12 @@ async fn credential_requests_are_rate_limited_per_bound_key() {
     assert_eq!(body_json(response).await["error"], "RateLimitExceeded");
 }
 
-/// `space.listRepos` (a space-level space-host read) for `space` under `credential`, signed by
+/// `space.listWriters` (a space-level space-host read) for `space` under `credential`, signed by
 /// `key` and addressed to the space's authority.
 fn get_space_signed(space: &str, key: &SpaceSigKey, credential: &str) -> Request<Body> {
     let mut b = Request::builder()
         .method(http::Method::GET)
-        .uri(format!("/xrpc/com.atproto.space.listRepos?space={space}"));
+        .uri(format!("/xrpc/com.atproto.space.listWriters?space={space}"));
     b.headers_mut()
         .unwrap()
         .extend(key.credential_headers(credential, DID));
@@ -828,11 +828,11 @@ fn repo_reads(space: &str) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// An empty repo and a nonexistent one are the same thing: deleting the last record makes the
-/// repo read as absent on every surface — `RepoNotFound` from each repo read, gone from
-/// `listSpaces` — until the next write recreates it.
+/// Deleting the last record leaves an empty repo, not a missing one: every repo read answers
+/// as for an empty repo, the commit sits at the empty-set digest, and the space stays in
+/// `listSpaces`.
 #[tokio::test]
-async fn deleting_the_last_record_makes_the_repo_absent_until_the_next_write() {
+async fn deleting_the_last_record_leaves_an_empty_repo() {
     let state = setup().await;
     let token = access_jwt(&state.jwt_secret, DID);
     let write = || {
@@ -859,36 +859,57 @@ async fn deleting_the_last_record_makes_the_repo_absent_until_the_next_write() {
     );
 
     for (label, uri) in repo_reads(SPACE) {
-        let (status, body) = crate::test_support::send(&state, get(&uri, &token)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {body}");
-        assert_eq!(body["error"], "RepoNotFound", "{label}");
-    }
-    let (status, body) =
-        crate::test_support::send(&state, get("com.atproto.space.listSpaces", &token)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        !body.to_string().contains(SPACE),
-        "an emptied repo's space must drop out of listSpaces: {body}"
-    );
-
-    // The next write recreates the repo, readable everywhere again.
-    assert_eq!(send(&state, write()).await, StatusCode::OK);
-    for (label, uri) in repo_reads(SPACE) {
-        // Status only: getRepo answers a CAR, not JSON.
+        // Status only: getRepo answers a STAR archive, not JSON.
         let response = crate::test_support::test_app(state.clone())
             .oneshot(get(&uri, &token))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "{label}");
     }
-    let (_, body) =
+    let (_, commit) = crate::test_support::send(
+        &state,
+        get(
+            &format!("com.atproto.space.getLatestCommit?space={SPACE}&repo={DID}"),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(
+        commit["commit"]["data"],
+        crate::views::lex_bytes(&crypto::LtHash::new().digest()),
+        "{commit}"
+    );
+    let (_, records) = crate::test_support::send(
+        &state,
+        get(
+            &format!(
+                "com.atproto.space.listRecords?space={SPACE}&repo={DID}&collection={COLLECTION}"
+            ),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(records["records"], serde_json::json!([]), "{records}");
+    let (status, body) =
         crate::test_support::send(&state, get("com.atproto.space.listSpaces", &token)).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(body.to_string().contains(SPACE), "{body}");
+
+    // The next write lands on the same repo, at a later rev.
+    let before = commit["commit"]["rev"].as_str().unwrap().to_string();
+    assert_eq!(send(&state, write()).await, StatusCode::OK);
+    let rev = crate::db::space_repos::get_repo(&state.db, SPACE, DID)
+        .await
+        .unwrap()
+        .unwrap()
+        .rev;
+    assert!(rev > before);
 }
 
-/// On the authority's side, an emptied repo leaves the writer set `listRepos` answers.
+/// On the authority's side, an emptied repo stays in the writer set `listWriters` answers, as a
+/// `repoWrite` at the empty-set digest.
 #[tokio::test]
-async fn an_emptied_repo_leaves_the_authority_writer_set() {
+async fn an_emptied_repo_stays_in_the_authority_writer_set() {
     let state = setup().await;
     let token = access_jwt(&state.jwt_secret, DID);
     let own_space = format!("at://{DID}/space/org.example.bucket/main");
@@ -923,5 +944,8 @@ async fn an_emptied_repo_leaves_the_authority_writer_set() {
         .await,
         StatusCode::OK
     );
-    assert!(writers().await.unwrap().is_empty());
+    let writers = writers().await.unwrap();
+    assert_eq!(writers.len(), 1);
+    assert!(!writers[0].removed);
+    assert_eq!(writers[0].hash, crypto::LtHash::new().digest());
 }

@@ -22,7 +22,7 @@ docs {
   Export a space's host-side state as an "atproto-space-meta" STAR archive
   (application/vnd.dasl.star), for migrating its authority's account: "policy", then the policy
   state (a memberspace's member list), then one "writer/{did}" → { repoRev, data, spaceRev }
-  entry per repo in the writer set. OAuth with a "space:…?action=read_self" grant, authority
+  entry per repo in the writer set (removed writers are left out). OAuth with a "space:…?action=read_self" grant, authority
   only.
 
   Errors: 400 SpaceNotFound (also for a space the operator took down), 400 NotAuthorized.

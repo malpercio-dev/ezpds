@@ -252,23 +252,6 @@ export type ListRepoOpsOpEntry = {
   prev: string | null;
   value?: { [key: string]: unknown };
 };
-export type ListReposParams = {
-  space: string;
-  limit?: number;
-  cursor?: string;
-};
-export type ListReposInput = undefined;
-export type ListReposOutput = {
-  repos: Array<ListReposRepo>;
-  cursor?: string;
-};
-export type ListReposRepo = {
-  $type?: "com.atproto.space.listRepos#repo";
-  did: string;
-  repoRev: string;
-  hash: { $bytes: string };
-  spaceRev: string;
-};
 export type ListSpacesParams = {
   spaceDid?: string;
   spaceType?: string;

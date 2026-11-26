@@ -356,7 +356,7 @@ async fn get_repo_star_verifies_end_to_end() {
     );
 }
 
-/// An empty repo (never written) is RepoNotFound — there is no commit.
+/// A repo never written is RepoNotFound — there is no commit.
 #[tokio::test]
 async fn get_repo_unknown_repo_is_repo_not_found() {
     let (state, _kp) = setup().await;

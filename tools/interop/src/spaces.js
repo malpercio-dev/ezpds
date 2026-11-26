@@ -256,18 +256,18 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
     });
     const exported = assertSpaceStar(new Uint8Array(await star.arrayBuffer()), `${COLLECTION}/${rkey}`);
 
-    // …and on the space host — the side that is the authority. `listRepos` is the writer
+    // …and on the space host — the side that is the authority. `listWriters` is the writer
     // set the authority tracks, so the member's repo must show up here after the write.
-    const repos = await xrpc(authorityHost, 'com.atproto.space.listRepos', {
+    const repos = await xrpc(authorityHost, 'com.atproto.space.listWriters', {
       params: { space: spaceUri },
       spaceSig: toAuthority,
     });
-    const listed = (repos.repos ?? []).some((r) => r.did === member.did);
+    const listed = (repos.repos ?? []).some((r) => r.repo === member.did);
     // The writer row is durable with the commit only when the authority IS the repo host;
     // a foreign authority learns of the write through a best-effort, non-blocking fan-out,
     // so its absence there is a lag to report, not a failure to assert.
     if (!listed && repoHost === authorityHost) {
-      throw new Error(`member ${member.did} missing from the authority's listRepos after writing`);
+      throw new Error(`member ${member.did} missing from the authority's listWriters after writing`);
     }
 
     await xrpc(repoHost, 'com.atproto.space.deleteRecord', {

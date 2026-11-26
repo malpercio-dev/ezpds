@@ -28,8 +28,26 @@
 //!   triggered from here rather than from each record route because a write
 //!   path that forgot to notify would look correct and silently strand every
 //!   syncer. What stays inside the transaction is the writer-set row
-//!   `listRepos` answers — our own durable claim about our own repo, not a
+//!   `listWriters` answers — our own durable claim about our own repo, not a
 //!   network effect.
+//!
+//! **The writer set is gated on the space's write policy; the write is not.** In a space this
+//! host governs, a commit joins (or rejoins) the writer set only when the policy admits the
+//! writer, the same check an inbound `notifyRepoUpdate` gets
+//! (`auth::space::authorize_write_notification`: member `write` bit, `publicWrite`, a
+//! managedspace's `checkAccess`). The record itself always commits, since the repo is the
+//! writer's own, as in the reference, where a local write reaches its own authority through
+//! `notifyRepoUpdate` too. A refused write records no writer row and fans nothing out.
+//!
+//! The decision is made inside the commit's transaction ([`writer_set_entry`]), from the space
+//! row, policy and membership read on it, so a member change can't slip between check and join.
+//! The one exception is a managedspace's `checkAccess`, a network call the single SQLite
+//! connection must not wait on: it is asked before the transaction ([`managed_verdict`]), and the
+//! answer counts only if the transaction still sees a managedspace with the same managing app.
+//! Every unclear case fails closed: no answer from a managing app, a changed policy, and a
+//! policy-less row whose authority is a local account (a space nobody has created yet) all mean
+//! no join. A row without a policy whose authority is elsewhere is a space governed by another
+//! host; the commit is reported to it as `notifyRepoUpdate`, and its authority checks the policy.
 //!
 //! Authentication and `space:` scope enforcement happen above this layer (the
 //! space auth seam); callers pass an already-authorized `(space, did)`.
@@ -104,8 +122,8 @@ pub struct SpaceCommitOutcome {
 
 /// Apply a batch of record writes to one space repo as a single atomic commit.
 ///
-/// The repo is created on first write (fresh TID rev, empty LtHash state) and deleted by the
-/// commit that empties it. A foreign authority's space row is recorded on first write too, so a
+/// The repo is created on first write (fresh TID rev, empty LtHash state), and a commit that
+/// empties it leaves it in place at the empty-set digest. A foreign authority's space row is recorded on first write too, so a
 /// member can join it without this host having been told in advance; a space anchored on `did`
 /// itself must already exist ([`ErrorCode::SpaceNotFound`] otherwise).
 /// Returns [`ErrorCode::Conflict`] when the rev CAS loses to a concurrent
@@ -134,11 +152,12 @@ pub async fn apply_space_writes(
             ),
         ));
     }
+    let managed = managed_verdict(state, space, did).await?;
     let mut tx = state.db.begin().await.map_err(|e| {
         tracing::error!(error = %e, did = %did, "failed to open space write transaction");
         internal_error()
     })?;
-    let commit = commit_ops(state, &mut tx, space, did, ops).await?;
+    let commit = commit_ops(state, &mut tx, space, did, ops, managed.as_ref()).await?;
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, space = %space.uri, did = %did, "failed to commit space write transaction");
         internal_error()
@@ -152,6 +171,8 @@ pub async fn apply_space_writes(
 ///
 /// `None` when there is nothing to write. Otherwise the caller commits its transaction and then
 /// calls [`PendingSpaceCommit::announce`], which fires the post-commit notification fan-out.
+///
+/// The only writer here is the space's authority, so no managing app is asked.
 pub(crate) async fn apply_space_writes_in_tx(
     state: &CoreState,
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -163,14 +184,120 @@ pub(crate) async fn apply_space_writes_in_tx(
         return Ok(None);
     }
     validate_ops(ops)?;
-    commit_ops(state, tx, space, did, ops).await.map(Some)
+    commit_ops(state, tx, space, did, ops, None).await.map(Some)
+}
+
+/// A managing app's `checkAccess` answer for one writer, asked before the commit's transaction.
+pub(crate) struct ManagedVerdict {
+    /// The managing app the answer came from, which the transaction must still see.
+    managing_app: String,
+    admitted: bool,
+}
+
+/// Ask the managing app whether `did` may write, when `space` is a managedspace this host
+/// governs and `did` isn't its authority; `None` otherwise. Outside the transaction because it
+/// is a network call; [`writer_set_entry`] decides whether the answer still applies.
+async fn managed_verdict(
+    state: &CoreState,
+    space: &SpaceRef,
+    did: &str,
+) -> Result<Option<ManagedVerdict>, ApiError> {
+    if space.authority == did {
+        return Ok(None);
+    }
+    let row = crate::db::spaces::get_space(&state.db, &space.uri)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space.uri, "failed to load space");
+            internal_error()
+        })?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let Some(policy) = row.space_policy()? else {
+        return Ok(None);
+    };
+    let crate::policy::SpacePolicy::Managed(managed) = &policy else {
+        return Ok(None);
+    };
+    let admitted =
+        crate::auth::space::authorize_write_notification(state, &row, &policy, did).await?;
+    Ok(Some(ManagedVerdict {
+        managing_app: managed.managing_app.clone(),
+        admitted,
+    }))
+}
+
+/// What a commit does to the writer set, decided on its transaction.
+enum WriterSetEntry {
+    /// This host governs the space and the policy admits the writer: record it.
+    Join,
+    /// The space is governed by another host: record nothing, report the commit to it.
+    Report,
+    /// Not admitted, or not clearly governed: record nothing, announce nothing.
+    Skip,
+}
+
+/// Decide the writer-set entry for `did`'s commit into `space`, from the space row, policy and
+/// membership read on `tx` (see the module doc). A managedspace uses `managed`, asked before the
+/// transaction, and only while the policy still names the same managing app.
+async fn writer_set_entry(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space: &SpaceRef,
+    did: &str,
+    managed: Option<&ManagedVerdict>,
+) -> Result<WriterSetEntry, ApiError> {
+    use crate::policy::SpacePolicy;
+    let db_error = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space.uri, "failed to read the space's write policy");
+        internal_error()
+    };
+    let Some(row) = crate::db::spaces::get_space(&mut **tx, &space.uri)
+        .await
+        .map_err(db_error)?
+    else {
+        return Ok(WriterSetEntry::Skip);
+    };
+    let Some(policy) = row.space_policy()? else {
+        // No policy: either another host's space, or one whose local authority hasn't created
+        // it yet (a member's write records the row first). Only the first is reported.
+        let local_authority = custos_db::accounts::account_lifecycle(&mut **tx, &space.authority)
+            .await?
+            .is_some();
+        return Ok(if local_authority {
+            WriterSetEntry::Skip
+        } else {
+            WriterSetEntry::Report
+        });
+    };
+    if did == space.authority {
+        return Ok(WriterSetEntry::Join);
+    }
+    let admitted = match &policy {
+        SpacePolicy::Personal => false,
+        SpacePolicy::Member(member_policy) => {
+            let member = crate::db::spaces::get_member(&mut **tx, &space.uri, did)
+                .await
+                .map_err(db_error)?;
+            crate::auth::space::member_admits_write(member_policy, member)
+        }
+        SpacePolicy::Managed(current) => managed.is_some_and(|verdict| {
+            verdict.managing_app == current.managing_app && verdict.admitted
+        }),
+    };
+    Ok(if admitted {
+        WriterSetEntry::Join
+    } else {
+        WriterSetEntry::Skip
+    })
 }
 
 /// A space commit written inside a transaction that has not committed yet.
 pub(crate) struct PendingSpaceCommit {
     space: SpaceRef,
     did: String,
-    update: crate::db::space_notify::WriterUpdate,
+    /// `None` when the write policy kept the commit out of the writer set: nothing is announced.
+    update: Option<crate::db::space_notify::WriterUpdate>,
     outcome: SpaceCommitOutcome,
 }
 
@@ -181,7 +308,10 @@ impl PendingSpaceCommit {
     pub(crate) fn announce(self, state: &CoreState) -> SpaceCommitOutcome {
         use crate::db::space_notify::WriterUpdate;
         let (space, did, outcome) = (&self.space, self.did.as_str(), &self.outcome);
-        match self.update {
+        let Some(update) = self.update else {
+            return self.outcome;
+        };
+        match update {
             WriterUpdate::Accepted(revs) => drop(crate::space_notify::forward_write(
                 state,
                 space,
@@ -233,41 +363,20 @@ fn validate_ops(ops: &[SpaceWriteOp]) -> Result<(), ApiError> {
 }
 
 /// The commit itself, on the caller's transaction. Any error leaves the transaction to be
-/// dropped, which rolls it back.
+/// dropped, which rolls it back. `managed` is [`managed_verdict`]'s answer.
 async fn commit_ops(
     state: &CoreState,
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     space: &SpaceRef,
     did: &str,
     ops: &[SpaceWriteOp],
+    managed: Option<&ManagedVerdict>,
 ) -> Result<PendingSpaceCommit, ApiError> {
     let space_uri = space.uri.as_str();
 
-    // A deactivated, suspended, or taken-down account is read-only, exactly as
-    // on the public write path (the migration import is [`import_space_repo`]'s
-    // own path). Checked *inside* the transaction: the public
-    // path folds this guard into its root CAS, but the space head's CAS is on
-    // `space_repos`, not `accounts`, so a pre-transaction check would leave a
-    // window for a concurrent deactivation to land between check and commit.
-    use custos_db::accounts::AccountLifecycle;
-    match custos_db::accounts::account_lifecycle(&mut **tx, did).await? {
-        Some(AccountLifecycle::Active) => {}
-        Some(AccountLifecycle::Deactivated) => {
-            return Err(ApiError::new(
-                ErrorCode::AccountDeactivated,
-                "account is deactivated",
-            ));
-        }
-        Some(AccountLifecycle::TakenDown | AccountLifecycle::Suspended) => {
-            return Err(ApiError::new(
-                ErrorCode::AccountTakedown,
-                "account has been taken down",
-            ));
-        }
-        None => {
-            return Err(ApiError::new(ErrorCode::NotFound, "account not found"));
-        }
-    }
+    // A deactivated, suspended, or taken-down account is read-only, exactly as on the public
+    // write path.
+    require_writable_account(tx, did).await?;
 
     admit_space(tx, space, did).await?;
 
@@ -481,31 +590,27 @@ async fn commit_ops(
             );
         })?;
 
-    // An empty repo and a nonexistent one are the same thing (spec "Repo lifecycle"): a commit
-    // that removes the last record deletes the repo — head, records and oplog — so every read
-    // keyed on the head answers `RepoNotFound` and the next write starts a fresh repo. The
-    // commit itself is still announced below with the empty-set hash, which is how the authority
-    // and its syncers learn the repo is gone.
-    let emptied = !crate::db::space_repos::repo_has_records(&mut **tx, space_uri, did)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to count space records");
-            internal_error()
-        })?;
-    if emptied {
-        crate::db::space_repos::delete_repo(tx, space_uri, did)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, space = %space_uri, did = %did, "failed to delete emptied space repo");
-                internal_error()
-            })?;
-    }
+    // A commit that removes the last record leaves an empty repo, not a missing one: the head
+    // stays at the empty-set digest, its rev keeps advancing, and reads answer as for any empty
+    // repo. Nothing collects it.
+    finish_commit(tx, space, did, new_rev, &lthash, results, managed).await
+}
 
-    // Finalize the folded LtHash state. The rev was already advanced (and
-    // CAS-guarded) before the fold; inside the same transaction this update
-    // trivially matches its own rev.
-    let finalized = emptied
-        || crate::db::space_repos::advance_repo_rev(
+/// Store the folded LtHash state on the head the commit already advanced to `new_rev`, and,
+/// when the write policy admits the writer, record the commit in the writer set, inside the commit's transaction.
+async fn finish_commit(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    space: &SpaceRef,
+    did: &str,
+    new_rev: String,
+    lthash: &LtHash,
+    results: Vec<SpaceWriteResult>,
+    managed: Option<&ManagedVerdict>,
+) -> Result<PendingSpaceCommit, ApiError> {
+    let space_uri = space.uri.as_str();
+    // The rev was already advanced (and CAS-guarded) before the fold; inside the same
+    // transaction this update trivially matches its own rev.
+    let finalized = crate::db::space_repos::advance_repo_rev(
         &mut **tx,
         space_uri,
         did,
@@ -523,17 +628,23 @@ async fn commit_ops(
         return Err(internal_error());
     }
 
-    // The writer set `listRepos` answers, kept durable with the commit rather than derived
+    // The writer set `listWriters` answers, kept durable with the commit rather than derived
     // afterwards: for a space this host is the authority for, our own account's write is one of
-    // the facts the authority reports. The query no-ops for a space whose authority is
-    // elsewhere.
+    // the facts the authority reports. Recorded only when the write policy, read on this
+    // transaction, admits the writer ([`writer_set_entry`]).
     let hash = lthash.digest();
-    let update = crate::db::space_notify::upsert_writer(tx, space_uri, did, &new_rev, &hash)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to record space writer");
-            internal_error()
-        })?;
+    let update = match writer_set_entry(tx, space, did, managed).await? {
+        WriterSetEntry::Join => Some(
+            crate::db::space_notify::upsert_writer(tx, space_uri, did, &new_rev, &hash)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, space = %space_uri, did = %did, "failed to record space writer");
+                    internal_error()
+                })?,
+        ),
+        WriterSetEntry::Report => Some(crate::db::space_notify::WriterUpdate::NotAuthority),
+        WriterSetEntry::Skip => None,
+    };
 
     Ok(PendingSpaceCommit {
         space: space.clone(),
@@ -547,6 +658,141 @@ async fn commit_ops(
     })
 }
 
+/// Delete every record in `did`'s repo in `space` except those in `keep`, as one commit:
+/// `clearRecords`. The repo takes a new rev with the kept records' set hash, its oplog is cleared
+/// (kept records' entries too, as the reference clears it), and the commit is announced like any
+/// other. `None`, with nothing changed, when the repo doesn't exist or holds nothing to delete.
+///
+/// `granted` is the set of collections the caller's grant was checked against before the
+/// transaction. A collection that appeared since then answers `Conflict`, so a concurrent write
+/// can't slip a collection past the check; the client retries. One delete's write cost is charged,
+/// not one per record, so a repo too large for the write budget can still be cleared.
+pub async fn clear_space_records(
+    state: &CoreState,
+    space: &SpaceRef,
+    did: &str,
+    keep: &[&str],
+    granted: &[String],
+) -> Result<Option<SpaceCommitOutcome>, ApiError> {
+    let space_uri = space.uri.as_str();
+    let db_error = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space_uri, did = %did, "failed to clear space records");
+        internal_error()
+    };
+    let managed = managed_verdict(state, space, did).await?;
+    let mut tx = state.db.begin().await.map_err(db_error)?;
+    require_writable_account(&mut tx, did).await?;
+    let Some(repo) = crate::db::space_repos::get_repo(&mut *tx, space_uri, did)
+        .await
+        .map_err(db_error)?
+    else {
+        return Ok(None);
+    };
+    // The repo exists, so its space row does too; this applies the write path's refusals
+    // (deleted, taken down) without recording anything.
+    admit_space(&mut tx, space, did).await?;
+
+    let records = crate::db::space_repos::list_record_index(&mut *tx, space_uri, did)
+        .await
+        .map_err(db_error)?;
+    if let Some((collection, _, _)) = records.iter().find(|(collection, _, _)| {
+        !keep.contains(&collection.as_str()) && !granted.contains(collection)
+    }) {
+        tracing::debug!(space = %space_uri, did = %did, %collection, "clearRecords raced a new collection");
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "space repo was modified concurrently; retry",
+        ));
+    }
+    let mut lthash = LtHash::new();
+    let mut cleared = false;
+    for (collection, rkey, cid) in &records {
+        if keep.contains(&collection.as_str()) {
+            lthash.add(&format_set_hash_element(collection, rkey, cid));
+        } else {
+            cleared = true;
+        }
+    }
+    if !cleared {
+        return Ok(None);
+    }
+
+    let new_rev = repo_engine::next_record_rev(&repo.rev).map_err(|e| {
+        tracing::error!(error = %e, space = %space_uri, did = %did, "failed to derive commit rev");
+        internal_error()
+    })?;
+    if !crate::db::space_repos::advance_repo_rev(
+        &mut *tx,
+        space_uri,
+        did,
+        &new_rev,
+        &repo.lthash_state,
+        &repo.rev,
+    )
+    .await
+    .map_err(db_error)?
+    {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "space repo was modified concurrently; retry against the current head",
+        ));
+    }
+    crate::db::space_repos::clear_records(&mut tx, space_uri, did, keep)
+        .await
+        .map_err(db_error)?;
+
+    state
+        .rate_limiter
+        .check_write_points(did, custos_core::rate_limit::WRITE_COST_DELETE)
+        .inspect_err(|_| {
+            state.metrics.rate_limit_rejections.add(
+                1,
+                &[custos_core::metrics::label(
+                    custos_core::metrics::names::LABEL_LIMITER,
+                    "account_writes",
+                )],
+            );
+        })?;
+
+    let pending = finish_commit(
+        &mut tx,
+        space,
+        did,
+        new_rev,
+        &lthash,
+        Vec::new(),
+        managed.as_ref(),
+    )
+    .await?;
+    tx.commit().await.map_err(db_error)?;
+    Ok(Some(pending.announce(state)))
+}
+
+/// Refuse a commit by an account that isn't active: deactivated, suspended, taken down or gone.
+///
+/// Read inside the commit's transaction: the public path folds this guard into its root CAS, but
+/// the space head's CAS is on `space_repos`, not `accounts`, so a pre-transaction check would
+/// leave a window for a concurrent deactivation to land between check and commit. The migration
+/// import is [`import_space_repo`]'s own path.
+async fn require_writable_account(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    did: &str,
+) -> Result<(), ApiError> {
+    use custos_db::accounts::AccountLifecycle;
+    match custos_db::accounts::account_lifecycle(&mut **tx, did).await? {
+        Some(AccountLifecycle::Active) => Ok(()),
+        Some(AccountLifecycle::Deactivated) => Err(ApiError::new(
+            ErrorCode::AccountDeactivated,
+            "account is deactivated",
+        )),
+        Some(AccountLifecycle::TakenDown | AccountLifecycle::Suspended) => Err(ApiError::new(
+            ErrorCode::AccountTakedown,
+            "account has been taken down",
+        )),
+        None => Err(ApiError::new(ErrorCode::NotFound, "account not found")),
+    }
+}
+
 /// Replace `did`'s repo in `archive.space` with the archive's records: the migration import
 /// (`crate::space_migration`). `did` must be a deactivated account.
 ///
@@ -555,7 +801,7 @@ async fn commit_ops(
 /// writer-set row moves, as in the reference. A syncer still holding the old host's `since` finds
 /// its set hash no longer matches and heals with `getRepo`. Write points are not charged: the
 /// records are the account's own, arriving in one bulk transfer. An archive with no records
-/// leaves no repo, since an empty repo is a nonexistent one.
+/// leaves an empty repo, as the reference's import does.
 ///
 /// The space is admitted as any commit's is, so the authority's own space has to be imported
 /// with `importSpaceMeta` first (`SpaceNotFound` otherwise).
@@ -588,30 +834,22 @@ pub(crate) async fn import_space_repo(
     crate::db::space_repos::delete_repo(&mut tx, space_uri, did)
         .await
         .map_err(db_error)?;
-    if !archive.records.is_empty() {
-        crate::db::space_repos::insert_repo(
+    crate::db::space_repos::insert_repo(&mut *tx, space_uri, did, &rev, &archive.lthash.state())
+        .await
+        .map_err(db_error)?;
+    for record in &archive.records {
+        crate::db::space_repos::upsert_record(
             &mut *tx,
             space_uri,
             did,
+            &record.collection,
+            &record.rkey,
+            &record.cid,
+            &record.bytes,
             &rev,
-            &archive.lthash.state(),
         )
         .await
         .map_err(db_error)?;
-        for record in &archive.records {
-            crate::db::space_repos::upsert_record(
-                &mut *tx,
-                space_uri,
-                did,
-                &record.collection,
-                &record.rkey,
-                &record.cid,
-                &record.bytes,
-                &rev,
-            )
-            .await
-            .map_err(db_error)?;
-        }
     }
     tx.commit().await.map_err(db_error)?;
     Ok(rev)
@@ -1016,5 +1254,186 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), &ErrorCode::AccountTakedown);
+    }
+
+    // ── the writer-set gate ─────────────────────────────────────────────────
+
+    const GOVERNED: &str = "at://did:plc:spacewriter/space/org.example.bucket/gate";
+    const MEMBER: &str = "did:plc:spacegatememberaaaaaaa";
+    const APP: &str = "did:web:managing.example#atproto_pds";
+
+    async fn seed_member(state: &CoreState) {
+        crate::test_support::seed_account_with_repo(&state.db, MEMBER).await;
+    }
+
+    async fn set_policy(state: &CoreState, policy: serde_json::Value) {
+        let policy = crate::policy::SpacePolicy::from_lex(&policy).unwrap();
+        sqlx::query("UPDATE spaces SET policy = ? WHERE uri = ?")
+            .bind(policy.to_json().to_string())
+            .bind(GOVERNED)
+            .execute(&state.db)
+            .await
+            .unwrap();
+    }
+
+    /// Commit one record by `MEMBER` into `GOVERNED` with the managing app's answer already in
+    /// hand, as `apply_space_writes` would after asking it, and report whether a writer row
+    /// exists for `MEMBER` afterwards, along with whether anything would be announced.
+    async fn commit_with(
+        state: &CoreState,
+        managed: Option<ManagedVerdict>,
+        rkey: &str,
+    ) -> (bool, bool) {
+        let space = custos_core::space_uri::parse_space_ref(GOVERNED).unwrap();
+        let mut tx = state.db.begin().await.unwrap();
+        let pending = commit_ops(
+            state,
+            &mut tx,
+            &space,
+            MEMBER,
+            &[put("org.example.note", rkey, rkey)],
+            managed.as_ref(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let announced = pending.update.is_some();
+        let joined = crate::db::space_notify::list_writers(&state.db, GOVERNED, None, 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|w| w.repo_did == MEMBER);
+        (joined, announced)
+    }
+
+    /// A managing app's answer counts only while the transaction still sees a managedspace with
+    /// the same managing app: a policy change between the pre-check and the commit is honoured,
+    /// including a switch to a memberspace that refuses the writer.
+    #[tokio::test]
+    async fn a_policy_change_after_the_managing_app_answered_is_honoured() {
+        let state = test_state().await;
+        seed(&state).await;
+        seed_member(&state).await;
+        crate::test_support::seed_authority_space(
+            &state.db,
+            GOVERNED,
+            &crate::test_support::memberspace_policy(false),
+        )
+        .await;
+        let yes = |app: &str| {
+            Some(ManagedVerdict {
+                managing_app: app.to_string(),
+                admitted: true,
+            })
+        };
+
+        // Admitted by the app, but the space is (now) a memberspace that refuses a non-member.
+        assert_eq!(commit_with(&state, yes(APP), "a").await, (false, false));
+
+        // A managedspace whose managing app changed since the answer.
+        set_policy(
+            &state,
+            serde_json::json!({
+                "$type": crate::policy::MANAGEDSPACE,
+                "managingApp": "did:web:other.example#atproto_pds",
+            }),
+        )
+        .await;
+        assert_eq!(commit_with(&state, yes(APP), "b").await, (false, false));
+        // No answer at all.
+        assert_eq!(commit_with(&state, None, "c").await, (false, false));
+
+        // The same managing app that answered yes: the writer joins.
+        set_policy(
+            &state,
+            serde_json::json!({ "$type": crate::policy::MANAGEDSPACE, "managingApp": APP }),
+        )
+        .await;
+        assert_eq!(commit_with(&state, yes(APP), "d").await, (true, true));
+    }
+
+    /// The memberspace rule is read on the commit's transaction: a membership change that lands
+    /// before the commit is what the commit sees, whichever way it goes.
+    #[tokio::test]
+    async fn the_membership_the_commit_sees_decides_the_join() {
+        let state = test_state().await;
+        seed(&state).await;
+        seed_member(&state).await;
+        crate::test_support::seed_authority_space(
+            &state.db,
+            GOVERNED,
+            &crate::test_support::memberspace_policy(false),
+        )
+        .await;
+        let put_member =
+            |write: bool| crate::db::spaces::put_member(&state.db, GOVERNED, MEMBER, true, write);
+
+        put_member(true).await.unwrap();
+        assert_eq!(commit_with(&state, None, "a").await, (true, true));
+
+        // Removed, then the commit: no rejoin.
+        let mut conn = state.db.acquire().await.unwrap();
+        crate::db::spaces::remove_member(&mut *conn, GOVERNED, MEMBER)
+            .await
+            .unwrap();
+        crate::db::space_notify::remove_writer(&mut conn, GOVERNED, MEMBER)
+            .await
+            .unwrap();
+        drop(conn);
+        commit_with(&state, None, "b").await;
+        let rows = crate::db::space_notify::list_writers(&state.db, GOVERNED, None, 10)
+            .await
+            .unwrap();
+        assert!(rows.iter().all(|w| w.repo_did != MEMBER || w.removed));
+
+        // Put back without `write`, still no rejoin; with it, the next commit rejoins.
+        put_member(false).await.unwrap();
+        commit_with(&state, None, "c").await;
+        let rows = crate::db::space_notify::list_writers(&state.db, GOVERNED, None, 10)
+            .await
+            .unwrap();
+        assert!(rows.iter().all(|w| w.repo_did != MEMBER || w.removed));
+        put_member(true).await.unwrap();
+        commit_with(&state, None, "d").await;
+        let rows = crate::db::space_notify::list_writers(&state.db, GOVERNED, None, 10)
+            .await
+            .unwrap();
+        assert!(rows.iter().any(|w| w.repo_did == MEMBER && !w.removed));
+    }
+
+    /// A row with no policy for a space whose authority is a local account (a member wrote before
+    /// the authority created it) is not governed yet: the commit joins nothing and reports
+    /// nothing. One whose authority is elsewhere is reported, as before.
+    #[tokio::test]
+    async fn a_policy_less_row_joins_nothing() {
+        let state = test_state().await;
+        seed(&state).await;
+        seed_member(&state).await;
+
+        // `GOVERNED`'s authority is the local account `DID`; the member's write records the row.
+        assert_eq!(commit_with(&state, None, "a").await, (false, false));
+        let row = crate::db::spaces::get_space(&state.db, GOVERNED)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.policy.is_none(), "precondition: no policy");
+
+        // `SPACE`'s authority (`did:plc:author`) has no account here: reported, never recorded.
+        let mut tx = state.db.begin().await.unwrap();
+        let pending = commit_ops(
+            &state,
+            &mut tx,
+            &space(),
+            MEMBER,
+            &[put("org.example.note", "x", "x")],
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert!(matches!(
+            pending.update,
+            Some(crate::db::space_notify::WriterUpdate::NotAuthority)
+        ));
     }
 }
