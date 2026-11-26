@@ -158,7 +158,7 @@ fn mac_response<'a>(headers: &'a HeaderMap, profile: MacProfile) -> MacResponse<
 
 fn lex_bytes(value: &serde_json::Value) -> Vec<u8> {
     use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD
+    base64::engine::general_purpose::STANDARD_NO_PAD
         .decode(value["$bytes"].as_str().unwrap())
         .unwrap()
 }
@@ -320,7 +320,7 @@ fn unhex(s: &str) -> Vec<u8> {
 #[tokio::test]
 async fn the_minted_vectors_pass_through_the_handlers() {
     let v: Vectors = serde_json::from_str(include_str!(
-        "../../../crypto/tests/fixtures/space/mac-vectors-unconfirmed.json"
+        "../../../crypto/tests/fixtures/space/mac-vectors.json"
     ))
     .unwrap();
     let sk: [u8; 32] = v.kem.kem_private_key_bytes.as_slice().try_into().unwrap();

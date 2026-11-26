@@ -284,8 +284,10 @@ pub fn json_to_record_value(json: &serde_json::Value) -> Result<Ipld, RecordErro
                     return Ok(Ipld::Link(cid));
                 }
                 if let Some(Value::String(b64)) = map.get("$bytes") {
-                    let bytes = base64::engine::general_purpose::STANDARD
+                    // Unpadded is the data model's form; padded is accepted too.
+                    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
                         .decode(b64)
+                        .or_else(|_| base64::engine::general_purpose::STANDARD.decode(b64))
                         .map_err(|e| {
                             RecordError::InvalidRecord(format!("invalid $bytes base64: {e}"))
                         })?;

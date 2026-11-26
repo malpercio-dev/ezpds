@@ -465,7 +465,7 @@ pub fn space_mac_encapsulate(author_kem_key: &str) -> Result<(String, [u8; 32]),
 
 - `signature_base`, `format_components`, `members_with_tag`, and `find_signature` (with `SignatureRequirements`) are shared by the MAC and the space-credential verifier. `find_signature` selects the one signature by `tag`, never by label, and checks its covered components, `alg`, and `keyid`.
 - MACs: `MacProfile::{Commit, Record}` (tag = covered header name, `atproto-space-commit` / `atproto-space-record`); `format_mac_request` / `parse_mac_request` for `Accept-Signature` (accepts only `keyid`, `tag`, `alg` = `hmac-sha256`; `keyid` must be a DID); `commit_mac_headers` / `record_mac_headers` answer under the requested label and parameters as given; `verify_commit_mac` / `verify_record_mac` re-serialize the covered header before checking, so insignificant whitespace is accepted.
-- Vectors: `tests/fixtures/space/mac-vectors-unconfirmed.json` is self-minted (upstream publishes no MAC output) and **unconfirmed against the reference**; `tests/space_mac_vectors.rs` reproduces it end to end.
+- Vectors: `tests/fixtures/space/mac-vectors.json` is self-minted (upstream publishes no MAC output) and **confirmed against the reference** at the pin (`tools/interop` `spaces-vectors` recomputes it with the reference's `@atproto/space`); `tests/space_mac_vectors.rs` reproduces it end to end.
 
 ### Public types
 

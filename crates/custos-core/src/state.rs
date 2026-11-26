@@ -87,7 +87,8 @@ pub struct CoreState {
     /// Test-only relaxation of the `atproto-proxy` SSRF guard
     /// (`identity::proxy::resolve_atproto_proxy_target`): when `true`, a loopback address is
     /// accepted alongside public ones, so tests can proxy to a local `wiremock` server standing in
-    /// for a labeler. Always `false` in the real server (`main.rs`) — only `test_state()` sets it.
+    /// for a labeler. `false` in the real server (`main.rs`), except in a debug build started with
+    /// `EZPDS_DEV_ALLOW_LOOPBACK_TARGETS=true` for local cross-host interop; `test_state()` sets it.
     pub allow_loopback_proxy_targets: bool,
     /// Typed handles for every instrument the PDS records (see `crate::metrics`). Always
     /// present — when `[telemetry] metrics_enabled = false` this is the reader-less

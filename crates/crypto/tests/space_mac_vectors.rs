@@ -1,7 +1,7 @@
-//! Self-minted Spaces MAC vectors, **unconfirmed against the reference** — see the fixture's
-//! `status`/`comment`. They freeze this crate's RFC 9421 MAC output end to end (HPKE export →
-//! request parsing → signature base → HMAC) so drift surfaces as a failing test; the interop
-//! scenario against a running reference host is what confirms them.
+//! Spaces MAC vectors minted by this crate and confirmed against the reference at the pin — see
+//! the fixture's `status`/`comment`. They freeze this crate's RFC 9421 MAC output end to end
+//! (HPKE export → request parsing → signature base → HMAC) so drift surfaces as a failing test;
+//! `tools/interop`'s `spaces-vectors` recomputes them with the reference's own code.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a panic is the failure signal
 
 use crypto::http_signature::{
@@ -66,12 +66,12 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 fn fixture() -> Fixture {
-    serde_json::from_str(include_str!("fixtures/space/mac-vectors-unconfirmed.json")).unwrap()
+    serde_json::from_str(include_str!("fixtures/space/mac-vectors.json")).unwrap()
 }
 
 #[test]
-fn fixture_is_marked_unconfirmed() {
-    assert!(fixture().status.starts_with("UNCONFIRMED"));
+fn fixture_is_marked_confirmed() {
+    assert!(fixture().status.starts_with("CONFIRMED"));
 }
 
 #[test]

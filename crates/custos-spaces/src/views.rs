@@ -112,10 +112,11 @@ pub async fn require_local_authority(
 }
 
 /// Lex-JSON encoding of a byte string: `{"$bytes": "<base64>"}`, the JSON form the lexicon
-/// `bytes` type takes on the wire.
+/// `bytes` type takes on the wire. Unpadded, as the atproto data model writes it and the
+/// reference emits it.
 pub fn lex_bytes(bytes: &[u8]) -> serde_json::Value {
     use base64::Engine as _;
-    serde_json::json!({ "$bytes": base64::engine::general_purpose::STANDARD.encode(bytes) })
+    serde_json::json!({ "$bytes": base64::engine::general_purpose::STANDARD_NO_PAD.encode(bytes) })
 }
 
 // ── repo head + commit ───────────────────────────────────────────────────────

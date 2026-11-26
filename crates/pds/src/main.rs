@@ -145,6 +145,22 @@ fn load_config_auto(config_path: Option<PathBuf>) -> anyhow::Result<common::Conf
     }
 }
 
+/// `EZPDS_DEV_ALLOW_LOOPBACK_TARGETS=true` lets a **debug** build reach loopback (and plain-http
+/// notify endpoints) through the SSRF-hardened client, so a local Custos can talk to a reference
+/// PDS on `localhost` (`tools/interop`'s Spaces scenario). A release build ignores it and says so.
+fn dev_allow_loopback_targets() -> bool {
+    let requested = std::env::var("EZPDS_DEV_ALLOW_LOOPBACK_TARGETS")
+        .is_ok_and(|v| v.eq_ignore_ascii_case("true"));
+    if requested && !cfg!(debug_assertions) {
+        tracing::warn!("EZPDS_DEV_ALLOW_LOOPBACK_TARGETS is ignored outside a debug build");
+        return false;
+    }
+    if requested {
+        tracing::warn!("loopback targets allowed for caller-influenced fetches (dev only)");
+    }
+    requested
+}
+
 /// Read and validate a 64-hex-char master key from an environment variable.
 fn rewrap_key_from_env(var: &'static str) -> anyhow::Result<zeroize::Zeroizing<[u8; 32]>> {
     let value = std::env::var(var)
@@ -374,9 +390,10 @@ async fn run() -> anyhow::Result<()> {
     // Shared, pooled client for every SSRF-guarded fetch to a caller-influenced target
     // (atproto-proxy header target, did:web document, handle well-known endpoint,
     // Lexicon-authority permission-set record): redirects disabled + a DNS resolver that
-    // re-checks the public-address allowlist at connect time. `false` (never `allow_loopback`) in
-    // production.
-    let hardened_http_client = custos_core::identity::proxy::build_hardened_client(false)
+    // re-checks the public-address allowlist at connect time. Never `allow_loopback` in
+    // production: only a debug build honors `dev_allow_loopback_targets`.
+    let allow_loopback = dev_allow_loopback_targets();
+    let hardened_http_client = custos_core::identity::proxy::build_hardened_client(allow_loopback)
         .context("failed to build hardened HTTP client")?;
 
     let txt_resolver: Option<Arc<dyn custos_core::identity::dns::TxtResolver>> =
@@ -600,7 +617,7 @@ async fn run() -> anyhow::Result<()> {
         did_document_cache: custos_core::identity::resolution::new_did_document_cache(),
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         rate_limiter,
-        allow_loopback_proxy_targets: false,
+        allow_loopback_proxy_targets: allow_loopback,
         metrics,
         sweeps: Arc::new(custos_core::sweep_status::SweepStatus::default()),
         started_at,
