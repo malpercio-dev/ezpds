@@ -25,11 +25,11 @@ body:json {
 
 docs {
   A repo host telling a space host that one of its repos advanced, so the authority can maintain
-  the rev/hash listRepos reports. The space host then sends the update to every syncer
+  the repoRev/data listWriters reports. The space host then sends the update to every syncer
   registered through authorizeSpaceSync, as a repoWrite in notifySpaceUpdate. Carries no record
   data — just the new repoRev and commit hash (data). The forwarded form adds spaceRev and
   prevSpaceRev (omitted on the first update); a gap in prevSpaceRev means a missed
-  notification, healed with listRepos and a spaceRev cursor.
+  notification, healed with listWriters and a spaceRev cursor.
 
   Authenticated with service auth (Authorization: Bearer <service-auth JWT>, lxm =
   com.atproto.space.notifyRepoUpdate, aud = this server's DID). Unlike uploadBlob's

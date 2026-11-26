@@ -101,7 +101,7 @@ variables only:
 | `CUSTOS_PDS_URL` | yes | Base URL of the PDS to onboard to |
 | `CUSTOS_MCP_EMAIL` | first run | Your account email on that PDS (`login_hint` for registration) |
 | `CUSTOS_MCP_AGENT_NAME` | no | Display name for the registration (default "Custos MCP") |
-| `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | `1` lists `put_record`/`delete_record` |
+| `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | `1` lists `put_record`/`delete_record` and their space siblings `space_put_record`/`space_delete_record`; hidden otherwise |
 | `CUSTOS_MCP_IMAGE_DIR` | no | The one directory `create_post`, `upload_blob` (by `path`), and `update_bluesky_profile` may read files from; unset = path-based uploads disabled (inline `data` uploads still work) |
 | `CUSTOS_MCP_STATE_DIR` | no | Credential-cache dir (default: OS state dir, e.g. `~/.local/state/custos-mcp`) |
 | `CUSTOS_MCP_PACE_MS` | no | Min gap between HTTP requests (default 150) |

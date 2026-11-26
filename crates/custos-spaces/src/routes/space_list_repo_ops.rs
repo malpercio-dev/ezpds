@@ -7,6 +7,11 @@
 //! and droppable (`space_oplog_sweep.rs`), so a `since` that predates the retained window
 //! simply yields the retained suffix — the syncer's own LtHash fold failing to match the head
 //! commit is its signal to heal via `getRepo`, not an error this route can raise.
+//!
+//! `since` and `cursor` filter together, as in the reference: a page sent with both holds only
+//! ops after the cursor *and* after `since`. A malformed cursor is `InvalidCursor`. One
+//! divergence: the reference reads the cursor's index with `parseInt`, so it takes `rev/12x` as
+//! index 12; Custos refuses any index that is not a whole integer.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
@@ -28,8 +33,7 @@ pub struct SpaceListRepoOpsParams {
     /// The caller's own sync position: only ops strictly after this rev.
     since: Option<String>,
     limit: Option<i64>,
-    /// Opaque continuation from a previous page; takes precedence over `since` when both are
-    /// supplied (the cursor is itself a position).
+    /// Opaque continuation from a previous page; applied together with `since`.
     cursor: Option<String>,
     #[serde(default, rename = "excludeValues")]
     exclude_values: bool,
@@ -67,19 +71,12 @@ pub async fn space_list_repo_ops(
     // The lexicon already rejects a `limit` outside [1, 1000]; this only applies the default.
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cursor = params.cursor.as_deref().map(parse_cursor).transpose()?;
-    // The cursor takes precedence over `since` when both arrive — the cursor IS a
-    // position, so conjoining a later `since` would silently skip the ops between them.
-    let since = if cursor.is_some() {
-        None
-    } else {
-        params.since.as_deref()
-    };
 
     let rows = crate::db::space_repos::list_repo_ops(
         &state.db,
         &space.uri,
         &params.repo,
-        since,
+        params.since.as_deref(),
         cursor.as_ref().map(|(rev, idx)| (rev.as_str(), *idx)),
         params.exclude_values,
         limit,
@@ -128,5 +125,5 @@ fn parse_cursor(cursor: &str) -> Result<(String, i64), ApiError> {
     cursor
         .split_once('/')
         .and_then(|(rev, idx)| idx.parse::<i64>().ok().map(|idx| (rev.to_string(), idx)))
-        .ok_or_else(|| ApiError::new(ErrorCode::InvalidRequest, "malformed cursor"))
+        .ok_or_else(|| ApiError::new(ErrorCode::InvalidCursor, "Malformed cursor"))
 }

@@ -198,8 +198,8 @@ async fn list_repo_ops_paginates_with_cursor() {
     );
     assert!(second.get("cursor").is_none());
 
-    // The cursor takes precedence over `since`: a `since` at the head, which
-    // on its own would exclude every op, must not shrink a cursor-driven page.
+    // `cursor` and `since` filter together, as in the reference: a `since` at the head
+    // empties a cursor-driven page...
     let head_rev = &revs[2];
     let response = crate::test_support::test_app(state.clone())
         .oneshot(get(
@@ -212,9 +212,62 @@ async fn list_repo_ops_paginates_with_cursor() {
         .unwrap();
     let with_since = body_json(response).await;
     assert_eq!(
-        with_since["ops"], second["ops"],
-        "a cursor-driven page ignores `since`"
+        with_since["ops"].as_array().unwrap().len(),
+        0,
+        "`since` at the head excludes every op past the cursor: {with_since}"
     );
+
+    // ...and a `since` past the cursor's position skips the ops between them.
+    let response = crate::test_support::test_app(state.clone())
+        .oneshot(get(
+            &format!("com.atproto.space.listRepoOps?space={SPACE}&repo={DID}&limit=1"),
+            &token,
+        ))
+        .await
+        .unwrap();
+    let early_cursor = body_json(response).await["cursor"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let since = &revs[1];
+    let response = crate::test_support::test_app(state.clone())
+        .oneshot(get(
+            &format!(
+                "com.atproto.space.listRepoOps?space={SPACE}&repo={DID}&cursor={early_cursor}&since={since}"
+            ),
+            &token,
+        ))
+        .await
+        .unwrap();
+    let both = body_json(response).await;
+    let rkeys: Vec<_> = both["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| op["rkey"].as_str().unwrap())
+        .collect();
+    assert_eq!(rkeys, ["ccc"], "both filters apply: {both}");
+}
+
+/// A cursor that does not parse as `rev/idx` answers `InvalidCursor`, as the lexicon declares.
+#[tokio::test]
+async fn list_repo_ops_malformed_cursor_is_invalid_cursor() {
+    let (state, _kp) = setup().await;
+    let token = access_jwt(&state.jwt_secret, DID);
+    write_one(&state, SpaceWriteAction::Create, "aaa", "aaa").await;
+
+    for cursor in ["norev", "rev/notanumber"] {
+        let response = crate::test_support::test_app(state.clone())
+            .oneshot(get(
+                &format!("com.atproto.space.listRepoOps?space={SPACE}&repo={DID}&cursor={cursor}"),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{cursor}");
+        let body = body_json(response).await;
+        assert_eq!(body["error"], "InvalidCursor", "{cursor}: {body}");
+    }
 }
 
 /// An account holding no repo in the space answers RepoNotFound — not an empty oplog, which

@@ -18,7 +18,9 @@
 //! **Best-effort.** Nothing here blocks a commit: the write has landed before the task is spawned.
 //! Each syncer gets one attempt, and a failure is logged and nothing more. It never unregisters
 //! the syncer, which heals from the `prevSpaceRev` gap with `listWriters`. A registration lapses
-//! only at its own expiry.
+//! only at its own expiry. The two notices that must arrive, `spaceDeleted` and the one
+//! `registrationExpired` a lapse is owed, go through the durable queue in `space_notify_retry`
+//! instead; the fan-out only claims the lapses it finds.
 //!
 //! **Bounded, twice.** A space holds at most [`MAX_REGISTRATIONS`] active registrations, and one
 //! fan-out runs [`SYNCER_CONCURRENCY`] deliveries at once. Across the process at most
@@ -46,10 +48,10 @@ use custos_core::space_uri::SpaceRef;
 pub const MAX_REGISTRATIONS: i64 = 100;
 
 /// Deliveries one fan-out runs at once, so a slow syncer doesn't hold up the others.
-const SYNCER_CONCURRENCY: usize = 4;
+pub(crate) const SYNCER_CONCURRENCY: usize = 4;
 
 /// How long one call to a syncer's endpoint may take: `confirmRegistration` or one notice.
-const SYNCER_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const SYNCER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Largest `confirmRegistration` answer read. The body is `{"challenge": …}`, at most 512 chars.
 const MAX_CONFIRM_BODY_BYTES: usize = 4096;
@@ -68,7 +70,7 @@ const MAX_CONCURRENT_FANOUTS: usize = 8;
 /// `listWriters`. Waiting bounds the expensive half without losing the cheap half.
 // ponytail: unbounded wait queue — an mpsc-fed worker with a bounded channel if a write burst
 // ever outpaces delivery for long enough that queued tasks, not connections, are the problem.
-fn fanout_permits() -> &'static Semaphore {
+pub(crate) fn fanout_permits() -> &'static Semaphore {
     static PERMITS: OnceLock<Semaphore> = OnceLock::new();
     PERMITS.get_or_init(|| Semaphore::new(MAX_CONCURRENT_FANOUTS))
 }
@@ -83,7 +85,7 @@ const BASE_BACKOFF: Duration = Duration::from_millis(500);
 const SERVICE_AUTH_TTL_SECS: u64 = 60;
 
 const NOTIFY_REPO_UPDATE: &str = "com.atproto.space.notifyRepoUpdate";
-const NOTIFY_SPACE_UPDATE: &str = "com.atproto.space.notifySpaceUpdate";
+pub(crate) const NOTIFY_SPACE_UPDATE: &str = "com.atproto.space.notifySpaceUpdate";
 const CONFIRM_REGISTRATION: &str = "com.atproto.space.confirmRegistration";
 
 /// Repo host: report our own account's write into a space whose authority is elsewhere, as one
@@ -175,10 +177,11 @@ fn forward_update(
 ) -> tokio::task::JoinHandle<()> {
     let state = state.clone();
     let space = space.clone();
-    update["spaceRev"] = revs.space_rev.into();
+    update["spaceRev"] = revs.space_rev.clone().into();
     if let Some(prev) = revs.prev_space_rev {
         update["prevSpaceRev"] = prev.into();
     }
+    let space_rev = revs.space_rev;
     tokio::spawn(async move {
         let _permit = fanout_permits().acquire().await;
         if authority_is_local(&state, &space).await != Some(true) {
@@ -199,27 +202,9 @@ fn forward_update(
             }
         };
         notify_syncers(&state, &space, registrations, &update).await;
+        // A registration that lapsed since the last update is owed its expiry notice instead.
+        crate::space_notify_retry::claim_lapses(&state, &space.uri, &space_rev).await;
     })
-}
-
-/// Tell every syncer registered for `space` that it has been deleted.
-///
-/// The registrations are captured by the caller *before* the deletion transaction drops them.
-pub fn fan_out_space_deleted(
-    state: &CoreState,
-    space: &SpaceRef,
-    registrations: Vec<Registration>,
-) {
-    if registrations.is_empty() {
-        return;
-    }
-    let state = state.clone();
-    let space = space.clone();
-    let update = serde_json::json!({ "$type": "com.atproto.space.notifySpaceUpdate#spaceDeleted" });
-    tokio::spawn(async move {
-        let _permit = fanout_permits().acquire().await;
-        notify_syncers(&state, &space, registrations, &update).await;
-    });
 }
 
 /// Whether this host is `space`'s authority (a `spaces` row with a policy). `None` when there is
@@ -276,7 +261,7 @@ async fn notify_syncers(
 }
 
 /// `method`'s URL on a syncer's registered base URL.
-fn syncer_url(endpoint: &str, method: &str) -> CallerUrl {
+pub(crate) fn syncer_url(endpoint: &str, method: &str) -> CallerUrl {
     CallerUrl::new(endpoint).join(&format!("/xrpc/{method}"))
 }
 
@@ -597,25 +582,9 @@ mod tests {
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap()
     }
 
-    /// Wait for a detached fan-out to reach `server` `n` times.
-    async fn wait_for(server: &MockServer, n: usize) -> Vec<wiremock::Request> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let requests = received(server).await;
-            if requests.len() >= n {
-                return requests;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for {n} deliveries"
-            );
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    }
-
     /// The `notifySpaceUpdate` a syncer receives: the `{space, token, update}` envelope, the
     /// update a typed `repoWrite`, and no Authorization header — the token in the body is the
-    /// authentication. A lapsed registration is not sent the update.
+    /// authentication. A lapsed registration is sent its expiry notice instead of the update.
     #[tokio::test]
     async fn a_write_reaches_each_active_syncer_in_the_envelope() {
         let state = authority_state().await;
@@ -640,8 +609,17 @@ mod tests {
         .await
         .unwrap();
 
-        let requests = received(&server).await;
-        assert_eq!(requests.len(), 1, "the lapsed registration is skipped");
+        let (requests, lapsed): (Vec<_>, Vec<_>) = received(&server)
+            .await
+            .into_iter()
+            .partition(|r| body_of(r)["token"] == "live-token");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(lapsed.len(), 1);
+        assert_eq!(
+            body_of(&lapsed[0])["update"]["$type"],
+            "com.atproto.space.notifySpaceUpdate#registrationExpired",
+            "the lapsed registration is sent its expiry notice, not the update"
+        );
         assert_eq!(
             requests[0].url.path(),
             "/xrpc/com.atproto.space.notifySpaceUpdate"
@@ -741,27 +719,6 @@ mod tests {
             .await
             .unwrap();
         assert!(received(&server).await.is_empty());
-    }
-
-    /// A deletion is a `spaceDeleted` update in the same envelope.
-    #[tokio::test]
-    async fn a_deletion_is_a_space_deleted_update() {
-        let state = authority_state().await;
-        let server = MockServer::start().await;
-        notify_ok(NOTIFY_SPACE_UPDATE).mount(&server).await;
-
-        let space = parse_space_ref(SPACE).unwrap();
-        fan_out_space_deleted(&state, &space, vec![registration(&server.uri(), "t")]);
-
-        let requests = wait_for(&server, 1).await;
-        assert_eq!(
-            body_of(&requests[0]),
-            serde_json::json!({
-                "space": SPACE,
-                "token": "t",
-                "update": { "$type": "com.atproto.space.notifySpaceUpdate#spaceDeleted" },
-            })
-        );
     }
 
     /// The endpoint must echo the challenge it was sent, for the token it was sent with. A wrong
