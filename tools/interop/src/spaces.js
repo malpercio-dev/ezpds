@@ -389,6 +389,10 @@ export async function spacesInterop({ authority: authorityName, member: memberNa
       }).then(() => null, (e) => e);
       if (!err) throw new Error('the member host accepted an unsigned space credential');
       if (!(err instanceof HttpError)) throw err;
+      // The reference's name for a missing signature; Custos answers the same.
+      if (err.status !== 401 || err.errorCode !== 'BadSpaceSignature') {
+        throw new Error(`expected 401 BadSpaceSignature, got ${err.status} ${err.errorCode}`);
+      }
       return { status: err.status, error: err.errorCode, message: err.errorDescription };
     });
 
