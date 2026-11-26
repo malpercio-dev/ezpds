@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.19.1] - 2026-11-26
+
+### Fixed
+
+- An unparseable or malformed space credential now answers the reference's name for its fault (for example `401 BadJwt`) instead of `400 InvalidCredential`. Revocation and the audience are now checked after the request's HTTP signature, in the reference's order.
+
+
 ## [0.19.0] - 2026-11-26
 
 ### Added
