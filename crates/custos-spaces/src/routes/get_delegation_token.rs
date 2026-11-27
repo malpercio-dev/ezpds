@@ -196,7 +196,7 @@ mod tests {
                 .oneshot(request(&app_pass, SPACE))
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             assert_eq!(body_json(response).await["error"], "InvalidToken");
         }
 

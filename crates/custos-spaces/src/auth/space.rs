@@ -47,9 +47,8 @@
 //!   `verify_credential_signature` to `auth`, so no route grows its own credential parsing.
 //! * **Session scope** — every account-credential arm above admits a full-access token only (a
 //!   full session or an OAuth grant), the reference's `scopes: ACCESS_FULL`: an app-password
-//!   session answers `InvalidToken` ("Bad token scope") in [`authenticate_space_caller`]. One
-//!   divergence: the reply is 401 where the reference's is 400, because every `InvalidToken`
-//!   this server sends is 401. `listWriters`' account arm, which the reference does not have,
+//!   session answers 400 `InvalidToken` ("Bad token scope") in [`authenticate_space_caller`],
+//!   the reference's reply. `listWriters`' account arm, which the reference does not have,
 //!   refuses it too.
 //! * **The operator cut** — [`require_space_servable`] refuses a space the operator took down
 //!   (V070), the per-space counterpart to [`require_serviceable_caller`]'s account-level one and
@@ -136,11 +135,10 @@ pub fn space_host_aud(space: &SpaceRef) -> String {
 /// routes through here, so this is the one place either gate has to hold.
 ///
 /// Only a full-access token (a full session or an OAuth grant) is admitted. An app-password
-/// session, privileged or not, answers `InvalidToken` ("Bad token scope"): the reference
+/// session, privileged or not, answers 400 `InvalidToken` ("Bad token scope"): the reference
 /// authorizes every account-session space and memberspace method with `scopes: ACCESS_FULL`.
 /// It runs before the lifecycle gate because the reference refuses the scope while verifying
-/// the token, before it looks at the account. The reply is 401, where the reference's is 400,
-/// because every `InvalidToken` this server sends is 401; clients dispatch on the name.
+/// the token, before it looks at the account.
 pub async fn authenticate_space_caller(
     state: &CoreState,
     headers: &HeaderMap,
@@ -149,7 +147,7 @@ pub async fn authenticate_space_caller(
 ) -> Result<AuthenticatedUser, ApiError> {
     let user = custos_core::auth::authenticate_access(headers, method, uri, state)?;
     if user.scope != AuthScope::Access {
-        return Err(ApiError::new(ErrorCode::InvalidToken, "Bad token scope"));
+        return Err(ApiError::new(ErrorCode::BadTokenScope, "Bad token scope"));
     }
 
     require_serviceable_caller(state, &user.did).await?;
@@ -2161,7 +2159,8 @@ mod tests {
             )
             .await
             .unwrap_err();
-            assert_eq!(*err.code(), ErrorCode::InvalidToken);
+            assert_eq!(*err.code(), ErrorCode::BadTokenScope);
+            assert_eq!(err.status_code(), 400);
             assert_eq!(err.message(), "Bad token scope");
         }
     }

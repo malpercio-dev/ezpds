@@ -25,6 +25,6 @@ docs {
   (`typ atproto-space-delegation+jwt`, `kid #atproto`, `sub` = space, `aud` =
   `{authority}#atproto_pds`). Requires an OAuth (or full-access) session whose grant covers
   `read` on the space — a `read_self`-only grant gets 403 InsufficientScope, and an
-  app-password session gets 401 InvalidToken, as on every account-session space method.
+  app-password session gets 400 InvalidToken, as on every account-session space method.
   The app passes it in the body of the authority's `authorizeSpaceSync` for a space credential.
 }

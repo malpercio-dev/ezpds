@@ -541,7 +541,7 @@ async fn app_password_sessions_are_refused_at_every_account_seam() {
                 .oneshot(request)
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
             let body = body_json(response).await;
             assert_eq!(body["error"], "InvalidToken", "{uri}");
             assert_eq!(body["message"], "Bad token scope", "{uri}");
