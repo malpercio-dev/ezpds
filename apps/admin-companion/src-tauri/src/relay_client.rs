@@ -1553,6 +1553,7 @@ pub struct AccountListEntry {
 #[serde(rename_all = "camelCase")]
 pub struct HostedSpaceList {
     pub spaces: Vec<HostedSpaceEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
 
@@ -1569,11 +1570,14 @@ pub struct HostedSpaceEntry {
     pub local_authority: bool,
     /// The policy's `$type` (personalspace, memberspace, or managedspace); `None` for a
     /// space another server governs, since that server holds the policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_type: Option<String>,
     pub created_at: String,
     /// The space *owner's* tombstone (`deleteSpace`), not the operator's; `None` when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<String>,
     /// When the operator took the space down; `None` means it is being served.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub takendown_at: Option<String>,
     /// Repos the relay stores in the space.
     pub repo_count: i64,
@@ -1589,6 +1593,7 @@ pub struct HostedSpaceEntry {
 pub struct SpaceTakedown {
     pub uri: String,
     pub applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub takendown_at: Option<String>,
 }
 
@@ -3078,6 +3083,24 @@ mod tests {
         .expect("deserialize restore");
         assert!(!cleared.applied);
         assert_eq!(cleared.takendown_at, None);
+
+        // What crosses IPC must omit an absent field too: the screen reads "taken down" as
+        // `takendownAt !== undefined`, and a `null` would mark every served space refused.
+        let served = serde_json::to_string(&page.spaces[1]).expect("serialize");
+        assert!(
+            !served.contains("null"),
+            "absent fields leaked as null: {served}"
+        );
+        let cleared = serde_json::to_string(&cleared).expect("serialize");
+        assert!(
+            !cleared.contains("null"),
+            "absent fields leaked as null: {cleared}"
+        );
+        let last = serde_json::to_string(&last).expect("serialize");
+        assert!(
+            !last.contains("null"),
+            "absent cursor leaked as null: {last}"
+        );
     }
 
     // Pins the relay's in-flight transfer wire shapes by value (`TransferView` /
