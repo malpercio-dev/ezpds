@@ -557,7 +557,14 @@ in fixtures only (no pinned MAC or digest output moved).
    on every collection) and indexes only the difference from what the host
    holds (atproto pull request 5932); `reserveKemKey` (atproto pull request
    5974, the pin commit itself). These are conformance checks against the
-   current pin, not past-pin work.
+   current pin, not past-pin work. **Custos gap found:** only
+   `getDelegationToken` refuses app passwords today;
+   `auth::space::require_space_grant` returns early for every non-`Access`
+   scope, so an app-password session reaches every other space method
+   bounded only by repo ownership. The module doc says this is how the
+   reference bounds them, but at the pin the reference refuses them with
+   `InvalidToken` ("Bad token scope"). Custos's `importRepo` already requires
+   a grant over the whole space.
 
 ## 1. What the proposal specifies
 
