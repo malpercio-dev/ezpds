@@ -39,7 +39,7 @@ Wave 10: Spaces implementation issues never silently drift from upstream.
 > Spaces") as the open issues titled "Spaces: …"; the slice plan is the
 > resolution comment on MM-675. The closed issues MM-506…MM-518 are history:
 > never map a delta to them. The conformance target is frozen at the
-> `permissioned-data` branch of `bluesky-social/atproto` at commit 047d603.
+> `permissioned-data` branch of `bluesky-social/atproto` at commit 355b733.
 > Anything upstream past that commit is a NEW issue for the maintainer to
 > triage, never a silent pin bump.
 >
@@ -54,7 +54,7 @@ Wave 10: Spaces implementation issues never silently drift from upstream.
 >    of `bluesky-social/atproto` (paths `lexicons/` and `packages/space/`) and
 >    check whether the lexicon file set, golden test vectors, or endpoint
 >    surface moved relative to what the doc claims and relative to the pin
->    047d603.
+>    355b733.
 > 4. If there are NO material changes: finish with a one-line "no spec changes
 >    this week" report. Do not commit, push, or open a PR.
 > 5. If there ARE material changes: update the doc — append dated entries to

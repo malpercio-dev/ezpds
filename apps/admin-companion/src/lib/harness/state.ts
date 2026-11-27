@@ -343,7 +343,7 @@ export function seedRelay(opts: {
       : [makeTransfer(`${seed}:t1`, 'pending')],
     spaces: [
       {
-        uri: `at://${accounts[0]?.did ?? fakeAccountDid(`${seed}:acct0`)}/space/org.example.bucket/main`,
+        uri: `at:space/${accounts[0]?.did ?? fakeAccountDid(`${seed}:acct0`)}/org.example.bucket/main`,
         authorityDid: accounts[0]?.did ?? fakeAccountDid(`${seed}:acct0`),
         localAuthority: true,
         policyType: 'com.atproto.memberspace.policy',
@@ -355,7 +355,7 @@ export function seedRelay(opts: {
         takendownAt: opts.degraded ? '2026-07-14 22:10:00' : undefined,
       },
       {
-        uri: 'at://did:plc:foreignauthorityaaaaaaaa/space/com.atmoboards.forum/general',
+        uri: 'at:space/did:plc:foreignauthorityaaaaaaaa/com.atmoboards.forum/general',
         authorityDid: 'did:plc:foreignauthorityaaaaaaaa',
         localAuthority: false,
         createdAt: '2026-07-12 16:40:00',

@@ -143,7 +143,7 @@ mod purge_tests {
         let state = state_with_master_key().await;
         let did = "did:plc:purgespaces";
         seed_account_with_repo(&state.db, did).await;
-        let space = "at://did:plc:purgespaces/space/org.example.bucket/self";
+        let space = "at:space/did:plc:purgespaces/org.example.bucket/self";
         seed_authority_space(&state.db, space, &memberspace_policy(false)).await;
         apply_space_writes(
             &state,

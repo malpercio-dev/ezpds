@@ -1391,7 +1391,7 @@ fn test_unexplained_missing_blobs_excuses_only_accepted_public_losses() {
     let missing = vec!["bafyaccepted".to_string(), "bafyspaceonly".to_string()];
     let accepted = [
         loss("bafyaccepted", None),
-        loss("bafyspaceonly", Some("at://did:plc:abc/space/a.b/c")),
+        loss("bafyspaceonly", Some("at:space/did:plc:abc/a.b/c")),
     ];
     assert_eq!(
         unexplained_missing_blobs(&missing, &accepted),

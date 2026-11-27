@@ -29,8 +29,8 @@ const FOREIGN: &str = "did:plc:foreignauthorityaaaaaaa";
 const SYNCER: &str = "did:web:syncer.example.com";
 const TYPE: &str = "org.example.bucket";
 const COLLECTION: &str = "org.example.note";
-const SPACE: &str = "at://did:plc:alicenotifyaaaaaaaaaaaa/space/org.example.bucket/main";
-const FOREIGN_SPACE: &str = "at://did:plc:foreignauthorityaaaaaaa/space/org.example.bucket/main";
+const SPACE: &str = "at:space/did:plc:alicenotifyaaaaaaaaaaaa/org.example.bucket/main";
+const FOREIGN_SPACE: &str = "at:space/did:plc:foreignauthorityaaaaaaa/org.example.bucket/main";
 
 /// Alice hosts an account and a public memberspace of her own; Bob is a second local account.
 async fn setup() -> CoreState {

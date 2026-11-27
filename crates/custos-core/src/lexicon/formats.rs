@@ -23,8 +23,8 @@ pub(super) fn validate_format(format: StringFormat, value: &str) -> Result<(), &
             }
         }
         // Two disjoint families share this format: the public repo form `repo_engine::AtUri`
-        // parses, and the permissioned-space form (`at://…/space/…`), which the marker segment
-        // makes unambiguous. The reference splits them the same way.
+        // parses, and the permissioned-space form (`at:space/…`), which its prefix makes
+        // unambiguous. The reference splits them the same way.
         StringFormat::AtUri => {
             repo_engine::AtUri::parse(value).is_ok() || crate::space_uri::is_space_at_uri(value)
         }

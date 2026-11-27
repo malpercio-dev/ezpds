@@ -681,7 +681,7 @@ export function cancelTransfer(
 
 /** One Atproto Space the relay stores something about. */
 export interface HostedSpaceEntry {
-  /** Canonical space URI, `at://{authority}/space/{type}/{skey}`. */
+  /** Canonical space URI, `at:space/{authority}/{type}/{skey}`. */
   uri: string;
   authorityDid: string;
   /**

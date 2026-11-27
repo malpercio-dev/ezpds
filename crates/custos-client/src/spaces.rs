@@ -21,7 +21,7 @@ pub const STAR_CONTENT_TYPE: &str = "application/vnd.dasl.star";
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SpaceView {
-    /// The space-ref, `at://{authority}/space/{type}/{skey}`.
+    /// The space-ref, `at:space/{authority}/{type}/{skey}`.
     pub space: String,
     /// The account's repo revision in the space, when it holds a repo there.
     #[serde(default)]
@@ -276,9 +276,9 @@ mod tests {
     fn space_view_reads_the_lexicon_shape() {
         let page: SpacePage = serde_json::from_value(serde_json::json!({
             "spaces": [
-                { "space": "at://did:plc:a/space/app.example.group/one",
+                { "space": "at:space/did:plc:a/app.example.group/one",
                   "repoRev": "3l", "data": { "$bytes": "AAEC" }, "spaceRev": "3m" },
-                { "space": "at://did:plc:b/space/app.example.group/two" }
+                { "space": "at:space/did:plc:b/app.example.group/two" }
             ],
             "cursor": "next"
         }))

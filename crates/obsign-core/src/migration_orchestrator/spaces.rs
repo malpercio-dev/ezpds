@@ -45,11 +45,11 @@ pub struct SpaceTransferState {
 
 // ── pure cores ─────────────────────────────────────────────────────
 
-/// Whether `space` (a space-ref, `at://{authority}/space/{type}/{skey}`) names `did` as its
+/// Whether `space` (a space-ref, `at:space/{authority}/{type}/{skey}`) names `did` as its
 /// authority.
 pub fn is_space_authority(space: &str, did: &str) -> bool {
     space
-        .strip_prefix("at://")
+        .strip_prefix("at:space/")
         .and_then(|rest| rest.split('/').next())
         == Some(did)
 }

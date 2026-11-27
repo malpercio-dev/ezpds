@@ -940,7 +940,7 @@ mod tests {
     use super::*;
     use crate::test_support::test_state;
 
-    const SPACE: &str = "at://did:plc:author/space/org.example.bucket/self";
+    const SPACE: &str = "at:space/did:plc:author/org.example.bucket/self";
     const DID: &str = "did:plc:spacewriter";
 
     fn space() -> SpaceRef {
@@ -1169,7 +1169,7 @@ mod tests {
         let state = test_state().await;
         seed(&state).await;
         let unknown = custos_core::space_uri::parse_space_ref(
-            "at://did:plc:someoneelse/space/org.example.bucket/shared",
+            "at:space/did:plc:someoneelse/org.example.bucket/shared",
         )
         .unwrap();
 
@@ -1266,7 +1266,7 @@ mod tests {
 
     // ── the writer-set gate ─────────────────────────────────────────────────
 
-    const GOVERNED: &str = "at://did:plc:spacewriter/space/org.example.bucket/gate";
+    const GOVERNED: &str = "at:space/did:plc:spacewriter/org.example.bucket/gate";
     const MEMBER: &str = "did:plc:spacegatememberaaaaaaa";
     const APP: &str = "did:web:managing.example#atproto_pds";
 

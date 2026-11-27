@@ -26,7 +26,7 @@ use crate::test_support::{send, xrpc_get, xrpc_post};
 const ALICE: &str = "did:plc:alicespacepolicyaaaaaaaa";
 const BOB: &str = "did:plc:bobspacepolicyaaaaaaaaaa";
 const TYPE: &str = "org.example.bucket";
-const SPACE: &str = "at://did:plc:alicespacepolicyaaaaaaaa/space/org.example.bucket/main";
+const SPACE: &str = "at:space/did:plc:alicespacepolicyaaaaaaaa/org.example.bucket/main";
 
 async fn setup() -> CoreState {
     let state = state_with_master_key().await;
@@ -126,7 +126,7 @@ async fn create_get_members_update_delete_round_trip() {
     .await;
     let generated = body["space"].as_str().unwrap();
     assert_ne!(generated, SPACE);
-    assert!(generated.starts_with(&format!("at://{ALICE}/space/{TYPE}/")));
+    assert!(generated.starts_with(&format!("at:space/{ALICE}/{TYPE}/")));
 
     // getSpace serves the normalized policy: defaults filled in.
     let body = ok(

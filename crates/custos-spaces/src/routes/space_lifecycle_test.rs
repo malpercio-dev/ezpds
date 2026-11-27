@@ -31,7 +31,7 @@ use custos_core::space_uri::parse_space_ref;
 use custos_db::dids::seed_did_document;
 
 const DID: &str = "did:plc:spacelifecycleaaaaaaaaa";
-const SPACE: &str = "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main";
+const SPACE: &str = "at:space/did:plc:authorityaaaaaaaaaaaaaaa/org.example.bucket/main";
 const COLLECTION: &str = "org.example.note";
 
 /// A grant covering exactly this space and collection, for every record verb plus `read_self`.
@@ -49,7 +49,7 @@ fn create_body(rkey: &str, text: &str) -> serde_json::Value {
     space_record_body(SPACE, DID, COLLECTION, rkey, text)
 }
 
-/// `createSpace` for `at://{DID}/space/org.example.bucket/main`, open to everyone.
+/// `createSpace` for `at:space/{DID}/org.example.bucket/main`, open to everyone.
 async fn create_own_space(state: &CoreState, token: &str) {
     assert_eq!(
         send(
@@ -235,7 +235,7 @@ async fn the_writer_listing_answers_the_authoritys_status() {
     )
     .await;
     let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
-    let own_space = format!("at://{DID}/space/org.example.bucket/main");
+    let own_space = format!("at:space/{DID}/org.example.bucket/main");
     let owner = access_jwt(&state.jwt_secret, DID);
     create_own_space(&state, &owner).await;
 
@@ -290,7 +290,7 @@ async fn credential_requests_are_rate_limited_per_bound_key() {
     )
     .await;
     let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
-    let own_space = format!("at://{DID}/space/org.example.bucket/main");
+    let own_space = format!("at:space/{DID}/org.example.bucket/main");
     let owner = access_jwt(&state.jwt_secret, DID);
     create_own_space(&state, &owner).await;
 
@@ -626,7 +626,7 @@ async fn import_refuses_an_archive_that_does_not_verify_or_is_not_the_callers() 
 #[tokio::test]
 async fn an_authoritys_space_round_trips_through_meta_and_repo_with_equal_data() {
     const MEMBER: &str = "did:plc:spacelifecyclememberaaa";
-    let own = format!("at://{DID}/space/org.example.bucket/main");
+    let own = format!("at:space/{DID}/org.example.bucket/main");
     let source = setup().await;
     let token = access_jwt(&source.jwt_secret, DID);
     assert_eq!(
@@ -745,7 +745,7 @@ async fn an_authoritys_space_round_trips_through_meta_and_repo_with_equal_data()
 /// authority's own `exportSpaceMeta` and `getRepo` answer `SpaceNotFound` until it is lifted.
 #[tokio::test]
 async fn a_space_takedown_blocks_the_authoritys_export() {
-    let own = format!("at://{DID}/space/org.example.bucket/main");
+    let own = format!("at:space/{DID}/org.example.bucket/main");
     let state = setup().await;
     let token = access_jwt(&state.jwt_secret, DID);
     create_own_space(&state, &token).await;
@@ -787,7 +787,7 @@ async fn a_space_takedown_blocks_the_authoritys_export() {
 async fn writing_into_an_uncreated_own_space_is_refused() {
     let state = setup().await;
     let token = access_jwt(&state.jwt_secret, DID);
-    let own_space = format!("at://{DID}/space/org.example.bucket/main");
+    let own_space = format!("at:space/{DID}/org.example.bucket/main");
     let write = || {
         post(
             "com.atproto.space.createRecord",
@@ -912,7 +912,7 @@ async fn deleting_the_last_record_leaves_an_empty_repo() {
 async fn an_emptied_repo_stays_in_the_authority_writer_set() {
     let state = setup().await;
     let token = access_jwt(&state.jwt_secret, DID);
-    let own_space = format!("at://{DID}/space/org.example.bucket/main");
+    let own_space = format!("at:space/{DID}/org.example.bucket/main");
     create_own_space(&state, &token).await;
     let writers = || crate::db::space_notify::list_writers(&state.db, &own_space, None, 10);
 

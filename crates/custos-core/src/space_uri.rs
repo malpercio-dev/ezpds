@@ -1,15 +1,24 @@
 // pattern: Functional Core
 
-//! Space-ref syntax: `at://{authority}/space/{spaceType}/{skey}`.
+//! Space URI syntax: `at:space/{spaceDid}/{spaceType}/{skey}`, optionally followed by
+//! `/{authorDid}/{collection}/{rkey}` for one record inside the space.
 //!
-//! The literal `space` segment carries no dot, so it can never be mistaken for a collection
-//! NSID (which always has at least two) — that is what lets one AT-URI space address both
-//! public repo data and permissioned space data.
+//! The `at:space/` prefix is what tells a space URI from a public one (`at://…`); there is no
+//! `at://` form of a space URI, and only those two lengths are valid.
 //!
 //! Two callers share this: the lexicon layer's `space-ref` string format, and every
 //! `com.atproto.space.*` route, which needs the parsed `(authority, type, skey)` triple to
 //! evaluate a `space:` grant and to fill the `spaces` row's columns. Parsing is therefore the
 //! only way a route obtains those parts, so a malformed ref can never reach the store.
+
+/// What every space URI starts with.
+pub const SPACE_URI_PREFIX: &str = "at:space/";
+
+/// The canonical URI of the space `(authority, space_type, skey)`. Unvalidated: a caller holding
+/// untrusted parts passes the result through [`parse_space_ref`].
+pub fn space_uri(authority: &str, space_type: &str, skey: &str) -> String {
+    format!("{SPACE_URI_PREFIX}{authority}/{space_type}/{skey}")
+}
 
 /// A space's identity, parsed from its canonical URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +35,7 @@ pub struct SpaceRef {
 }
 
 impl SpaceRef {
-    /// The AT-URI of one record inside this space: the space ref, then the author, collection
+    /// The URI of one record inside this space: the space ref, then the author, collection
     /// and rkey. This is the `uri` the record routes report and the order `listRecords` pages in.
     pub fn record_uri(&self, author: &str, collection: &str, rkey: &str) -> String {
         format!("{}/{author}/{collection}/{rkey}", self.uri)
@@ -68,15 +77,12 @@ pub fn is_space_at_uri(value: &str) -> bool {
 /// `{authorDid}/{collection}/{rkey}` record tail. Both halves are validated, so neither caller
 /// has to re-check what the other established.
 fn split_space_uri(value: &str) -> Option<(SpaceRef, Option<()>)> {
-    let rest = value.strip_prefix("at://")?;
+    let rest = value.strip_prefix(SPACE_URI_PREFIX)?;
     if rest.contains(['?', '#']) {
         return None;
     }
     let mut parts = rest.split('/');
     let authority = parts.next()?;
-    if parts.next()? != "space" {
-        return None;
-    }
     let space_type = parts.next()?;
     let skey = parts.next()?;
 
@@ -105,10 +111,9 @@ fn split_space_uri(value: &str) -> Option<(SpaceRef, Option<()>)> {
 
     // Rebuilt rather than sliced from the input, so a record URI yields its space's canonical
     // ref rather than a prefix of itself.
-    let space_uri = format!("at://{authority}/space/{space_type}/{skey}");
     Some((
         SpaceRef {
-            uri: space_uri,
+            uri: space_uri(authority, space_type, skey),
             authority: authority.to_string(),
             space_type: space_type.to_string(),
             skey: skey.to_string(),
@@ -121,7 +126,7 @@ fn split_space_uri(value: &str) -> Option<(SpaceRef, Option<()>)> {
 mod tests {
     use super::*;
 
-    const OK: &str = "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group/default";
+    const OK: &str = "at:space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.group/default";
 
     #[test]
     fn parses_the_canonical_three_part_form() {
@@ -130,6 +135,10 @@ mod tests {
         assert_eq!(space.space_type, "app.bsky.group");
         assert_eq!(space.skey, "default");
         assert_eq!(space.uri, OK);
+        assert_eq!(
+            space_uri(&space.authority, &space.space_type, &space.skey),
+            OK
+        );
         assert_eq!(
             space.record_uri("did:plc:member", "org.example.note", "3jui7"),
             format!("{OK}/did:plc:member/org.example.note/3jui7")
@@ -140,21 +149,24 @@ mod tests {
     fn rejects_everything_that_is_not_a_bare_space_ref() {
         for bad in [
             // A record within a space is not a space ref (though it is a space AT-URI).
-            "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group/default/did:plc:a/org.example.note/3jui7",
-            // A public repo URI: no `space` marker.
+            "at:space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.group/default/did:plc:a/org.example.note/3jui7",
+            // A public repo URI.
             "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.feed.post/3jui7",
+            // The pre-2026-11-24 alpha form, and an `at://` spelling of the new one.
+            "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group/default",
+            "at://space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.group/default",
             // The authority must be a DID, never a handle.
-            "at://alice.example.com/space/app.bsky.group/default",
+            "at:space/alice.example.com/app.bsky.group/default",
             // Malformed space type / space key.
-            "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/notannsid/default",
-            "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group/..",
+            "at:space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/notannsid/default",
+            "at:space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.group/..",
             // Truncated, trailing slash, wrong scheme.
-            "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group",
-            "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group/default/",
-            "https://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group/default",
+            "at:space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.group",
+            "at:space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.group/default/",
+            "https://space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.group/default",
             // Query and fragment would give one space two spellings, hence two rows.
-            "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group/default?x=1",
-            "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group/default#/foo",
+            "at:space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.group/default?x=1",
+            "at:space/did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.group/default#/foo",
         ] {
             assert!(parse_space_ref(bad).is_none(), "should reject: {bad}");
         }
@@ -177,6 +189,8 @@ mod tests {
             // The author must be a DID, and the collection an NSID.
             &format!("{OK}/member.example.com/org.example.note/3jui7"),
             &format!("{OK}/did:plc:member/notannsid/3jui7"),
+            // The old form of a record URI.
+            &"at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/space/app.bsky.group/default/did:plc:member/org.example.note/3jui7".to_string(),
             // Not a space URI at all.
             &"at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/app.bsky.feed.post/3jui7".to_string(),
         ] {

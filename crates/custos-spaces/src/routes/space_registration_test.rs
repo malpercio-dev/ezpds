@@ -26,7 +26,7 @@ use crate::test_support::{
 use custos_core::space_uri::parse_space_ref;
 
 const AUTHORITY: &str = "did:plc:authorityregistrationaaa";
-const SPACE: &str = "at://did:plc:authorityregistrationaaa/space/org.example.bucket/main";
+const SPACE: &str = "at:space/did:plc:authorityregistrationaaa/org.example.bucket/main";
 const CONFIRM: &str = "/xrpc/com.atproto.space.confirmRegistration";
 const UPDATE: &str = "/xrpc/com.atproto.space.notifySpaceUpdate";
 

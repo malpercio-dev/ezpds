@@ -41,9 +41,10 @@ pub async fn space_create_space(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let user = authenticate_space_caller(&state, &headers, &method, &uri).await?;
     let skey = input.skey.unwrap_or_else(repo_engine::generate_tid);
-    let space = crate::views::parse_space(&format!(
-        "at://{}/space/{}/{skey}",
-        user.did, input.space_type
+    let space = crate::views::parse_space(&custos_core::space_uri::space_uri(
+        &user.did,
+        &input.space_type,
+        &skey,
     ))?;
     require_space_grant(&state, &user, &space, SpaceOp::Manage(RepoAction::Create)).await?;
     let policy = SpacePolicy::from_lex(&input.policy)?;

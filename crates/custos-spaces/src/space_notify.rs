@@ -417,7 +417,7 @@ mod tests {
     const WRITER: &str = "did:plc:writernotifyaaaaaaaaaaaa";
     const THROTTLER: &str = "did:plc:throttlernotifyaaaaaaaaa";
     const TIMED_OUT: &str = "did:plc:timedoutnotifyaaaaaaaaaa";
-    const SPACE: &str = "at://did:plc:authoritynotifyaaaaaaaaa/space/org.example.bucket/main";
+    const SPACE: &str = "at:space/did:plc:authoritynotifyaaaaaaaaa/org.example.bucket/main";
 
     /// A host that is the space's authority, holding the repo signing key the repo-host leg's
     /// service auth is minted against.

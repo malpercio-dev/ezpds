@@ -64,11 +64,12 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
       the ones live routes validate against, including the ones upstream has since deleted.
       Twelve of them changed shape by the frozen pin; seven still wait here
       (`com.atproto.space.{applyWrites,createRecord,deleteRecord,getBlob,listBlobs,
-      listRecords,putRecord}`). Each is re-vendored from `047d603` by the change that moves its
+      listRecords,putRecord}`). Each is re-vendored from `355b733` by the change that moves its
       route to the new shape, and a deleted one is removed together with its route (the
       `com.atproto.simplespace.*` set already has been).
-    - **`047d6032a21be01df8447489f0d6b59d2cc60af8`** (the frozen pin, 2026-11-23): the
-      documents first vendored at it — `com.atproto.space.{authorizeSpaceSync,clearRecords,
+    - **`355b73380411a24c751b9896ee9e17f5b593bca7`** (the frozen pin, 2026-11-25): the
+      documents first vendored at its predecessor `047d603`, byte-identical at this one —
+      `com.atproto.space.{authorizeSpaceSync,clearRecords,
       confirmRegistration,createSpace,deleteSpace,exportSpaceMeta,getSpace,importRepo,
       importSpaceMeta,listWriters,notifyCredentialsRevoked,notifyRepoUpdate,notifySpaceUpdate,
       policy,removeWriter,updateSpace}`, `com.atproto.{memberspace,managedspace,personalspace}.*`,
@@ -104,7 +105,7 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
 
    ```sh
    curl -o com/atproto/space/example.json \
-     "https://raw.githubusercontent.com/bluesky-social/atproto/047d6032a21be01df8447489f0d6b59d2cc60af8/lexicons/com/atproto/space/example.json"
+     "https://raw.githubusercontent.com/bluesky-social/atproto/355b73380411a24c751b9896ee9e17f5b593bca7/lexicons/com/atproto/space/example.json"
    ```
 
 2. Add it to `LEXICON_SOURCES` in `crates/custos-core/src/lexicon/mod.rs` (also vendor anything its

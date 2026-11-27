@@ -66,7 +66,7 @@ mod tests {
     async fn sweep_prunes_only_ops_past_retention() {
         let state = test_state().await;
         let space = custos_core::space_uri::parse_space_ref(
-            "at://did:plc:oplogauthorityaaaaaaaaa/space/org.example.bucket/main",
+            "at:space/did:plc:oplogauthorityaaaaaaaaa/org.example.bucket/main",
         )
         .unwrap();
         let did = "did:plc:oplogsweepaaaaaaaaaaaaaa";

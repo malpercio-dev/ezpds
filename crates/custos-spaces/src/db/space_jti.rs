@@ -170,28 +170,28 @@ mod tests {
         let pool = test_pool().await;
         let jtis = vec!["c-1".to_string()];
 
-        revoke_credentials(&pool, "at://a/space/x/main", &jtis, 60)
+        revoke_credentials(&pool, "at:space/a/x/main", &jtis, 60)
             .await
             .unwrap();
-        revoke_credentials(&pool, "at://a/space/x/main", &jtis, 60)
+        revoke_credentials(&pool, "at:space/a/x/main", &jtis, 60)
             .await
             .unwrap();
-        assert!(is_credential_revoked(&pool, "at://a/space/x/main", "c-1")
+        assert!(is_credential_revoked(&pool, "at:space/a/x/main", "c-1")
             .await
             .unwrap());
         assert!(
-            !is_credential_revoked(&pool, "at://b/space/x/main", "c-1")
+            !is_credential_revoked(&pool, "at:space/b/x/main", "c-1")
                 .await
                 .unwrap(),
             "a revocation names one space; another space's credential is untouched"
         );
 
         assert_eq!(sweep_expired_revocations(&pool).await.unwrap(), 0);
-        revoke_credentials(&pool, "at://a/space/x/main", &["stale".to_string()], 0)
+        revoke_credentials(&pool, "at:space/a/x/main", &["stale".to_string()], 0)
             .await
             .unwrap();
         assert_eq!(sweep_expired_revocations(&pool).await.unwrap(), 1);
-        assert!(is_credential_revoked(&pool, "at://a/space/x/main", "c-1")
+        assert!(is_credential_revoked(&pool, "at:space/a/x/main", "c-1")
             .await
             .unwrap());
     }

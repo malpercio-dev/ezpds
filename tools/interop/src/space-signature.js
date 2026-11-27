@@ -1,6 +1,6 @@
 // The RFC 9421 signature on a space-credential request, as the pin profiles it — the client
 // half of `createSpaceSigHeaders` (packages/space/src/http-signature.ts, atproto
-// `permissioned-data` @ 047d603).
+// `permissioned-data` @ 355b733).
 //
 // A request authorized by a space credential carries `Authorization: Atproto-Space-Credential
 // <credential>` and `Atproto-Space-Audience: <did>`, both covered, in that order, signed by the

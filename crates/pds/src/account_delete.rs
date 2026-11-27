@@ -694,7 +694,7 @@ mod tests {
         let (state, _dir) = purge_state().await;
         let did = "did:plc:purgespaces";
         seed_account_with_repo(&state.db, did).await;
-        let space = "at://did:plc:purgespaces/space/org.example.bucket/self";
+        let space = "at:space/did:plc:purgespaces/org.example.bucket/self";
         sqlx::query(
             "INSERT INTO spaces (uri, authority_did, space_type, skey, created_at) \
              VALUES (?, ?, 'org.example.bucket', 'self', datetime('now'))",
