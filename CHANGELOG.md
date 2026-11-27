@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.20.0] - 2026-11-27
+
+### Changed
+
+- Space URIs use the 2026-11-24 Atproto Spaces alpha form, `at:space/{spaceDid}/{spaceType}/{skey}[/{authorDid}/{collection}/{rkey}]`, everywhere: `space` parameters and fields, record `uri`s, token `sub`s, MAC headers and archive metadata. The old `at://{spaceDid}/space/…` form is refused with `must be a valid space ref`, so clients and peer hosts that have not upgraded stop working against this server. Stored space URIs are rewritten on upgrade by a one-way migration; archives exported before the upgrade no longer import.
+
+
+### Fixed
+
+- The operator console's Spaces screen no longer shows every space as refused, and its Take down action now takes the space down instead of sending a restore.
+
+
 ## [0.19.2] - 2026-11-27
 
 ### Fixed
