@@ -10,7 +10,6 @@ use custos_core::CoreState;
 use serde::Deserialize;
 
 use common::{ApiError, ErrorCode};
-use custos_core::auth::jwt::AuthScope;
 use custos_core::auth::oauth_scopes::{self, SpaceOp, SpaceRequest};
 use custos_core::lexicon::LexiconParams;
 
@@ -49,19 +48,17 @@ pub async fn space_list_spaces(
     // has to cover. The listing is the caller's own, so `read_self` is the action that fits;
     // a whole-space `read` grant satisfies it too. This is the one space route whose check
     // cannot go through `auth::space`'s space-ref-keyed seam, because it names no space.
-    if user.scope == AuthScope::Access {
-        oauth_scopes::require_space(
-            &user.scope_claim,
-            &SpaceRequest {
-                space_type: params.space_type.as_deref().unwrap_or("*"),
-                authority: params.space_did.as_deref().unwrap_or("*"),
-                skey: "*",
-                op: SpaceOp::ReadSelf,
-                account_did: &user.did,
-                declared_collections: &[],
-            },
-        )?;
-    }
+    oauth_scopes::require_space(
+        &user.scope_claim,
+        &SpaceRequest {
+            space_type: params.space_type.as_deref().unwrap_or("*"),
+            authority: params.space_did.as_deref().unwrap_or("*"),
+            skey: "*",
+            op: SpaceOp::ReadSelf,
+            account_did: &user.did,
+            declared_collections: &[],
+        },
+    )?;
 
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let spaces = crate::db::space_repos::list_spaces_for_account(

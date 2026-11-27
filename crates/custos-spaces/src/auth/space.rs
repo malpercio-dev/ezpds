@@ -45,6 +45,12 @@
 //!   host being replayed at another. Replay against the same audience is allowed until expiry,
 //!   by spec. The compiler confines it: `verify_space_credential` is private to this module and
 //!   `verify_credential_signature` to `auth`, so no route grows its own credential parsing.
+//! * **Session scope** — every account-credential arm above admits a full-access token only (a
+//!   full session or an OAuth grant), the reference's `scopes: ACCESS_FULL`: an app-password
+//!   session answers `InvalidToken` ("Bad token scope") in [`authenticate_space_caller`]. One
+//!   divergence: the reply is 401 where the reference's is 400, because every `InvalidToken`
+//!   this server sends is 401. `listWriters`' account arm, which the reference does not have,
+//!   refuses it too.
 //! * **The operator cut** — [`require_space_servable`] refuses a space the operator took down
 //!   (V070), the per-space counterpart to [`require_serviceable_caller`]'s account-level one and
 //!   the only lever that reaches a space whose authority is a foreign server. Every seam above
@@ -125,9 +131,16 @@ pub fn space_host_aud(space: &SpaceRef) -> String {
 /// Authenticate a caller of a space method that names no one repo (`listSpaces`).
 ///
 /// Runs the shared access-auth path, so the RFC 9449 scheme ↔ `cnf.jkt` binding rules are
-/// identical to every other authenticated route's, and then applies the account-lifecycle
-/// gate below. Every account-credential arm of every space seam routes
-/// through here, so this is the one place the gate has to hold.
+/// identical to every other authenticated route's, then refuses an app-password session and
+/// applies the account-lifecycle gate below. Every account-credential arm of every space seam
+/// routes through here, so this is the one place either gate has to hold.
+///
+/// Only a full-access token (a full session or an OAuth grant) is admitted. An app-password
+/// session, privileged or not, answers `InvalidToken` ("Bad token scope"): the reference
+/// authorizes every account-session space and memberspace method with `scopes: ACCESS_FULL`.
+/// It runs before the lifecycle gate because the reference refuses the scope while verifying
+/// the token, before it looks at the account. The reply is 401, where the reference's is 400,
+/// because every `InvalidToken` this server sends is 401; clients dispatch on the name.
 pub async fn authenticate_space_caller(
     state: &CoreState,
     headers: &HeaderMap,
@@ -135,6 +148,9 @@ pub async fn authenticate_space_caller(
     uri: &Uri,
 ) -> Result<AuthenticatedUser, ApiError> {
     let user = custos_core::auth::authenticate_access(headers, method, uri, state)?;
+    if user.scope != AuthScope::Access {
+        return Err(ApiError::new(ErrorCode::InvalidToken, "Bad token scope"));
+    }
 
     require_serviceable_caller(state, &user.did).await?;
     Ok(user)
@@ -150,9 +166,7 @@ pub async fn authenticate_space_caller(
 /// stay narrower than this: `space_record_write` refuses every non-active state inside its
 /// commit transaction, so deactivation remains read-only for ordinary writes.
 ///
-/// Called from [`authenticate_space_caller`], and directly by `getDelegationToken` — the one
-/// space route that authenticates through the bare `AuthenticatedUser` extractor, because it
-/// names a space this server need not host.
+/// Called from [`authenticate_space_caller`].
 pub async fn require_serviceable_caller(state: &CoreState, did: &str) -> Result<(), ApiError> {
     match custos_db::accounts::account_lifecycle(&state.db, did).await? {
         Some(AccountLifecycle::Active | AccountLifecycle::Deactivated) => Ok(()),
@@ -483,19 +497,15 @@ pub fn repo_not_found(repo: &str) -> ApiError {
 
 /// Check one space operation against the caller's `space:` grant.
 ///
-/// Legacy access tokens — a full session or an app password — carry no space grants at all, so
-/// there is nothing to evaluate; they are bounded instead by the repo-ownership check above,
-/// which is exactly how the reference bounds them. Only an OAuth grant reaches the matcher.
+/// `user` comes from [`authenticate_space_caller`], which has already refused an app-password
+/// session. A full session's `com.atproto.access` claim covers every space operation, so the
+/// matcher admits it; an OAuth grant is matched operation by operation.
 pub async fn require_space_grant(
     state: &CoreState,
     user: &AuthenticatedUser,
     space: &SpaceRef,
     op: SpaceOp<'_>,
 ) -> Result<(), ApiError> {
-    if user.scope != AuthScope::Access {
-        return Ok(());
-    }
-
     // First pass with no declaration. A grant that names its own `collection`, and every
     // non-record operation (read is all-or-nothing at the space boundary), is decided here —
     // which is what keeps the resolution below off the hot path of an ordinary write.
@@ -2134,7 +2144,7 @@ mod tests {
                 ErrorCode::RepoNotFound
             );
         }
-        // An unrelated grant is refused; a legacy app password is bounded by ownership only.
+        // An unrelated grant is refused, and an app-password session is refused outright.
         let repo_only = scoped_access_jwt(&state.jwt_secret, ALICE, "atproto repo:*");
         assert_eq!(
             call(repo_only, own.clone(), ALICE)
@@ -2143,8 +2153,17 @@ mod tests {
                 .status_code(),
             403
         );
-        let app_pass = app_pass_jwt(&state.jwt_secret, ALICE, true);
-        assert!(call(app_pass, own, ALICE).await.is_ok());
+        for privileged in [false, true] {
+            let err = call(
+                app_pass_jwt(&state.jwt_secret, ALICE, privileged),
+                own.clone(),
+                ALICE,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(*err.code(), ErrorCode::InvalidToken);
+            assert_eq!(err.message(), "Bad token scope");
+        }
     }
 
     fn member_policy(
