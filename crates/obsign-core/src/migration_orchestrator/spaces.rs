@@ -47,9 +47,14 @@ pub struct SpaceTransferState {
 
 /// Whether `space` (a space-ref, `at:space/{authority}/{type}/{skey}`) names `did` as its
 /// authority.
+///
+/// The form before the 2026-11-24 alpha (`at://{authority}/space/…`) is read too: a host that
+/// has not moved yet still lists it, and missing an authority space here skips its meta
+/// transfer without an error.
 pub fn is_space_authority(space: &str, did: &str) -> bool {
     space
         .strip_prefix("at:space/")
+        .or_else(|| space.strip_prefix("at://"))
         .and_then(|rest| rest.split('/').next())
         == Some(did)
 }

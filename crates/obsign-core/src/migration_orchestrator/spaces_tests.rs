@@ -109,6 +109,11 @@ fn authority_is_read_from_the_space_ref() {
     assert!(!is_space_authority(WRITER_SPACE, DID));
     assert!(!is_space_authority("did:plc:spacer", DID));
     assert!(!is_space_authority("at:space/did:plc:spacerx/a.b/c", DID));
+    // A host still on the old form lists the same space this way.
+    assert!(is_space_authority(
+        &format!("at://{DID}/space/app.example.group/alpha"),
+        DID
+    ));
 }
 
 #[test]
