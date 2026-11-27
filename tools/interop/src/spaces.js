@@ -1,4 +1,4 @@
-// Atproto Spaces checks against the pin (atproto `permissioned-data` @ 047d603).
+// Atproto Spaces checks against the pin (atproto `permissioned-data` @ 355b733).
 //
 //   spacesRoundTrip    authority = self, one host: create a space, write/read/list records,
 //                      the account's own sync reads, teardown. Runs against any deployment.
@@ -98,7 +98,7 @@ export async function createSpace(name, skey, { policy = PUBLIC_POLICY } = {}) {
     token: account.accessJwt,
     body: { spaceType: SPACE_TYPE, skey, policy },
   });
-  return out.space ?? `at://${account.did}/space/${SPACE_TYPE}/${skey}`;
+  return out.space ?? `at:space/${account.did}/${SPACE_TYPE}/${skey}`;
 }
 
 export async function deleteSpace(name, spaceUri) {

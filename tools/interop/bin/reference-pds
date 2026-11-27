@@ -13,7 +13,7 @@
 # Never `latest` or an image tag: the pin is a reference commit, and moving it is a decision.
 set -euo pipefail
 
-PIN=047d6032a21be01df8447489f0d6b59d2cc60af8   # atproto permissioned-data, frozen
+PIN=355b73380411a24c751b9896ee9e17f5b593bca7   # atproto permissioned-data, frozen
 BRANCH=permissioned-data
 CACHE="${EZPDS_REFERENCE_CACHE:-$HOME/.cache/ezpds/reference-pds}"
 SRC="$CACHE/atproto"

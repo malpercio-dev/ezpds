@@ -491,7 +491,7 @@ mod tests {
     use super::*;
 
     const KEY_SHARE: &str = "did:key:zDnaExample";
-    const SPACE: &str = "at://did:example:space/space/app.bsky.group/test";
+    const SPACE: &str = "at:space/did:example:space/app.bsky.group/test";
     const CID_A: &str = "bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244";
     const SECRET: [u8; 32] = [7u8; 32];
 

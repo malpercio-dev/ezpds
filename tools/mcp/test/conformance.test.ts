@@ -552,7 +552,7 @@ test('spaces: the agent tool surface drives a permissioned space end-to-end', as
   // The space is the account's own public memberspace, created by its
   // authority (full session) the way the wallet would — the agent then reads
   // and writes it under its space:* grant.
-  const spaceUri = `at://${account.did}/space/org.example.bucket/main`;
+  const spaceUri = `at:space/${account.did}/org.example.bucket/main`;
   const createSpace = await fetch(`${pds.baseUrl}/xrpc/com.atproto.space.createSpace`, {
     method: 'POST',
     headers: {

@@ -5,7 +5,7 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/xrpc/com.atproto.space.listBlobs?space=at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main&repo={{did}}&limit=500
+  url: {{baseUrl}}/xrpc/com.atproto.space.listBlobs?space=at:space/did:plc:authorityaaaaaaaaaaaaaaa/org.example.bucket/main&repo={{did}}&limit=500
   body: none
   auth: bearer
 }
@@ -15,7 +15,7 @@ auth:bearer {
 }
 
 params:query {
-  space: at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main
+  space: at:space/did:plc:authorityaaaaaaaaaaaaaaa/org.example.bucket/main
   repo: {{did}}
   limit: 500
   ~since:

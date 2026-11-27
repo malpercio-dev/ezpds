@@ -100,7 +100,7 @@ mod tests {
     use tower::ServiceExt;
 
     const ALICE: &str = "did:plc:alice";
-    const SPACE: &str = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/self";
+    const SPACE: &str = "at:space/did:plc:abc234567abc234567abc234/org.example.bucket/self";
 
     fn request(token: &str, space: &str) -> Request<Body> {
         Request::builder()

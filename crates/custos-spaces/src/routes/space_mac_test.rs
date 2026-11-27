@@ -23,7 +23,7 @@ use custos_core::space_uri::parse_space_ref;
 
 const ALICE: &str = "did:plc:alicemacaaaaaaaaaaaaaaaa";
 const AUTHORITY: &str = "did:plc:macauthorityaaaaaaaaaaa";
-const SPACE: &str = "at://did:plc:macauthorityaaaaaaaaaaa/space/org.example.bucket/main";
+const SPACE: &str = "at:space/did:plc:macauthorityaaaaaaaaaaa/org.example.bucket/main";
 const COLLECTION: &str = "org.example.note";
 
 /// Alice, with a published KEM key, has written one record into a space whose authority is

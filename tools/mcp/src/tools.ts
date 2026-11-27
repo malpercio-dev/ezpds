@@ -802,7 +802,7 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
   // agent's scopes (not part of the default profile), so out of the box each
   // reports a clean InsufficientScope refusal naming what the operator must
   // grant. `space` arguments are canonical space refs:
-  // at://{authority-did}/space/{type}/{skey}
+  // at:space/{authority-did}/{type}/{skey}
 
   server.registerTool(
     'list_spaces',
@@ -848,7 +848,7 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
         'collection, and record key. Requires a space: grant in the agent’s scopes.',
       annotations: { readOnlyHint: true },
       inputSchema: {
-        space: z.string().describe('Canonical space ref, e.g. at://did:plc:…/space/org.example.bucket/main'),
+        space: z.string().describe('Canonical space ref, e.g. at:space/did:plc:…/org.example.bucket/main'),
         collection: z.string().describe('Collection NSID'),
         rkey: z.string().describe('Record key'),
       },

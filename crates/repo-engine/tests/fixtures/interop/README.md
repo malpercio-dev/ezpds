@@ -18,7 +18,7 @@ commit `056e5741bb330757205d6b16db5266fffcae937b`.
 | `data-model-{valid,invalid}.json` | atproto-interop-tests `data-model/data-model-{valid,invalid}.json` | CC0-1.0 |
 | `lexicon-{valid,invalid}.json` | atproto-interop-tests `lexicon/lexicon-{valid,invalid}.json` | CC0-1.0 |
 | `record-data-{valid,invalid}.json`, `lexicon-record.json` | atproto-interop-tests `lexicon/record-data-{valid,invalid}.json`, `lexicon/catalog/record.json` | CC0-1.0 |
-| `star-{valid,invalid}.json` | [bluesky-social/atproto](https://github.com/bluesky-social/atproto) `packages/star/tests/interop/{valid,invalid}-star-fixtures.json` at `permissioned-data` `047d603`, itself copied from [microcosm.blue/star](https://tangled.org/microcosm.blue/star/tree/main/interop) `41bdec1` | MIT OR Apache-2.0 |
+| `star-{valid,invalid}.json` | [bluesky-social/atproto](https://github.com/bluesky-social/atproto) `packages/star/tests/interop/{valid,invalid}-star-fixtures.json` at `permissioned-data` `355b733`, itself copied from [microcosm.blue/star](https://tangled.org/microcosm.blue/star/tree/main/interop) `41bdec1` | MIT OR Apache-2.0 |
 | `commit-proof-fixtures.json` | [bluesky-social/atproto](https://github.com/bluesky-social/atproto) `packages/repo/tests/commit-proof-fixtures.json` | MIT |
 
 `commit-proof-fixtures.json` is the one exception to CC0: it lives in the main atproto

@@ -30,7 +30,7 @@ body:json {
 
 docs {
   Atproto Spaces: create a space with the authenticated account as its authority. The URI is
-  at://{callerDid}/space/{spaceType}/{skey}; "skey" is optional (a TID is generated when
+  at:space/{callerDid}/{spaceType}/{skey}; "skey" is optional (a TID is generated when
   absent) and uses record-key syntax.
 
   "policy" is an open union over the three baseline policies, all implemented here:

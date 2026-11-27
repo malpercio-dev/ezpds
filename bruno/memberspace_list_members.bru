@@ -5,7 +5,7 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/xrpc/com.atproto.memberspace.listMembers?space=at://{{did}}/space/org.example.bucket/main&limit=100
+  url: {{baseUrl}}/xrpc/com.atproto.memberspace.listMembers?space=at:space/{{did}}/org.example.bucket/main&limit=100
   body: none
   auth: bearer
 }
@@ -15,7 +15,7 @@ auth:bearer {
 }
 
 params:query {
-  space: at://{{did}}/space/org.example.bucket/main
+  space: at:space/{{did}}/org.example.bucket/main
   limit: 100
   ~cursor:
 }

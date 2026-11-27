@@ -367,7 +367,7 @@ mod tests {
     use super::*;
     use crate::test_support::test_state;
 
-    const SPACE: &str = "at://did:plc:authoritywritersaaaaaaaa/space/org.example.bucket/main";
+    const SPACE: &str = "at:space/did:plc:authoritywritersaaaaaaaa/org.example.bucket/main";
     const ALICE: &str = "did:plc:alicewritersaaaaaaaaaaaa";
     const BOB: &str = "did:plc:bobwritersaaaaaaaaaaaaaa";
 

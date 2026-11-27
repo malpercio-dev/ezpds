@@ -6,9 +6,9 @@ use httpmock::{Method, MockServer};
 
 const DID: &str = "did:plc:spacer";
 /// A space this account is the authority of.
-const AUTHORITY_SPACE: &str = "at://did:plc:spacer/space/app.example.group/alpha";
+const AUTHORITY_SPACE: &str = "at:space/did:plc:spacer/app.example.group/alpha";
 /// A space another account is the authority of; this account only writes there.
-const WRITER_SPACE: &str = "at://did:plc:other/space/app.example.group/beta";
+const WRITER_SPACE: &str = "at:space/did:plc:other/app.example.group/beta";
 
 fn view(space: &str, data: Option<&str>) -> custos_client::spaces::SpaceView {
     serde_json::from_value(match data {
@@ -108,7 +108,12 @@ fn authority_is_read_from_the_space_ref() {
     assert!(is_space_authority(AUTHORITY_SPACE, DID));
     assert!(!is_space_authority(WRITER_SPACE, DID));
     assert!(!is_space_authority("did:plc:spacer", DID));
-    assert!(!is_space_authority("at://did:plc:spacerx/space/a.b/c", DID));
+    assert!(!is_space_authority("at:space/did:plc:spacerx/a.b/c", DID));
+    // A host still on the old form lists the same space this way.
+    assert!(is_space_authority(
+        &format!("at://{DID}/space/app.example.group/alpha"),
+        DID
+    ));
 }
 
 #[test]
@@ -116,19 +121,19 @@ fn digest_mismatches_names_missing_and_changed_spaces_but_not_accepted_ones() {
     let source = [
         view(AUTHORITY_SPACE, Some("AAAA")),
         view(WRITER_SPACE, Some("BBBB")),
-        view("at://did:plc:x/space/a.b/gone", Some("CCCC")),
-        view("at://did:plc:spacer/space/a.b/norepo", None),
+        view("at:space/did:plc:x/a.b/gone", Some("CCCC")),
+        view("at:space/did:plc:spacer/a.b/norepo", None),
     ];
     let dest = [
         view(AUTHORITY_SPACE, Some("AAAA")),
         view(WRITER_SPACE, Some("BBBC")),
-        view("at://did:plc:spacer/space/a.b/norepo", None),
+        view("at:space/did:plc:spacer/a.b/norepo", None),
     ];
     assert_eq!(
         digest_mismatches(&source, &dest, &[]),
         vec![
             WRITER_SPACE.to_string(),
-            "at://did:plc:x/space/a.b/gone".to_string()
+            "at:space/did:plc:x/a.b/gone".to_string()
         ]
     );
     assert_eq!(
@@ -137,7 +142,7 @@ fn digest_mismatches_names_missing_and_changed_spaces_but_not_accepted_ones() {
             &dest,
             &[
                 WRITER_SPACE.to_string(),
-                "at://did:plc:x/space/a.b/gone".to_string()
+                "at:space/did:plc:x/a.b/gone".to_string()
             ]
         ),
         Vec::<String>::new()

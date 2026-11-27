@@ -33,8 +33,8 @@ describe('wallet harness: space transfer', () => {
   it('migration-spaces moves an authority space and a writer space, then verifies', () => {
     const { state, registry, did } = startMove('migration-spaces');
     const [authority, writer] = state.spaceTransfer.sourceSpaces;
-    expect(authority.startsWith(`at://${did}/`)).toBe(true);
-    expect(writer.startsWith(`at://${did}/`)).toBe(false);
+    expect(authority.startsWith(`at:space/${did}/`)).toBe(true);
+    expect(writer.startsWith(`at:space/${did}/`)).toBe(false);
 
     registry.transfer_spaces({ did, acceptLoss: false });
     expect(state.migration?.spacesTransferred).toBe(true);

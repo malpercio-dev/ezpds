@@ -67,7 +67,7 @@ these ways, each folded into the sections below:
 7. **`simplespace` config hardening**: `policy` and `appAccess` are open
    unions at the schema layer; a host MUST reject values it does not implement
    at `createSpace`/`updateSpace` time.
-8. **Golden test vectors now exist** in `packages/space/src/*.test.ts` (at the pin `047d603`) — e.g. the
+8. **Golden test vectors now exist** in `packages/space/src/*.test.ts` (at the pin `355b733`) — e.g. the
    empty-state digest is `sha256(2048 zero bytes)` =
    `e5a00aa9…36b183ad`, and `add("one"); add("two")` digests to
    `ae05cb6d…701c63e7` — plus full test suites for commits, credentials,
@@ -502,14 +502,17 @@ scope grammar and the credential JWT claims did not move.
     new host, which re-registers it. The reference SDK was refactored
     (PR #137); no vector moved because of it.
 
-### 2026-11-27 weekly watch (proposals repo, commits `b54ec68`…`1831b5d`) — past the pin
+### 2026-11-27 weekly watch (proposals repo, commits `b54ec68`…`1831b5d`) — shipped, pin moved to `355b733`
 
 One proposal change, PR #146 (merged 2026-11-24), implemented upstream in
 atproto pull request 6010 (`6d08d3671`, plus the did:webs regex fix
-`6bfbc4f11`) and shipped as the 2026-11-24 alpha. Both commits land **past
-the pin `047d603`**, so Custos's conformance target does not move; this is a
-re-pin question for the maintainer, not a correction to shipped behaviour.
-Re-checked against `permissioned-data` @ `355b733`: the space lexicon set is
+`6bfbc4f11`) and shipped as the 2026-11-24 alpha. Both commits land past
+the old pin `047d603`; the maintainer moved the pin to `permissioned-data` @
+`355b733`, and Custos now accepts and emits only the new form (item 1), with
+stored URIs rewritten by migration V085 (item 3). There is no dual-syntax
+window: a client or peer host still on the old form gets
+`must be a valid space ref`.
+Checked against `355b733`: the space lexicon set is
 unchanged (30 `space`, 6 `memberspace`, 2 `managedspace`, 1 `personalspace`;
 the only lexicon change since the pin is an unrelated
 `tools.ozone.report.getStatGroupDetails`), the golden LtHash digests are
@@ -547,17 +550,21 @@ in fixtures only (no pinned MAC or digest output moved).
    that would change CIDs: alpha-era records may embed old-form URIs, which
    lenient reads accept while params, tokens, MAC headers and archives accept
    only the new form. Upstream calls that leniency temporary, removed before
-   beta. The same notes describe a space-table remodel (atproto pull request
+   beta. **Custos is stricter:** it has no lenient mode, so a write or an
+   imported archive whose record value carries an old-form space URI is
+   refused by the record-format gate (`auth::validation`), and V085 leaves
+   stored values untouched. The admin audit log's subjects are not rewritten
+   either. The same notes describe a space-table remodel (atproto pull request
    6011) and new space-write rate limits; both are reference-PDS internals
-   with no wire effect.
+   with no wire effect, and Custos took neither.
 4. **Already in the pin, not previously recorded here.** The same notes call
    out behaviour that predates `047d603`: space methods refuse app-password
    sessions with `InvalidToken` (atproto pull request 5923); `importRepo`
    requires full access to the space (`read` plus `create`/`update`/`delete`
    on every collection) and indexes only the difference from what the host
    holds (atproto pull request 5932); `reserveKemKey` (atproto pull request
-   5974, the pin commit itself). These are conformance checks against the
-   current pin, not past-pin work. **Custos gap found:** only
+   5974, the `047d603` commit itself). These were conformance checks against
+   that pin, not past-pin work. **Custos gap found:** only
    `getDelegationToken` refuses app passwords today;
    `auth::space::require_space_grant` returns early for every non-`Access`
    scope, so an app-password session reaches every other space method
@@ -579,11 +586,11 @@ format, sync mechanism, addressing, and resolution path.
 
 - **Space** = authorization + sync boundary, identified by
   `(authority DID, spaceType NSID, skey)`. URI form:
-  `at://{spaceDid}/space/{spaceType}/{skey}[/{authorDid}/{collection}/{rkey}]`
-  at the pin (the literal `space` segment — no dots — disambiguates from a
-  collection NSID, which always has ≥2 dots). **Past the pin (2026-11-27):**
-  `at:space/{spaceDid}/{spaceType}/{skey}[/{authorDid}/{collection}/{rkey}]`,
-  no `at://` form, DIDs only, two valid lengths — see §0 (2026-11-27).
+  `at:space/{spaceDid}/{spaceType}/{skey}[/{authorDid}/{collection}/{rkey}]`
+  (the `at:space/` prefix tells it from a public `at://` URI; there is no
+  `at://` form, both DIDs are never handles, and only those two lengths are
+  valid). Until the 2026-11-24 alpha it was
+  `at://{spaceDid}/space/{spaceType}/{skey}[/…]` — see §0 (2026-11-27).
 - **Space repo** (née permissioned repo) = one user's records within one space,
   hosted on that user's PDS. One repo per (user, space); users hold many.
   Created implicitly by the first write; empty ≡ nonexistent; `clearRecords`
@@ -1062,11 +1069,11 @@ resident.
   Message Signatures), replaces registration with webhooks, and renames
   eight methods — so the MAC and notification slices have now been
   respecified in consecutive weeks and are the least settled parts.
-  The 2026-11-27 delta (past the pin) rewrites the space URI syntax
-  everywhere it appears — params, token `sub`s, MAC headers, STAR metadata,
-  stored keys — and makes old-form tokens and archives fail against upgraded
-  hosts, so re-pinning past `047d603` is an all-or-nothing interop flag day
-  with a stored-data migration, not an incremental patch.
+  The 2026-11-27 delta rewrote the space URI syntax everywhere it appears —
+  params, token `sub`s, MAC headers, STAR metadata, stored keys — and makes
+  old-form tokens and archives fail against upgraded hosts, so the re-pin to
+  `355b733` was an all-or-nothing interop flag day with a one-way
+  stored-data migration, not an incremental patch.
   Mitigation: re-diff the proposals repo before each implementation slice, and
   interop-test against the hosted alpha PDS + TS SDK continuously.
 - ~~No published test vectors~~ **Resolved**: golden vectors and full test

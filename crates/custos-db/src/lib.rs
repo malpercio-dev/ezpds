@@ -836,7 +836,7 @@ mod tests {
         type OldRow<'a> = (&'a str, [Option<&'a str>; 6]);
         let rows: &[OldRow] = &[
             (
-                "at://did:plc:a/space/t/public",
+                "at:space/did:plc:a/t/public",
                 [
                     Some("public"),
                     None,
@@ -847,7 +847,7 @@ mod tests {
                 ],
             ),
             (
-                "at://did:plc:a/space/t/split",
+                "at:space/did:plc:a/t/split",
                 [
                     Some("public"),
                     None,
@@ -858,7 +858,7 @@ mod tests {
                 ],
             ),
             (
-                "at://did:plc:a/space/t/members",
+                "at:space/did:plc:a/t/members",
                 [
                     Some("member-list"),
                     None,
@@ -869,7 +869,7 @@ mod tests {
                 ],
             ),
             (
-                "at://did:plc:a/space/t/garbage",
+                "at:space/did:plc:a/t/garbage",
                 [
                     Some("member-list"),
                     None,
@@ -880,7 +880,7 @@ mod tests {
                 ],
             ),
             (
-                "at://did:plc:a/space/t/nulllist",
+                "at:space/did:plc:a/t/nulllist",
                 [
                     Some("member-list"),
                     None,
@@ -891,7 +891,7 @@ mod tests {
                 ],
             ),
             (
-                "at://did:plc:a/space/t/readapp",
+                "at:space/did:plc:a/t/readapp",
                 [
                     Some("managing-app"),
                     Some("did:web:app.example#forum"),
@@ -902,7 +902,7 @@ mod tests {
                 ],
             ),
             (
-                "at://did:plc:a/space/t/writeapp",
+                "at:space/did:plc:a/t/writeapp",
                 [
                     Some("member-list"),
                     None,
@@ -913,12 +913,12 @@ mod tests {
                 ],
             ),
             (
-                "at://did:plc:b/space/t/foreign",
+                "at:space/did:plc:b/t/foreign",
                 [None, None, None, None, None, None],
             ),
         ];
         for (uri, [read, read_app, write, write_app, app_access, app_allowed]) in rows {
-            let (authority, rest) = uri["at://".len()..].split_once("/space/").unwrap();
+            let (authority, rest) = uri["at:space/".len()..].split_once('/').unwrap();
             let (space_type, skey) = rest.split_once('/').unwrap();
             sqlx::query(
                 "INSERT INTO spaces (uri, authority_did, space_type, skey, policy, managing_app, \
@@ -1037,6 +1037,133 @@ mod tests {
                 "{column} must be gone"
             );
         }
+    }
+
+    /// V085 rewrites every stored space URI from `at://{did}/space/…` to `at:space/{did}/…`:
+    /// the `spaces` key, and each child table's `space_uri`, across the two foreign-key hops
+    /// (`spaces` → `space_repos` → `space_records`). A row already in the new form is left
+    /// alone, a second run changes nothing, and a record value keeps its bytes.
+    #[tokio::test]
+    async fn v085_rewrites_stored_space_uris_once() {
+        const OLD: &str = "at://did:plc:v085owner/space/org.example.bucket/main";
+        const NEW: &str = "at:space/did:plc:v085owner/org.example.bucket/main";
+        const ALREADY_NEW: &str = "at:space/did:web:other.example/org.example.bucket/kept";
+        // Deliberately the old form: a value is content-addressed, so it is not rewritten.
+        let value = format!("{OLD}/did:plc:v085owner/org.example.note/a").into_bytes();
+
+        let pool = in_memory_pool().await;
+        apply_migrations_before(&pool, 85).await;
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:v085owner', 'v085@example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (uri, authority, skey) in [
+            (OLD, "did:plc:v085owner", "main"),
+            (ALREADY_NEW, "did:web:other.example", "kept"),
+        ] {
+            sqlx::query(
+                "INSERT INTO spaces (uri, authority_did, space_type, skey, created_at) \
+                 VALUES (?, ?, 'org.example.bucket', ?, datetime('now'))",
+            )
+            .bind(uri)
+            .bind(authority)
+            .bind(skey)
+            .execute(&pool)
+            .await
+            .unwrap();
+            // One row in every table keyed on the space, parents before children.
+            for insert in [
+                "INSERT INTO space_repos (space_uri, account_did, rev, lthash_state, created_at, updated_at) \
+                 VALUES (?1, 'did:plc:v085owner', 'r1', zeroblob(2048), datetime('now'), datetime('now'))",
+                "INSERT INTO space_records (space_uri, account_did, collection, rkey, cid, value, created_at, updated_at) \
+                 VALUES (?1, 'did:plc:v085owner', 'org.example.note', 'a', 'cid', ?2, datetime('now'), datetime('now'))",
+                "INSERT INTO space_repo_ops (space_uri, account_did, rev, collection, rkey, cid, created_at) \
+                 VALUES (?1, 'did:plc:v085owner', 'r1', 'org.example.note', 'a', 'cid', datetime('now'))",
+                "INSERT INTO space_members (space_uri, member_did, added_at) \
+                 VALUES (?1, 'did:plc:member', datetime('now'))",
+                "INSERT INTO space_writers (space_uri, repo_did, rev, hash, updated_at) \
+                 VALUES (?1, 'did:plc:v085owner', 'r1', zeroblob(32), datetime('now'))",
+                "INSERT INTO space_notify_registrations (space_uri, endpoint, token, expires_at) \
+                 VALUES (?1, 'https://syncer.example', 'tok', 0)",
+                "INSERT INTO space_revoked_credentials (space_uri, jti, expires_at) \
+                 VALUES (?1, 'jti', datetime('now'))",
+                "INSERT INTO space_syncer_notice_retries (space_uri, endpoint, token, notice, attempts, retry_at, expires_at) \
+                 VALUES (?1, 'https://syncer.example', 'tok', '{}', 0, 0, 0)",
+                "INSERT INTO space_repo_update_retries (repo_did, space_uri, repo_rev, data, attempts, retry_at, expires_at) \
+                 VALUES ('did:plc:v085owner', ?1, 'r1', zeroblob(32), 0, 0, 0)",
+            ] {
+                sqlx::query(insert)
+                    .bind(uri)
+                    .bind(&value)
+                    .execute(&pool)
+                    .await
+                    .unwrap_or_else(|e| panic!("{insert}: {e}"));
+            }
+        }
+
+        // Every table holding a space URI, found by walking the schema, so a table added later
+        // without a rewrite fails here instead of keeping old-form rows.
+        let mut columns: Vec<(String, String)> = sqlx::query_as(
+            "SELECT m.name, p.name FROM sqlite_master m, pragma_table_info(m.name) p \
+             WHERE m.type = 'table' AND p.name = 'space_uri' ORDER BY m.name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(columns.len(), 9, "{columns:?}");
+        columns.push(("spaces".to_string(), "uri".to_string()));
+
+        let v085 = MIGRATIONS.iter().find(|m| m.version == 85).unwrap();
+        for run in ["first", "second"] {
+            // The pool holds one connection, so `total_changes()` counts this run's writes.
+            let changes = || async {
+                sqlx::query_scalar::<_, i64>("SELECT total_changes()")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            };
+            let before = changes().await;
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::raw_sql(v085.sql)
+                .execute(&mut *tx)
+                .await
+                .unwrap_or_else(|e| panic!("{run} run of V085: {e}"));
+            tx.commit()
+                .await
+                .unwrap_or_else(|e| panic!("{run} run of V085 left a dangling foreign key: {e}"));
+            let changed = changes().await - before;
+            assert_eq!(changed, if run == "first" { 10 } else { 0 }, "{run} run");
+
+            for (table, column) in &columns {
+                let uris: Vec<(String,)> =
+                    sqlx::query_as(&format!("SELECT {column} FROM {table} ORDER BY {column}"))
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap();
+                let uris: Vec<&str> = uris.iter().map(|(uri,)| uri.as_str()).collect();
+                assert_eq!(
+                    uris,
+                    [NEW, ALREADY_NEW],
+                    "{table}.{column} after the {run} run"
+                );
+            }
+        }
+
+        let dangling: Vec<(String,)> =
+            sqlx::query_as("SELECT \"table\" FROM pragma_foreign_key_check")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(dangling.is_empty(), "{dangling:?}");
+        let stored: Vec<(Vec<u8>,)> = sqlx::query_as("SELECT value FROM space_records")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(stored.iter().all(|(bytes,)| *bytes == value));
     }
 
     /// schema_migrations records version=1 with a non-null applied_at.

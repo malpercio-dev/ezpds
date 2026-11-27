@@ -295,7 +295,7 @@ mod tests {
     const AUTHORITY: &str = "did:plc:abc234567abc234567abc234";
     const ALICE: &str = "did:plc:alice";
     const BOB: &str = "did:plc:bob";
-    const SPACE: &str = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/self";
+    const SPACE: &str = "at:space/did:plc:abc234567abc234567abc234/org.example.bucket/self";
     const PATH: &str = "/xrpc/com.atproto.space.authorizeSpaceSync";
 
     fn did_doc(did: &str, kp: &crypto::P256Keypair) -> serde_json::Value {
@@ -491,7 +491,7 @@ mod tests {
         );
 
         // Unknown space.
-        let other = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/nosuch";
+        let other = "at:space/did:plc:abc234567abc234567abc234/org.example.bucket/nosuch";
         let delegation = mint_delegation_token(
             |b| alice.sign(b),
             ALICE,
@@ -563,7 +563,7 @@ mod tests {
         }
 
         // A space whose authority has no account here is not ours to answer for.
-        let foreign = "at://did:plc:elsewhere/space/org.example.bucket/self";
+        let foreign = "at:space/did:plc:elsewhere/org.example.bucket/self";
         let req = request(foreign, &key, None, None);
         assert_eq!(
             error(app(state).oneshot(req).await.unwrap()).await,

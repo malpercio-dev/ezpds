@@ -17,7 +17,7 @@ use crate::test_support::xrpc_get as get;
 use crate::test_support::{access_jwt, body_json, seed_account_with_repo, state_with_master_key};
 
 const DID: &str = "did:plc:spacesyncaaaaaaaaaaaaaaa";
-const SPACE: &str = "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main";
+const SPACE: &str = "at:space/did:plc:authorityaaaaaaaaaaaaaaa/org.example.bucket/main";
 const COLLECTION: &str = "org.example.note";
 
 async fn setup() -> (CoreState, crypto::P256Keypair) {

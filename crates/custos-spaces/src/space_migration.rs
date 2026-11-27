@@ -522,7 +522,7 @@ mod tests {
     fn repo_archive(pairs: &[(&str, Vec<u8>)], data: [u8; 32]) -> Vec<u8> {
         let commit = SpaceCommit {
             repo: Did::parse("did:plc:migrationtestaaaaaaaaaa").unwrap(),
-            space: "at://did:plc:migrationtestaaaaaaaaaa/space/org.example.bucket/main".to_string(),
+            space: "at:space/did:plc:migrationtestaaaaaaaaaa/org.example.bucket/main".to_string(),
             rev: "3lztsjenmq22a".to_string(),
             data,
         };
@@ -587,8 +587,7 @@ mod tests {
             (
                 "space".to_string(),
                 Ipld::String(
-                    "at://did:plc:migrationtestaaaaaaaaaa/space/org.example.bucket/main"
-                        .to_string(),
+                    "at:space/did:plc:migrationtestaaaaaaaaaa/org.example.bucket/main".to_string(),
                 ),
             ),
         ]));

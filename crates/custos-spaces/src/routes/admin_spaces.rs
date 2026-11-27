@@ -144,7 +144,7 @@ pub async fn list_hosted_spaces(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpaceTakedownInput {
-    /// Canonical space URI (`at://{authority}/space/{type}/{skey}`).
+    /// Canonical space URI (`at:space/{authority}/{type}/{skey}`).
     uri: String,
     /// `true` applies the takedown, `false` clears it — the `takedown.applied` shape
     /// `com.atproto.admin.updateSubjectStatus` uses for an account.

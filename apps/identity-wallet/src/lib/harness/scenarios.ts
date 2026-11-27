@@ -710,8 +710,8 @@ function spacesMigrationState(): WalletState {
   const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
   upsertIdentity(state, identity);
   state.spaceTransfer.sourceSpaces = [
-    `at://${identity.did}/space/app.example.group/book-club`,
-    `at://${fakePlcDid('org.harness.pds.local')}/space/app.example.group/team`,
+    `at:space/${identity.did}/app.example.group/book-club`,
+    `at:space/${fakePlcDid('org.harness.pds.local')}/app.example.group/team`,
   ];
   return state;
 }

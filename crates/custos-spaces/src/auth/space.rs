@@ -1257,7 +1257,7 @@ mod tests {
 
     const AUTHORITY: &str = "did:plc:abc234567abc234567abc234";
     const ALICE: &str = "did:plc:alice";
-    const SPACE: &str = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/self";
+    const SPACE: &str = "at:space/did:plc:abc234567abc234567abc234/org.example.bucket/self";
     const GET_RECORD: &str = "/xrpc/com.atproto.space.getRecord";
 
     /// A DID document whose `#atproto` Multikey holds `kp`'s public key — what this server
@@ -1368,7 +1368,7 @@ mod tests {
         // A token for another space, an expired token, and a service-auth token (wrong typ)
         // are all InvalidDelegationToken.
         let other =
-            parse_space_ref("at://did:plc:abc234567abc234567abc234/space/org.example.bucket/other")
+            parse_space_ref("at:space/did:plc:abc234567abc234567abc234/org.example.bucket/other")
                 .unwrap();
         let wrong_space = mint_delegation_token(|b| alice.sign(b), ALICE, &other, now);
         assert_eq!(
@@ -1660,7 +1660,7 @@ mod tests {
         let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
         let other =
-            parse_space_ref("at://did:plc:abc234567abc234567abc234/space/org.example.bucket/other")
+            parse_space_ref("at:space/did:plc:abc234567abc234567abc234/org.example.bucket/other")
                 .unwrap();
 
         for (cred, code) in [
@@ -1873,7 +1873,7 @@ mod tests {
         )
         .await;
         let keyless_space =
-            parse_space_ref(&format!("at://{keyless}/space/org.example.bucket/x")).unwrap();
+            parse_space_ref(&format!("at:space/{keyless}/org.example.bucket/x")).unwrap();
         let cred = mint_space_credential(
             |b| authority.sign(b),
             keyless,
@@ -1950,7 +1950,7 @@ mod tests {
         let ghost = repo_engine::CommitSigner::from_bytes(&ghost.private_key_bytes).unwrap();
         let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
-        let other = parse_space_ref("at://did:plc:nobodyhere/space/org.example.bucket/x").unwrap();
+        let other = parse_space_ref("at:space/did:plc:nobodyhere/org.example.bucket/x").unwrap();
         let cred = mint_space_credential(
             |b| ghost.sign(b),
             "did:plc:nobodyhere",
@@ -2000,7 +2000,7 @@ mod tests {
         seed_identity(&state, ALICE).await;
         let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
-        let other = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/other";
+        let other = "at:space/did:plc:abc234567abc234567abc234/org.example.bucket/other";
         let header =
             serde_json::json!({ "typ": SPACE_CREDENTIAL_TYP, "alg": "ES256", "kid": "#atproto" });
         let claims = serde_json::json!({
@@ -2075,7 +2075,7 @@ mod tests {
         let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
         let elsewhere =
-            parse_space_ref("at://did:plc:nobodyhere/space/org.example.bucket/x").unwrap();
+            parse_space_ref("at:space/did:plc:nobodyhere/org.example.bucket/x").unwrap();
         let cred = mint_space_credential(
             |b| ghost.sign(b),
             "did:plc:nobodyhere",
@@ -2097,7 +2097,7 @@ mod tests {
         // The seam gates on the caller's account lifecycle, so the caller needs an account row.
         seed_account_with_repo(&state.db, ALICE).await;
         // Alice's own space (authority = self).
-        let own = parse_space_ref("at://did:plc:alice/space/org.example.bucket/self").unwrap();
+        let own = parse_space_ref("at:space/did:plc:alice/org.example.bucket/self").unwrap();
 
         let call = |token: String, space: SpaceRef, repo: &'static str| {
             let state = state.clone();

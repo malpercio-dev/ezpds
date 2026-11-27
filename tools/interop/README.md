@@ -119,7 +119,7 @@ confirm the migrated account on the new PDS.
 ## Reference PDS
 
 The Spaces conformance target is the reference implementation at a frozen commit: atproto
-`permissioned-data` @ `047d6032a21be01df8447489f0d6b59d2cc60af8`. `just reference-pds` builds
+`permissioned-data` @ `355b73380411a24c751b9896ee9e17f5b593bca7`. `just reference-pds` builds
 it **from source** at that commit and runs `packages/dev-env`'s multi-PDS setup through
 `reference/multi-pds.mjs` (see "Why not `bin-multi-pds`" below). It never
 uses `latest` or an image tag. Moving the pin is a decision with its own ticket, so the SHA

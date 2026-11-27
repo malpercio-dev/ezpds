@@ -25,7 +25,7 @@ use crate::test_support::{
 use crate::test_support::{space_record_body, xrpc_get as get, xrpc_post as post};
 
 const DID: &str = "did:plc:spaceroutesaaaaaaaaaaaaa";
-const SPACE: &str = "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main";
+const SPACE: &str = "at:space/did:plc:authorityaaaaaaaaaaaaaaa/org.example.bucket/main";
 const COLLECTION: &str = "org.example.note";
 
 /// A grant covering exactly this space and collection, for every record verb plus `read_self`.
@@ -549,9 +549,8 @@ async fn app_password_sessions_are_refused_at_every_account_seam() {
     }
 }
 
-/// A space record may reference another space record. The write-time record-format gate asserts
-/// every `at://` string in a record parses, and a space AT-URI is not the public form — so
-/// without both families admitted, the two protocols could not refer to each other at all.
+/// A space record may reference another space record: the write-time record-format gate admits
+/// a space URI beside the public form.
 #[tokio::test]
 async fn a_record_may_reference_another_space_record() {
     let state = setup().await;
@@ -577,11 +576,13 @@ async fn a_malformed_space_ref_is_rejected_by_the_lexicon_layer() {
     let token = access_jwt(&state.jwt_secret, DID);
     for space in [
         // A record within a space, not the space itself.
-        "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main/did:plc:memberaaaaaaaaaaaaaaaaaa/org.example.note/a",
+        "at:space/did:plc:authorityaaaaaaaaaaaaaaa/org.example.bucket/main/did:plc:memberaaaaaaaaaaaaaaaaaa/org.example.note/a",
         // A public repo URI.
         "at://did:plc:authorityaaaaaaaaaaaaaaa/org.example.note/aaa",
         // Authority must be a DID.
-        "at://authority.example.com/space/org.example.bucket/main",
+        "at:space/authority.example.com/org.example.bucket/main",
+        // The form before the 2026-11-24 alpha.
+        "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main",
     ] {
         let mut body = create_body("aaa", "x");
         body["space"] = serde_json::Value::String(space.to_string());

@@ -16,7 +16,7 @@ auth:bearer {
 
 body:json {
   {
-    "space": "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main",
+    "space": "at:space/did:plc:authorityaaaaaaaaaaaaaaa/org.example.bucket/main",
     "repo": {{did}},
     "collection": "org.example.note",
     "record": {
@@ -28,7 +28,7 @@ body:json {
 
 docs {
   Atproto Spaces: create a record in the authenticated account's permissioned repo
-  within a space. "space" is a space ref — at://{authorityDid}/space/{spaceType}/{skey} —
+  within a space. "space" is a space ref — at:space/{authorityDid}/{spaceType}/{skey} —
   and "repo" MUST be the authenticated account's own DID (403 otherwise).
 
   The first write into a space this PDS has not seen records it, so a member can join a

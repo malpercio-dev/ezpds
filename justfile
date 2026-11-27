@@ -238,7 +238,7 @@ interop-test:
     cd tools/interop && pnpm test
 
 # Build the Atproto Spaces reference PDS from source at the frozen pin (atproto
-# permissioned-data @ 047d603, cached under ~/.cache/ezpds/reference-pds) and run
+# permissioned-data @ 355b733, cached under ~/.cache/ezpds/reference-pds) and run
 # packages/dev-env's multi-PDS setup on configurable ports (PLC on EZPDS_REFERENCE_PORT,
 # default 2680, PDS i on +i): `just reference-pds` serves N (default 2) http loopback
 # PDSes + a local PLC in the foreground and prints their URLs;

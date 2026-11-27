@@ -16,7 +16,7 @@ auth:bearer {
 
 body:json {
   {
-    "uri": "at://did:plc:example/space/com.example.space/3kabc",
+    "uri": "at:space/did:plc:example/com.example.space/3kabc",
     "applied": true
   }
 }
@@ -45,7 +45,7 @@ docs {
   to its space.
 
   Body:
-  - `uri` — canonical space URI, `at://{authority}/space/{type}/{skey}`.
+  - `uri` — canonical space URI, `at:space/{authority}/{type}/{skey}`.
   - `applied` — `true` applies the takedown, `false` clears it (the `takedown.applied`
     shape `com.atproto.admin.updateSubjectStatus` uses for an account).
 

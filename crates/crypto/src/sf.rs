@@ -452,8 +452,8 @@ mod tests {
             r#"mac=("atproto-space-commit";sf);keyid="did:key:zDnaExample";tag="atproto-space-commit""#,
             r#"sig=("authorization" "atproto-space-audience");tag="atproto-space-credential""#,
             r#"sig1=:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=:"#,
-            r#"ver=1, repo="did:example:alice", space="at://did:example:space/space/app.bsky.group/test", rev="3kbcq3p7ad400", data=:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=:"#,
-            r#"uri="at://did:example:space/space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1", cid="bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244""#,
+            r#"ver=1, repo="did:example:alice", space="at:space/did:example:space/app.bsky.group/test", rev="3kbcq3p7ad400", data=:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=:"#,
+            r#"uri="at:space/did:example:space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1", cid="bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244""#,
             r#"m=("atproto-space-commit";sf);tag="atproto-space-commit";created=1700000000;keyid="k""#,
             r#"a=?0, b, c;x=tok/en:1, d=-42, e=("a\"b\\c" ?1);p, f=()"#,
         ] {

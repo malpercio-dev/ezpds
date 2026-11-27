@@ -495,7 +495,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const AUTHORITY: &str = "did:plc:authorityretryaaaaaaaaaa";
-    const SPACE: &str = "at://did:plc:authorityretryaaaaaaaaaa/space/org.example.bucket/main";
+    const SPACE: &str = "at:space/did:plc:authorityretryaaaaaaaaaa/org.example.bucket/main";
     const UPDATE_PATH: &str = "/xrpc/com.atproto.space.notifySpaceUpdate";
 
     async fn setup() -> CoreState {
@@ -877,7 +877,7 @@ mod tests {
 
     const WRITER: &str = "did:plc:writerretryaaaaaaaaaaaaa";
     const FOREIGN: &str = "did:plc:foreignretryaaaaaaaaaaaa";
-    const FOREIGN_SPACE: &str = "at://did:plc:foreignretryaaaaaaaaaaaa/space/org.example.bucket/a";
+    const FOREIGN_SPACE: &str = "at:space/did:plc:foreignretryaaaaaaaaaaaa/org.example.bucket/a";
     const REPO_UPDATE_PATH: &str = "/xrpc/com.atproto.space.notifyRepoUpdate";
 
     /// A repo host: `WRITER` is ours, `FOREIGN_SPACE` is governed by a space host at `server`.

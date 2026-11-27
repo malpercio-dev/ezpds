@@ -24,7 +24,7 @@ use crate::test_support::{path_get as get, path_post as post, send};
 const ADMIN: &str = "test-admin-token";
 const DID: &str = "did:plc:spacetakedownaaaaaaaaaaa";
 /// A space governed elsewhere: this host only stores `DID`'s repo in it.
-const SPACE: &str = "at://did:plc:foreignauthorityaaaaaaaa/space/org.example.bucket/main";
+const SPACE: &str = "at:space/did:plc:foreignauthorityaaaaaaaa/org.example.bucket/main";
 const COLLECTION: &str = "org.example.note";
 
 const GRANT: &str = "atproto space:org.example.bucket?authority=did:plc:foreignauthorityaaaaaaaa\
@@ -227,7 +227,7 @@ async fn listing_reports_the_policy_type_of_a_locally_governed_space() {
         ("b", crate::policy::MEMBERSPACE),
         ("c", crate::policy::MANAGEDSPACE),
     ] {
-        let uri = format!("at://{DID}/space/org.example.bucket/{skey}");
+        let uri = format!("at:space/{DID}/org.example.bucket/{skey}");
         crate::db::spaces::create_space(
             &state.db,
             &crate::db::spaces::NewSpace {
@@ -338,7 +338,7 @@ async fn unknown_space_is_404_and_unauthenticated_is_401() {
 #[tokio::test]
 async fn a_taken_down_uri_cannot_be_re_created() {
     let state = setup().await;
-    let local_space = format!("at://{DID}/space/org.example.bucket/own");
+    let local_space = format!("at:space/{DID}/org.example.bucket/own");
     let grant = format!(
         "atproto space:org.example.bucket?authority={DID}&skey=own\
          &manage=create&manage=delete&action=read_self"
