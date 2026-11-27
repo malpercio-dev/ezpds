@@ -1,16 +1,16 @@
 # Spaces alpha watch routine
 
-**Last verified:** 2026-11-23
+**Last verified:** 2026-11-26
 
 A cloud-hosted Claude Code Routine (fresh remote session per run, surviving any
 one machine — unlike the machine-local routines in
 [`scheduled-agents.md`](scheduled-agents.md)) that tracks the **Atproto Spaces
 alpha** release cadence. The alpha ships updates on **Thursdays**
 ([announcement](https://atproto.com/blog/atproto-spaces-alpha)); this routine
-runs **Fridays at 14:00 UTC** and re-diffs the spec so the gap analysis and the
+runs **Fridays at 10:00 America/New_York** and re-diffs the spec so the gap analysis and the
 Wave 10: Spaces implementation issues never silently drift from upstream.
 
-- **Schedule:** `0 14 * * 5` (Fridays 14:00 UTC)
+- **Schedule:** `CRON_TZ=America/New_York 0 10 * * 5` (Fridays 10:00 New York time: 15:00 UTC in winter, 14:00 UTC in summer)
 - **Mode:** fresh session per fire, in the ezpds remote environment; push
   notification on completion.
 - **Watches:** the `0016-permissioned-data` proposal in
