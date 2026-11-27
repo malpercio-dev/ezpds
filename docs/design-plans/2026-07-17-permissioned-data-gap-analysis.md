@@ -1,9 +1,9 @@
 # Atproto Spaces (proposal 0016, née Permissioned Data) — Custos Gap Analysis
 
-**Date:** 2026-07-17 · **Revised:** 2026-08-20 (official alpha release) · 2026-09-04, 2026-09-11, 2026-10-16, 2026-11-06, 2026-11-13 (weekly watch)
+**Date:** 2026-07-17 · **Revised:** 2026-08-20 (official alpha release) · 2026-09-04, 2026-09-11, 2026-10-16, 2026-11-06, 2026-11-13, 2026-11-27 (weekly watch)
 **Status:** Research / gap analysis — updated for the alpha; implementation green-lit for Phase 0
 **Sources:**
-- [0016 proposal](https://github.com/bluesky-social/proposals/tree/main/0016-permissioned-data) (canonical; kept in sync with the reference implementation as of the alpha; last diffed against commit `b54ec68`)
+- [0016 proposal](https://github.com/bluesky-social/proposals/tree/main/0016-permissioned-data) (canonical; kept in sync with the reference implementation as of the alpha; last diffed against commit `1831b5d`)
 - [The Atproto Spaces Alpha is Live](https://atproto.com/blog/atproto-spaces-alpha) (2026-08-20 announcement)
 - Reference implementation: `permissioned-data` branch of bluesky-social/atproto — lexicons under `lexicons/com/atproto/{space,memberspace,managedspace,personalspace}/`, protocol library in `packages/space/` (LtHash, deniable commits, DPoP, sync — **with golden test vectors**)
 - [Permissioned Data Diary 7: Off the Record](https://dholms.leaflet.pub/3mqtqvjidqs2p) (2026-07-17 — repo structure, signing, sync rationale); earlier diaries: [Diary 2: Buckets](https://dholms.leaflet.pub/3mfrsbcn2gk2a), [Diary 4: The Big Picture](https://dholms.leaflet.pub/3mhj6bcqats2o)
@@ -502,6 +502,70 @@ scope grammar and the credential JWT claims did not move.
     new host, which re-registers it. The reference SDK was refactored
     (PR #137); no vector moved because of it.
 
+### 2026-11-27 weekly watch (proposals repo, commits `b54ec68`…`1831b5d`) — past the pin
+
+One proposal change, PR #146 (merged 2026-11-24), implemented upstream in
+atproto pull request 6010 (`6d08d3671`, plus the did:webs regex fix
+`6bfbc4f11`) and shipped as the 2026-11-24 alpha. Both commits land **past
+the pin `047d603`**, so Custos's conformance target does not move; this is a
+re-pin question for the maintainer, not a correction to shipped behaviour.
+Re-checked against `permissioned-data` @ `355b733`: the space lexicon set is
+unchanged (30 `space`, 6 `memberspace`, 2 `managedspace`, 1 `personalspace`;
+the only lexicon change since the pin is an unrelated
+`tools.ozone.report.getStatGroupDetails`), the golden LtHash digests are
+unchanged, and the `packages/space/src/*.test.ts` diffs are the URI string
+in fixtures only (no pinned MAC or digest output moved).
+
+1. **Space URIs move to `at:space/`.** Old form
+   `at://{spaceDid}/space/{spaceType}/{skey}[/{authorDid}/{collection}/{rkey}]`;
+   new form
+   `at:space/{spaceDid}/{spaceType}/{skey}[/{authorDid}/{collection}/{rkey}]`.
+   The literal `space` path marker is gone and `space/` replaces the `//`
+   authority. There is no `at://` form of a space URI. Only two lengths are
+   valid (space ref through `skey`, record through `rkey`). `spaceDid` and
+   `authorDid` must be DIDs, never handles. Both forms validate under the
+   existing `at-uri` Lexicon format; `space-ref` admits only the three-segment
+   `at:space/` form. A space URI is detected by its `at:space/` prefix. The
+   proposal notes public URIs may later get a matching `at:global/` form at
+   the IETF working group's discretion; `at://` stays supported.
+2. **Where the new form is on the wire.** Every `space` parameter and field
+   (all `space`/`memberspace` methods, `managedspace.checkAccess`, the
+   notification methods, `confirmRegistration`, `listSpaces` entries); record
+   `uri`s from the record methods; the `sub` of delegation tokens and space
+   credentials (compared exactly, so a token minted by an un-upgraded host
+   fails against an upgraded one); the `space` in `Atproto-Space-Commit` and
+   the `uri` in `Atproto-Space-Record`; the `space` in both STAR metadata
+   maps. Archives exported in the old form no longer import. Unchanged:
+   `space:` OAuth scopes (they name a type and authority, not a URI; the
+   proposal's wording now says they match the `{spaceDid}/{spaceType}/{skey}`
+   segments), record CIDs, and commit `data` (the set hash covers only
+   collection, rkey and CID), so synced data stays valid.
+3. **Stored state and record values (from the upstream migration notes,
+   `alpha-migrations/prompt-11-24-26.md`, not the proposal).** Hosts rewrite
+   stored space URIs idempotently (the reference adds actor-store migration
+   `011` and account-manager `013`). Record *values* are not rewritten, since
+   that would change CIDs: alpha-era records may embed old-form URIs, which
+   lenient reads accept while params, tokens, MAC headers and archives accept
+   only the new form. Upstream calls that leniency temporary, removed before
+   beta. The same notes describe a space-table remodel (atproto pull request
+   6011) and new space-write rate limits; both are reference-PDS internals
+   with no wire effect.
+4. **Already in the pin, not previously recorded here.** The same notes call
+   out behaviour that predates `047d603`: space methods refuse app-password
+   sessions with `InvalidToken` (atproto pull request 5923); `importRepo`
+   requires full access to the space (`read` plus `create`/`update`/`delete`
+   on every collection) and indexes only the difference from what the host
+   holds (atproto pull request 5932); `reserveKemKey` (atproto pull request
+   5974, the pin commit itself). These are conformance checks against the
+   current pin, not past-pin work. **Custos gap found:** only
+   `getDelegationToken` refuses app passwords today;
+   `auth::space::require_space_grant` returns early for every non-`Access`
+   scope, so an app-password session reaches every other space method
+   bounded only by repo ownership. The module doc says this is how the
+   reference bounds them, but at the pin the reference refuses them with
+   `InvalidToken` ("Bad token scope"). Custos's `importRepo` already requires
+   a grant over the whole space.
+
 ## 1. What the proposal specifies
 
 A second data protocol beside public broadcast, for data with an access
@@ -516,8 +580,10 @@ format, sync mechanism, addressing, and resolution path.
 - **Space** = authorization + sync boundary, identified by
   `(authority DID, spaceType NSID, skey)`. URI form:
   `at://{spaceDid}/space/{spaceType}/{skey}[/{authorDid}/{collection}/{rkey}]`
-  (the literal `space` segment — no dots — disambiguates from a collection
-  NSID, which always has ≥2 dots).
+  at the pin (the literal `space` segment — no dots — disambiguates from a
+  collection NSID, which always has ≥2 dots). **Past the pin (2026-11-27):**
+  `at:space/{spaceDid}/{spaceType}/{skey}[/{authorDid}/{collection}/{rkey}]`,
+  no `at://` form, DIDs only, two valid lengths — see §0 (2026-11-27).
 - **Space repo** (née permissioned repo) = one user's records within one space,
   hosted on that user's PDS. One repo per (user, space); users hold many.
   Created implicitly by the first write; empty ≡ nonexistent; `clearRecords`
@@ -996,6 +1062,11 @@ resident.
   Message Signatures), replaces registration with webhooks, and renames
   eight methods — so the MAC and notification slices have now been
   respecified in consecutive weeks and are the least settled parts.
+  The 2026-11-27 delta (past the pin) rewrites the space URI syntax
+  everywhere it appears — params, token `sub`s, MAC headers, STAR metadata,
+  stored keys — and makes old-form tokens and archives fail against upgraded
+  hosts, so re-pinning past `047d603` is an all-or-nothing interop flag day
+  with a stored-data migration, not an incremental patch.
   Mitigation: re-diff the proposals repo before each implementation slice, and
   interop-test against the hosted alpha PDS + TS SDK continuously.
 - ~~No published test vectors~~ **Resolved**: golden vectors and full test
