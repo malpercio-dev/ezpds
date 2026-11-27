@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.19.2] - 2026-11-27
+
+### Fixed
+
+- Space and memberspace methods now refuse app-password sessions, privileged or not, with HTTP 400 `InvalidToken`, as the Atproto Spaces reference does. A full session or an OAuth grant is needed; space credentials, delegation tokens and service auth are unchanged.
+
+
 ## [0.19.1] - 2026-11-26
 
 ### Fixed
