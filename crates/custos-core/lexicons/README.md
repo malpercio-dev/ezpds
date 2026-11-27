@@ -76,13 +76,13 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
       `com.atproto.space.{listSpaces,getDelegationToken,defs,getLatestCommit,getRecord,
       listRepoOps,getRepo}`, re-vendored with their routes (`defs` through `listRepoOps` with the
       read MACs, `getRepo` with the STAR archive). Each is
-      registered in `LEXICON_SOURCES` by the change that adds its route; registered so far:
-      `listSpaces`, `getDelegationToken`, `authorizeSpaceSync`, `server.reserveKemKey`,
-      `space.{createSpace,updateSpace,deleteSpace,getSpace,notifyRepoUpdate,
-      notifyCredentialsRevoked}`, `memberspace.{defs,putMembers,removeMembers,listMembers}`,
-      the three `*space.policy` documents, `space.{exportSpaceMeta,importRepo,
-      importSpaceMeta}`, and `space.{listWriters,removeWriter,clearRecords}` (`listWriters`
-      replaced `listRepos`, which is deleted).
+      registered in `LEXICON_SOURCES` by the change that adds its route; every one that is an
+      XRPC validation root now is — `LEXICON_SOURCES` in `src/lexicon/mod.rs` is the source of
+      truth (`listWriters` replaced `listRepos`, which is deleted). The rest stay vendored for
+      byte-parity but unregistered: `space.notifySpaceUpdate` and `space.confirmRegistration`
+      (only sent, a syncer serves them), `managedspace.checkAccess` (only called, a managing app
+      serves it), and the record schemas `space.policy`, `memberspace.member`, and `label.record`
+      (published or written outside the XRPC repo-write path, so not validation roots).
 
     The frozen pin is final: an upstream change after it is new work, never a silent SHA bump.
     The Friday [spaces-alpha-watch routine](../../../docs/operations/spaces-alpha-watch-routine.md)
