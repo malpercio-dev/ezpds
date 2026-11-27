@@ -1,21 +1,21 @@
 // pattern: Imperative Shell
 //
-// Gathers: AuthenticatedUser (JWT extractor), query params (space), DB pool + master key
-// Processes: OAuth-session check → space-ref parse → covering `space:` read grant → load the
+// Gathers: the account session (space caller seam), query params (space), DB pool + master key
+// Processes: full-access session check → space-ref parse → covering `space:` read grant → load the
 //            account's repo signer → mint the delegation token
 // Returns: JSON { token } on success; ApiError on failure
 //
 // Implements: GET /xrpc/com.atproto.space.getDelegationToken
 
-use axum::{extract::State, response::Json};
+use axum::extract::State;
+use axum::http::{HeaderMap, Method, Uri};
+use axum::response::Json;
 use custos_core::CoreState;
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
 use crate::auth::space::{mint_delegation_token, unix_now};
-use custos_core::auth::extractors::AuthenticatedUser;
-use custos_core::auth::jwt::AuthScope;
 use custos_core::auth::oauth_scopes::{require_space, SpaceOp, SpaceRequest};
 
 #[derive(Deserialize)]
@@ -34,23 +34,19 @@ pub struct GetDelegationTokenResponse {
 /// Mint a delegation token for `space` on behalf of the authenticated account — the user's side
 /// of the Atproto Spaces credential flow. The app presents it in the body of the space
 /// authority's `authorizeSpaceSync`. Requires an OAuth (or full-access) session whose grant
-/// covers `read` on the space; the token says nothing about membership, which is the
-/// authority's call. This PDS need not know the space at all.
+/// covers `read` on the space (the caller seam refuses an app-password session). The token says
+/// nothing about membership, which is the authority's call. This PDS need not know the space.
 pub async fn get_delegation_token(
-    user: AuthenticatedUser,
     State(state): State<CoreState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
     custos_core::lexicon::LexiconParams(params): custos_core::lexicon::LexiconParams<
         GetDelegationTokenQuery,
     >,
 ) -> Result<Json<GetDelegationTokenResponse>, ApiError> {
-    if user.scope != AuthScope::Access {
-        return Err(ApiError::new(
-            ErrorCode::InsufficientScope,
-            "getDelegationToken requires an OAuth session with a covering space: read grant",
-        ));
-    }
-
-    crate::auth::space::require_serviceable_caller(&state, &user.did).await?;
+    let user =
+        crate::auth::space::authenticate_space_caller(&state, &headers, &method, &uri).await?;
 
     let space = crate::views::parse_space(&params.space)?;
 
@@ -194,12 +190,15 @@ mod tests {
             assert_eq!(body_json(response).await["error"], "InsufficientScope");
         }
 
-        let app_pass = app_pass_jwt(&state.jwt_secret, ALICE, true);
-        let response = app(state.clone())
-            .oneshot(request(&app_pass, SPACE))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        for privileged in [false, true] {
+            let app_pass = app_pass_jwt(&state.jwt_secret, ALICE, privileged);
+            let response = app(state.clone())
+                .oneshot(request(&app_pass, SPACE))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(body_json(response).await["error"], "InvalidToken");
+        }
 
         // A malformed space reference is a 400 from the lexicon params layer.
         let full = access_jwt(&state.jwt_secret, ALICE);

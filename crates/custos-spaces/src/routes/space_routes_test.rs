@@ -515,25 +515,38 @@ async fn granular_oauth_grants_are_matched_against_the_operation() {
     }
 }
 
-/// An app-password session carries no space grants to evaluate, so it is bounded by the repo
-/// ownership check alone — the same latitude the reference gives legacy credentials, and the
-/// same one this PDS already gives them on public repo writes.
+/// An app-password session, privileged or not, is refused on every account-session space and
+/// memberspace method, as the reference refuses it (`scopes: ACCESS_FULL`). One route per seam:
+/// write, read, the bare caller, the authority, the space-host access arm, and memberspace.
 #[tokio::test]
-async fn app_password_sessions_are_bounded_by_repo_ownership() {
+async fn app_password_sessions_are_refused_at_every_account_seam() {
     let state = setup().await;
-    let token = app_pass_jwt(&state.jwt_secret, DID, false);
-    assert_eq!(
-        crate::test_support::test_app(state.clone())
-            .oneshot(post(
-                "com.atproto.space.createRecord",
+    for privileged in [false, true] {
+        let token = app_pass_jwt(&state.jwt_secret, DID, privileged);
+        for request in [
+            post("com.atproto.space.createRecord", &token, create_body("aaa", "x")),
+            get(
+                &format!(
+                    "com.atproto.space.getRecord?space={SPACE}&repo={DID}&collection={COLLECTION}&rkey=aaa"
+                ),
                 &token,
-                create_body("aaa", "x")
-            ))
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::OK
-    );
+            ),
+            get("com.atproto.space.listSpaces", &token),
+            get(&format!("com.atproto.space.getSpace?space={SPACE}"), &token),
+            get(&format!("com.atproto.space.listWriters?space={SPACE}"), &token),
+            get(&format!("com.atproto.memberspace.listMembers?space={SPACE}"), &token),
+        ] {
+            let uri = request.uri().to_string();
+            let response = crate::test_support::test_app(state.clone())
+                .oneshot(request)
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            let body = body_json(response).await;
+            assert_eq!(body["error"], "InvalidToken", "{uri}");
+            assert_eq!(body["message"], "Bad token scope", "{uri}");
+        }
+    }
 }
 
 /// A space record may reference another space record. The write-time record-format gate asserts

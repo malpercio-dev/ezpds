@@ -237,6 +237,11 @@ pub enum ErrorCode {
     /// reference raises it as `InvalidRequestError` (400), not an auth failure.
     #[serde(rename = "InvalidCredential")]
     InvalidCredential,
+    /// An access token of the wrong kind for the method: an app-password session on a space
+    /// method. Named `InvalidToken` on the wire, like [`Self::InvalidToken`], but 400, because
+    /// the reference raises its "Bad token scope" as `InvalidRequestError`.
+    #[serde(rename = "InvalidToken")]
+    BadTokenScope,
     // Codes for endpoints/designs not yet shipped (tiers, did:web self-service, device
     // leases, Shamir recovery, etc.) are catalogued in docs/provisioning-api-spec.md's
     // status-code appendix; add them here as those designs actually land.
@@ -333,6 +338,7 @@ impl ErrorCode {
             ErrorCode::JwtExpired => "JwtExpired",
             ErrorCode::CredentialRevoked => "CredentialRevoked",
             ErrorCode::InvalidCredential => "InvalidCredential",
+            ErrorCode::BadTokenScope => "InvalidToken",
         }
     }
 
@@ -417,6 +423,7 @@ impl ErrorCode {
             ErrorCode::JwtExpired => 401,
             ErrorCode::CredentialRevoked => 401,
             ErrorCode::InvalidCredential => 400,
+            ErrorCode::BadTokenScope => 400,
         }
     }
 }
@@ -736,6 +743,7 @@ mod tests {
             (ErrorCode::JwtExpired, 401),
             (ErrorCode::CredentialRevoked, 401),
             (ErrorCode::InvalidCredential, 400),
+            (ErrorCode::BadTokenScope, 400),
         ];
         for (code, expected) in cases {
             assert_eq!(code.status_code(), expected, "wrong status for {code:?}");
@@ -804,6 +812,7 @@ mod tests {
         assert_eq!(ErrorCode::TokenExpired.xrpc_name(), "ExpiredToken");
         assert_eq!(ErrorCode::ExpiredToken.xrpc_name(), "ExpiredToken");
         assert_eq!(ErrorCode::InvalidToken.xrpc_name(), "InvalidToken");
+        assert_eq!(ErrorCode::BadTokenScope.xrpc_name(), "InvalidToken");
         assert_eq!(ErrorCode::AuthenticationRequired.xrpc_name(), "AuthMissing");
         assert_eq!(
             ErrorCode::Unauthorized.xrpc_name(),
