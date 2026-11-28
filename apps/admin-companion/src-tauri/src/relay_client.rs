@@ -1561,7 +1561,7 @@ pub struct HostedSpaceList {
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostedSpaceEntry {
-    /// Canonical space URI, `at://{authority}/space/{type}/{skey}`.
+    /// Canonical space URI, `at:space/{authority}/{type}/{skey}`.
     pub uri: String,
     pub authority_did: String,
     /// Whether the relay is the space's authority. `false` means the space is governed by
