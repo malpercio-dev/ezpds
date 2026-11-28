@@ -323,7 +323,8 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   per-space takedown. Every row states whether the space is governed by this server or another
   one, in words: that is what decides whether the operator has any option besides takedown, since
   a foreign authority's `deleteSpace` is not theirs to call. Expandable rows carry a fact sheet
-  (authority, first seen, repos/records stored, the owner's delete and the operator's takedown)
+  (authority, the policy type for a space this server governs, first seen, repos/records stored,
+  the owner's delete and the operator's takedown)
   and the armed two-tap + biometric-gated **Take down / Restore this space**, the same friction
   Moderation's account takedown carries — one armed action for the screen, since only the
   expanded row can be armed and collapsing disarms it. A filter toggle narrows to the spaces
